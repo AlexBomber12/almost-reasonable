@@ -187,6 +187,27 @@ def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
     )
 
 
+def test_relative_database_path_remains_bound_after_working_directory_change(
+    tmp_path, monkeypatch
+):
+    original_directory = tmp_path / "original"
+    other_directory = tmp_path / "other"
+    original_directory.mkdir()
+    other_directory.mkdir()
+    monkeypatch.chdir(original_directory)
+    store = EventStore("events.sqlite3")
+
+    monkeypatch.chdir(other_directory)
+    result = store.append_private_input(
+        principal("a"), private_input("relative-path", "private content")
+    )
+
+    assert result.status is AppendStatus.CREATED
+    assert store.database_path == original_directory / "events.sqlite3"
+    assert not (other_directory / "events.sqlite3").exists()
+    assert store.retrieve_private_events(principal("a"))[0].content == "private content"
+
+
 def test_private_events_within_one_second_are_returned_chronologically(tmp_path):
     database = tmp_path / "events.sqlite3"
     store = EventStore(database)

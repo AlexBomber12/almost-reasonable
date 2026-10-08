@@ -179,9 +179,10 @@ class EventStore:
             or not 1 <= busy_timeout_ms <= MAX_BUSY_TIMEOUT_MS
         ):
             raise ValueError("busy_timeout_ms is outside SQLite's supported range")
-        self._database_path = Path(database_path)
-        if self._database_path == Path(":memory:"):
+        database_path = Path(database_path)
+        if database_path == Path(":memory:"):
             raise ValueError("in-memory databases are not supported")
+        self._database_path = database_path.resolve()
         self._busy_timeout_ms = busy_timeout_ms
         self._fault_injector = fault_injector
         self._initialize()
