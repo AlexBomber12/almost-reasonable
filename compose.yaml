@@ -1,0 +1,35 @@
+name: almost-reasonable
+
+services:
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    user: "1000:1000"
+    command: tunnel --no-autoupdate run --token-file /run/secrets/cloudflare_tunnel_token
+    restart: unless-stopped
+    volumes:
+      - ./secrets/cloudflare_tunnel_token:/run/secrets/cloudflare_tunnel_token:ro
+    networks:
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  oauth:
+    image: python:3.12-alpine
+    user: "1000:1000"
+    command: ["python", "-B", "/app/oauth_server.py"]
+    restart: unless-stopped
+    read_only: true
+    volumes:
+      - ./app/oauth_server.py:/app/oauth_server.py:ro
+    networks:
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+networks:
+  frontend:
+    driver: bridge

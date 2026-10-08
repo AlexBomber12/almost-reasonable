@@ -1,0 +1,14 @@
+secrets/
+data/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+*.db
+*.sqlite*
+*.log
+dist/
+build/

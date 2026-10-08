@@ -1,0 +1,4 @@
+services:
+  oauth:
+    volumes:
+      - ./data/oauth:/var/lib/oauth
