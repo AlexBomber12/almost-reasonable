@@ -28,6 +28,7 @@ from .events import (
 SCHEMA_VERSION = 1
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
+MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
 WAL_RETRY_INTERVAL_SECONDS = 0.01
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
@@ -84,7 +85,8 @@ _SCHEMA = (
     """
     CREATE TABLE schema_metadata (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        version INTEGER NOT NULL CHECK (version >= 1)
+        version INTEGER NOT NULL
+            CHECK (typeof(version) = 'integer' AND version >= 1)
     )
     """,
     """
@@ -256,6 +258,8 @@ class EventStore:
         metadata_version = connection.execute(
             "SELECT COALESCE(MAX(version), -1) FROM schema_metadata"
         ).fetchone()[0]
+        if type(metadata_version) is not int:
+            raise EventStoreError("event store operation failed")
         if metadata_version != SCHEMA_VERSION:
             raise UnsupportedSchemaVersionError(metadata_version)
 
@@ -444,6 +448,8 @@ class EventStore:
 
     @staticmethod
     def _conversation_event(row: tuple[object, ...]) -> PrivateConversationEvent:
+        if any(type(value) is not str for value in row):
+            raise EventStoreError("event store operation failed")
         return PrivateConversationEvent(
             event_id=row[0],
             occurred_at=datetime.fromisoformat(row[1]),
@@ -523,10 +529,14 @@ class EventStore:
             )
         if not isinstance(event.content, str) or not event.content:
             raise EventValidationError("invalid payload content")
+        if len(event.content) > MAX_PRIVATE_PAYLOAD_BYTES:
+            raise EventValidationError("invalid payload content")
         try:
-            event.content.encode("utf-8")
+            encoded_content = event.content.encode("utf-8")
         except UnicodeEncodeError:
             raise EventValidationError("invalid payload content") from None
+        if len(encoded_content) > MAX_PRIVATE_PAYLOAD_BYTES:
+            raise EventValidationError("invalid payload content")
         try:
             return EventStore._serialize_time(event.occurred_at)
         except (OverflowError, TypeError, ValueError):

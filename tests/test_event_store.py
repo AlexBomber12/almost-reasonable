@@ -323,6 +323,38 @@ def test_metadata_version_mismatch_fails_closed(tmp_path):
         EventStore(database)
 
 
+def test_nonnumeric_schema_metadata_is_sanitized_at_every_boundary(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("metadata-canary", "private content")
+    )
+    metadata_canary = "private-metadata-canary"
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE schema_metadata SET version = ?",
+            (metadata_canary,),
+        )
+
+    operations = (
+        lambda: EventStore(database),
+        lambda: store.append_private_input(
+            principal("a"), private_input("rejected", "not persisted")
+        ),
+        lambda: store.retrieve_private_events(principal("a")),
+    )
+    for operation in operations:
+        with pytest.raises(EventStoreError) as captured:
+            operation()
+        assert str(captured.value) == "event store operation failed"
+        assert metadata_canary not in repr(captured.value)
+
+    assert table_count(database, "event_envelopes") == 1
+    assert table_count(database, "private_payloads") == 1
+    assert table_count(database, "protected_event_taints") == 1
+
+
 def test_append_rechecks_future_schema_version_before_writing(tmp_path):
     database = tmp_path / "events.sqlite3"
     store = EventStore(database)
@@ -571,6 +603,8 @@ def test_schema_constraints_reject_scope_or_provenance_broadening(tmp_path):
             connection.execute(
                 "UPDATE private_payloads SET provenance_type = 'invented'"
             )
+        with pytest.raises(sqlite3.IntegrityError):
+            connection.execute("UPDATE schema_metadata SET version = 'invalid'")
 
 
 def test_foreign_key_enforcement_rejects_an_orphan_taint(tmp_path):
@@ -778,6 +812,24 @@ def test_malformed_persisted_rows_are_sanitized_during_retrieval(tmp_path):
     assert str(captured.value) == "event store operation failed"
     assert persisted_canary not in repr(captured.value)
     assert "private content" not in repr(captured.value)
+
+
+def test_blob_payload_is_rejected_during_retrieval(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(principal("a"), private_input("blob-row", "replace me"))
+    persisted_canary = b"private-blob-canary"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE private_payloads SET content = ?",
+            (persisted_canary,),
+        )
+
+    with pytest.raises(EventStoreError) as captured:
+        store.retrieve_private_events(principal("a"))
+
+    assert str(captured.value) == "event store operation failed"
+    assert repr(persisted_canary) not in repr(captured.value)
 
 
 def test_connection_open_and_setup_errors_are_sanitized(tmp_path):
@@ -989,6 +1041,39 @@ def test_invalid_payload_content_is_rejected(tmp_path, content):
 
     with pytest.raises(EventValidationError, match="payload content"):
         store.append_private_input(principal("a"), event)
+
+
+def test_payload_at_byte_limit_is_persisted(tmp_path):
+    store = EventStore(tmp_path / "events.sqlite3")
+    content = "a" * store_module.MAX_PRIVATE_PAYLOAD_BYTES
+
+    result = store.append_private_input(
+        principal("a"), private_input("max-content", content)
+    )
+
+    assert result.status is AppendStatus.CREATED
+    assert store.retrieve_private_events(principal("a"))[0].content == content
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "a" * (store_module.MAX_PRIVATE_PAYLOAD_BYTES + 1),
+        "é" * (store_module.MAX_PRIVATE_PAYLOAD_BYTES // 2 + 1),
+    ],
+)
+def test_payload_over_byte_limit_is_rejected_without_writes(tmp_path, content):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+
+    with pytest.raises(EventValidationError, match="payload content"):
+        store.append_private_input(
+            principal("a"), private_input("oversized-content", content)
+        )
+
+    assert table_count(database, "event_envelopes") == 0
+    assert table_count(database, "private_payloads") == 0
+    assert table_count(database, "protected_event_taints") == 0
 
 
 @pytest.mark.parametrize("busy_timeout_ms", [0, True, 1.5, 2_147_483_648])
