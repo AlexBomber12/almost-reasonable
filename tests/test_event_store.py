@@ -361,6 +361,38 @@ def test_append_rechecks_schema_metadata_before_writing(tmp_path):
     assert table_count(database, "protected_event_taints") == 0
 
 
+def test_retrieval_rechecks_future_schema_version_before_reading(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("future-read", "private canary")
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(
+        UnsupportedSchemaVersionError,
+        match="unsupported event store schema version: 2",
+    ):
+        store.retrieve_private_events(principal("a"))
+
+
+def test_retrieval_rechecks_schema_metadata_before_reading(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("metadata-read", "private canary")
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE schema_metadata SET version = 2")
+
+    with pytest.raises(
+        UnsupportedSchemaVersionError,
+        match="unsupported event store schema version: 2",
+    ):
+        store.retrieve_private_events(principal("a"))
+
+
 def test_private_participants_are_isolated_and_owner_has_no_bypass(tmp_path):
     store = EventStore(tmp_path / "events.sqlite3")
     participant_a = principal("a", owner=True)
@@ -891,9 +923,9 @@ def test_invalid_payload_content_is_rejected(tmp_path, content):
         store.append_private_input(principal("a"), event)
 
 
-@pytest.mark.parametrize("busy_timeout_ms", [0, True, 1.5])
+@pytest.mark.parametrize("busy_timeout_ms", [0, True, 1.5, 2_147_483_648])
 def test_invalid_store_configuration_is_rejected(tmp_path, busy_timeout_ms):
-    with pytest.raises(ValueError, match="busy_timeout_ms must be positive"):
+    with pytest.raises(ValueError, match="busy_timeout_ms is outside SQLite"):
         EventStore(tmp_path / "events.sqlite3", busy_timeout_ms=busy_timeout_ms)
 
 

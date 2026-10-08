@@ -27,6 +27,7 @@ from .events import (
 
 SCHEMA_VERSION = 1
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
+MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 WAL_RETRY_INTERVAL_SECONDS = 0.01
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
@@ -170,8 +171,11 @@ class EventStore:
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
         fault_injector: Callable[[FaultPoint], None] | None = None,
     ):
-        if type(busy_timeout_ms) is not int or busy_timeout_ms <= 0:
-            raise ValueError("busy_timeout_ms must be positive")
+        if (
+            type(busy_timeout_ms) is not int
+            or not 1 <= busy_timeout_ms <= MAX_BUSY_TIMEOUT_MS
+        ):
+            raise ValueError("busy_timeout_ms is outside SQLite's supported range")
         self._database_path = Path(database_path)
         if self._database_path == Path(":memory:"):
             raise ValueError("in-memory databases are not supported")
@@ -403,30 +407,33 @@ class EventStore:
         self._validate_context(context)
         connection = self._open()
         try:
-            rows = connection.execute(
-                """
-                SELECT
-                    event.event_id,
-                    event.occurred_at,
-                    event.event_type,
-                    event.channel,
-                    event.correlation_id,
-                    event.audience_type,
-                    event.provenance_type,
-                    event.verification_status,
-                    payload.content
-                FROM event_envelopes AS event
-                JOIN private_payloads AS payload
-                  ON payload.payload_id = event.payload_id
-                WHERE event.audience_type = 'private_participant'
-                  AND event.audience_principal_id = ?
-                  AND payload.audience_type = event.audience_type
-                  AND payload.audience_principal_id = event.audience_principal_id
-                  AND payload.retention_status = 'active'
-                ORDER BY event.occurred_at, event.event_id
-                """,
-                (context.principal_id.value,),
-            ).fetchall()
+            with connection:
+                connection.execute("BEGIN")
+                self._verify_current_schema(connection)
+                rows = connection.execute(
+                    """
+                    SELECT
+                        event.event_id,
+                        event.occurred_at,
+                        event.event_type,
+                        event.channel,
+                        event.correlation_id,
+                        event.audience_type,
+                        event.provenance_type,
+                        event.verification_status,
+                        payload.content
+                    FROM event_envelopes AS event
+                    JOIN private_payloads AS payload
+                      ON payload.payload_id = event.payload_id
+                    WHERE event.audience_type = 'private_participant'
+                      AND event.audience_principal_id = ?
+                      AND payload.audience_type = event.audience_type
+                      AND payload.audience_principal_id = event.audience_principal_id
+                      AND payload.retention_status = 'active'
+                    ORDER BY event.occurred_at, event.event_id
+                    """,
+                    (context.principal_id.value,),
+                ).fetchall()
             return tuple(self._conversation_event(row) for row in rows)
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
