@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import re
 import sqlite3
+import stat
 import time
 
 from .events import (
@@ -171,12 +172,26 @@ class EventStore:
         self._database_path = database_path.resolve()
         self._busy_timeout_ms = busy_timeout_ms
         self._fault_injector = fault_injector
+        self._verify_database_parent_security()
         self._secure_database_file()
         self._initialize()
 
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    def _verify_database_parent_security(self) -> None:
+        try:
+            parent_status = self._database_path.parent.stat()
+        except OSError:
+            raise EventStoreError("event store operation failed") from None
+        security = (
+            stat.S_ISDIR(parent_status.st_mode),
+            parent_status.st_uid == os.geteuid(),
+            bool(parent_status.st_mode & (stat.S_IWGRP | stat.S_IWOTH)),
+        )
+        if security != (True, True, False):
+            raise EventStoreError("event store operation failed")
 
     def _secure_database_file(self) -> None:
         try:
@@ -192,6 +207,19 @@ class EventStore:
         except OSError:
             raise EventStoreError("event store operation failed") from None
 
+    def _verify_database_file_security(self) -> None:
+        try:
+            database_status = self._database_path.stat()
+        except OSError:
+            raise EventStoreError("event store operation failed") from None
+        security = (
+            stat.S_ISREG(database_status.st_mode),
+            database_status.st_uid == os.geteuid(),
+            stat.S_IMODE(database_status.st_mode),
+        )
+        if security != (True, True, 0o600):
+            raise EventStoreError("event store operation failed")
+
     def _open(self) -> sqlite3.Connection:
         try:
             connection = sqlite3.connect(
@@ -202,9 +230,13 @@ class EventStore:
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
         try:
+            self._verify_database_file_security()
             connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
             connection.execute("PRAGMA foreign_keys = ON")
             return connection
+        except EventStoreError:
+            connection.close()
+            raise
         except sqlite3.Error as error:
             connection.close()
             raise self._translated_error(error) from None

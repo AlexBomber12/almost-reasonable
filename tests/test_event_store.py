@@ -1,6 +1,7 @@
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
 import os
+from pathlib import Path
 import sqlite3
 import stat
 
@@ -192,6 +193,33 @@ def test_database_and_wal_sidecars_are_owner_only(tmp_path, preexisting_mode):
         "events.sqlite3-wal": 0o600,
         "events.sqlite3-shm": 0o600,
     }
+
+
+def test_database_in_an_untrusted_parent_is_rejected(tmp_path):
+    shared_directory = tmp_path / "shared"
+    shared_directory.mkdir(mode=0o777)
+    shared_directory.chmod(0o777)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        EventStore(shared_directory / "events.sqlite3")
+
+    assert not (shared_directory / "events.sqlite3").exists()
+
+
+def test_database_replacement_before_sqlite_open_is_rejected(tmp_path, monkeypatch):
+    database = tmp_path / "events.sqlite3"
+    real_connect = store_module.sqlite3.connect
+
+    def replace_with_insecure_file(path, *args, **kwargs):
+        database.chmod(0o644)
+        return real_connect(path, *args, **kwargs)
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", replace_with_insecure_file)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        EventStore(database)
+
+    assert stat.S_IMODE(database.stat().st_mode) == 0o644
 
 
 def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
@@ -1020,6 +1048,31 @@ def test_sqlite_connection_open_errors_are_sanitized(tmp_path, monkeypatch):
 
     with pytest.raises(EventStoreError, match="event store operation failed"):
         EventStore(tmp_path / "events.sqlite3")
+
+
+def test_secure_database_open_errors_are_sanitized(tmp_path, monkeypatch):
+    def fail_to_open(*_args, **_kwargs):
+        raise OSError("synthetic secure open failure")
+
+    monkeypatch.setattr(store_module.os, "open", fail_to_open)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        EventStore(tmp_path / "events.sqlite3")
+
+
+def test_post_connect_file_stat_errors_are_sanitized(tmp_path, monkeypatch):
+    database = tmp_path / "events.sqlite3"
+    real_stat = Path.stat
+
+    def fail_database_stat(path, *args, **kwargs):
+        if path == database:
+            raise OSError("synthetic file stat failure")
+        return real_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fail_database_stat)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        EventStore(database)
 
 
 def test_connection_pragma_failure_is_sanitized_and_closed(tmp_path, monkeypatch):
