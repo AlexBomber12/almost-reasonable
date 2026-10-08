@@ -1,5 +1,5 @@
 from dataclasses import fields
-from datetime import UTC, datetime, tzinfo
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 import sqlite3
 
 import pytest
@@ -727,6 +727,37 @@ def test_timezone_with_no_utc_offset_is_rejected(tmp_path):
         store.append_private_input(
             principal("a"),
             private_input("missing-offset", "not persisted", occurred_at=timestamp),
+        )
+
+
+def test_timestamp_that_overflows_during_utc_conversion_is_rejected(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    timestamp = datetime.min.replace(tzinfo=timezone(timedelta(hours=1)))
+
+    with pytest.raises(EventValidationError, match="represented in UTC"):
+        store.append_private_input(
+            principal("a"),
+            private_input("utc-overflow", "not persisted", occurred_at=timestamp),
+        )
+
+    assert table_count(database, "event_envelopes") == 0
+    assert table_count(database, "private_payloads") == 0
+    assert table_count(database, "protected_event_taints") == 0
+
+
+def test_timestamp_with_failing_utc_offset_is_rejected(tmp_path):
+    class FailingOffset(tzinfo):
+        def utcoffset(self, _value):
+            raise ValueError("synthetic offset failure")
+
+    store = EventStore(tmp_path / "events.sqlite3")
+    timestamp = datetime(2026, 1, 2, tzinfo=FailingOffset())
+
+    with pytest.raises(EventValidationError, match="represented in UTC"):
+        store.append_private_input(
+            principal("a"),
+            private_input("failing-offset", "not persisted", occurred_at=timestamp),
         )
 
 

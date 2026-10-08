@@ -255,7 +255,7 @@ class EventStore:
         event: PrivateInputEvent,
     ) -> AppendResult:
         self._validate_context(context)
-        self._validate_private_input(context, event)
+        timestamp = self._validate_private_input(context, event)
         connection = self._open()
         try:
             with connection:
@@ -294,7 +294,6 @@ class EventStore:
                 if replay is not None:
                     return AppendResult(AppendStatus.DUPLICATE)
 
-                timestamp = self._serialize_time(event.occurred_at)
                 connection.execute(
                     """
                     INSERT INTO private_payloads(
@@ -443,7 +442,7 @@ class EventStore:
     @staticmethod
     def _validate_private_input(
         context: TrustedPrincipalContext, event: PrivateInputEvent
-    ) -> None:
+    ) -> str:
         if not isinstance(event, PrivateInputEvent):
             raise EventValidationError("private input event is required")
         EventStore._require_token("event id", event.event_id)
@@ -452,7 +451,15 @@ class EventStore:
         EventStore._require_token("correlation id", event.correlation_id)
         if not isinstance(event.occurred_at, datetime):
             raise EventValidationError("invalid event timestamp")
-        if event.occurred_at.tzinfo is None or event.occurred_at.utcoffset() is None:
+        if event.occurred_at.tzinfo is None:
+            raise EventValidationError("event timestamp must include a timezone")
+        try:
+            offset = event.occurred_at.utcoffset()
+        except (OverflowError, ValueError):
+            raise EventValidationError(
+                "event timestamp cannot be represented in UTC"
+            ) from None
+        if offset is None:
             raise EventValidationError("event timestamp must include a timezone")
         if event.event_type is not EventType.PARTICIPANT_INPUT:
             raise EventValidationError("unsupported event type")
@@ -486,6 +493,12 @@ class EventStore:
             event.content.encode("utf-8")
         except UnicodeEncodeError:
             raise EventValidationError("invalid payload content") from None
+        try:
+            return EventStore._serialize_time(event.occurred_at)
+        except (OverflowError, ValueError):
+            raise EventValidationError(
+                "event timestamp cannot be represented in UTC"
+            ) from None
 
     @staticmethod
     def _require_token(field: str, value: object) -> None:
