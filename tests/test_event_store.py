@@ -162,6 +162,36 @@ def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
     )
 
 
+def test_private_events_within_one_second_are_returned_chronologically(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    context = principal("a")
+    start = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
+    fractionally_later = start.replace(microsecond=1)
+
+    store.append_private_input(
+        context,
+        private_input("whole-second", "earlier", occurred_at=start),
+    )
+    store.append_private_input(
+        context,
+        private_input("fractional-second", "later", occurred_at=fractionally_later),
+    )
+
+    assert [event.content for event in store.retrieve_private_events(context)] == [
+        "earlier",
+        "later",
+    ]
+    with sqlite3.connect(database) as connection:
+        stored_times = connection.execute(
+            "SELECT occurred_at FROM event_envelopes ORDER BY occurred_at"
+        ).fetchall()
+    assert stored_times == [
+        ("2026-01-02T03:04:05.000000Z",),
+        ("2026-01-02T03:04:05.000001Z",),
+    ]
+
+
 def test_schema_version_changed_before_initialization_lock_fails_closed(tmp_path):
     database = tmp_path / "events.sqlite3"
 

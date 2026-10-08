@@ -492,7 +492,11 @@ class EventStore:
 
     @staticmethod
     def _serialize_time(value: datetime) -> str:
-        return value.astimezone(UTC).isoformat().replace("+00:00", "Z")
+        return (
+            value.astimezone(UTC)
+            .isoformat(timespec="microseconds")
+            .replace("+00:00", "Z")
+        )
 
     @staticmethod
     def _translated_error(error: sqlite3.Error) -> EventStoreError:
