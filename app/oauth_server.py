@@ -10,6 +10,7 @@ STATE = BASE / "state"
 CODE = BASE / "code"
 MAX_AGE = 900
 
+
 class Handler(BaseHTTPRequestHandler):
     def reply(self, status, message):
         body = (message + "\n").encode()
@@ -62,11 +63,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.reply(400, "Invalid authorization code")
 
         try:
-            fd = os.open(
-                CODE,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o600
-            )
+            fd = os.open(CODE, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
             with os.fdopen(fd, "w") as output:
                 output.write(codes[0])
         except FileExistsError:
@@ -77,4 +74,10 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
 
-HTTPServer(("0.0.0.0", 8000), Handler).serve_forever()
+
+def main(server_class=HTTPServer):
+    server_class(("0.0.0.0", 8000), Handler).serve_forever()
+
+
+if __name__ == "__main__":
+    main()
