@@ -112,11 +112,13 @@ class PrivateContextAssembler:
 
         core_self = initial_core_self()
         retrieved = self._event_store.retrieve_private_events(trusted_context)
-        candidates = retrieved[-self._limits.max_history_events :]
-        history_omitted = len(candidates) != len(retrieved)
+        history_omitted = False
         selected: tuple[ConversationSegment, ...] = ()
 
-        for event in reversed(candidates):
+        for event in reversed(retrieved):
+            if len(selected) == self._limits.max_history_events:
+                history_omitted = True
+                break
             segment = ConversationSegment(
                 role=ContextRole.PARTICIPANT,
                 trust=ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,

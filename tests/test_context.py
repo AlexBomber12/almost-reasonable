@@ -208,6 +208,30 @@ def test_byte_budget_omits_oversized_message_without_partial_quotation(tmp_path)
     assert "Ж" not in repr(context)
 
 
+def test_oversized_recent_message_does_not_consume_event_quota(tmp_path):
+    store = EventStore(tmp_path / "events.sqlite3")
+    participant = principal("a")
+    append_message(store, participant, "old", "older fits", offset=0)
+    append_message(store, participant, "middle", "middle fits", offset=1)
+    append_message(store, participant, "large", "Ж" * 1000, offset=2)
+    generous = assembler(store).build(participant)
+    fitting_history = generous.history[:2]
+    exact_budget = context_utf8_size(initial_core_self(), fitting_history)
+
+    context = assembler(
+        store,
+        max_utf8_bytes=exact_budget,
+        max_history_events=2,
+    ).build(participant)
+
+    assert [item.content for item in context.history] == [
+        "older fits",
+        "middle fits",
+    ]
+    assert context.history_omitted is True
+    assert context.used_utf8_bytes == exact_budget
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
