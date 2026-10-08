@@ -913,6 +913,53 @@ def test_timestamp_with_failing_utc_offset_is_rejected(tmp_path):
         )
 
 
+def test_timestamp_with_malformed_utc_offset_is_rejected(tmp_path):
+    class MalformedOffset(tzinfo):
+        def utcoffset(self, _value):
+            return "not-an-offset"
+
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    timestamp = datetime(2026, 1, 2, tzinfo=MalformedOffset())
+
+    with pytest.raises(EventValidationError, match="represented in UTC"):
+        store.append_private_input(
+            principal("a"),
+            private_input("malformed-offset", "not persisted", occurred_at=timestamp),
+        )
+
+    assert table_count(database, "event_envelopes") == 0
+    assert table_count(database, "private_payloads") == 0
+    assert table_count(database, "protected_event_taints") == 0
+
+
+def test_timestamp_that_becomes_malformed_during_utc_conversion_is_rejected(tmp_path):
+    class LateMalformedOffset(tzinfo):
+        calls = 0
+
+        def utcoffset(self, _value):
+            self.calls += 1
+            if self.calls == 1:
+                return timedelta(0)
+            return "not-an-offset"
+
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    timestamp = datetime(2026, 1, 2, tzinfo=LateMalformedOffset())
+
+    with pytest.raises(EventValidationError, match="represented in UTC"):
+        store.append_private_input(
+            principal("a"),
+            private_input(
+                "late-malformed-offset", "not persisted", occurred_at=timestamp
+            ),
+        )
+
+    assert table_count(database, "event_envelopes") == 0
+    assert table_count(database, "private_payloads") == 0
+    assert table_count(database, "protected_event_taints") == 0
+
+
 @pytest.mark.parametrize("content", [None, "", "\ud800"])
 def test_invalid_payload_content_is_rejected(tmp_path, content):
     store = EventStore(tmp_path / "events.sqlite3")

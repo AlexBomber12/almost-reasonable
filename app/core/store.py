@@ -487,7 +487,7 @@ class EventStore:
             raise EventValidationError("event timestamp must include a timezone")
         try:
             offset = event.occurred_at.utcoffset()
-        except (OverflowError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             raise EventValidationError(
                 "event timestamp cannot be represented in UTC"
             ) from None
@@ -527,7 +527,7 @@ class EventStore:
             raise EventValidationError("invalid payload content") from None
         try:
             return EventStore._serialize_time(event.occurred_at)
-        except (OverflowError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             raise EventValidationError(
                 "event timestamp cannot be represented in UTC"
             ) from None
