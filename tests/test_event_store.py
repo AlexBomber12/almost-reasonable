@@ -323,6 +323,44 @@ def test_metadata_version_mismatch_fails_closed(tmp_path):
         EventStore(database)
 
 
+def test_append_rechecks_future_schema_version_before_writing(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(
+        UnsupportedSchemaVersionError,
+        match="unsupported event store schema version: 2",
+    ):
+        store.append_private_input(
+            principal("a"), private_input("future-write", "not persisted")
+        )
+
+    assert table_count(database, "event_envelopes") == 0
+    assert table_count(database, "private_payloads") == 0
+    assert table_count(database, "protected_event_taints") == 0
+
+
+def test_append_rechecks_schema_metadata_before_writing(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    with sqlite3.connect(database) as connection:
+        connection.execute("UPDATE schema_metadata SET version = 2")
+
+    with pytest.raises(
+        UnsupportedSchemaVersionError,
+        match="unsupported event store schema version: 2",
+    ):
+        store.append_private_input(
+            principal("a"), private_input("metadata-write", "not persisted")
+        )
+
+    assert table_count(database, "event_envelopes") == 0
+    assert table_count(database, "private_payloads") == 0
+    assert table_count(database, "protected_event_taints") == 0
+
+
 def test_private_participants_are_isolated_and_owner_has_no_bypass(tmp_path):
     store = EventStore(tmp_path / "events.sqlite3")
     participant_a = principal("a", owner=True)
@@ -853,9 +891,10 @@ def test_invalid_payload_content_is_rejected(tmp_path, content):
         store.append_private_input(principal("a"), event)
 
 
-def test_invalid_store_configuration_is_rejected(tmp_path):
+@pytest.mark.parametrize("busy_timeout_ms", [0, True, 1.5])
+def test_invalid_store_configuration_is_rejected(tmp_path, busy_timeout_ms):
     with pytest.raises(ValueError, match="busy_timeout_ms must be positive"):
-        EventStore(tmp_path / "events.sqlite3", busy_timeout_ms=0)
+        EventStore(tmp_path / "events.sqlite3", busy_timeout_ms=busy_timeout_ms)
 
 
 def test_in_memory_database_is_rejected():

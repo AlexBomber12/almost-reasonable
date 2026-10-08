@@ -170,7 +170,7 @@ class EventStore:
         busy_timeout_ms: int = DEFAULT_BUSY_TIMEOUT_MS,
         fault_injector: Callable[[FaultPoint], None] | None = None,
     ):
-        if not isinstance(busy_timeout_ms, int) or busy_timeout_ms <= 0:
+        if type(busy_timeout_ms) is not int or busy_timeout_ms <= 0:
             raise ValueError("busy_timeout_ms must be positive")
         self._database_path = Path(database_path)
         if self._database_path == Path(":memory:"):
@@ -223,11 +223,7 @@ class EventStore:
                     )
                     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                     return
-                metadata_version = connection.execute(
-                    "SELECT COALESCE(MAX(version), -1) FROM schema_metadata"
-                ).fetchone()[0]
-                if metadata_version != SCHEMA_VERSION:
-                    raise UnsupportedSchemaVersionError(metadata_version)
+                self._verify_current_schema(connection)
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
         finally:
@@ -247,6 +243,17 @@ class EventStore:
                 if remaining <= 0:
                     raise
                 time.sleep(min(WAL_RETRY_INTERVAL_SECONDS, remaining))
+
+    @staticmethod
+    def _verify_current_schema(connection: sqlite3.Connection) -> None:
+        version = connection.execute("PRAGMA user_version").fetchone()[0]
+        if version != SCHEMA_VERSION:
+            raise UnsupportedSchemaVersionError(version)
+        metadata_version = connection.execute(
+            "SELECT COALESCE(MAX(version), -1) FROM schema_metadata"
+        ).fetchone()[0]
+        if metadata_version != SCHEMA_VERSION:
+            raise UnsupportedSchemaVersionError(metadata_version)
 
     def diagnostics(self) -> StoreDiagnostics:
         connection = self._open()
@@ -277,6 +284,7 @@ class EventStore:
         try:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
+                self._verify_current_schema(connection)
                 existing_event = connection.execute(
                     """
                     SELECT
