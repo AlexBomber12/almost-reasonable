@@ -202,7 +202,7 @@ class EventStore:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version not in {0, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
-            connection.execute("PRAGMA journal_mode = WAL")
+            connection.execute("PRAGMA journal_mode = WAL").fetchone()
             if self._fault_injector is not None:
                 self._fault_injector(FaultPoint.BEFORE_INITIALIZATION_LOCK)
             with connection:

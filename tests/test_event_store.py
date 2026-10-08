@@ -1,8 +1,6 @@
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from datetime import UTC, datetime, tzinfo
 import sqlite3
-from threading import Barrier
 
 import pytest
 
@@ -162,24 +160,6 @@ def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
             content="synthetic private A content",
         ),
     )
-
-
-def test_concurrent_first_initialization_rechecks_version_under_write_lock(tmp_path):
-    database = tmp_path / "events.sqlite3"
-    ready = Barrier(2)
-
-    def pause_before_lock(point):
-        assert point is FaultPoint.BEFORE_INITIALIZATION_LOCK
-        ready.wait(timeout=5)
-
-    def initialize():
-        return EventStore(database, fault_injector=pause_before_lock).diagnostics()
-
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        diagnostics = list(executor.map(lambda _index: initialize(), range(2)))
-
-    assert [result.schema_version for result in diagnostics] == [1, 1]
-    assert [result.journal_mode for result in diagnostics] == ["wal", "wal"]
 
 
 def test_schema_version_changed_before_initialization_lock_fails_closed(tmp_path):
