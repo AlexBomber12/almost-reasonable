@@ -1036,6 +1036,7 @@ def test_blob_payload_is_rejected_during_retrieval(tmp_path):
     store.append_private_input(principal("a"), private_input("blob-row", "replace me"))
     persisted_canary = b"private-blob-canary"
     with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
         connection.execute(
             "UPDATE private_payloads SET content = ?",
             (persisted_canary,),
@@ -1046,6 +1047,27 @@ def test_blob_payload_is_rejected_during_retrieval(tmp_path):
 
     assert str(captured.value) == "event store operation failed"
     assert repr(persisted_canary) not in repr(captured.value)
+
+
+def test_oversized_persisted_payload_is_sanitized_before_retrieval(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("oversized-row", "replace me")
+    )
+    oversized_content = "x" * (store_module.MAX_PRIVATE_PAYLOAD_BYTES + 1)
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE private_payloads SET content = ?",
+            (oversized_content,),
+        )
+
+    with pytest.raises(EventStoreError) as captured:
+        store.retrieve_private_events(principal("a"))
+
+    assert str(captured.value) == "event store operation failed"
+    assert oversized_content not in repr(captured.value)
 
 
 @pytest.mark.parametrize(

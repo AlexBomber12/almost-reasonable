@@ -92,10 +92,14 @@ _SCHEMA = (
             CHECK (typeof(version) = 'integer' AND version >= 1)
     )
     """,
-    """
+    f"""
     CREATE TABLE private_payloads (
         payload_id TEXT PRIMARY KEY,
-        content TEXT NOT NULL,
+        content TEXT NOT NULL CHECK (
+            typeof(content) = 'text'
+            AND length(CAST(content AS BLOB)) BETWEEN 1
+                AND {MAX_PRIVATE_PAYLOAD_BYTES}
+        ),
         audience_type TEXT NOT NULL
             CHECK (audience_type = 'private_participant'),
         audience_principal_id TEXT NOT NULL,
@@ -495,7 +499,12 @@ class EventStore:
                         taint.source_event_id,
                         taint.source_principal_id,
                         taint.source_provenance_type,
-                        payload.content
+                        CASE
+                            WHEN typeof(payload.content) = 'text'
+                             AND length(CAST(payload.content AS BLOB))
+                                 BETWEEN 1 AND ?
+                            THEN payload.content
+                        END AS content
                     FROM event_envelopes AS event
                     JOIN private_payloads AS payload
                       ON payload.payload_id = event.payload_id
@@ -510,6 +519,7 @@ class EventStore:
                     LIMIT ?
                     """,
                     (
+                        MAX_PRIVATE_PAYLOAD_BYTES,
                         context.principal_id.value,
                         MAX_PRIVATE_EVENTS_PER_RETRIEVAL,
                     ),
@@ -527,6 +537,7 @@ class EventStore:
     def _conversation_event(row: tuple[object, ...]) -> PrivateConversationEvent:
         if any(type(value) is not str for value in row):
             raise EventStoreError("event store operation failed")
+        EventStore._validate_payload_content(row[14])
         occurred_at = datetime.fromisoformat(row[1])
         if EventStore._serialize_time(occurred_at) != row[1]:
             raise ValueError("noncanonical stored timestamp")
@@ -626,22 +637,26 @@ class EventStore:
             raise EventValidationError(
                 "private input must be an unverified participant assertion"
             )
-        if not isinstance(event.content, str) or not event.content:
-            raise EventValidationError("invalid payload content")
-        if len(event.content) > MAX_PRIVATE_PAYLOAD_BYTES:
-            raise EventValidationError("invalid payload content")
-        try:
-            encoded_content = event.content.encode("utf-8")
-        except UnicodeEncodeError:
-            raise EventValidationError("invalid payload content") from None
-        if len(encoded_content) > MAX_PRIVATE_PAYLOAD_BYTES:
-            raise EventValidationError("invalid payload content")
+        EventStore._validate_payload_content(event.content)
         try:
             return EventStore._serialize_time(event.occurred_at)
         except (OverflowError, TypeError, ValueError):
             raise EventValidationError(
                 "event timestamp cannot be represented in UTC"
             ) from None
+
+    @staticmethod
+    def _validate_payload_content(content: object) -> None:
+        if not isinstance(content, str) or not content:
+            raise EventValidationError("invalid payload content")
+        if len(content) > MAX_PRIVATE_PAYLOAD_BYTES:
+            raise EventValidationError("invalid payload content")
+        try:
+            encoded_content = content.encode("utf-8")
+        except UnicodeEncodeError:
+            raise EventValidationError("invalid payload content") from None
+        if len(encoded_content) > MAX_PRIVATE_PAYLOAD_BYTES:
+            raise EventValidationError("invalid payload content")
 
     @staticmethod
     def _require_token(field: str, value: object) -> None:
