@@ -20,6 +20,7 @@ from .store import (
     EventStore,
     EventStoreBusyError,
     EventStoreError,
+    EventIdentityConflictError,
     EventValidationError,
     UnsupportedSchemaVersionError,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "EventStore",
     "EventStoreBusyError",
     "EventStoreError",
+    "EventIdentityConflictError",
     "EventType",
     "EventValidationError",
     "ParticipantId",

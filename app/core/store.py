@@ -41,6 +41,10 @@ class EventValidationError(ValueError):
     """Input at the internal storage boundary failed closed validation."""
 
 
+class EventIdentityConflictError(EventStoreError):
+    """A global event ID is already assigned to another logical event."""
+
+
 class UnsupportedSchemaVersionError(EventStoreError):
     """The database schema is not understood by this application version."""
 
@@ -56,6 +60,7 @@ class AppendStatus(StrEnum):
 class FaultPoint(StrEnum):
     """Deterministic fault locations used by local transactional tests."""
 
+    BEFORE_INITIALIZATION_LOCK = "before_initialization_lock"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
 
 
@@ -123,7 +128,11 @@ _SCHEMA = (
             CHECK (verification_status IN ('unverified', 'verified')),
         payload_id TEXT UNIQUE
             REFERENCES private_payloads(payload_id) ON DELETE SET NULL,
-        UNIQUE (authenticated_source_ref, source_message_id)
+        UNIQUE (
+            audience_principal_id,
+            authenticated_source_ref,
+            source_message_id
+        )
     )
     """,
     """
@@ -194,8 +203,13 @@ class EventStore:
             if version not in {0, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             connection.execute("PRAGMA journal_mode = WAL")
+            if self._fault_injector is not None:
+                self._fault_injector(FaultPoint.BEFORE_INITIALIZATION_LOCK)
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
+                version = connection.execute("PRAGMA user_version").fetchone()[0]
+                if version not in {0, SCHEMA_VERSION}:
+                    raise UnsupportedSchemaVersionError(version)
                 if version == 0:
                     for statement in _SCHEMA:
                         connection.execute(statement)
@@ -244,21 +258,38 @@ class EventStore:
         try:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                duplicate = connection.execute(
+                existing_event = connection.execute(
+                    """
+                    SELECT
+                        audience_principal_id,
+                        authenticated_source_ref,
+                        source_message_id
+                    FROM event_envelopes
+                    WHERE event_id = ?
+                    """,
+                    (event.event_id,),
+                ).fetchone()
+                source_identity = (
+                    context.principal_id.value,
+                    context.authenticated_source.value,
+                    event.source_message_id,
+                )
+                if existing_event is not None:
+                    if existing_event == source_identity:
+                        return AppendResult(AppendStatus.DUPLICATE)
+                    raise EventIdentityConflictError("event identity conflict")
+                replay = connection.execute(
                     """
                     SELECT 1
                     FROM event_envelopes
-                    WHERE event_id = ?
-                       OR (authenticated_source_ref = ? AND source_message_id = ?)
+                    WHERE audience_principal_id = ?
+                      AND authenticated_source_ref = ?
+                      AND source_message_id = ?
                     LIMIT 1
                     """,
-                    (
-                        event.event_id,
-                        context.authenticated_source.value,
-                        event.source_message_id,
-                    ),
+                    source_identity,
                 ).fetchone()
-                if duplicate is not None:
+                if replay is not None:
                     return AppendResult(AppendStatus.DUPLICATE)
 
                 timestamp = self._serialize_time(event.occurred_at)
@@ -449,6 +480,10 @@ class EventStore:
             )
         if not isinstance(event.content, str) or not event.content:
             raise EventValidationError("invalid payload content")
+        try:
+            event.content.encode("utf-8")
+        except UnicodeEncodeError:
+            raise EventValidationError("invalid payload content") from None
 
     @staticmethod
     def _require_token(field: str, value: object) -> None:

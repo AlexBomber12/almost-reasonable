@@ -1,6 +1,8 @@
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import fields
 from datetime import UTC, datetime, tzinfo
 import sqlite3
+from threading import Barrier
 
 import pytest
 
@@ -24,6 +26,7 @@ from app.core.store import (
     EventStore,
     EventStoreBusyError,
     EventStoreError,
+    EventIdentityConflictError,
     EventValidationError,
     FaultPoint,
     UnsupportedSchemaVersionError,
@@ -33,10 +36,10 @@ from app.core.store import (
 NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
 
-def principal(name, *, owner=False):
+def principal(name, *, owner=False, source=None):
     return TrustedPrincipalContext(
         principal_id=ParticipantId(f"participant-{name}"),
-        authenticated_source=AuthenticatedSourceReference(f"session-{name}"),
+        authenticated_source=AuthenticatedSourceReference(source or f"session-{name}"),
         is_owner=owner,
     )
 
@@ -103,6 +106,33 @@ def test_first_initialization_creates_versioned_wal_database(tmp_path):
         }
         assert "content" not in envelope_columns
         assert "payload_id" in envelope_columns
+        primary_key_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(event_envelopes)")
+            if row[5]
+        }
+        unique_indexes = [
+            row[1]
+            for row in connection.execute("PRAGMA index_list(event_envelopes)")
+            if row[2]
+        ]
+        unique_column_sets = {
+            tuple(
+                row[2]
+                for row in connection.execute(f"PRAGMA index_info('{index_name}')")
+            )
+            for index_name in unique_indexes
+        }
+        assert primary_key_columns == {"event_id"}
+        assert (
+            "audience_principal_id",
+            "authenticated_source_ref",
+            "source_message_id",
+        ) in unique_column_sets
+        assert (
+            "authenticated_source_ref",
+            "source_message_id",
+        ) not in unique_column_sets
 
 
 def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
@@ -132,6 +162,39 @@ def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
             content="synthetic private A content",
         ),
     )
+
+
+def test_concurrent_first_initialization_rechecks_version_under_write_lock(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    ready = Barrier(2)
+
+    def pause_before_lock(point):
+        assert point is FaultPoint.BEFORE_INITIALIZATION_LOCK
+        ready.wait(timeout=5)
+
+    def initialize():
+        return EventStore(database, fault_injector=pause_before_lock).diagnostics()
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        diagnostics = list(executor.map(lambda _index: initialize(), range(2)))
+
+    assert [result.schema_version for result in diagnostics] == [1, 1]
+    assert [result.journal_mode for result in diagnostics] == ["wal", "wal"]
+
+
+def test_schema_version_changed_before_initialization_lock_fails_closed(tmp_path):
+    database = tmp_path / "events.sqlite3"
+
+    def install_future_version(point):
+        assert point is FaultPoint.BEFORE_INITIALIZATION_LOCK
+        with sqlite3.connect(database) as connection:
+            connection.execute("PRAGMA user_version = 2")
+
+    with pytest.raises(
+        UnsupportedSchemaVersionError,
+        match="unsupported event store schema version: 2",
+    ):
+        EventStore(database, fault_injector=install_future_version)
 
 
 def test_future_schema_version_is_not_silently_interpreted(tmp_path):
@@ -367,7 +430,7 @@ def test_foreign_key_enforcement_rejects_an_orphan_taint(tmp_path):
             )
 
 
-def test_duplicate_event_or_source_identifier_is_idempotently_ignored(tmp_path):
+def test_legitimate_same_principal_source_message_replay_is_idempotent(tmp_path):
     database = tmp_path / "events.sqlite3"
     store = EventStore(database)
     context = principal("a")
@@ -389,6 +452,103 @@ def test_duplicate_event_or_source_identifier_is_idempotently_ignored(tmp_path):
     assert store.retrieve_private_events(context)[0].content == "original private value"
 
 
+def test_same_source_message_key_is_independent_between_principals(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    participant_a = principal("a", source="shared-source")
+    participant_b = principal("b", source="shared-source")
+    event_a = private_input(
+        "a-shared-key",
+        "A private collision canary",
+        source_message_id="shared-message",
+    )
+    event_b = private_input(
+        "b-shared-key",
+        "B private collision canary",
+        source_message_id="shared-message",
+        audience=EventAudience.private_for(ParticipantId("participant-b")),
+    )
+
+    assert (
+        store.append_private_input(participant_a, event_a).status
+        is AppendStatus.CREATED
+    )
+    assert (
+        store.append_private_input(participant_b, event_b).status
+        is AppendStatus.CREATED
+    )
+
+    a_view = store.retrieve_private_events(participant_a)
+    b_view = store.retrieve_private_events(participant_b)
+    assert [record.content for record in a_view] == ["A private collision canary"]
+    assert [record.content for record in b_view] == ["B private collision canary"]
+    assert "B private" not in repr(a_view)
+    assert "A private" not in repr(b_view)
+    assert table_count(database, "event_envelopes") == 2
+    assert table_count(database, "private_payloads") == 2
+    assert table_count(database, "protected_event_taints") == 2
+
+
+def test_global_event_id_collision_across_principals_fails_without_partial_write(
+    tmp_path,
+):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    participant_a = principal("a", source="shared-source")
+    participant_b = principal("b", source="shared-source")
+    original = private_input("global-id", "A original private canary")
+    collision = private_input(
+        "b-collision",
+        "B rejected private canary",
+        source_message_id="different-message",
+        audience=EventAudience.private_for(ParticipantId("participant-b")),
+    )
+    object.__setattr__(collision, "event_id", original.event_id)
+    store.append_private_input(participant_a, original)
+
+    with pytest.raises(EventIdentityConflictError) as captured:
+        store.append_private_input(participant_b, collision)
+
+    assert str(captured.value) == "event identity conflict"
+    assert "event-global-id" not in repr(captured.value)
+    assert "B rejected private canary" not in repr(captured.value)
+    assert table_count(database, "event_envelopes") == 1
+    assert table_count(database, "private_payloads") == 1
+    assert table_count(database, "protected_event_taints") == 1
+    assert [
+        record.content for record in store.retrieve_private_events(participant_a)
+    ] == ["A original private canary"]
+    assert store.retrieve_private_events(participant_b) == ()
+
+
+def test_event_id_collision_with_different_same_principal_source_fails_privately(
+    tmp_path,
+):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    participant_a = principal("a")
+    participant_b = principal("b")
+    original = private_input("same-principal-id", "A retained private canary")
+    collision = private_input(
+        "different-source",
+        "A rejected private canary",
+        source_message_id="different-source-message",
+    )
+    object.__setattr__(collision, "event_id", original.event_id)
+    store.append_private_input(participant_a, original)
+
+    with pytest.raises(EventIdentityConflictError, match="event identity conflict"):
+        store.append_private_input(participant_a, collision)
+
+    assert table_count(database, "event_envelopes") == 1
+    assert table_count(database, "private_payloads") == 1
+    assert table_count(database, "protected_event_taints") == 1
+    a_view = store.retrieve_private_events(participant_a)
+    assert [record.content for record in a_view] == ["A retained private canary"]
+    assert "rejected" not in repr(a_view)
+    assert store.retrieve_private_events(participant_b) == ()
+
+
 def test_transaction_rolls_back_payload_when_envelope_write_fails(tmp_path):
     database = tmp_path / "events.sqlite3"
 
@@ -396,6 +556,8 @@ def test_transaction_rolls_back_payload_when_envelope_write_fails(tmp_path):
         pass
 
     def fail_after_payload(point):
+        if point is FaultPoint.BEFORE_INITIALIZATION_LOCK:
+            return
         assert point is FaultPoint.AFTER_PAYLOAD_INSERT
         raise SyntheticFailure("controlled fault")
 
@@ -558,7 +720,7 @@ def test_timezone_with_no_utc_offset_is_rejected(tmp_path):
         )
 
 
-@pytest.mark.parametrize("content", [None, ""])
+@pytest.mark.parametrize("content", [None, "", "\ud800"])
 def test_invalid_payload_content_is_rejected(tmp_path, content):
     store = EventStore(tmp_path / "events.sqlite3")
     event = private_input("bad-content", "placeholder")
