@@ -239,7 +239,11 @@ class EventStore:
         deadline = time.monotonic() + self._busy_timeout_ms / 1_000
         while True:
             try:
-                connection.execute("PRAGMA journal_mode = WAL").fetchone()
+                journal_mode = connection.execute(
+                    "PRAGMA journal_mode = WAL"
+                ).fetchone()
+                if journal_mode != ("wal",):
+                    raise EventStoreError("event store operation failed")
                 return
             except sqlite3.Error as error:
                 error_code = getattr(error, "sqlite_errorcode", -1) & 0xFF
@@ -439,7 +443,7 @@ class EventStore:
                     (context.principal_id.value,),
                 ).fetchall()
             return tuple(self._conversation_event(row) for row in rows)
-        except (TypeError, ValueError):
+        except (OverflowError, TypeError, ValueError):
             raise EventStoreError("event store operation failed") from None
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
@@ -450,9 +454,12 @@ class EventStore:
     def _conversation_event(row: tuple[object, ...]) -> PrivateConversationEvent:
         if any(type(value) is not str for value in row):
             raise EventStoreError("event store operation failed")
+        occurred_at = datetime.fromisoformat(row[1])
+        if EventStore._serialize_time(occurred_at) != row[1]:
+            raise ValueError("noncanonical stored timestamp")
         return PrivateConversationEvent(
             event_id=row[0],
-            occurred_at=datetime.fromisoformat(row[1]),
+            occurred_at=occurred_at,
             event_type=EventType(row[2]),
             channel=EventChannel(row[3]),
             correlation_id=row[4],

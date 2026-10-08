@@ -86,6 +86,7 @@ class ScheduledPragmaConnection:
     def __init__(self, outcomes):
         self.outcomes = list(outcomes)
         self.calls = 0
+        self.result = None
 
     def execute(self, statement):
         assert statement == "PRAGMA journal_mode = WAL"
@@ -93,10 +94,11 @@ class ScheduledPragmaConnection:
         outcome = self.outcomes.pop(0)
         if isinstance(outcome, Exception):
             raise outcome
+        self.result = outcome
         return self
 
     def fetchone(self):
-        return ("wal",)
+        return (self.result,)
 
 
 def test_first_initialization_creates_versioned_wal_database(tmp_path):
@@ -237,7 +239,7 @@ def test_wal_transition_retries_busy_errors_until_success(monkeypatch):
         [
             sqlite_operational_error(sqlite3.SQLITE_BUSY, "synthetic busy"),
             sqlite_operational_error(sqlite3.SQLITE_LOCKED, "synthetic locked"),
-            "success",
+            "wal",
         ]
     )
     clock = iter([0.0, 0.0, 0.005])
@@ -287,6 +289,17 @@ def test_wal_transition_does_not_retry_non_lock_errors(monkeypatch):
 
     assert connection.calls == 1
     assert sleeps == []
+
+
+def test_wal_transition_rejects_an_unchanged_journal_mode():
+    store = object.__new__(EventStore)
+    store._busy_timeout_ms = 10
+    connection = ScheduledPragmaConnection(["delete"])
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        store._enable_wal(connection)
+
+    assert connection.calls == 1
 
 
 def test_future_schema_version_is_not_silently_interpreted(tmp_path):
@@ -811,6 +824,33 @@ def test_malformed_persisted_rows_are_sanitized_during_retrieval(tmp_path):
 
     assert str(captured.value) == "event store operation failed"
     assert persisted_canary not in repr(captured.value)
+    assert "private content" not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    "persisted_timestamp",
+    [
+        "2026-01-02T03:04:05.000000",
+        "2026-01-02T03:04:05.000000+00:00",
+    ],
+)
+def test_noncanonical_persisted_timestamps_are_sanitized(tmp_path, persisted_timestamp):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("noncanonical-time", "private content")
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE event_envelopes SET occurred_at = ?",
+            (persisted_timestamp,),
+        )
+
+    with pytest.raises(EventStoreError) as captured:
+        store.retrieve_private_events(principal("a"))
+
+    assert str(captured.value) == "event store operation failed"
+    assert persisted_timestamp not in repr(captured.value)
     assert "private content" not in repr(captured.value)
 
 
