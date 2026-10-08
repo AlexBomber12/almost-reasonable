@@ -1,6 +1,8 @@
 from dataclasses import fields
 from datetime import UTC, datetime, timedelta, timezone, tzinfo
+import os
 import sqlite3
+import stat
 
 import pytest
 
@@ -156,6 +158,40 @@ def test_first_initialization_creates_versioned_wal_database(tmp_path):
             "authenticated_source_ref",
             "source_message_id",
         ) not in unique_column_sets
+
+
+@pytest.mark.parametrize("preexisting_mode", [None, 0o644])
+def test_database_and_wal_sidecars_are_owner_only(tmp_path, preexisting_mode):
+    database = tmp_path / "events.sqlite3"
+    if preexisting_mode is not None:
+        database.touch()
+        database.chmod(preexisting_mode)
+    previous_umask = os.umask(0o022)
+    connection = None
+    try:
+        store = EventStore(database)
+        connection = store._open()
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute("UPDATE schema_metadata SET version = version")
+        modes = {
+            path.name: stat.S_IMODE(path.stat().st_mode)
+            for path in (
+                database,
+                tmp_path / "events.sqlite3-wal",
+                tmp_path / "events.sqlite3-shm",
+            )
+        }
+    finally:
+        if connection is not None:
+            connection.rollback()
+            connection.close()
+        os.umask(previous_umask)
+
+    assert modes == {
+        "events.sqlite3": 0o600,
+        "events.sqlite3-wal": 0o600,
+        "events.sqlite3-shm": 0o600,
+    }
 
 
 def test_repeated_initialization_and_reopen_preserve_both_records(tmp_path):
@@ -943,6 +979,29 @@ def test_impossible_persisted_provenance_is_sanitized(tmp_path, corruption):
     assert "private content" not in repr(captured.value)
 
 
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "DELETE FROM protected_event_taints",
+        "UPDATE protected_event_taints SET source_principal_id = 'participant-b'",
+    ],
+)
+def test_missing_or_inconsistent_protected_taint_is_sanitized(tmp_path, corruption):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("invalid-taint", "private content")
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(corruption)
+
+    with pytest.raises(EventStoreError) as captured:
+        store.retrieve_private_events(principal("a"))
+
+    assert str(captured.value) == "event store operation failed"
+    assert "private content" not in repr(captured.value)
+
+
 def test_connection_open_and_setup_errors_are_sanitized(tmp_path):
     with pytest.raises(EventStoreError, match="event store operation failed"):
         EventStore(tmp_path / "missing-parent" / "events.sqlite3")
@@ -951,6 +1010,16 @@ def test_connection_open_and_setup_errors_are_sanitized(tmp_path):
     corrupt.write_bytes(b"not a sqlite database")
     with pytest.raises(EventStoreError, match="event store operation failed"):
         EventStore(corrupt)
+
+
+def test_sqlite_connection_open_errors_are_sanitized(tmp_path, monkeypatch):
+    def fail_to_connect(*_args, **_kwargs):
+        raise sqlite3.OperationalError("synthetic open failure")
+
+    monkeypatch.setattr(store_module.sqlite3, "connect", fail_to_connect)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        EventStore(tmp_path / "events.sqlite3")
 
 
 def test_connection_pragma_failure_is_sanitized_and_closed(tmp_path, monkeypatch):

@@ -4,6 +4,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
+import os
 from pathlib import Path
 import re
 import sqlite3
@@ -170,11 +171,26 @@ class EventStore:
         self._database_path = database_path.resolve()
         self._busy_timeout_ms = busy_timeout_ms
         self._fault_injector = fault_injector
+        self._secure_database_file()
         self._initialize()
 
     @property
     def database_path(self) -> Path:
         return self._database_path
+
+    def _secure_database_file(self) -> None:
+        try:
+            descriptor = os.open(
+                self._database_path,
+                os.O_CREAT | os.O_RDWR,
+                0o600,
+            )
+            try:
+                os.fchmod(descriptor, 0o600)
+            finally:
+                os.close(descriptor)
+        except OSError:
+            raise EventStoreError("event store operation failed") from None
 
     def _open(self) -> sqlite3.Connection:
         try:
@@ -414,14 +430,20 @@ class EventStore:
                         event.channel,
                         event.correlation_id,
                         event.audience_type,
+                        event.audience_principal_id,
                         event.provenance_type,
                         event.verification_status,
                         payload.provenance_type,
                         payload.verification_status,
+                        taint.source_event_id,
+                        taint.source_principal_id,
+                        taint.source_provenance_type,
                         payload.content
                     FROM event_envelopes AS event
                     JOIN private_payloads AS payload
                       ON payload.payload_id = event.payload_id
+                    LEFT JOIN protected_event_taints AS taint
+                      ON taint.event_id = event.event_id
                     WHERE event.audience_type = 'private_participant'
                       AND event.audience_principal_id = ?
                       AND payload.audience_type = event.audience_type
@@ -452,19 +474,27 @@ class EventStore:
         if EventStore._serialize_time(occurred_at) != row[1]:
             raise ValueError("noncanonical stored timestamp")
         provenance = Provenance(
-            source_type=ProvenanceType(row[6]),
-            verification=VerificationStatus(row[7]),
+            source_type=ProvenanceType(row[7]),
+            verification=VerificationStatus(row[8]),
         )
         expected_provenance = Provenance(
             source_type=ProvenanceType.PARTICIPANT_ASSERTION,
             verification=VerificationStatus.UNVERIFIED,
         )
         payload_provenance = Provenance(
-            source_type=ProvenanceType(row[8]),
-            verification=VerificationStatus(row[9]),
+            source_type=ProvenanceType(row[9]),
+            verification=VerificationStatus(row[10]),
         )
         if provenance != expected_provenance or payload_provenance != provenance:
             raise ValueError("invalid stored provenance")
+        taint_identity = (row[11], row[12], row[13])
+        expected_taint_identity = (
+            row[0],
+            row[6],
+            provenance.source_type.value,
+        )
+        if taint_identity != expected_taint_identity:
+            raise ValueError("invalid protected taint")
         return PrivateConversationEvent(
             event_id=row[0],
             occurred_at=occurred_at,
@@ -473,7 +503,7 @@ class EventStore:
             correlation_id=row[4],
             audience=AudienceType(row[5]),
             provenance=provenance,
-            content=row[10],
+            content=row[14],
         )
 
     @staticmethod
