@@ -76,6 +76,29 @@ def table_count(path, table):
         return connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
+def sqlite_operational_error(code, message):
+    error = sqlite3.OperationalError(message)
+    error.sqlite_errorcode = code
+    return error
+
+
+class ScheduledPragmaConnection:
+    def __init__(self, outcomes):
+        self.outcomes = list(outcomes)
+        self.calls = 0
+
+    def execute(self, statement):
+        assert statement == "PRAGMA journal_mode = WAL"
+        self.calls += 1
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return self
+
+    def fetchone(self):
+        return ("wal",)
+
+
 def test_first_initialization_creates_versioned_wal_database(tmp_path):
     database = tmp_path / "events.sqlite3"
 
@@ -205,6 +228,65 @@ def test_schema_version_changed_before_initialization_lock_fails_closed(tmp_path
         match="unsupported event store schema version: 2",
     ):
         EventStore(database, fault_injector=install_future_version)
+
+
+def test_wal_transition_retries_busy_errors_until_success(monkeypatch):
+    store = object.__new__(EventStore)
+    store._busy_timeout_ms = 20
+    connection = ScheduledPragmaConnection(
+        [
+            sqlite_operational_error(sqlite3.SQLITE_BUSY, "synthetic busy"),
+            sqlite_operational_error(sqlite3.SQLITE_LOCKED, "synthetic locked"),
+            "success",
+        ]
+    )
+    clock = iter([0.0, 0.0, 0.005])
+    sleeps = []
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(store_module.time, "sleep", sleeps.append)
+
+    store._enable_wal(connection)
+
+    assert connection.calls == 3
+    assert sleeps == [0.01, 0.01]
+
+
+def test_wal_transition_busy_retry_stops_at_deadline(monkeypatch):
+    store = object.__new__(EventStore)
+    store._busy_timeout_ms = 10
+    connection = ScheduledPragmaConnection(
+        [
+            sqlite_operational_error(sqlite3.SQLITE_BUSY, "first busy"),
+            sqlite_operational_error(sqlite3.SQLITE_BUSY, "final busy"),
+        ]
+    )
+    clock = iter([0.0, 0.0, 0.01])
+    sleeps = []
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: next(clock))
+    monkeypatch.setattr(store_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(sqlite3.OperationalError, match="final busy"):
+        store._enable_wal(connection)
+
+    assert connection.calls == 2
+    assert sleeps == [0.01]
+
+
+def test_wal_transition_does_not_retry_non_lock_errors(monkeypatch):
+    store = object.__new__(EventStore)
+    store._busy_timeout_ms = 10
+    connection = ScheduledPragmaConnection(
+        [sqlite_operational_error(sqlite3.SQLITE_IOERR, "synthetic I/O failure")]
+    )
+    sleeps = []
+    monkeypatch.setattr(store_module.time, "monotonic", lambda: 0.0)
+    monkeypatch.setattr(store_module.time, "sleep", sleeps.append)
+
+    with pytest.raises(sqlite3.OperationalError, match="synthetic I/O failure"):
+        store._enable_wal(connection)
+
+    assert connection.calls == 1
+    assert sleeps == []
 
 
 def test_future_schema_version_is_not_silently_interpreted(tmp_path):

@@ -7,6 +7,7 @@ from enum import StrEnum
 from pathlib import Path
 import re
 import sqlite3
+import time
 
 from .events import (
     AudienceType,
@@ -26,6 +27,7 @@ from .events import (
 
 SCHEMA_VERSION = 1
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
+WAL_RETRY_INTERVAL_SECONDS = 0.01
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
 
@@ -204,7 +206,7 @@ class EventStore:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
             if version not in {0, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
-            connection.execute("PRAGMA journal_mode = WAL").fetchone()
+            self._enable_wal(connection)
             if self._fault_injector is not None:
                 self._fault_injector(FaultPoint.BEFORE_INITIALIZATION_LOCK)
             with connection:
@@ -230,6 +232,21 @@ class EventStore:
             raise self._translated_error(error) from None
         finally:
             connection.close()
+
+    def _enable_wal(self, connection: sqlite3.Connection) -> None:
+        deadline = time.monotonic() + self._busy_timeout_ms / 1_000
+        while True:
+            try:
+                connection.execute("PRAGMA journal_mode = WAL").fetchone()
+                return
+            except sqlite3.Error as error:
+                error_code = getattr(error, "sqlite_errorcode", -1) & 0xFF
+                if error_code not in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise
+                time.sleep(min(WAL_RETRY_INTERVAL_SECONDS, remaining))
 
     def diagnostics(self) -> StoreDiagnostics:
         connection = self._open()
