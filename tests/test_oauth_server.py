@@ -7,6 +7,8 @@ import pytest
 
 from app import oauth_server
 
+NOW = 1_000.0
+
 
 class CapturingHandler(oauth_server.Handler):
     def __init__(self, path):
@@ -32,8 +34,13 @@ def oauth_files(tmp_path, monkeypatch):
     code = tmp_path / "code"
     monkeypatch.setattr(oauth_server, "STATE", state)
     monkeypatch.setattr(oauth_server, "CODE", code)
-    monkeypatch.setattr(oauth_server.time, "time", lambda: 1_000.0)
+    monkeypatch.setattr(oauth_server.time, "time", lambda: NOW)
     return state, code
+
+
+def write_state(state, contents="expected", *, mtime=NOW):
+    state.write_text(contents)
+    os.utime(state, (mtime, mtime))
 
 
 def request(path):
@@ -79,7 +86,7 @@ def test_non_callback_routes(path, status, body):
 )
 def test_invalid_or_malformed_state_is_rejected(oauth_files, path):
     state, _ = oauth_files
-    state.write_text("expected")
+    write_state(state)
 
     assert_response(request(path), 403, "Invalid OAuth state")
     assert state.exists()
@@ -94,7 +101,7 @@ def test_missing_state_file_is_rejected(oauth_files):
 
 def test_unreadable_state_file_is_rejected(oauth_files, monkeypatch):
     state, _ = oauth_files
-    state.write_text("expected")
+    write_state(state)
 
     def deny_read(path, *args, **kwargs):
         if path == state:
@@ -112,11 +119,32 @@ def test_unreadable_state_file_is_rejected(oauth_files, monkeypatch):
 )
 def test_expired_future_dated_or_empty_state_is_rejected(oauth_files, mtime, contents):
     state, _ = oauth_files
-    state.write_text(contents)
-    os.utime(state, (mtime, mtime))
+    write_state(state, contents, mtime=mtime)
 
     assert_response(request("/callback?state=expected"), 403, "Invalid OAuth state")
     assert state.exists()
+
+
+def test_state_is_valid_at_max_age(oauth_files):
+    state, code = oauth_files
+    write_state(state, mtime=NOW - oauth_server.MAX_AGE)
+
+    response = request("/callback?state=expected&code=boundary-code")
+
+    assert_response(response, 200, "Authorization received. You can close this page.")
+    assert not state.exists()
+    assert code.read_text() == "boundary-code"
+
+
+def test_state_is_expired_immediately_after_max_age(oauth_files):
+    state, code = oauth_files
+    write_state(state, mtime=NOW - oauth_server.MAX_AGE - 0.001)
+
+    response = request("/callback?state=expected&code=expired-code")
+
+    assert_response(response, 403, "Invalid OAuth state")
+    assert state.exists()
+    assert not code.exists()
 
 
 @pytest.mark.parametrize(
@@ -130,8 +158,7 @@ def test_expired_future_dated_or_empty_state_is_rejected(oauth_files, mtime, con
 )
 def test_invalid_authorization_code_consumes_state(oauth_files, query):
     state, code = oauth_files
-    state.write_text("expected")
-    os.utime(state, (1_000.0, 1_000.0))
+    write_state(state)
 
     assert_response(request(f"/callback?{query}"), 400, "Invalid authorization code")
     assert not state.exists()
@@ -140,8 +167,7 @@ def test_invalid_authorization_code_consumes_state(oauth_files, query):
 
 def test_authorization_error_consumes_state(oauth_files):
     state, code = oauth_files
-    state.write_text("expected")
-    os.utime(state, (1_000.0, 1_000.0))
+    write_state(state)
 
     response = request("/callback?state=expected&error=access_denied")
 
@@ -152,9 +178,8 @@ def test_authorization_error_consumes_state(oauth_files):
 
 def test_existing_code_file_conflict_consumes_state(oauth_files):
     state, code = oauth_files
-    state.write_text("expected")
+    write_state(state)
     code.write_text("previous")
-    os.utime(state, (1_000.0, 1_000.0))
 
     response = request("/callback?state=expected&code=new")
 
@@ -165,8 +190,7 @@ def test_existing_code_file_conflict_consumes_state(oauth_files):
 
 def test_valid_callback_persists_code_once_with_private_permissions(oauth_files):
     state, code = oauth_files
-    state.write_text("expected")
-    os.utime(state, (1_000.0, 1_000.0))
+    write_state(state)
 
     response = request("/callback?state=expected&code=synthetic-code")
 
