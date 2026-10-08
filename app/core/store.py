@@ -435,6 +435,8 @@ class EventStore:
                     (context.principal_id.value,),
                 ).fetchall()
             return tuple(self._conversation_event(row) for row in rows)
+        except (TypeError, ValueError):
+            raise EventStoreError("event store operation failed") from None
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
         finally:

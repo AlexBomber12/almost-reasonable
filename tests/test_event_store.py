@@ -759,6 +759,27 @@ def test_retrieval_database_errors_are_sanitized(tmp_path):
         store.retrieve_private_events(principal("a"))
 
 
+def test_malformed_persisted_rows_are_sanitized_during_retrieval(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("malformed-row", "private content")
+    )
+    persisted_canary = "malformed-persisted-timestamp-canary"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "UPDATE event_envelopes SET occurred_at = ?",
+            (persisted_canary,),
+        )
+
+    with pytest.raises(EventStoreError) as captured:
+        store.retrieve_private_events(principal("a"))
+
+    assert str(captured.value) == "event store operation failed"
+    assert persisted_canary not in repr(captured.value)
+    assert "private content" not in repr(captured.value)
+
+
 def test_connection_open_and_setup_errors_are_sanitized(tmp_path):
     with pytest.raises(EventStoreError, match="event store operation failed"):
         EventStore(tmp_path / "missing-parent" / "events.sqlite3")
