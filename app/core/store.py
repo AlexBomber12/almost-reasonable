@@ -220,6 +220,29 @@ class EventStore:
         if security != (True, True, 0o600):
             raise EventStoreError("event store operation failed")
 
+    def _secure_database_sidecars(self) -> None:
+        for suffix in ("-wal", "-shm"):
+            sidecar_path = Path(f"{self._database_path}{suffix}")
+            try:
+                descriptor = os.open(sidecar_path, os.O_RDWR | os.O_NOFOLLOW)
+            except FileNotFoundError:
+                continue
+            except OSError:
+                raise EventStoreError("event store operation failed") from None
+            try:
+                sidecar_status = os.fstat(descriptor)
+                identity = (
+                    stat.S_ISREG(sidecar_status.st_mode),
+                    sidecar_status.st_uid == os.geteuid(),
+                )
+                if identity != (True, True):
+                    raise EventStoreError("event store operation failed")
+                os.fchmod(descriptor, 0o600)
+            except OSError:
+                raise EventStoreError("event store operation failed") from None
+            finally:
+                os.close(descriptor)
+
     def _open(self) -> sqlite3.Connection:
         try:
             connection = sqlite3.connect(
@@ -231,6 +254,7 @@ class EventStore:
             raise self._translated_error(error) from None
         try:
             self._verify_database_file_security()
+            self._secure_database_sidecars()
             connection.execute(f"PRAGMA busy_timeout = {self._busy_timeout_ms}")
             connection.execute("PRAGMA foreign_keys = ON")
             return connection
@@ -248,6 +272,7 @@ class EventStore:
             if version not in {0, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
+            self._secure_database_sidecars()
             if self._fault_injector is not None:
                 self._fault_injector(FaultPoint.BEFORE_INITIALIZATION_LOCK)
             with connection:

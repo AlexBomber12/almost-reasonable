@@ -195,6 +195,71 @@ def test_database_and_wal_sidecars_are_owner_only(tmp_path, preexisting_mode):
     }
 
 
+def test_existing_wal_sidecars_are_tightened_before_reuse(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    holder = store._open()
+    try:
+        holder.execute("BEGIN")
+        holder.execute("SELECT version FROM schema_metadata").fetchall()
+        sidecars = (
+            tmp_path / "events.sqlite3-wal",
+            tmp_path / "events.sqlite3-shm",
+        )
+        for sidecar in sidecars:
+            sidecar.chmod(0o644)
+
+        reopened = EventStore(database)
+        reopened.append_private_input(
+            principal("a"), private_input("secured-sidecars", "private content")
+        )
+
+        assert [stat.S_IMODE(sidecar.stat().st_mode) for sidecar in sidecars] == [
+            0o600,
+            0o600,
+        ]
+    finally:
+        holder.rollback()
+        holder.close()
+
+
+def test_invalid_wal_sidecar_is_rejected(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    wal_path = tmp_path / "events.sqlite3-wal"
+    wal_path.mkdir()
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        EventStore(database)
+
+
+def test_nonregular_wal_sidecar_inode_is_rejected(tmp_path, monkeypatch):
+    class DirectoryStatus:
+        st_mode = stat.S_IFDIR | 0o700
+        st_uid = os.geteuid()
+
+    store = object.__new__(EventStore)
+    store._database_path = tmp_path / "events.sqlite3"
+    (tmp_path / "events.sqlite3-wal").touch()
+    monkeypatch.setattr(store_module.os, "fstat", lambda _descriptor: DirectoryStatus())
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        store._secure_database_sidecars()
+
+
+def test_wal_sidecar_permission_errors_are_sanitized(tmp_path, monkeypatch):
+    store = object.__new__(EventStore)
+    store._database_path = tmp_path / "events.sqlite3"
+    (tmp_path / "events.sqlite3-wal").touch()
+
+    def fail_to_chmod(*_args, **_kwargs):
+        raise OSError("synthetic sidecar chmod failure")
+
+    monkeypatch.setattr(store_module.os, "fchmod", fail_to_chmod)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        store._secure_database_sidecars()
+
+
 def test_database_in_an_untrusted_parent_is_rejected(tmp_path):
     shared_directory = tmp_path / "shared"
     shared_directory.mkdir(mode=0o777)
