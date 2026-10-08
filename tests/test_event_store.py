@@ -745,6 +745,11 @@ def test_invalid_store_configuration_is_rejected(tmp_path):
         EventStore(tmp_path / "events.sqlite3", busy_timeout_ms=0)
 
 
+def test_in_memory_database_is_rejected():
+    with pytest.raises(ValueError, match="in-memory databases are not supported"):
+        EventStore(":memory:")
+
+
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [

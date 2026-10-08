@@ -171,6 +171,8 @@ class EventStore:
         if not isinstance(busy_timeout_ms, int) or busy_timeout_ms <= 0:
             raise ValueError("busy_timeout_ms must be positive")
         self._database_path = Path(database_path)
+        if self._database_path == Path(":memory:"):
+            raise ValueError("in-memory databases are not supported")
         self._busy_timeout_ms = busy_timeout_ms
         self._fault_injector = fault_injector
         self._initialize()
