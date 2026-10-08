@@ -29,6 +29,7 @@ SCHEMA_VERSION = 1
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
+MAX_PRIVATE_EVENTS_PER_RETRIEVAL = 100
 WAL_RETRY_INTERVAL_SECONDS = 0.01
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 
@@ -438,10 +439,15 @@ class EventStore:
                       AND payload.audience_type = event.audience_type
                       AND payload.audience_principal_id = event.audience_principal_id
                       AND payload.retention_status = 'active'
-                    ORDER BY event.occurred_at, event.event_id
+                    ORDER BY event.occurred_at DESC, event.event_id DESC
+                    LIMIT ?
                     """,
-                    (context.principal_id.value,),
+                    (
+                        context.principal_id.value,
+                        MAX_PRIVATE_EVENTS_PER_RETRIEVAL,
+                    ),
                 ).fetchall()
+                rows.reverse()
             return tuple(self._conversation_event(row) for row in rows)
         except (OverflowError, TypeError, ValueError):
             raise EventStoreError("event store operation failed") from None

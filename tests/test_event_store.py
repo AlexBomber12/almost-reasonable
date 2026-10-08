@@ -217,6 +217,28 @@ def test_private_events_within_one_second_are_returned_chronologically(tmp_path)
     ]
 
 
+def test_private_event_retrieval_returns_a_bounded_chronological_window(tmp_path):
+    store = EventStore(tmp_path / "events.sqlite3")
+    context = principal("a")
+    window_size = store_module.MAX_PRIVATE_EVENTS_PER_RETRIEVAL
+    for index in range(window_size + 1):
+        store.append_private_input(
+            context,
+            private_input(
+                f"window-{index:03d}",
+                f"content-{index:03d}",
+                occurred_at=NOW + timedelta(microseconds=index),
+            ),
+        )
+
+    events = store.retrieve_private_events(context)
+
+    assert len(events) == window_size
+    assert [event.content for event in events] == [
+        f"content-{index:03d}" for index in range(1, window_size + 1)
+    ]
+
+
 def test_schema_version_changed_before_initialization_lock_fails_closed(tmp_path):
     database = tmp_path / "events.sqlite3"
 
