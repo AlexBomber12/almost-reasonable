@@ -97,15 +97,10 @@ _SCHEMA = (
         audience_type TEXT NOT NULL
             CHECK (audience_type = 'private_participant'),
         audience_principal_id TEXT NOT NULL,
-        provenance_type TEXT NOT NULL CHECK (provenance_type IN (
-            'direct_observation',
-            'participant_assertion',
-            'external_claim',
-            'model_inference',
-            'independently_verified_claim'
-        )),
+        provenance_type TEXT NOT NULL
+            CHECK (provenance_type = 'participant_assertion'),
         verification_status TEXT NOT NULL
-            CHECK (verification_status IN ('unverified', 'verified')),
+            CHECK (verification_status = 'unverified'),
         created_at TEXT NOT NULL,
         retention_status TEXT NOT NULL DEFAULT 'active'
             CHECK (retention_status IN ('active', 'deleted'))
@@ -123,15 +118,10 @@ _SCHEMA = (
         audience_type TEXT NOT NULL
             CHECK (audience_type = 'private_participant'),
         audience_principal_id TEXT NOT NULL,
-        provenance_type TEXT NOT NULL CHECK (provenance_type IN (
-            'direct_observation',
-            'participant_assertion',
-            'external_claim',
-            'model_inference',
-            'independently_verified_claim'
-        )),
+        provenance_type TEXT NOT NULL
+            CHECK (provenance_type = 'participant_assertion'),
         verification_status TEXT NOT NULL
-            CHECK (verification_status IN ('unverified', 'verified')),
+            CHECK (verification_status = 'unverified'),
         payload_id TEXT UNIQUE
             REFERENCES private_payloads(payload_id) ON DELETE SET NULL,
         UNIQUE (
@@ -148,13 +138,8 @@ _SCHEMA = (
         source_event_id TEXT NOT NULL
             REFERENCES event_envelopes(event_id),
         source_principal_id TEXT NOT NULL,
-        source_provenance_type TEXT NOT NULL CHECK (source_provenance_type IN (
-            'direct_observation',
-            'participant_assertion',
-            'external_claim',
-            'model_inference',
-            'independently_verified_claim'
-        ))
+        source_provenance_type TEXT NOT NULL
+            CHECK (source_provenance_type = 'participant_assertion')
     )
     """,
     """
@@ -431,6 +416,8 @@ class EventStore:
                         event.audience_type,
                         event.provenance_type,
                         event.verification_status,
+                        payload.provenance_type,
+                        payload.verification_status,
                         payload.content
                     FROM event_envelopes AS event
                     JOIN private_payloads AS payload
@@ -464,6 +451,20 @@ class EventStore:
         occurred_at = datetime.fromisoformat(row[1])
         if EventStore._serialize_time(occurred_at) != row[1]:
             raise ValueError("noncanonical stored timestamp")
+        provenance = Provenance(
+            source_type=ProvenanceType(row[6]),
+            verification=VerificationStatus(row[7]),
+        )
+        expected_provenance = Provenance(
+            source_type=ProvenanceType.PARTICIPANT_ASSERTION,
+            verification=VerificationStatus.UNVERIFIED,
+        )
+        payload_provenance = Provenance(
+            source_type=ProvenanceType(row[8]),
+            verification=VerificationStatus(row[9]),
+        )
+        if provenance != expected_provenance or payload_provenance != provenance:
+            raise ValueError("invalid stored provenance")
         return PrivateConversationEvent(
             event_id=row[0],
             occurred_at=occurred_at,
@@ -471,11 +472,8 @@ class EventStore:
             channel=EventChannel(row[3]),
             correlation_id=row[4],
             audience=AudienceType(row[5]),
-            provenance=Provenance(
-                source_type=ProvenanceType(row[6]),
-                verification=VerificationStatus(row[7]),
-            ),
-            content=row[8],
+            provenance=provenance,
+            content=row[10],
         )
 
     @staticmethod

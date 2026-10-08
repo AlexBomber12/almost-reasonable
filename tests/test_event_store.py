@@ -660,6 +660,10 @@ def test_schema_constraints_reject_scope_or_provenance_broadening(tmp_path):
                 "UPDATE private_payloads SET provenance_type = 'invented'"
             )
         with pytest.raises(sqlite3.IntegrityError):
+            connection.execute(
+                "UPDATE event_envelopes SET verification_status = 'verified'"
+            )
+        with pytest.raises(sqlite3.IntegrityError):
             connection.execute("UPDATE schema_metadata SET version = 'invalid'")
 
 
@@ -913,6 +917,30 @@ def test_blob_payload_is_rejected_during_retrieval(tmp_path):
 
     assert str(captured.value) == "event store operation failed"
     assert repr(persisted_canary) not in repr(captured.value)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    [
+        "UPDATE event_envelopes SET verification_status = 'verified'",
+        "UPDATE private_payloads SET provenance_type = 'direct_observation'",
+    ],
+)
+def test_impossible_persisted_provenance_is_sanitized(tmp_path, corruption):
+    database = tmp_path / "events.sqlite3"
+    store = EventStore(database)
+    store.append_private_input(
+        principal("a"), private_input("invalid-provenance", "private content")
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(corruption)
+
+    with pytest.raises(EventStoreError) as captured:
+        store.retrieve_private_events(principal("a"))
+
+    assert str(captured.value) == "event store operation failed"
+    assert "private content" not in repr(captured.value)
 
 
 def test_connection_open_and_setup_errors_are_sanitized(tmp_path):
