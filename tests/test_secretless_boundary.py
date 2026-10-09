@@ -1,7 +1,7 @@
 import json
 import os
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -59,14 +59,22 @@ def principal(name: str, source: str | None = None) -> TrustedPrincipalContext:
     )
 
 
-def append(store: EventStore, route: TrustedPrincipalContext, content: str) -> None:
+def append(
+    store: EventStore,
+    route: TrustedPrincipalContext,
+    content: str,
+    *,
+    name: str | None = None,
+    offset: int = 0,
+) -> None:
+    identifier = name or route.principal_id.value
     store.append_private_input(
         route,
         PrivateInputEvent(
-            event_id=f"event-{route.principal_id.value}",
-            payload_id=f"payload-{route.principal_id.value}",
-            source_message_id=f"message-{route.principal_id.value}",
-            occurred_at=datetime(2026, 1, 2, tzinfo=UTC),
+            event_id=f"event-{identifier}",
+            payload_id=f"payload-{identifier}",
+            source_message_id=f"message-{identifier}",
+            occurred_at=datetime(2026, 1, 2, tzinfo=UTC) + timedelta(seconds=offset),
             event_type=EventType.PARTICIPANT_INPUT,
             channel=EventChannel.PRIVATE_CHAT,
             correlation_id=f"correlation-{route.principal_id.value}",
@@ -131,6 +139,29 @@ def test_model_request_has_only_explicit_allowlisted_fields(tmp_path):
     assert json.loads(serialized) == structured
     assert len(serialized.encode("utf-8")) <= MAX_MODEL_REQUEST_UTF8_BYTES
     assert serialized == serialize_model_request(request)
+
+
+def test_json_escape_expansion_omits_old_history_before_serialization(tmp_path):
+    store = EventStore(tmp_path / "events.sqlite3")
+    route = principal("a")
+    for index in range(3):
+        append(
+            store,
+            route,
+            "\x00" * (64 * 1024),
+            name=f"nul-{index}",
+            offset=index,
+        )
+    context = model_context(store, route)
+
+    request = build_model_request(context)
+    serialized = serialize_model_request(request)
+
+    assert len(context.history) == 3
+    assert context.history_omitted is False
+    assert len(request.conversation) == 2
+    assert request.history_omitted is True
+    assert len(serialized.encode("utf-8")) <= MAX_MODEL_REQUEST_UTF8_BYTES
 
 
 def test_application_owned_secret_canaries_never_enter_boundary_outputs(

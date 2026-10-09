@@ -14,7 +14,7 @@ from .context import (
     PrivateConversationContext,
     context_utf8_size,
 )
-from .core_self import initial_core_self
+from .core_self import CoreSelf, initial_core_self
 
 
 MODEL_CONTRACT_VERSION = "model-contract-v1"
@@ -75,14 +75,31 @@ def build_model_request(context: PrivateConversationContext) -> ModelRequest:
 
     _validate_context(context)
     core_self = context.core_self
+    selected: tuple[ConversationSegment, ...] = ()
+    history_omitted = context.history_omitted
+    for segment in reversed(context.history):
+        proposed = (segment, *selected)
+        candidate = _new_request(core_self, proposed, history_omitted)
+        if _serialized_utf8_size(candidate) <= MAX_MODEL_REQUEST_UTF8_BYTES:
+            selected = proposed
+        else:
+            history_omitted = True
+    return _new_request(core_self, selected, history_omitted)
+
+
+def _new_request(
+    core_self: CoreSelf,
+    conversation: tuple[ConversationSegment, ...],
+    history_omitted: bool,
+) -> ModelRequest:
     return ModelRequest(
         contract_version=MODEL_CONTRACT_VERSION,
         task=ModelTask.PRIVATE_CONVERSATION,
         core_self_version=core_self.version,
         core_self_identity=core_self.identity,
         core_self_principles=core_self.principles,
-        conversation=context.history,
-        history_omitted=context.history_omitted,
+        conversation=conversation,
+        history_omitted=history_omitted,
         allowed_decisions=MODEL_ALLOWED_DECISIONS,
     )
 
@@ -92,15 +109,23 @@ def serialize_model_request(request: ModelRequest) -> str:
 
     if not isinstance(request, ModelRequest):
         raise TypeError("request must be a ModelRequest")
-    serialized = json.dumps(
+    serialized = _serialize_unchecked(request)
+    if len(serialized.encode("utf-8")) > MAX_MODEL_REQUEST_UTF8_BYTES:
+        raise ValueError("serialized model request exceeds its byte bound")
+    return serialized
+
+
+def _serialize_unchecked(request: ModelRequest) -> str:
+    return json.dumps(
         request.to_structured_data(),
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,
     )
-    if len(serialized.encode("utf-8")) > MAX_MODEL_REQUEST_UTF8_BYTES:
-        raise ValueError("serialized model request exceeds its byte bound")
-    return serialized
+
+
+def _serialized_utf8_size(request: ModelRequest) -> int:
+    return len(_serialize_unchecked(request).encode("utf-8"))
 
 
 def _validate_context(context: PrivateConversationContext) -> None:
