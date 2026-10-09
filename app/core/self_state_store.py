@@ -56,6 +56,9 @@ MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
 _BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/]{8,}={0,2}\Z")
+_MIXED_SCRIPT_TOKEN = re.compile(
+    r"(?i)(?=[^\W_]*[a-z])(?=[^\W_]*[\u0370-\u058f])[^\W_]+"
+)
 _DISALLOWED_STATE_TEXT = (
     re.compile(r"\b[a-z][a-z0-9+.-]{1,20}://", re.IGNORECASE),
     re.compile(r"\bwww\.", re.IGNORECASE),
@@ -1344,10 +1347,10 @@ class SelfStateStore:
             or not minimum <= len(values) <= MAX_EVIDENCE_PER_REVISION
         ):
             raise SelfStateValidationError(f"invalid {field}")
-        if len(set(values)) != len(values):
-            raise SelfStateValidationError(f"invalid {field}")
         for value in values:
             SelfStateStore._require_token(field, value)
+        if len(set(values)) != len(values):
+            raise SelfStateValidationError(f"invalid {field}")
 
     @staticmethod
     def _validate_text_list(field: str, values: object) -> None:
@@ -1374,8 +1377,10 @@ class SelfStateStore:
         compact = normalized.strip()
         if not compact:
             raise SelfStateValidationError(f"invalid {field}")
-        if SelfStateStore._decodes_to_text(compact) or any(
-            pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT
+        if (
+            SelfStateStore._decodes_to_text(compact)
+            or _MIXED_SCRIPT_TOKEN.search(normalized) is not None
+            or any(pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT)
         ):
             raise SelfStateValidationError(f"invalid {field}")
 
