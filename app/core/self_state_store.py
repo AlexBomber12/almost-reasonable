@@ -59,6 +59,7 @@ _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
 _BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}\Z")
 _HEX_ONLY_TEXT = re.compile(r"(?:[A-Fa-f0-9]{2}){4,}\Z")
 _PERCENT_ESCAPE = re.compile(r"%[A-Fa-f0-9]{2}")
+_MAX_PERCENT_DECODING_DEPTH = 3
 _MIXED_SCRIPT_TOKEN = re.compile(
     r"(?i)(?=[^\W_]*[a-z])(?=[^\W_]*[\u0370-\u058f])[^\W_]+"
 )
@@ -1429,12 +1430,18 @@ class SelfStateStore:
             raise SelfStateValidationError(f"invalid {field}")
         normalized = unicodedata.normalize("NFKC", value)
         representations = [normalized]
-        if _PERCENT_ESCAPE.search(normalized) is not None:
+        decoded = normalized
+        for _ in range(_MAX_PERCENT_DECODING_DEPTH):
+            if _PERCENT_ESCAPE.search(decoded) is None:
+                break
             try:
-                decoded = unquote_to_bytes(normalized).decode("utf-8")
+                decoded = unquote_to_bytes(decoded).decode("utf-8")
             except UnicodeDecodeError:
                 raise SelfStateValidationError(f"invalid {field}") from None
-            representations.append(unicodedata.normalize("NFKC", decoded))
+            decoded = unicodedata.normalize("NFKC", decoded)
+            representations.append(decoded)
+        if _PERCENT_ESCAPE.search(decoded) is not None:
+            raise SelfStateValidationError(f"invalid {field}")
         for representation in representations:
             compact = representation.strip()
             if not compact:
