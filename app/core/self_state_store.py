@@ -91,7 +91,12 @@ _DISALLOWED_STATE_TEXT = (
         r"\b(?:directive|instruction|message|prompt|rule|policy)\w*\b",
         re.IGNORECASE,
     ),
-    re.compile(r"\bигнорируй\s+(?:все\s+)?(?:предыдущие\s+)?инструкц", re.IGNORECASE),
+    re.compile(
+        r"\b(?:игнорир\w*|забуд\w*|отброс\w*|переопредел\w*|следуй\w*|"
+        r"подчин\w*)\b.{0,60}\b(?:инструкц\w*|директив\w*|сообщен\w*|"
+        r"правил\w*|политик\w*)\b",
+        re.IGNORECASE,
+    ),
     re.compile(
         r"(?m)^\s*(?:(?:goal|objective|instruction|request)\s*:\s*)?"
         r"(?:(?:please|kindly)\s+)?"
@@ -1285,11 +1290,14 @@ class SelfStateStore:
         SelfStateStore._validate_event_ids(
             "supporting evidence", change.supporting_event_ids
         )
-        counter_count = (
-            len(change.conflicting_event_ids)
-            if isinstance(change, BeliefCandidateChange)
-            else 0
-        )
+        counter_count = 0
+        if isinstance(change, BeliefCandidateChange):
+            SelfStateStore._validate_event_ids(
+                "conflicting evidence",
+                change.conflicting_event_ids,
+                allow_empty=True,
+            )
+            counter_count = len(change.conflicting_event_ids)
         if (
             len(change.supporting_event_ids) + counter_count + 1
             > MAX_EVIDENCE_PER_REVISION
@@ -1315,11 +1323,6 @@ class SelfStateStore:
                 raise SelfStateValidationError("invalid belief status")
             if change.verification is not VerificationStatus.UNVERIFIED:
                 raise SelfStateValidationError("belief cannot become verified")
-            SelfStateStore._validate_event_ids(
-                "conflicting evidence",
-                change.conflicting_event_ids,
-                allow_empty=True,
-            )
             if set(change.supporting_event_ids) & set(change.conflicting_event_ids):
                 raise SelfStateValidationError("evidence roles conflict")
             SelfStateStore._validate_text_list("alternatives", change.alternatives)
