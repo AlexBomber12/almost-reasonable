@@ -1,5 +1,7 @@
 """Participant-scoped persistence for versioned mutable intellectual state."""
 
+import base64
+import binascii
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
@@ -53,7 +55,7 @@ MAX_REVISION_HISTORY_PER_RETRIEVAL = 100
 MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
-_BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}\Z")
+_BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/]{8,}={0,2}\Z")
 _DISALLOWED_STATE_TEXT = (
     re.compile(r"\b[a-z][a-z0-9+.-]{1,20}://", re.IGNORECASE),
     re.compile(r"\bwww\.", re.IGNORECASE),
@@ -1370,10 +1372,24 @@ class SelfStateStore:
             raise SelfStateValidationError(f"invalid {field}")
         normalized = unicodedata.normalize("NFKC", value)
         compact = normalized.strip()
-        if _BASE64_ONLY_TEXT.fullmatch(compact) is not None or any(
+        if not compact:
+            raise SelfStateValidationError(f"invalid {field}")
+        if SelfStateStore._decodes_to_text(compact) or any(
             pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT
         ):
             raise SelfStateValidationError(f"invalid {field}")
+
+    @staticmethod
+    def _decodes_to_text(value: str) -> bool:
+        if len(value) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(value) is None:
+            return False
+        try:
+            decoded = base64.b64decode(value, validate=True).decode("utf-8")
+        except (binascii.Error, UnicodeDecodeError):
+            return False
+        return all(
+            character.isprintable() or character in "\n\t" for character in decoded
+        )
 
     @staticmethod
     def _require_token(field: str, value: object) -> None:
