@@ -5,6 +5,7 @@ import binascii
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
+from html import unescape as html_unescape
 import re
 import sqlite3
 import unicodedata
@@ -68,7 +69,8 @@ _DISALLOWED_STATE_TEXT = (
     re.compile(r"\b[a-z][a-z0-9+.-]{1,20}://", re.IGNORECASE),
     re.compile(r"\bwww\.", re.IGNORECASE),
     re.compile(
-        r"\b(?:api[ _-]?key|access[ _-]?token|password|secret)\b\s*[:=]",
+        r"\b(?:api[ _-]?key|access[ _-]?token|password|secret)\b\s*"
+        r"(?::|=|\b(?:is|was|equals?)\b)\s*\S",
         re.IGNORECASE,
     ),
     re.compile(r"\bbearer\s+[a-z0-9._~-]{8,}", re.IGNORECASE),
@@ -1506,15 +1508,21 @@ class SelfStateStore:
         representations = [normalized]
         decoded = normalized
         for _ in range(_MAX_PERCENT_DECODING_DEPTH):
-            if _PERCENT_ESCAPE.search(decoded) is None:
+            transformed = decoded
+            if _PERCENT_ESCAPE.search(transformed) is not None:
+                try:
+                    transformed = unquote_to_bytes(transformed).decode("utf-8")
+                except UnicodeDecodeError:
+                    raise SelfStateValidationError(f"invalid {field}") from None
+            transformed = unicodedata.normalize("NFKC", html_unescape(transformed))
+            if transformed == decoded:
                 break
-            try:
-                decoded = unquote_to_bytes(decoded).decode("utf-8")
-            except UnicodeDecodeError:
-                raise SelfStateValidationError(f"invalid {field}") from None
-            decoded = unicodedata.normalize("NFKC", decoded)
+            decoded = transformed
             representations.append(decoded)
-        if _PERCENT_ESCAPE.search(decoded) is not None:
+        if (
+            _PERCENT_ESCAPE.search(decoded) is not None
+            or html_unescape(decoded) != decoded
+        ):
             raise SelfStateValidationError(f"invalid {field}")
         inspection_representations = representations + [
             unicodedata.normalize(
