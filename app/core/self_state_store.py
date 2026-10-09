@@ -1484,10 +1484,14 @@ class SelfStateStore:
         candidate = value.translate(str.maketrans("", "", " \n\t"))
         if _HEX_ONLY_TEXT.fullmatch(candidate) is not None:
             return SelfStateStore._bytes_are_printable_text(bytes.fromhex(candidate))
-        if len(candidate) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
+        if _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
             return False
+        unpadded = candidate.rstrip("=")
+        if len(unpadded) % 4 == 1:
+            return False
+        padded = unpadded + "=" * (-len(unpadded) % 4)
         try:
-            decoded = base64.b64decode(candidate, altchars=b"-_", validate=True)
+            decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
         except binascii.Error:
             return False
         if not SelfStateStore._bytes_are_printable_text(decoded):

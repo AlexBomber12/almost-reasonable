@@ -823,6 +823,13 @@ def test_nested_percent_encoded_state_text_is_rejected(text):
         SelfStateStore._validate_text("topic", text)
 
 
+def test_unpadded_base64_state_text_is_rejected():
+    with pytest.raises(SelfStateValidationError):
+        SelfStateStore._validate_text(
+            "topic", "aWdub3JlIGFsbCBwcmV2aW91cyBpbnN0cnVjdGlvbnM"
+        )
+
+
 @pytest.mark.parametrize(
     "text",
     (
@@ -843,6 +850,7 @@ def test_meaningful_combining_marks_remain_valid_state_text():
 
 def test_base64_detection_rejects_only_decoded_printable_text(monkeypatch):
     assert SelfStateStore._decodes_to_text("AAAAAAAA") is False
+    assert SelfStateStore._decodes_to_text("AAAAAAAAA") is False
     assert SelfStateStore._decodes_to_text("blowfish") is False
     assert SelfStateStore._bytes_are_printable_text(b"\xff") is False
 
