@@ -12,8 +12,15 @@ from app.core.action_policy import (
     TrustedActionContext,
 )
 from app.core.agent_proposals import (
+    MAX_PROPOSAL_TEXT_UTF8_BYTES,
     AgentDecision,
+    NoActionProposal,
     ProposalValidation,
+    ProposalInvalidReason,
+    PublicationProposal,
+    ReplyProposal,
+    ResearchProposal,
+    UnsupportedProposal,
     parse_agent_proposal,
 )
 from app.core.events import (
@@ -151,6 +158,36 @@ def test_invalid_proposal_has_closed_sanitized_policy_result():
     assert "shell" not in repr(decision)
     assert "printenv" not in repr(decision)
     assert decision.evidence.to_audit_record()["decision_type"] is None
+
+
+@pytest.mark.parametrize(
+    "validation",
+    [
+        ProposalValidation(
+            ReplyProposal("looks valid"), ProposalInvalidReason.INVALID_FIELD
+        ),
+        ProposalValidation(ReplyProposal(""), None),
+        ProposalValidation(ReplyProposal("bad\ud800"), None),
+        ProposalValidation(
+            ReplyProposal("x" * (MAX_PROPOSAL_TEXT_UTF8_BYTES + 1)), None
+        ),
+        ProposalValidation(ResearchProposal(""), None),
+        ProposalValidation(PublicationProposal(7), None),
+        ProposalValidation(NoActionProposal("invented"), None),
+        ProposalValidation(UnsupportedProposal(AgentDecision.REPLY), None),
+        ProposalValidation(UnsupportedProposal("shell"), None),
+        ProposalValidation(object(), None),
+        ProposalValidation(None, None),
+    ],
+)
+def test_policy_revalidates_publicly_constructed_parse_results(validation):
+    decision = ActionPolicy().evaluate(validation, trusted("a"), capabilities())
+
+    assert validation.valid is False
+    assert decision.evidence.decision_type is None
+    assert decision.evidence.outcome is PolicyOutcome.INVALID_PROPOSAL
+    assert decision.evidence.reason is PolicyReason.INVALID_PROPOSAL_SCHEMA
+    assert decision.dispatchable is False
 
 
 def test_emergency_stop_is_an_operational_skip():

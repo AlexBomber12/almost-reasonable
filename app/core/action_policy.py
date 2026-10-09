@@ -136,7 +136,7 @@ class ActionPolicy:
     ) -> PolicyDecision:
         _validate_inputs(validation, trusted, capabilities)
         proposal = validation.proposal
-        if proposal is None:
+        if not validation.valid:
             return self._result(
                 trusted,
                 capabilities,

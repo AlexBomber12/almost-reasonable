@@ -95,7 +95,11 @@ class ProposalValidation:
 
     @property
     def valid(self) -> bool:
-        return self.proposal is not None and self.invalid_reason is None
+        return (
+            self.proposal is not None
+            and self.invalid_reason is None
+            and is_valid_agent_proposal(self.proposal)
+        )
 
 
 _SUPPORTED_FIELDS = {
@@ -148,6 +152,25 @@ def parse_agent_proposal(payload: object) -> ProposalValidation:
     else:
         proposal = PublicationProposal(value)
     return ProposalValidation(proposal, None)
+
+
+def is_valid_agent_proposal(proposal: object) -> bool:
+    """Revalidate a typed proposal so direct construction cannot bypass parsing."""
+
+    if type(proposal) is NoActionProposal:
+        return type(proposal.reason_category) is NoActionReason
+    if type(proposal) is ReplyProposal:
+        return _validate_text(proposal.content) is None
+    if type(proposal) is ResearchProposal:
+        return _validate_text(proposal.brief) is None
+    if type(proposal) is PublicationProposal:
+        return _validate_text(proposal.draft) is None
+    if type(proposal) is UnsupportedProposal:
+        return (
+            type(proposal.decision) is AgentDecision
+            and proposal.decision in _UNSUPPORTED_DECISIONS
+        )
+    return False
 
 
 def _validate_text(value: object) -> ProposalInvalidReason | None:
