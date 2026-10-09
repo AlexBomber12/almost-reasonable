@@ -8,6 +8,7 @@ from enum import StrEnum
 import re
 import sqlite3
 import unicodedata
+from urllib.parse import unquote_to_bytes
 
 from .core_self import CORE_SELF_VERSION
 from .events import (
@@ -56,6 +57,8 @@ MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
 _BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}\Z")
+_HEX_ONLY_TEXT = re.compile(r"(?:[A-Fa-f0-9]{2}){4,}\Z")
+_PERCENT_ONLY_TEXT = re.compile(r"(?:%[A-Fa-f0-9]{2}){4,}\Z")
 _MIXED_SCRIPT_TOKEN = re.compile(
     r"(?i)(?=[^\W_]*[a-z])(?=[^\W_]*[\u0370-\u058f])[^\W_]+"
 )
@@ -391,11 +394,31 @@ class SelfStateStore:
                         source.audience_type,
                         source.source_principal_id,
                         source.source_provenance_type,
-                        source.verification_status
+                        source.verification_status,
+                        event.event_type,
+                        event.channel,
+                        event.audience_type,
+                        event.audience_principal_id,
+                        event.provenance_type,
+                        event.verification_status,
+                        payload.audience_type,
+                        payload.audience_principal_id,
+                        payload.provenance_type,
+                        payload.verification_status,
+                        payload.retention_status,
+                        taint.source_event_id,
+                        taint.source_principal_id,
+                        taint.source_provenance_type
                     FROM state_items AS item
                     JOIN state_revisions AS revision ON revision.item_key = item.item_key
                     JOIN protected_state_provenance AS source
                       ON source.revision_key = revision.revision_key
+                    LEFT JOIN event_envelopes AS event
+                      ON event.event_id = source.event_id
+                    LEFT JOIN private_payloads AS payload
+                      ON payload.payload_id = event.payload_id
+                    LEFT JOIN protected_event_taints AS taint
+                      ON taint.event_id = event.event_id
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
@@ -414,7 +437,10 @@ class SelfStateStore:
                         MAX_EVIDENCE_PER_REVISION,
                     ),
                 ).fetchall()
-            return tuple(self._protected_evidence(row) for row in rows)
+            return tuple(
+                self._protected_evidence(row, context.principal_id.value)
+                for row in rows
+            )
         except (TypeError, ValueError):
             raise EventStoreError("event store operation failed") from None
         except sqlite3.Error as error:
@@ -1214,8 +1240,32 @@ class SelfStateStore:
         return tuple(row[0] for row in rows)
 
     @staticmethod
-    def _protected_evidence(row: tuple[object, ...]) -> ProtectedEvidence:
+    def _protected_evidence(
+        row: tuple[object, ...], expected_principal_id: str
+    ) -> ProtectedEvidence:
         if any(type(value) is not str for value in row):
+            raise ValueError("malformed evidence")
+        expected = (
+            AudienceType.PRIVATE_PARTICIPANT.value,
+            expected_principal_id,
+            ProvenanceType.PARTICIPANT_ASSERTION.value,
+            VerificationStatus.UNVERIFIED.value,
+            EventType.PARTICIPANT_INPUT.value,
+            EventChannel.PRIVATE_CHAT.value,
+            AudienceType.PRIVATE_PARTICIPANT.value,
+            expected_principal_id,
+            ProvenanceType.PARTICIPANT_ASSERTION.value,
+            VerificationStatus.UNVERIFIED.value,
+            AudienceType.PRIVATE_PARTICIPANT.value,
+            expected_principal_id,
+            ProvenanceType.PARTICIPANT_ASSERTION.value,
+            VerificationStatus.UNVERIFIED.value,
+            "active",
+            row[0],
+            expected_principal_id,
+            ProvenanceType.PARTICIPANT_ASSERTION.value,
+        )
+        if row[2:] != expected:
             raise ValueError("malformed evidence")
         return ProtectedEvidence(
             event_id=row[0],
@@ -1390,13 +1440,23 @@ class SelfStateStore:
     @staticmethod
     def _decodes_to_text(value: str) -> bool:
         candidate = value.translate(str.maketrans("", "", " \n\t"))
+        if _HEX_ONLY_TEXT.fullmatch(candidate) is not None:
+            return SelfStateStore._bytes_are_printable_text(bytes.fromhex(candidate))
+        if _PERCENT_ONLY_TEXT.fullmatch(candidate) is not None:
+            return SelfStateStore._bytes_are_printable_text(unquote_to_bytes(candidate))
         if len(candidate) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
             return False
         try:
-            decoded = base64.b64decode(candidate, altchars=b"-_", validate=True).decode(
-                "utf-8"
-            )
-        except (binascii.Error, UnicodeDecodeError):
+            decoded = base64.b64decode(candidate, altchars=b"-_", validate=True)
+        except binascii.Error:
+            return False
+        return SelfStateStore._bytes_are_printable_text(decoded)
+
+    @staticmethod
+    def _bytes_are_printable_text(value: bytes) -> bool:
+        try:
+            decoded = value.decode("utf-8")
+        except UnicodeDecodeError:
             return False
         return all(
             character.isprintable() or character in "\n\t" for character in decoded
