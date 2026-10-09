@@ -405,6 +405,7 @@ def test_matching_confirmed_code_is_required(tmp_path):
         replace(attempt(), duration_ms=-1),
         replace(attempt(), retry_count=True),
         replace(attempt(), input_tokens=-1),
+        replace(attempt(), input_tokens=2**63),
         replace(attempt(), cost_estimate_status="estimated"),
         replace(attempt(), estimated_cost=None),
         replace(attempt(), estimated_cost="not-a-decimal"),

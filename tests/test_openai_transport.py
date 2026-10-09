@@ -147,6 +147,7 @@ def test_transport_accepts_reasoning_item_with_null_content():
         {"output": ["not-an-object"]},
         {"usage": "not-an-object"},
         {"usage": {"input_tokens": -1}},
+        {"usage": {"input_tokens": 2**63}},
     ],
 )
 def test_malformed_sdk_response_fails_with_sanitized_error(mutation):

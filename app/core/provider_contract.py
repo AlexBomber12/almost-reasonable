@@ -18,6 +18,7 @@ PROVIDER_CONFIG_VERSION = "openai-config-v1"
 APPROVED_OPENAI_MODELS = frozenset(("gpt-6-luna", "gpt-6.1-sol"))
 MAX_PROVIDER_INPUT_UTF8_BYTES = 384 * 1024
 MAX_PROVIDER_OUTPUT_TOKENS = 4096
+MAX_PROVIDER_TOKEN_COUNT = 2**63 - 1
 MAX_ATTEMPTS = 3
 MAX_TIMEOUT_SECONDS = 120.0
 MAX_OVERALL_TIMEOUT_SECONDS = 300.0
@@ -316,7 +317,9 @@ def _validate_usage(usage: ProviderUsage) -> None:
         usage.total_tokens,
     )
     if any(
-        value is not None and (type(value) is not int or value < 0) for value in values
+        value is not None
+        and (type(value) is not int or not 0 <= value <= MAX_PROVIDER_TOKEN_COUNT)
+        for value in values
     ):
         raise ValueError("provider usage is invalid")
     if (

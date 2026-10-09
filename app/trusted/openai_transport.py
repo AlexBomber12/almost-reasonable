@@ -7,7 +7,11 @@ import os
 import re
 from typing import Protocol
 
-from app.core.provider_contract import OpenAIRequest, ProviderUsage
+from app.core.provider_contract import (
+    MAX_PROVIDER_TOKEN_COUNT,
+    OpenAIRequest,
+    ProviderUsage,
+)
 
 
 MAX_RETRY_AFTER_SECONDS = 120.0
@@ -241,7 +245,7 @@ def _normalize_usage(raw: object) -> ProviderUsage | None:
 def _optional_nonnegative_integer(value: object) -> int | None:
     if value is None:
         return None
-    if type(value) is not int or value < 0:
+    if type(value) is not int or not 0 <= value <= MAX_PROVIDER_TOKEN_COUNT:
         raise ValueError("malformed usage value")
     return value
 

@@ -7,6 +7,7 @@ from enum import StrEnum
 import sqlite3
 
 from .provider_contract import (
+    MAX_PROVIDER_TOKEN_COUNT,
     PROVIDER_NAME,
     CostEstimateStatus,
     require_identifier,
@@ -363,7 +364,9 @@ def _validate_record(record: ProviderAttemptRecord) -> str:
         record.total_tokens,
     )
     if any(
-        value is not None and (type(value) is not int or value < 0) for value in tokens
+        value is not None
+        and (type(value) is not int or not 0 <= value <= MAX_PROVIDER_TOKEN_COUNT)
+        for value in tokens
     ):
         raise ValueError("attempt usage is invalid")
     if type(record.cost_estimate_status) is not CostEstimateStatus:
