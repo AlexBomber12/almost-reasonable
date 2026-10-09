@@ -55,7 +55,7 @@ MAX_REVISION_HISTORY_PER_RETRIEVAL = 100
 MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
-_BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/]{8,}={0,2}\Z")
+_BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}\Z")
 _MIXED_SCRIPT_TOKEN = re.compile(
     r"(?i)(?=[^\W_]*[a-z])(?=[^\W_]*[\u0370-\u058f])[^\W_]+"
 )
@@ -1393,7 +1393,9 @@ class SelfStateStore:
         if len(candidate) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
             return False
         try:
-            decoded = base64.b64decode(candidate, validate=True).decode("utf-8")
+            decoded = base64.b64decode(candidate, altchars=b"-_", validate=True).decode(
+                "utf-8"
+            )
         except (binascii.Error, UnicodeDecodeError):
             return False
         return all(
