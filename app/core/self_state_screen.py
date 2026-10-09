@@ -251,10 +251,12 @@ def _extend_inspected(
     for representation in representations:
         if _has_unsafe_unicode(representation):
             return SelfStateScreenReason.UNSAFE_UNICODE
+        without_combining_marks = _strip_combining_marks(representation)
         variants = (
             representation,
-            _strip_combining_marks(representation),
+            without_combining_marks,
             representation.translate(_COMMON_CONFUSABLES),
+            without_combining_marks.translate(_COMMON_CONFUSABLES),
         )
         for variant in variants:
             collapsed = " ".join(variant.split())
