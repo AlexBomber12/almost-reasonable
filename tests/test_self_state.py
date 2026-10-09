@@ -1593,14 +1593,29 @@ def test_time_and_parser_validation_guards():
             "history",
         ),
         (
+            "interest",
+            "UPDATE state_revisions SET new_status = 'suspended'",
+            "snapshot",
+        ),
+        (
             "belief",
             "UPDATE state_revisions SET new_confidence = 0.9",
             "history",
         ),
         (
+            "belief",
+            "UPDATE state_revisions SET new_confidence = 0.9",
+            "snapshot",
+        ),
+        (
             "interest",
             "UPDATE state_revisions SET new_confidence = 0.5",
             "history",
+        ),
+        (
+            "interest",
+            "UPDATE state_revisions SET new_confidence = 0.5",
+            "snapshot",
         ),
         (
             "interest",

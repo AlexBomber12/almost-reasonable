@@ -238,7 +238,9 @@ class SelfStateStore:
                         (SELECT COUNT(*) FROM protected_state_provenance AS source
                          WHERE source.revision_key = revision.revision_key
                            AND source.evidence_role = 'counter'
-                           AND source.retention_status = 'active')
+                           AND source.retention_status = 'active'),
+                        revision.new_status,
+                        revision.new_confidence
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
@@ -258,7 +260,9 @@ class SelfStateStore:
                     ),
                 ).fetchall()
                 rows.reverse()
-                return tuple(self._snapshot_from_row(connection, row) for row in rows)
+                return tuple(
+                    self._current_snapshot_from_row(connection, row) for row in rows
+                )
         except (OverflowError, TypeError, ValueError):
             raise EventStoreError("event store operation failed") from None
         except sqlite3.Error as error:
@@ -1191,13 +1195,7 @@ class SelfStateStore:
         self, connection: sqlite3.Connection, row: tuple[object, ...]
     ) -> StateRevision:
         state = self._snapshot_from_row(connection, row[:24])
-        if row[26] != state.status.value:
-            raise ValueError("malformed stored revision")
-        current_confidence = (
-            state.confidence if isinstance(state, BeliefCandidate) else None
-        )
-        if row[28] != current_confidence:
-            raise ValueError("malformed stored revision")
+        self._validate_snapshot_header(state, row[26], row[28])
         previous_status = None
         previous_confidence = None
         if row[24] is not None:
@@ -1273,6 +1271,25 @@ class SelfStateStore:
             prompt_version=row[35],
             state=state,
         )
+
+    def _current_snapshot_from_row(
+        self, connection: sqlite3.Connection, row: tuple[object, ...]
+    ) -> PrivateCandidate:
+        state = self._snapshot_from_row(connection, row[:24])
+        self._validate_snapshot_header(state, row[24], row[25])
+        return state
+
+    @staticmethod
+    def _validate_snapshot_header(
+        state: PrivateCandidate, new_status: object, new_confidence: object
+    ) -> None:
+        if new_status != state.status.value:
+            raise ValueError("malformed stored revision")
+        current_confidence = (
+            state.confidence if isinstance(state, BeliefCandidate) else None
+        )
+        if new_confidence != current_confidence:
+            raise ValueError("malformed stored revision")
 
     @staticmethod
     def _payload_list(
