@@ -1535,6 +1535,10 @@ class SelfStateStore:
             )
             for representation in representations
         ]
+        inspection_representations += [
+            " ".join(representation.split())
+            for representation in inspection_representations
+        ]
         for representation in inspection_representations:
             if any(
                 (ord(character) < 32 or unicodedata.category(character) in {"Cf", "Cs"})
