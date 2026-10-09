@@ -185,6 +185,8 @@ def _normalize_output_item(raw: object) -> ProviderOutput:
         raise ValueError("malformed output item")
     output_type = _provider_token(raw.get("type"))
     raw_content = raw.get("content", [])
+    if output_type == "reasoning" and raw_content is None:
+        raw_content = []
     if type(raw_content) is not list:
         raise ValueError("malformed content")
     content = tuple(_normalize_content(item) for item in raw_content)

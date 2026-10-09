@@ -503,6 +503,57 @@ def test_gateway_requires_provider_state_store(tmp_path):
         )
 
 
+@pytest.mark.parametrize(
+    "bad_pricing",
+    [
+        PricingConfig(
+            "pricing-v1",
+            "gpt-6-luna",
+            "EUR",
+            Decimal("0.1"),
+            Decimal("0.01"),
+            Decimal("0.5"),
+        ),
+        PricingConfig(
+            "pricing-v1",
+            "gpt-6-luna",
+            "USD",
+            Decimal("-0.1"),
+            Decimal("0.01"),
+            Decimal("0.5"),
+        ),
+    ],
+)
+def test_malformed_pricing_is_rejected_before_provider_contact(tmp_path, bad_pricing):
+    transport = FakeOpenAITransport([response()])
+    store = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+
+    with pytest.raises(ValueError):
+        TrustedOpenAIGateway(
+            store=store,
+            transport=transport,
+            config=config(),
+            pricing=bad_pricing,
+        )
+
+    assert transport.calls == []
+
+
+def test_operation_identifier_reserves_space_for_attempt_suffix(tmp_path):
+    instance, transport, _store = gateway(tmp_path, [response()])
+
+    accepted = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="o" * 126
+    )
+    with pytest.raises(ValueError, match="invalid operation id"):
+        instance.submit(
+            request(), correlation_id="correlation-b", operation_id="o" * 127
+        )
+
+    assert accepted.outcome is GatewayOutcome.COMPLETED
+    assert len(transport.calls) == 1
+
+
 def test_persistence_preflight_failure_latches_gateway_closed(tmp_path, monkeypatch):
     instance, transport, store = gateway(tmp_path, [response()])
 

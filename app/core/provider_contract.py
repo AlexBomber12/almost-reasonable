@@ -239,6 +239,12 @@ def estimate_cost(
     )
 
 
+def validate_pricing_config(pricing: PricingConfig) -> None:
+    """Validate operator pricing before any provider contact can occur."""
+
+    _validate_pricing(pricing)
+
+
 def require_identifier(field: str, value: object) -> str:
     if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
         raise ValueError(f"invalid {field}")

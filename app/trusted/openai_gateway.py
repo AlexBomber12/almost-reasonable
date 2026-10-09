@@ -19,6 +19,7 @@ from app.core.provider_contract import (
     build_openai_request,
     estimate_cost,
     require_identifier,
+    validate_pricing_config,
 )
 from app.core.provider_spend import (
     CONFIRMED_SPEND_LIMIT_CODES,
@@ -34,6 +35,7 @@ from .openai_transport import (
 
 
 MAX_PROVIDER_OUTPUT_UTF8_BYTES = 8 * 1024
+MAX_OPERATION_ID_LENGTH = 126
 
 _GENERAL_FAILURE_RU = "Сервис модели временно недоступен. Попробуйте позже."
 _SPEND_FAILURE_RU = "Запросы к модели приостановлены из-за лимита расходов."
@@ -100,6 +102,8 @@ class TrustedOpenAIGateway:
     ):
         if type(store) is not ProviderStateStore:
             raise TypeError("store must be a ProviderStateStore")
+        if pricing is not None:
+            validate_pricing_config(pricing)
         self._store = store
         self._transport = transport
         self._config = config
@@ -122,6 +126,8 @@ class TrustedOpenAIGateway:
             raise TypeError("request must be a ModelRequest")
         require_identifier("correlation id", correlation_id)
         require_identifier("operation id", operation_id)
+        if len(operation_id) > MAX_OPERATION_ID_LENGTH:
+            raise ValueError("invalid operation id")
         provider_request = build_openai_request(request, self._config)
         if (
             self._config.deployment_stage is not DeploymentStage.STAGE_1

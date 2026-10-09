@@ -20,6 +20,7 @@ from app.trusted.openai_transport import (
     FakeOpenAITransport,
     OpenAIResponsesTransport,
     OpenAITransportError,
+    ProviderOutput,
     TrustedTransportConfigurationError,
 )
 
@@ -124,6 +125,18 @@ def test_transport_accepts_sdk_models_with_model_dump():
     ).call(provider_request(), timeout_seconds=1.0)
 
     assert result.response_id == "resp_synthetic"
+
+
+def test_transport_accepts_reasoning_item_with_null_content():
+    raw = documented_response()
+    raw["output"][0]["content"] = None
+    transport = OpenAIResponsesTransport(
+        SimpleNamespace(responses=RecordingResponses(raw))
+    )
+
+    result = transport.call(provider_request(), timeout_seconds=1.0)
+
+    assert result.output[0] == ProviderOutput("reasoning", ())
 
 
 @pytest.mark.parametrize(
