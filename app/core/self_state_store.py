@@ -1,15 +1,11 @@
 """Participant-scoped persistence for versioned mutable intellectual state."""
 
-import base64
-import binascii
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
-from html import unescape as html_unescape
 import re
 import sqlite3
 import unicodedata
-from urllib.parse import unquote_to_bytes
 
 from .core_self import CORE_SELF_VERSION
 from .events import (
@@ -43,6 +39,7 @@ from .self_state import (
     StateType,
     TransitionStatus,
 )
+from .self_state_screen import screen_self_state_text
 from .store import (
     MAX_STATE_TEXT_BYTES,
     EventStore,
@@ -57,80 +54,6 @@ MAX_REVISION_HISTORY_PER_RETRIEVAL = 100
 MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
-_BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}\Z")
-_BASE32_ONLY_TEXT = re.compile(r"[A-Z2-7]{8,}={0,6}\Z", re.IGNORECASE)
-_HEX_ONLY_TEXT = re.compile(r"(?:[A-Fa-f0-9]{2}){4,}\Z")
-_PERCENT_ESCAPE = re.compile(r"%[A-Fa-f0-9]{2}")
-_MAX_PERCENT_DECODING_DEPTH = 3
-_MIXED_SCRIPT_TOKEN = re.compile(
-    r"(?i)(?=[^\W_]*[a-z])(?=[^\W_]*[\u0370-\u058f])[^\W_]+"
-)
-_DISALLOWED_STATE_TEXT = (
-    re.compile(r"\b[a-z][a-z0-9+.-]{1,20}://", re.IGNORECASE),
-    re.compile(r"\bwww\.", re.IGNORECASE),
-    re.compile(
-        r"\b(?:api[ _-]?key|access[ _-]?token|password|secret)\b\s*"
-        r"(?::|=|\b(?:is|was|equals?)\b)\s*\S",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bbearer\s+[a-z0-9._~-]{8,}", re.IGNORECASE),
-    re.compile(r"\b(?:sk|pk)-[a-z0-9_-]{16,}\b", re.IGNORECASE),
-    re.compile(r"\bgh[pousr]_[a-z0-9]{20,}\b", re.IGNORECASE),
-    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
-    re.compile(r"\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\b", re.IGNORECASE),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
-    re.compile(
-        r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
-        r"(?:com|net|org|io|dev|app|ru|рф)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?m)^\s*(?:system|developer|assistant|tool|admin|administrator)\s*:",
-        re.IGNORECASE,
-    ),
-    re.compile(r"</?tool\b|\b(?:tool|function)_call\b|\[/?inst\]", re.IGNORECASE),
-    re.compile(
-        r"\bignore\s+(?:(?:all\s+)?(?:previous|prior)\s+)?instructions\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:disregard|discard|forget|override|obey|follow)\b.{0,40}"
-        r"\b(?:directive|instruction|message|prompt|rule|policy)\w*\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:игнорир\w*|забуд\w*|отброс\w*|переопредел\w*|следуй\w*|"
-        r"подчин\w*)\b.{0,60}\b(?:инструкц\w*|директив\w*|сообщен\w*|"
-        r"правил\w*|политик\w*)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"(?m)^\s*(?:"
-        r"(?:(?:goal|objective|instruction|request)\s*:\s*|"
-        r"(?:please|kindly)\s+)"
-        r"(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
-        r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)"
-        r"|(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
-        r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)\s+"
-        r"(?:a|an|the|this|that|these|those|my|our|all|any|on|to|from|"
-        r"record|records|file|files|data|message|email|command|shell|tool|"
-        r"model|service|site|app)\b)",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:run|execute|call|invoke|access|read)\s+(?:the\s+)?"
-        r"(?:shell|terminal|tool|command|filesystem|secret)\b",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"\b(?:send|transmit|upload|publish|post|export|share|reveal)\b.{0,50}"
-        r"\b(?:private|secret|credential|record|data|prompt)\w*\b",
-        re.IGNORECASE,
-    ),
-    re.compile(r"\bbase64\s*:", re.IGNORECASE),
-    re.compile(r"\b(?:bypass|without)\s+(?:approval|authorization)\b", re.IGNORECASE),
-    re.compile(r"\b[a-z0-9+/]{80,}={0,2}\b", re.IGNORECASE),
-)
 
 
 class SelfStateError(EventStoreError):
@@ -240,7 +163,10 @@ class SelfStateStore:
                            AND source.evidence_role = 'counter'
                            AND source.retention_status = 'active'),
                         revision.new_status,
-                        revision.new_confidence
+                        revision.new_confidence,
+                        (SELECT MAX(candidate.revision_number)
+                         FROM state_revisions AS candidate
+                         WHERE candidate.item_key = item.item_key)
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
@@ -503,7 +429,10 @@ class SelfStateStore:
                         item.state_type,
                         item.current_revision,
                         item.created_at,
-                        revision.revision_key
+                        revision.revision_key,
+                        (SELECT MAX(candidate.revision_number)
+                         FROM state_revisions AS candidate
+                         WHERE candidate.item_key = item.item_key)
                     FROM state_items AS item
                     LEFT JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
@@ -515,6 +444,8 @@ class SelfStateStore:
                     (context.principal_id.value, change.item_id),
                 ).fetchone()
                 decided_at = self._serialize_time(change.revision.decided_at)
+                if item is not None:
+                    self._validate_current_revision_pointer(item[2], item[5])
                 if creating:
                     if item is not None:
                         raise SelfStateConflictError("state revision conflict")
@@ -632,17 +563,42 @@ class SelfStateStore:
     ) -> int | None:
         row = connection.execute(
             """
-            SELECT revision.revision_key
+            SELECT
+                revision.revision_key,
+                operation.item_key,
+                revision.item_key,
+                operation.scope,
+                operation.audience_principal_id,
+                operation.revision_number,
+                item.scope,
+                item.audience_type,
+                item.audience_principal_id,
+                revision.revision_number
             FROM state_operations AS operation
             JOIN state_revisions AS revision
               ON revision.operation_key = operation.operation_key
+            JOIN state_items AS item
+              ON item.item_key = revision.item_key
             WHERE operation.scope = 'private_candidate'
               AND operation.audience_principal_id = ?
               AND operation.operation_id = ?
             """,
             (principal_id, operation_id),
         ).fetchone()
-        return None if row is None else row[0]
+        if row is None:
+            return None
+        if (
+            type(row[0]) is not int
+            or row[1] != row[2]
+            or row[3] != StateScope.PRIVATE_CANDIDATE.value
+            or row[4] != principal_id
+            or row[5] != row[9]
+            or row[6] != StateScope.PRIVATE_CANDIDATE.value
+            or row[7] != AudienceType.PRIVATE_PARTICIPANT.value
+            or row[8] != principal_id
+        ):
+            raise EventStoreError("event store operation failed")
+        return row[0]
 
     @staticmethod
     def _logical_change(
@@ -1275,9 +1231,22 @@ class SelfStateStore:
     def _current_snapshot_from_row(
         self, connection: sqlite3.Connection, row: tuple[object, ...]
     ) -> PrivateCandidate:
+        self._validate_current_revision_pointer(row[5], row[26])
         state = self._snapshot_from_row(connection, row[:24])
         self._validate_snapshot_header(state, row[24], row[25])
         return state
+
+    @staticmethod
+    def _validate_current_revision_pointer(
+        current_revision: object, latest_revision: object
+    ) -> None:
+        if (
+            type(current_revision) is not int
+            or type(latest_revision) is not int
+            or current_revision < 1
+            or current_revision != latest_revision
+        ):
+            raise ValueError("malformed stored revision")
 
     @staticmethod
     def _validate_snapshot_header(
@@ -1521,110 +1490,14 @@ class SelfStateStore:
             raise SelfStateValidationError(f"invalid {field}") from None
         if len(encoded) > MAX_STATE_TEXT_BYTES:
             raise SelfStateValidationError(f"invalid {field}")
-        normalized = unicodedata.normalize("NFKC", value)
-        representations = [normalized]
-        decoded = normalized
-        for _ in range(_MAX_PERCENT_DECODING_DEPTH):
-            transformed = decoded
-            if _PERCENT_ESCAPE.search(transformed) is not None:
-                try:
-                    transformed = unquote_to_bytes(transformed).decode("utf-8")
-                except UnicodeDecodeError:
-                    raise SelfStateValidationError(f"invalid {field}") from None
-            transformed = unicodedata.normalize("NFKC", html_unescape(transformed))
-            if transformed == decoded:
-                break
-            decoded = transformed
-            representations.append(decoded)
-        if (
-            _PERCENT_ESCAPE.search(decoded) is not None
-            or html_unescape(decoded) != decoded
+        if not value.strip() or any(
+            (ord(character) < 32 or unicodedata.category(character) == "Cs")
+            and character not in "\n\t"
+            for character in value
         ):
             raise SelfStateValidationError(f"invalid {field}")
-        inspection_representations = representations + [
-            unicodedata.normalize(
-                "NFKC",
-                "".join(
-                    character
-                    for character in unicodedata.normalize("NFKD", representation)
-                    if not unicodedata.category(character).startswith("M")
-                ),
-            )
-            for representation in representations
-        ]
-        inspection_representations += [
-            " ".join(representation.split())
-            for representation in inspection_representations
-        ]
-        for representation in inspection_representations:
-            if any(
-                (ord(character) < 32 or unicodedata.category(character) in {"Cf", "Cs"})
-                and character not in "\n\t"
-                for character in representation
-            ):
-                raise SelfStateValidationError(f"invalid {field}")
-            compact = representation.strip()
-            if not compact:
-                raise SelfStateValidationError(f"invalid {field}")
-            if (
-                SelfStateStore._decodes_to_text(compact)
-                or _MIXED_SCRIPT_TOKEN.search(representation) is not None
-                or any(
-                    pattern.search(representation) for pattern in _DISALLOWED_STATE_TEXT
-                )
-            ):
-                raise SelfStateValidationError(f"invalid {field}")
-
-    @staticmethod
-    def _decodes_to_text(value: str) -> bool:
-        candidate = value.translate(str.maketrans("", "", " \n\t"))
-        decoded_values = []
-        if _HEX_ONLY_TEXT.fullmatch(candidate) is not None:
-            decoded_values.append(bytes.fromhex(candidate))
-        if _BASE64_ONLY_TEXT.fullmatch(candidate) is not None:
-            unpadded = candidate.rstrip("=")
-            if len(unpadded) % 4 != 1:
-                padded = unpadded + "=" * (-len(unpadded) % 4)
-                try:
-                    decoded_values.append(
-                        base64.b64decode(padded, altchars=b"-_", validate=True)
-                    )
-                except binascii.Error:
-                    pass
-        if _BASE32_ONLY_TEXT.fullmatch(candidate) is not None:
-            unpadded = candidate.rstrip("=")
-            padded = unpadded + "=" * (-len(unpadded) % 8)
-            try:
-                decoded_values.append(base64.b32decode(padded, casefold=True))
-            except binascii.Error:
-                pass
-        return any(
-            SelfStateStore._bytes_are_plausible_text(decoded)
-            for decoded in decoded_values
-        )
-
-    @staticmethod
-    def _bytes_are_plausible_text(value: bytes) -> bool:
-        if not SelfStateStore._bytes_are_printable_text(value):
-            return False
-        text = value.decode("utf-8")
-        if any(pattern.search(text) for pattern in _DISALLOWED_STATE_TEXT):
-            return True
-        substantive = [character for character in text if not character.isspace()]
-        return len(substantive) >= 4 and (
-            sum(character.isalpha() for character in substantive) / len(substantive)
-            >= 0.7
-        )
-
-    @staticmethod
-    def _bytes_are_printable_text(value: bytes) -> bool:
-        try:
-            decoded = value.decode("utf-8")
-        except UnicodeDecodeError:
-            return False
-        return all(
-            character.isprintable() or character in "\n\t" for character in decoded
-        )
+        if not screen_self_state_text(value).allowed:
+            raise SelfStateValidationError(f"invalid {field}")
 
     @staticmethod
     def _require_token(field: str, value: object) -> None:

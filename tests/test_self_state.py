@@ -1,6 +1,5 @@
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
-import binascii
 import sqlite3
 from threading import Barrier, Thread
 from datetime import tzinfo
@@ -923,28 +922,6 @@ def test_meaningful_combining_marks_remain_valid_state_text():
     SelfStateStore._validate_text("topic", "कला और खगोल विज्ञान")
 
 
-def test_encoded_text_detection_requires_plausible_decoded_content(monkeypatch):
-    assert SelfStateStore._decodes_to_text("AAAAAAAA") is False
-    assert SelfStateStore._decodes_to_text("AAAAAAAAA") is False
-    assert SelfStateStore._decodes_to_text("blowfish") is False
-    assert SelfStateStore._bytes_are_printable_text(b"\xff") is False
-
-    def invalid_base64(_value, *, altchars, validate):
-        assert altchars == b"-_"
-        assert validate is True
-        raise binascii.Error("synthetic decoder failure")
-
-    monkeypatch.setattr("app.core.self_state_store.base64.b64decode", invalid_base64)
-    assert SelfStateStore._decodes_to_text("GGGGGGGG") is False
-
-    def invalid_base32(_value, *, casefold):
-        assert casefold is True
-        raise binascii.Error("synthetic decoder failure")
-
-    monkeypatch.setattr("app.core.self_state_store.base64.b32decode", invalid_base32)
-    assert SelfStateStore._decodes_to_text("MZXW6YTB") is False
-
-
 def test_goal_may_discuss_ending_publication_without_requesting_an_action(state_setup):
     _, state, context, event_id = state_setup
     change = replace(
@@ -1294,6 +1271,55 @@ def test_duplicate_with_missing_initiating_provenance_fails_closed(state_setup):
 
     with pytest.raises(EventStoreError, match="event store operation failed"):
         state.create_interest_candidate(context, change)
+
+
+def test_duplicate_operation_with_inconsistent_owner_never_returns_private_state(
+    state_setup,
+):
+    events, state, owner, event_id = state_setup
+    change = interest_change(event_id)
+    state.create_interest_candidate(owner, change)
+    other = principal("b")
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE state_operations SET audience_principal_id = ?",
+            (other.principal_id.value,),
+        )
+
+    with pytest.raises(EventStoreError) as error:
+        state.create_interest_candidate(other, change)
+
+    assert str(error.value) == "event store operation failed"
+    assert owner.principal_id.value not in str(error.value)
+
+
+def test_stale_current_revision_pointer_fails_closed_for_reads_and_writes(state_setup):
+    events, state, context, event_id = state_setup
+    state.create_interest_candidate(context, interest_change(event_id))
+    state.revise_interest_candidate(
+        context,
+        interest_change(
+            event_id,
+            operation="pointer-revision",
+            expected=1,
+            strength=61,
+        ),
+    )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute("UPDATE state_items SET current_revision = 1")
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        state.retrieve_private_candidates(context)
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        state.revise_interest_candidate(
+            context,
+            interest_change(
+                event_id,
+                operation="after-stale-pointer",
+                expected=1,
+                strength=62,
+            ),
+        )
 
 
 def test_internal_snapshot_scope_and_payload_list_guards(state_setup):
