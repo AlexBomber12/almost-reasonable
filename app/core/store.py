@@ -27,10 +27,11 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
+MAX_STATE_TEXT_BYTES = 4096
 MAX_PRIVATE_EVENTS_PER_RETRIEVAL = 100
 WAL_RETRY_INTERVAL_SECONDS = 0.01
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -68,6 +69,7 @@ class FaultPoint(StrEnum):
     """Deterministic fault locations used by local transactional tests."""
 
     BEFORE_INITIALIZATION_LOCK = "before_initialization_lock"
+    BEFORE_V2_MIGRATION_COMMIT = "before_v2_migration_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
 
 
@@ -84,7 +86,7 @@ class StoreDiagnostics:
     busy_timeout_ms: int
 
 
-_SCHEMA = (
+_SCHEMA_V1 = (
     """
     CREATE TABLE schema_metadata (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -151,6 +153,272 @@ _SCHEMA = (
     """
     CREATE INDEX event_envelopes_private_scope_time
     ON event_envelopes(audience_type, audience_principal_id, occurred_at, event_id)
+    """,
+)
+
+
+_SCHEMA_V2 = (
+    """
+    CREATE TABLE state_items (
+        item_key INTEGER PRIMARY KEY,
+        item_id TEXT NOT NULL,
+        state_type TEXT NOT NULL
+            CHECK (state_type IN ('interest', 'belief', 'goal')),
+        scope TEXT NOT NULL
+            CHECK (scope IN ('private_candidate', 'shared_agent')),
+        audience_type TEXT NOT NULL
+            CHECK (audience_type IN ('private_participant', 'shared_agent')),
+        audience_principal_id TEXT NOT NULL,
+        current_revision INTEGER NOT NULL
+            CHECK (typeof(current_revision) = 'integer' AND current_revision >= 0),
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL,
+        CHECK (
+            (scope = 'private_candidate'
+             AND audience_type = 'private_participant'
+             AND length(audience_principal_id) > 0)
+            OR
+            (scope = 'shared_agent'
+             AND audience_type = 'shared_agent'
+             AND audience_principal_id = '')
+        ),
+        UNIQUE (scope, audience_principal_id, item_id)
+    )
+    """,
+    """
+    CREATE TABLE state_operations (
+        operation_key INTEGER PRIMARY KEY,
+        operation_id TEXT NOT NULL,
+        scope TEXT NOT NULL CHECK (scope = 'private_candidate'),
+        audience_principal_id TEXT NOT NULL,
+        item_key INTEGER NOT NULL
+            REFERENCES state_items(item_key) ON DELETE CASCADE,
+        revision_number INTEGER NOT NULL
+            CHECK (typeof(revision_number) = 'integer' AND revision_number >= 1),
+        UNIQUE (scope, audience_principal_id, operation_id)
+    )
+    """,
+    """
+    CREATE TABLE state_revisions (
+        revision_key INTEGER PRIMARY KEY,
+        item_key INTEGER NOT NULL
+            REFERENCES state_items(item_key) ON DELETE CASCADE,
+        operation_key INTEGER NOT NULL UNIQUE
+            REFERENCES state_operations(operation_key) ON DELETE CASCADE,
+        revision_number INTEGER NOT NULL
+            CHECK (typeof(revision_number) = 'integer' AND revision_number >= 1),
+        previous_revision_number INTEGER,
+        previous_status TEXT,
+        new_status TEXT NOT NULL CHECK (
+            new_status IN ('active', 'suspended', 'completed', 'abandoned')
+        ),
+        previous_confidence REAL,
+        new_confidence REAL,
+        revision_kind TEXT NOT NULL CHECK (
+            revision_kind IN (
+                'evidence_backed',
+                'tentative_interpretation',
+                'operational_transition'
+            )
+        ),
+        decision_origin TEXT NOT NULL
+            CHECK (decision_origin IN ('deterministic', 'model')),
+        decided_at TEXT NOT NULL,
+        core_self_version TEXT NOT NULL,
+        model_identifier TEXT,
+        prompt_version TEXT,
+        CHECK (
+            previous_status IS NULL
+            OR previous_status IN ('active', 'suspended', 'completed', 'abandoned')
+        ),
+        CHECK (
+            previous_confidence IS NULL
+            OR (typeof(previous_confidence) = 'real'
+                AND previous_confidence BETWEEN 0.0 AND 1.0)
+        ),
+        CHECK (
+            new_confidence IS NULL
+            OR (typeof(new_confidence) = 'real'
+                AND new_confidence BETWEEN 0.0 AND 1.0)
+        ),
+        CHECK (
+            (decision_origin = 'deterministic'
+             AND model_identifier IS NULL
+             AND prompt_version IS NULL)
+            OR
+            (decision_origin = 'model'
+             AND model_identifier IS NOT NULL
+             AND prompt_version IS NOT NULL)
+        ),
+        UNIQUE (item_key, revision_number),
+        CHECK (
+            (revision_number = 1 AND previous_revision_number IS NULL)
+            OR previous_revision_number = revision_number - 1
+        )
+    )
+    """,
+    f"""
+    CREATE TABLE state_revision_payloads (
+        revision_key INTEGER PRIMARY KEY
+            REFERENCES state_revisions(revision_key) ON DELETE CASCADE,
+        state_type TEXT NOT NULL
+            CHECK (state_type IN ('interest', 'belief', 'goal')),
+        revision_reason TEXT NOT NULL CHECK (
+            typeof(revision_reason) = 'text'
+            AND length(CAST(revision_reason AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        ),
+        review_at TEXT NOT NULL,
+        topic TEXT,
+        interest_strength INTEGER,
+        interest_status TEXT,
+        interest_reason TEXT,
+        proposition TEXT,
+        belief_stance TEXT,
+        belief_confidence REAL,
+        belief_status TEXT,
+        belief_verification TEXT,
+        goal_description TEXT,
+        goal_rationale TEXT,
+        goal_priority INTEGER,
+        goal_status TEXT,
+        goal_review_condition TEXT,
+        retention_status TEXT NOT NULL DEFAULT 'active'
+            CHECK (retention_status IN ('active', 'deleted')),
+        CHECK (topic IS NULL OR (
+            typeof(topic) = 'text'
+            AND length(CAST(topic AS BLOB)) BETWEEN 1 AND {MAX_STATE_TEXT_BYTES}
+        )),
+        CHECK (interest_reason IS NULL OR (
+            typeof(interest_reason) = 'text'
+            AND length(CAST(interest_reason AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        )),
+        CHECK (proposition IS NULL OR (
+            typeof(proposition) = 'text'
+            AND length(CAST(proposition AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        )),
+        CHECK (goal_description IS NULL OR (
+            typeof(goal_description) = 'text'
+            AND length(CAST(goal_description AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        )),
+        CHECK (goal_rationale IS NULL OR (
+            typeof(goal_rationale) = 'text'
+            AND length(CAST(goal_rationale AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        )),
+        CHECK (goal_review_condition IS NULL OR (
+            typeof(goal_review_condition) = 'text'
+            AND length(CAST(goal_review_condition AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        )),
+        CHECK (interest_strength IS NULL OR (
+            typeof(interest_strength) = 'integer'
+            AND interest_strength BETWEEN 0 AND 100
+        )),
+        CHECK (belief_confidence IS NULL OR (
+            typeof(belief_confidence) = 'real'
+            AND belief_confidence BETWEEN 0.0 AND 1.0
+        )),
+        CHECK (goal_priority IS NULL OR (
+            typeof(goal_priority) = 'integer'
+            AND goal_priority BETWEEN 0 AND 100
+        )),
+        CHECK (
+            (state_type = 'interest'
+             AND topic IS NOT NULL
+             AND interest_strength IS NOT NULL
+             AND interest_status IN ('active', 'suspended', 'abandoned')
+             AND interest_reason IS NOT NULL
+             AND proposition IS NULL AND belief_stance IS NULL
+             AND belief_confidence IS NULL AND belief_status IS NULL
+             AND belief_verification IS NULL
+             AND goal_description IS NULL AND goal_rationale IS NULL
+             AND goal_priority IS NULL AND goal_status IS NULL
+             AND goal_review_condition IS NULL)
+            OR
+            (state_type = 'belief'
+             AND topic IS NULL AND interest_strength IS NULL
+             AND interest_status IS NULL AND interest_reason IS NULL
+             AND proposition IS NOT NULL
+             AND belief_stance IN ('supports', 'opposes', 'uncertain')
+             AND belief_confidence IS NOT NULL
+             AND belief_status IN ('active', 'suspended', 'abandoned')
+             AND belief_verification = 'unverified'
+             AND goal_description IS NULL AND goal_rationale IS NULL
+             AND goal_priority IS NULL AND goal_status IS NULL
+             AND goal_review_condition IS NULL)
+            OR
+            (state_type = 'goal'
+             AND topic IS NULL AND interest_strength IS NULL
+             AND interest_status IS NULL AND interest_reason IS NULL
+             AND proposition IS NULL AND belief_stance IS NULL
+             AND belief_confidence IS NULL AND belief_status IS NULL
+             AND belief_verification IS NULL
+             AND goal_description IS NOT NULL AND goal_rationale IS NOT NULL
+             AND goal_priority IS NOT NULL
+             AND goal_status IN ('active', 'suspended', 'completed', 'abandoned')
+             AND goal_review_condition IS NOT NULL)
+        )
+    )
+    """,
+    f"""
+    CREATE TABLE state_payload_alternatives (
+        revision_key INTEGER NOT NULL
+            REFERENCES state_revision_payloads(revision_key) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        alternative TEXT NOT NULL CHECK (
+            typeof(alternative) = 'text'
+            AND length(CAST(alternative AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        ),
+        PRIMARY KEY (revision_key, ordinal)
+    )
+    """,
+    f"""
+    CREATE TABLE state_payload_constraints (
+        revision_key INTEGER NOT NULL
+            REFERENCES state_revision_payloads(revision_key) ON DELETE CASCADE,
+        ordinal INTEGER NOT NULL CHECK (ordinal >= 0),
+        constraint_text TEXT NOT NULL CHECK (
+            typeof(constraint_text) = 'text'
+            AND length(CAST(constraint_text AS BLOB)) BETWEEN 1
+                AND {MAX_STATE_TEXT_BYTES}
+        ),
+        PRIMARY KEY (revision_key, ordinal)
+    )
+    """,
+    """
+    CREATE TABLE protected_state_provenance (
+        revision_key INTEGER NOT NULL
+            REFERENCES state_revisions(revision_key) ON DELETE CASCADE,
+        event_id TEXT NOT NULL
+            REFERENCES event_envelopes(event_id),
+        evidence_role TEXT NOT NULL
+            CHECK (evidence_role IN ('initiating', 'supporting', 'counter')),
+        audience_type TEXT NOT NULL CHECK (audience_type = 'private_participant'),
+        source_principal_id TEXT NOT NULL,
+        source_provenance_type TEXT NOT NULL
+            CHECK (source_provenance_type = 'participant_assertion'),
+        verification_status TEXT NOT NULL CHECK (verification_status = 'unverified'),
+        retention_status TEXT NOT NULL DEFAULT 'active'
+            CHECK (retention_status IN ('active', 'invalidated', 'deleted')),
+        PRIMARY KEY (revision_key, event_id, evidence_role)
+    )
+    """,
+    """
+    CREATE INDEX state_items_private_scope_updated
+    ON state_items(scope, audience_principal_id, updated_at, item_id)
+    """,
+    """
+    CREATE INDEX state_revisions_item_revision
+    ON state_revisions(item_key, revision_number)
+    """,
+    """
+    CREATE INDEX protected_state_provenance_event
+    ON protected_state_provenance(event_id, revision_key)
     """,
 )
 
@@ -273,7 +541,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, SCHEMA_VERSION}:
+            if version not in {0, 1, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -282,13 +550,25 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, SCHEMA_VERSION}:
+                if version not in {0, 1, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if version == 0:
-                    for statement in _SCHEMA:
+                    for statement in (*_SCHEMA_V1, *_SCHEMA_V2):
                         connection.execute(statement)
                     connection.execute(
                         "INSERT INTO schema_metadata(singleton, version) VALUES (1, ?)",
+                        (SCHEMA_VERSION,),
+                    )
+                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    return
+                if version == 1:
+                    self._verify_schema_version(connection, 1)
+                    for statement in _SCHEMA_V2:
+                        connection.execute(statement)
+                    if self._fault_injector is not None:
+                        self._fault_injector(FaultPoint.BEFORE_V2_MIGRATION_COMMIT)
+                    connection.execute(
+                        "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
                         (SCHEMA_VERSION,),
                     )
                     connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
@@ -320,15 +600,21 @@ class EventStore:
 
     @staticmethod
     def _verify_current_schema(connection: sqlite3.Connection) -> None:
+        EventStore._verify_schema_version(connection, SCHEMA_VERSION)
+
+    @staticmethod
+    def _verify_schema_version(
+        connection: sqlite3.Connection, expected_version: int
+    ) -> None:
         version = connection.execute("PRAGMA user_version").fetchone()[0]
-        if version != SCHEMA_VERSION:
+        if version != expected_version:
             raise UnsupportedSchemaVersionError(version)
         metadata_version = connection.execute(
             "SELECT COALESCE(MAX(version), -1) FROM schema_metadata"
         ).fetchone()[0]
         if type(metadata_version) is not int:
             raise EventStoreError("event store operation failed")
-        if metadata_version != SCHEMA_VERSION:
+        if metadata_version != expected_version:
             raise UnsupportedSchemaVersionError(metadata_version)
 
     def diagnostics(self) -> StoreDiagnostics:
