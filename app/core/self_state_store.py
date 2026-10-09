@@ -1386,10 +1386,11 @@ class SelfStateStore:
 
     @staticmethod
     def _decodes_to_text(value: str) -> bool:
-        if len(value) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(value) is None:
+        candidate = value.translate(str.maketrans("", "", " \n\t"))
+        if len(candidate) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
             return False
         try:
-            decoded = base64.b64decode(value, validate=True).decode("utf-8")
+            decoded = base64.b64decode(candidate, validate=True).decode("utf-8")
         except (binascii.Error, UnicodeDecodeError):
             return False
         return all(
