@@ -546,6 +546,26 @@ def test_duplicate_operation_is_idempotent_but_collision_is_rejected(state_setup
     )
 
 
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "UPDATE state_revisions SET new_status = 'suspended'",
+        "UPDATE state_revisions SET new_confidence = 0.9",
+    ),
+)
+def test_duplicate_replay_rejects_header_that_contradicts_payload(
+    state_setup, mutation
+):
+    events, state, context, event_id = state_setup
+    change = belief_change(event_id)
+    state.create_belief_candidate(context, change)
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(mutation)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        state.create_belief_candidate(context, change)
+
+
 def test_duplicate_evidence_identity_is_order_independent(tmp_path):
     events = EventStore(tmp_path / "events.sqlite3")
     state = SelfStateStore(events)

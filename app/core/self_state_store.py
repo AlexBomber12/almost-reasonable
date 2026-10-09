@@ -1052,7 +1052,9 @@ class SelfStateStore:
                 (SELECT COUNT(*) FROM protected_state_provenance AS source
                  WHERE source.revision_key = revision.revision_key
                    AND source.evidence_role = 'counter'
-                   AND source.retention_status = 'active')
+                   AND source.retention_status = 'active'),
+                revision.new_status,
+                revision.new_confidence
             FROM state_revisions AS revision
             JOIN state_items AS item ON item.item_key = revision.item_key
             JOIN state_revision_payloads AS payload
@@ -1064,7 +1066,9 @@ class SelfStateStore:
         ).fetchone()
         if row is None:
             raise EventStoreError("event store operation failed")
-        return self._snapshot_from_row(connection, row)
+        state = self._snapshot_from_row(connection, row[:24])
+        self._validate_snapshot_header(state, row[24], row[25])
+        return state
 
     def _snapshot_for_item_revision(
         self, connection: sqlite3.Connection, item_key: int, revision: int

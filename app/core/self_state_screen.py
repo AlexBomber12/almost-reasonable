@@ -185,21 +185,9 @@ def screen_self_state_text(value: object) -> SelfStateScreenResult:
         return _reject(failure)
 
     inspected: list[str] = []
-    for representation in representations:
-        if _has_unsafe_unicode(representation):
-            return _reject(SelfStateScreenReason.UNSAFE_UNICODE)
-        variants = (
-            representation,
-            _strip_combining_marks(representation),
-            representation.translate(_COMMON_CONFUSABLES),
-        )
-        for variant in variants:
-            collapsed = " ".join(variant.split())
-            for candidate in (variant, collapsed):
-                if candidate not in inspected:
-                    inspected.append(candidate)
-                if len(inspected) > _MAX_REPRESENTATIONS:
-                    return _reject(SelfStateScreenReason.INSPECTION_LIMIT)
+    failure = _extend_inspected(representations, inspected)
+    if failure is not None:
+        return _reject(failure)
 
     position = 0
     encoding_depth = 0
@@ -215,13 +203,12 @@ def screen_self_state_text(value: object) -> SelfStateScreenResult:
                 return _reject(SelfStateScreenReason.INSPECTION_LIMIT)
             encoding_depth += 1
             for decoded_text in decoded:
-                normalized = unicodedata.normalize("NFKC", decoded_text)
-                if _has_unsafe_unicode(normalized):
-                    return _reject(SelfStateScreenReason.UNSAFE_UNICODE)
-                if normalized not in inspected:
-                    inspected.append(normalized)
-                if len(inspected) > _MAX_REPRESENTATIONS:
-                    return _reject(SelfStateScreenReason.INSPECTION_LIMIT)
+                decoded_representations, failure = _text_representations(decoded_text)
+                if failure is not None:
+                    return _reject(failure)
+                failure = _extend_inspected(decoded_representations, inspected)
+                if failure is not None:
+                    return _reject(failure)
 
     return SelfStateScreenResult(
         SELF_STATE_SCREEN_VERSION,
@@ -256,6 +243,27 @@ def _text_representations(
     if _PERCENT_ESCAPE.search(current) is not None or html_unescape(current) != current:
         return (), SelfStateScreenReason.INSPECTION_LIMIT
     return tuple(representations), None
+
+
+def _extend_inspected(
+    representations: tuple[str, ...], inspected: list[str]
+) -> SelfStateScreenReason | None:
+    for representation in representations:
+        if _has_unsafe_unicode(representation):
+            return SelfStateScreenReason.UNSAFE_UNICODE
+        variants = (
+            representation,
+            _strip_combining_marks(representation),
+            representation.translate(_COMMON_CONFUSABLES),
+        )
+        for variant in variants:
+            collapsed = " ".join(variant.split())
+            for candidate in (variant, collapsed):
+                if candidate not in inspected:
+                    inspected.append(candidate)
+                if len(inspected) > _MAX_REPRESENTATIONS:
+                    return SelfStateScreenReason.INSPECTION_LIMIT
+    return None
 
 
 def _strip_combining_marks(value: str) -> str:
