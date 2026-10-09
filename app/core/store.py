@@ -27,7 +27,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -70,6 +70,7 @@ class FaultPoint(StrEnum):
 
     BEFORE_INITIALIZATION_LOCK = "before_initialization_lock"
     BEFORE_V2_MIGRATION_COMMIT = "before_v2_migration_commit"
+    BEFORE_V3_MIGRATION_COMMIT = "before_v3_migration_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
 
 
@@ -423,6 +424,88 @@ _SCHEMA_V2 = (
 )
 
 
+_SCHEMA_V3 = (
+    """
+    CREATE TABLE provider_spend_suspensions (
+        provider TEXT PRIMARY KEY CHECK (provider = 'openai'),
+        confirmed_at TEXT NOT NULL,
+        provider_error_code TEXT NOT NULL CHECK (
+            provider_error_code IN (
+                'project_spend_limit_exceeded',
+                'organization_spend_limit_exceeded'
+            )
+        ),
+        provider_config_version TEXT NOT NULL,
+        attempt_id TEXT NOT NULL UNIQUE
+    )
+    """,
+    """
+    CREATE TABLE provider_usage_attempts (
+        attempt_id TEXT PRIMARY KEY,
+        correlation_id TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK (provider = 'openai'),
+        model_identifier TEXT NOT NULL,
+        provider_config_version TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        core_self_version TEXT NOT NULL,
+        provider_response_id TEXT,
+        started_at TEXT NOT NULL,
+        duration_ms INTEGER NOT NULL CHECK (
+            typeof(duration_ms) = 'integer' AND duration_ms >= 0
+        ),
+        input_tokens INTEGER CHECK (
+            input_tokens IS NULL
+            OR (typeof(input_tokens) = 'integer' AND input_tokens >= 0)
+        ),
+        cached_input_tokens INTEGER CHECK (
+            cached_input_tokens IS NULL
+            OR (typeof(cached_input_tokens) = 'integer'
+                AND cached_input_tokens >= 0)
+        ),
+        output_tokens INTEGER CHECK (
+            output_tokens IS NULL
+            OR (typeof(output_tokens) = 'integer' AND output_tokens >= 0)
+        ),
+        total_tokens INTEGER CHECK (
+            total_tokens IS NULL
+            OR (typeof(total_tokens) = 'integer' AND total_tokens >= 0)
+        ),
+        outcome TEXT NOT NULL,
+        retry_count INTEGER NOT NULL CHECK (
+            typeof(retry_count) = 'integer' AND retry_count >= 0
+        ),
+        estimated_cost TEXT,
+        pricing_version TEXT,
+        currency TEXT,
+        cost_estimate_status TEXT NOT NULL CHECK (
+            cost_estimate_status IN (
+                'estimated',
+                'usage_unavailable',
+                'usage_incomplete',
+                'pricing_unavailable'
+            )
+        ),
+        provider_error_code TEXT,
+        CHECK (
+            (cost_estimate_status = 'estimated'
+             AND estimated_cost IS NOT NULL
+             AND pricing_version IS NOT NULL
+             AND currency = 'USD')
+            OR
+            (cost_estimate_status != 'estimated'
+             AND estimated_cost IS NULL
+             AND pricing_version IS NULL
+             AND currency IS NULL)
+        )
+    )
+    """,
+    """
+    CREATE INDEX provider_usage_correlation
+    ON provider_usage_attempts(correlation_id, started_at, attempt_id)
+    """,
+)
+
+
 class EventStore:
     """Purpose-specific private event persistence and retrieval boundary."""
 
@@ -541,7 +624,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -550,10 +633,10 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, 1, SCHEMA_VERSION}:
+                if version not in {0, 1, 2, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if version == 0:
-                    for statement in (*_SCHEMA_V1, *_SCHEMA_V2):
+                    for statement in (*_SCHEMA_V1, *_SCHEMA_V2, *_SCHEMA_V3):
                         connection.execute(statement)
                     connection.execute(
                         "INSERT INTO schema_metadata(singleton, version) VALUES (1, ?)",
@@ -567,6 +650,22 @@ class EventStore:
                         connection.execute(statement)
                     if self._fault_injector is not None:
                         self._fault_injector(FaultPoint.BEFORE_V2_MIGRATION_COMMIT)
+                    for statement in _SCHEMA_V3:
+                        connection.execute(statement)
+                    if self._fault_injector is not None:
+                        self._fault_injector(FaultPoint.BEFORE_V3_MIGRATION_COMMIT)
+                    connection.execute(
+                        "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
+                        (SCHEMA_VERSION,),
+                    )
+                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+                    return
+                if version == 2:
+                    self._verify_schema_version(connection, 2)
+                    for statement in _SCHEMA_V3:
+                        connection.execute(statement)
+                    if self._fault_injector is not None:
+                        self._fault_injector(FaultPoint.BEFORE_V3_MIGRATION_COMMIT)
                     connection.execute(
                         "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
                         (SCHEMA_VERSION,),
