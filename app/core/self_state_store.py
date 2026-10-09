@@ -57,6 +57,7 @@ MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
 _BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}\Z")
+_BASE32_ONLY_TEXT = re.compile(r"[A-Z2-7]{8,}={0,6}\Z", re.IGNORECASE)
 _HEX_ONLY_TEXT = re.compile(r"(?:[A-Fa-f0-9]{2}){4,}\Z")
 _PERCENT_ESCAPE = re.compile(r"%[A-Fa-f0-9]{2}")
 _MAX_PERCENT_DECODING_DEPTH = 3
@@ -1548,21 +1549,36 @@ class SelfStateStore:
     @staticmethod
     def _decodes_to_text(value: str) -> bool:
         candidate = value.translate(str.maketrans("", "", " \n\t"))
+        decoded_values = []
         if _HEX_ONLY_TEXT.fullmatch(candidate) is not None:
-            return SelfStateStore._bytes_are_printable_text(bytes.fromhex(candidate))
-        if _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
+            decoded_values.append(bytes.fromhex(candidate))
+        if _BASE64_ONLY_TEXT.fullmatch(candidate) is not None:
+            unpadded = candidate.rstrip("=")
+            if len(unpadded) % 4 != 1:
+                padded = unpadded + "=" * (-len(unpadded) % 4)
+                try:
+                    decoded_values.append(
+                        base64.b64decode(padded, altchars=b"-_", validate=True)
+                    )
+                except binascii.Error:
+                    pass
+        if _BASE32_ONLY_TEXT.fullmatch(candidate) is not None:
+            unpadded = candidate.rstrip("=")
+            padded = unpadded + "=" * (-len(unpadded) % 8)
+            try:
+                decoded_values.append(base64.b32decode(padded, casefold=True))
+            except binascii.Error:
+                pass
+        return any(
+            SelfStateStore._bytes_are_plausible_text(decoded)
+            for decoded in decoded_values
+        )
+
+    @staticmethod
+    def _bytes_are_plausible_text(value: bytes) -> bool:
+        if not SelfStateStore._bytes_are_printable_text(value):
             return False
-        unpadded = candidate.rstrip("=")
-        if len(unpadded) % 4 == 1:
-            return False
-        padded = unpadded + "=" * (-len(unpadded) % 4)
-        try:
-            decoded = base64.b64decode(padded, altchars=b"-_", validate=True)
-        except binascii.Error:
-            return False
-        if not SelfStateStore._bytes_are_printable_text(decoded):
-            return False
-        text = decoded.decode("utf-8")
+        text = value.decode("utf-8")
         if any(pattern.search(text) for pattern in _DISALLOWED_STATE_TEXT):
             return True
         substantive = [character for character in text if not character.isspace()]

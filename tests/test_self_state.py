@@ -850,6 +850,13 @@ def test_unpadded_base64_state_text_is_rejected():
         )
 
 
+def test_unpadded_base32_state_text_is_rejected():
+    with pytest.raises(SelfStateValidationError):
+        SelfStateStore._validate_text(
+            "topic", "NFTW433SMUQGC3DMEBYHEZLWNFXXK4ZANFXHG5DSOVRXI2LPNZZQ"
+        )
+
+
 @pytest.mark.parametrize(
     "text",
     (
@@ -868,7 +875,7 @@ def test_meaningful_combining_marks_remain_valid_state_text():
     SelfStateStore._validate_text("topic", "कला और खगोल विज्ञान")
 
 
-def test_base64_detection_rejects_only_decoded_printable_text(monkeypatch):
+def test_encoded_text_detection_requires_plausible_decoded_content(monkeypatch):
     assert SelfStateStore._decodes_to_text("AAAAAAAA") is False
     assert SelfStateStore._decodes_to_text("AAAAAAAAA") is False
     assert SelfStateStore._decodes_to_text("blowfish") is False
@@ -881,6 +888,13 @@ def test_base64_detection_rejects_only_decoded_printable_text(monkeypatch):
 
     monkeypatch.setattr("app.core.self_state_store.base64.b64decode", invalid_base64)
     assert SelfStateStore._decodes_to_text("GGGGGGGG") is False
+
+    def invalid_base32(_value, *, casefold):
+        assert casefold is True
+        raise binascii.Error("synthetic decoder failure")
+
+    monkeypatch.setattr("app.core.self_state_store.base64.b32decode", invalid_base32)
+    assert SelfStateStore._decodes_to_text("MZXW6YTB") is False
 
 
 def test_goal_may_discuss_ending_publication_without_requesting_an_action(state_setup):
