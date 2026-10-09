@@ -800,8 +800,11 @@ def test_instruction_link_credential_and_action_text_is_rejected(state_setup):
         "Astrophotography",
         "Electromagnetism",
         "ArtificialIntelligence",
+        "blowfish",
         "Post-rock",
         "Post-impressionism",
+        "Post hoc reasoning",
+        "Call option pricing",
     ),
 )
 def test_legitimate_long_single_word_state_text_is_not_mistaken_for_base64(text):
@@ -840,6 +843,7 @@ def test_meaningful_combining_marks_remain_valid_state_text():
 
 def test_base64_detection_rejects_only_decoded_printable_text(monkeypatch):
     assert SelfStateStore._decodes_to_text("AAAAAAAA") is False
+    assert SelfStateStore._decodes_to_text("blowfish") is False
     assert SelfStateStore._bytes_are_printable_text(b"\xff") is False
 
     def invalid_base64(_value, *, altchars, validate):

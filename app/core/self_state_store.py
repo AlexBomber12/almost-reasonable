@@ -102,11 +102,16 @@ _DISALLOWED_STATE_TEXT = (
         re.IGNORECASE,
     ),
     re.compile(
-        r"(?m)^\s*(?:(?:goal|objective|instruction|request)\s*:\s*)?"
-        r"(?:(?:please|kindly)\s+)?"
+        r"(?m)^\s*(?:"
+        r"(?:(?:goal|objective|instruction|request)\s*:\s*|"
+        r"(?:please|kindly)\s+)"
         r"(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
         r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)"
-        r"(?=\s|[:,.!?]|$)",
+        r"|(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
+        r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)\s+"
+        r"(?:a|an|the|this|that|these|those|my|our|all|any|on|to|from|"
+        r"record|records|file|files|data|message|email|command|shell|tool|"
+        r"model|service|site|app)\b)",
         re.IGNORECASE,
     ),
     re.compile(
@@ -1485,7 +1490,16 @@ class SelfStateStore:
             decoded = base64.b64decode(candidate, altchars=b"-_", validate=True)
         except binascii.Error:
             return False
-        return SelfStateStore._bytes_are_printable_text(decoded)
+        if not SelfStateStore._bytes_are_printable_text(decoded):
+            return False
+        text = decoded.decode("utf-8")
+        if any(pattern.search(text) for pattern in _DISALLOWED_STATE_TEXT):
+            return True
+        substantive = [character for character in text if not character.isspace()]
+        return len(substantive) >= 4 and (
+            sum(character.isalpha() for character in substantive) / len(substantive)
+            >= 0.7
+        )
 
     @staticmethod
     def _bytes_are_printable_text(value: bytes) -> bool:
