@@ -49,6 +49,7 @@ class ModelRequest:
     def to_structured_data(self) -> dict[str, object]:
         """Build the model payload through field-by-field allowlisting."""
 
+        _validate_request(self)
         return {
             "contract_version": self.contract_version,
             "task": self.task.value,
@@ -107,7 +108,7 @@ def _new_request(
 def serialize_model_request(request: ModelRequest) -> str:
     """Serialize deterministically without reflecting over application objects."""
 
-    if not isinstance(request, ModelRequest):
+    if type(request) is not ModelRequest:
         raise TypeError("request must be a ModelRequest")
     serialized = _serialize_unchecked(request)
     if len(serialized.encode("utf-8")) > MAX_MODEL_REQUEST_UTF8_BYTES:
@@ -126,6 +127,51 @@ def _serialize_unchecked(request: ModelRequest) -> str:
 
 def _serialized_utf8_size(request: ModelRequest) -> int:
     return len(_serialize_unchecked(request).encode("utf-8"))
+
+
+def _validate_request(request: ModelRequest) -> None:
+    core_self = initial_core_self()
+    fixed_fields = (
+        request.contract_version,
+        request.task,
+        request.core_self_version,
+        request.core_self_identity,
+        request.core_self_principles,
+        request.allowed_decisions,
+    )
+    approved_fields = (
+        MODEL_CONTRACT_VERSION,
+        ModelTask.PRIVATE_CONVERSATION,
+        core_self.version,
+        core_self.identity,
+        core_self.principles,
+        MODEL_ALLOWED_DECISIONS,
+    )
+    if fixed_fields != approved_fields:
+        raise ValueError("model request contains non-approved fixed fields")
+    if (
+        type(request.conversation) is not tuple
+        or len(request.conversation) > MAX_CONTEXT_HISTORY_EVENTS
+    ):
+        raise ValueError("model request conversation is malformed")
+    for segment in request.conversation:
+        if type(segment) is not ConversationSegment:
+            raise ValueError("model request conversation is malformed")
+        if (
+            segment.role is not ContextRole.PARTICIPANT
+            or segment.trust is not ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA
+            or not isinstance(segment.content, str)
+            or not segment.content
+        ):
+            raise ValueError("model request segment is malformed")
+        try:
+            segment.content.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise ValueError("model request segment is not valid UTF-8") from error
+    if type(request.history_omitted) is not bool:
+        raise ValueError("model request omission flag is malformed")
+    if context_utf8_size(core_self, request.conversation) > MAX_CONTEXT_UTF8_BYTES:
+        raise ValueError("model request conversation exceeds its raw byte bound")
 
 
 def _validate_context(context: PrivateConversationContext) -> None:

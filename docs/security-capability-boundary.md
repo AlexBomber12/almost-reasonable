@@ -68,9 +68,12 @@ Serialization is deterministic UTF-8 JSON and has a final byte bound in
 addition to the existing context byte and event-count bounds. A second-stage
 selection pass measures the exact escaped JSON size, keeps recent whole
 messages, and marks history omitted instead of failing when escaping expands
-the payload. Authenticated source references, participant routing identifiers,
-owner flags, protected provenance, operational state, adapter configuration,
-secret paths, and credentials have no model-facing fields.
+the payload. Structured conversion and final serialization revalidate the
+contract version, approved Core Self, task, decisions, segment labels, and both
+byte bounds so a directly constructed or replaced request fails closed.
+Authenticated source references, participant routing identifiers, owner flags,
+protected provenance, operational state, adapter configuration, secret paths,
+and credentials have no model-facing fields.
 
 Participant content is still ordinary untrusted content. If a participant
 chooses to type a credential-like value into an authorized conversation, that
