@@ -3,7 +3,9 @@
 from collections.abc import Callable
 from datetime import datetime
 from enum import StrEnum
+import re
 import sqlite3
+import unicodedata
 
 from .core_self import CORE_SELF_VERSION
 from .events import (
@@ -49,6 +51,50 @@ MAX_STATE_LIST_ITEMS = 20
 MAX_PRIVATE_STATE_ITEMS_PER_RETRIEVAL = 100
 MAX_REVISION_HISTORY_PER_RETRIEVAL = 100
 MAX_EVIDENCE_PER_REVISION = 50
+
+_CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
+_DISALLOWED_STATE_TEXT = (
+    re.compile(r"\b[a-z][a-z0-9+.-]{1,20}://", re.IGNORECASE),
+    re.compile(r"\bwww\.", re.IGNORECASE),
+    re.compile(
+        r"\b(?:api[ _-]?key|access[ _-]?token|password|secret)\b\s*[:=]",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bbearer\s+[a-z0-9._~-]{8,}", re.IGNORECASE),
+    re.compile(r"\b(?:sk|pk)-[a-z0-9_-]{16,}\b", re.IGNORECASE),
+    re.compile(r"\bgh[pousr]_[a-z0-9]{20,}\b", re.IGNORECASE),
+    re.compile(r"\bAKIA[A-Z0-9]{16}\b"),
+    re.compile(r"\beyJ[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\.[a-z0-9_-]{8,}\b", re.IGNORECASE),
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----", re.IGNORECASE),
+    re.compile(
+        r"\b(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"
+        r"(?:com|net|org|io|dev|app|ru|рф)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"(?m)^\s*(?:system|developer|assistant|tool|admin|administrator)\s*:",
+        re.IGNORECASE,
+    ),
+    re.compile(r"</?tool\b|\b(?:tool|function)_call\b|\[/?inst\]", re.IGNORECASE),
+    re.compile(
+        r"\bignore\s+(?:(?:all\s+)?(?:previous|prior)\s+)?instructions\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bигнорируй\s+(?:все\s+)?(?:предыдущие\s+)?инструкц", re.IGNORECASE),
+    re.compile(
+        r"(?m)^\s*(?:(?:please|kindly)\s+)?"
+        r"(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
+        r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:run|execute|call|invoke|access|read)\s+(?:the\s+)?"
+        r"(?:shell|terminal|tool|command|filesystem|secret)\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\b(?:bypass|without)\s+(?:approval|authorization)\b", re.IGNORECASE),
+    re.compile(r"\b[a-z0-9+/]{80,}={0,2}\b", re.IGNORECASE),
+)
 
 
 class SelfStateError(EventStoreError):
@@ -1035,7 +1081,7 @@ class SelfStateStore:
         state = self._snapshot_from_row(connection, row[:24])
         if row[26] != state.status.value:
             raise ValueError("malformed stored revision")
-        if row[31] != CORE_SELF_VERSION:
+        if type(row[31]) is not str or _CORE_SELF_VERSION.fullmatch(row[31]) is None:
             raise ValueError("malformed stored revision")
         self._validate_text("stored revision reason", row[29])
         kind = RevisionKind(row[32])
@@ -1252,8 +1298,13 @@ class SelfStateStore:
         except UnicodeEncodeError:
             raise SelfStateValidationError(f"invalid {field}") from None
         if len(encoded) > MAX_STATE_TEXT_BYTES or any(
-            ord(character) < 32 and character not in "\n\t" for character in value
+            (ord(character) < 32 or unicodedata.category(character) in {"Cf", "Cs"})
+            and character not in "\n\t"
+            for character in value
         ):
+            raise SelfStateValidationError(f"invalid {field}")
+        normalized = unicodedata.normalize("NFKC", value)
+        if any(pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT):
             raise SelfStateValidationError(f"invalid {field}")
 
     @staticmethod
