@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+from threading import Event, Thread
 
 import pytest
 
@@ -467,6 +468,51 @@ def test_duplicate_operation_identifier_is_blocked_before_another_paid_call(tmp_
     assert store.usage_attempt_count() == 1
 
 
+def test_concurrent_duplicate_is_reserved_before_provider_contact(tmp_path):
+    entered = Event()
+    release = Event()
+
+    class BlockingTransport:
+        def __init__(self):
+            self.call_count = 0
+
+        def call(self, _request, *, timeout_seconds):
+            self.call_count += 1
+            entered.set()
+            assert release.wait(timeout=5)
+            return response()
+
+    transport = BlockingTransport()
+    store = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+    instances = [
+        TrustedOpenAIGateway(store=store, transport=transport, config=config())
+        for _ in range(2)
+    ]
+    results = []
+    worker = Thread(
+        target=lambda: results.append(
+            instances[0].submit(
+                request(),
+                correlation_id="correlation-a",
+                operation_id="operation-a",
+            )
+        )
+    )
+    worker.start()
+    assert entered.wait(timeout=5)
+    duplicate = instances[1].submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+    release.set()
+    worker.join(timeout=5)
+
+    assert worker.is_alive() is False
+    assert duplicate.outcome is GatewayOutcome.DUPLICATE_OPERATION
+    assert results[0].outcome is GatewayOutcome.COMPLETED
+    assert transport.call_count == 1
+    assert store.usage_attempt_count() == 1
+
+
 def test_missing_usage_is_explicitly_unknown(tmp_path):
     instance, _transport, store = gateway(tmp_path, [response(usage=False)])
 
@@ -557,10 +603,10 @@ def test_operation_identifier_reserves_space_for_attempt_suffix(tmp_path):
 def test_persistence_preflight_failure_latches_gateway_closed(tmp_path, monkeypatch):
     instance, transport, store = gateway(tmp_path, [response()])
 
-    def fail():
+    def fail(*_args):
         raise ProviderPersistenceError("private detail")
 
-    monkeypatch.setattr(store, "is_spend_suspended", fail)
+    monkeypatch.setattr(store, "reserve_attempt", fail)
 
     first = instance.submit(
         request(), correlation_id="correlation-a", operation_id="operation-a"
@@ -614,6 +660,22 @@ def test_overall_deadline_blocks_transport_before_attempt(tmp_path):
 
     assert result.outcome is GatewayOutcome.TIMEOUT
     assert transport.calls == []
+
+
+def test_response_at_overall_deadline_is_recorded_as_timeout(tmp_path):
+    instance, transport, store = gateway(tmp_path, [response()], times=[0.0, 0.0, 20.0])
+
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+
+    assert result.outcome is GatewayOutcome.TIMEOUT
+    assert result.validation is None
+    assert len(transport.calls) == 1
+    record = store.usage_attempt("operation-a:1")
+    assert record.outcome == "timeout"
+    assert record.provider_response_id == "resp_synthetic"
+    assert record.total_tokens == 120
 
 
 def test_retry_stops_when_backoff_would_exceed_overall_deadline(tmp_path):

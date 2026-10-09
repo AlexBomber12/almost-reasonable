@@ -8,6 +8,7 @@ import pytest
 from app.core import store as store_module
 from app.core.provider_contract import CostEstimateStatus
 from app.core.provider_spend import (
+    AttemptReservationStatus,
     ProviderAttemptRecord,
     ProviderPersistenceError,
     ProviderStateStore,
@@ -128,7 +129,11 @@ def test_v2_to_v3_migration_is_atomic_and_preserves_existing_data(tmp_path):
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             )
         }
-        assert {"provider_spend_suspensions", "provider_usage_attempts"} <= tables
+        assert {
+            "provider_attempt_reservations",
+            "provider_spend_suspensions",
+            "provider_usage_attempts",
+        } <= tables
 
 
 def test_failed_v3_migration_rolls_back_to_recoverable_v2(tmp_path):
@@ -208,6 +213,52 @@ def test_confirmed_spend_suspension_and_telemetry_are_atomic_and_durable(tmp_pat
     assert suspension.attempt_id == "operation-a:1"
 
 
+def test_attempt_reservation_is_atomic_and_finalized_with_telemetry(tmp_path):
+    state = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+
+    first = state.reserve_attempt("operation-a:1", "correlation-a", NOW)
+    duplicate = state.reserve_attempt("operation-a:1", "correlation-a", NOW)
+    created = state.record_attempt(attempt(), require_reservation=True)
+    completed_duplicate = state.reserve_attempt("operation-a:1", "correlation-a", NOW)
+
+    assert first is AttemptReservationStatus.CREATED
+    assert duplicate is AttemptReservationStatus.DUPLICATE
+    assert created is True
+    assert completed_duplicate is AttemptReservationStatus.DUPLICATE
+    assert state.usage_attempt_count() == 1
+
+
+def test_attempt_reservation_observes_durable_spend_suspension(tmp_path):
+    state = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+    state.record_attempt(
+        attempt(outcome="confirmed_spend_limit"),
+        confirmed_spend_limit_code="project_spend_limit_exceeded",
+    )
+
+    result = state.reserve_attempt("operation-b:1", "correlation-b", NOW)
+
+    assert result is AttemptReservationStatus.SPEND_SUSPENDED
+    assert state.attempt_exists("operation-b:1") is False
+
+
+@pytest.mark.parametrize("timestamp", [object(), datetime(2026, 1, 1)])
+def test_attempt_reservation_rejects_invalid_timestamp(tmp_path, timestamp):
+    state = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+
+    with pytest.raises(ValueError, match="reservation timestamp"):
+        state.reserve_attempt("operation-a:1", "correlation-a", timestamp)
+
+
+def test_reserved_attempt_requires_matching_reservation(tmp_path):
+    state = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+
+    assert state.record_attempt(attempt(), require_reservation=True) is False
+    state.reserve_attempt("operation-a:1", "different-correlation", NOW)
+    assert state.record_attempt(attempt(), require_reservation=True) is False
+    with pytest.raises(TypeError, match="require_reservation"):
+        state.record_attempt(attempt(), require_reservation=1)
+
+
 def test_ordinary_attempt_does_not_suspend_and_missing_usage_stays_null(tmp_path):
     state = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
     missing = attempt()
@@ -276,6 +327,10 @@ def test_storage_errors_are_sanitized(tmp_path, monkeypatch):
         ProviderPersistenceError, match="provider state operation failed"
     ):
         state.is_spend_suspended()
+    with pytest.raises(
+        ProviderPersistenceError, match="provider state operation failed"
+    ):
+        state.reserve_attempt("operation-a:1", "correlation-a", NOW)
 
 
 def test_provider_state_store_requires_the_application_event_store():
@@ -322,6 +377,8 @@ def test_missing_attempt_and_missing_provider_tables_fail_closed(tmp_path):
 
     with pytest.raises(ProviderPersistenceError):
         state.attempt_exists("operation-a:1")
+    with pytest.raises(ProviderPersistenceError):
+        state.reserve_attempt("operation-a:1", "correlation-a", NOW)
     with pytest.raises(ProviderPersistenceError):
         state.usage_attempt_count()
     with pytest.raises(ProviderPersistenceError):

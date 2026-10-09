@@ -22,6 +22,7 @@ from app.core.provider_contract import (
     validate_pricing_config,
 )
 from app.core.provider_spend import (
+    AttemptReservationStatus,
     CONFIRMED_SPEND_LIMIT_CODES,
     ProviderAttemptRecord,
     ProviderPersistenceError,
@@ -142,9 +143,6 @@ class TrustedOpenAIGateway:
         completed_attempts = 0
         attempt_number = 1
         while True:
-            preflight = self._preflight(operation_id, attempt_number)
-            if preflight is not None:
-                return self._result(preflight, attempts=completed_attempts)
             attempt_id = f"{operation_id}:{attempt_number}"
             started_monotonic = self._checked_monotonic()
             remaining = deadline - started_monotonic
@@ -152,6 +150,9 @@ class TrustedOpenAIGateway:
                 return self._result(GatewayOutcome.TIMEOUT, attempts=completed_attempts)
             timeout = min(self._config.timeout_seconds, remaining)
             started_at = self._utcnow()
+            preflight = self._preflight(attempt_id, correlation_id, started_at)
+            if preflight is not None:
+                return self._result(preflight, attempts=completed_attempts)
             try:
                 response = self._transport.call(
                     provider_request, timeout_seconds=timeout
@@ -198,7 +199,11 @@ class TrustedOpenAIGateway:
 
             completed_attempts = attempt_number
             ended = self._checked_monotonic()
-            parsed = _parse_response(response)
+            parsed = (
+                _ParsedResponse(GatewayOutcome.TIMEOUT, None)
+                if ended >= deadline
+                else _parse_response(response)
+            )
             persisted = self._record(
                 request=request,
                 correlation_id=correlation_id,
@@ -226,14 +231,17 @@ class TrustedOpenAIGateway:
             )
 
     def _preflight(
-        self, operation_id: str, attempt_number: int
+        self, attempt_id: str, correlation_id: str, started_at: datetime
     ) -> GatewayOutcome | None:
         if self._emergency_stop():
             return GatewayOutcome.EMERGENCY_STOP
         try:
-            if self._store.is_spend_suspended():
+            reservation = self._store.reserve_attempt(
+                attempt_id, correlation_id, started_at
+            )
+            if reservation is AttemptReservationStatus.SPEND_SUSPENDED:
                 return GatewayOutcome.SPEND_SUSPENDED
-            if self._store.attempt_exists(f"{operation_id}:{attempt_number}"):
+            if reservation is AttemptReservationStatus.DUPLICATE:
                 return GatewayOutcome.DUPLICATE_OPERATION
         except ProviderPersistenceError:
             self._persistence_failed = True
@@ -290,7 +298,9 @@ class TrustedOpenAIGateway:
         )
         try:
             created = self._store.record_attempt(
-                record, confirmed_spend_limit_code=suspend
+                record,
+                confirmed_spend_limit_code=suspend,
+                require_reservation=True,
             )
         except (ProviderPersistenceError, TypeError, ValueError):
             self._persistence_failed = True

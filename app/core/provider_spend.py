@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from enum import StrEnum
 import sqlite3
 
 from .provider_contract import (
@@ -20,6 +21,12 @@ CONFIRMED_SPEND_LIMIT_CODES = frozenset(
 
 class ProviderPersistenceError(RuntimeError):
     """Sanitized fail-closed persistence error."""
+
+
+class AttemptReservationStatus(StrEnum):
+    CREATED = "created"
+    DUPLICATE = "duplicate"
+    SPEND_SUSPENDED = "spend_suspended"
 
 
 @dataclass(frozen=True, slots=True)
@@ -101,10 +108,59 @@ class ProviderStateStore:
                 connection.execute("BEGIN")
                 EventStore._verify_current_schema(connection)
                 row = connection.execute(
-                    "SELECT 1 FROM provider_usage_attempts WHERE attempt_id = ?",
-                    (attempt_id,),
+                    """
+                    SELECT 1 FROM provider_usage_attempts WHERE attempt_id = ?
+                    UNION ALL
+                    SELECT 1 FROM provider_attempt_reservations WHERE attempt_id = ?
+                    LIMIT 1
+                    """,
+                    (attempt_id, attempt_id),
                 ).fetchone()
             return row is not None
+        except (sqlite3.Error, EventStoreError):
+            raise ProviderPersistenceError("provider state operation failed") from None
+        finally:
+            connection.close()
+
+    def reserve_attempt(
+        self, attempt_id: str, correlation_id: str, reserved_at: datetime
+    ) -> AttemptReservationStatus:
+        require_identifier("attempt id", attempt_id)
+        require_identifier("correlation id", correlation_id)
+        if not isinstance(reserved_at, datetime) or reserved_at.tzinfo is None:
+            raise ValueError("reservation timestamp is invalid")
+        timestamp = EventStore._serialize_time(reserved_at)
+        connection = self._open()
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                EventStore._verify_current_schema(connection)
+                suspended = connection.execute(
+                    "SELECT 1 FROM provider_spend_suspensions WHERE provider = ?",
+                    (PROVIDER_NAME,),
+                ).fetchone()
+                if suspended is not None:
+                    return AttemptReservationStatus.SPEND_SUSPENDED
+                duplicate = connection.execute(
+                    """
+                    SELECT 1 FROM provider_usage_attempts WHERE attempt_id = ?
+                    UNION ALL
+                    SELECT 1 FROM provider_attempt_reservations WHERE attempt_id = ?
+                    LIMIT 1
+                    """,
+                    (attempt_id, attempt_id),
+                ).fetchone()
+                if duplicate is not None:
+                    return AttemptReservationStatus.DUPLICATE
+                connection.execute(
+                    """
+                    INSERT INTO provider_attempt_reservations(
+                        attempt_id, correlation_id, provider, reserved_at
+                    ) VALUES (?, ?, ?, ?)
+                    """,
+                    (attempt_id, correlation_id, PROVIDER_NAME, timestamp),
+                )
+            return AttemptReservationStatus.CREATED
         except (sqlite3.Error, EventStoreError):
             raise ProviderPersistenceError("provider state operation failed") from None
         finally:
@@ -115,8 +171,11 @@ class ProviderStateStore:
         record: ProviderAttemptRecord,
         *,
         confirmed_spend_limit_code: str | None = None,
+        require_reservation: bool = False,
     ) -> bool:
         timestamp = _validate_record(record)
+        if type(require_reservation) is not bool:
+            raise TypeError("require_reservation must be a boolean")
         if (
             confirmed_spend_limit_code is not None
             and confirmed_spend_limit_code not in CONFIRMED_SPEND_LIMIT_CODES
@@ -137,6 +196,17 @@ class ProviderStateStore:
                 ).fetchone()
                 if existing is not None:
                     return False
+                if require_reservation:
+                    reservation = connection.execute(
+                        """
+                        SELECT correlation_id
+                        FROM provider_attempt_reservations
+                        WHERE attempt_id = ? AND provider = ?
+                        """,
+                        (record.attempt_id, PROVIDER_NAME),
+                    ).fetchone()
+                    if reservation != (record.correlation_id,):
+                        return False
                 connection.execute(
                     """
                     INSERT INTO provider_usage_attempts(
@@ -189,6 +259,11 @@ class ProviderStateStore:
                             record.provider_config_version,
                             record.attempt_id,
                         ),
+                    )
+                if require_reservation:
+                    connection.execute(
+                        "DELETE FROM provider_attempt_reservations WHERE attempt_id = ?",
+                        (record.attempt_id,),
                     )
             return True
         except (sqlite3.Error, EventStoreError):

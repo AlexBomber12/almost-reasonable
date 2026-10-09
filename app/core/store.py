@@ -440,6 +440,14 @@ _SCHEMA_V3 = (
     )
     """,
     """
+    CREATE TABLE provider_attempt_reservations (
+        attempt_id TEXT PRIMARY KEY,
+        correlation_id TEXT NOT NULL,
+        provider TEXT NOT NULL CHECK (provider = 'openai'),
+        reserved_at TEXT NOT NULL
+    )
+    """,
+    """
     CREATE TABLE provider_usage_attempts (
         attempt_id TEXT PRIMARY KEY,
         correlation_id TEXT NOT NULL,

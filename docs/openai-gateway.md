@@ -89,10 +89,10 @@ not trigger another model call.
 
 ## Schema v3, suspension, and telemetry
 
-SQLite schema v3 adds `provider_spend_suspensions` and
-`provider_usage_attempts`. Fresh initialization and the transactional v1/v2-to-v3
-migrations remain WAL-backed, serialized by `BEGIN IMMEDIATE`, idempotent, and
-fail closed on unsupported versions.
+SQLite schema v3 adds `provider_spend_suspensions`,
+`provider_attempt_reservations`, and `provider_usage_attempts`. Fresh initialization
+and the transactional v1/v2-to-v3 migrations remain WAL-backed, serialized by
+`BEGIN IMMEDIATE`, idempotent, and fail closed on unsupported versions.
 
 A structured confirmed project or organization spend-limit error writes the usage
 attempt and durable suspension in one transaction before the gateway reports the
@@ -114,10 +114,12 @@ provider's USD 10 monthly project hard limit is the primary monetary boundary, b
 provider timing, token accounting, delayed reporting, taxes, credits, and an
 in-flight/lost response mean it is not a mathematical invoice guarantee.
 
-Attempt IDs are bounded and telemetry insertion is idempotent. SQLite can make the
-local outcome durable exactly once, but it cannot atomically commit with an external
-provider call. A response lost after provider acceptance may have incurred usage
-without local token telemetry; the implementation fails closed rather than
+Attempt IDs are bounded. Before provider contact, SQLite atomically checks the
+durable spend suspension and reserves the attempt ID; concurrent duplicates cannot
+both reach the provider. Final telemetry replaces that reservation in one
+transaction. SQLite still cannot atomically commit with an external provider call.
+A crash or response lost after provider acceptance leaves the durable reservation,
+may have incurred usage without local token telemetry, and fails closed rather than
 automatically replaying the same operation.
 
 ## Future Stage 1 smoke validation
