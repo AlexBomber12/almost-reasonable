@@ -1473,6 +1473,26 @@ def test_time_and_parser_validation_guards():
             "history",
         ),
         (
+            "belief",
+            "UPDATE state_revisions SET new_confidence = 0.9",
+            "history",
+        ),
+        (
+            "interest",
+            "UPDATE state_revisions SET new_confidence = 0.5",
+            "history",
+        ),
+        (
+            "interest",
+            "UPDATE state_revisions SET previous_status = 'active'",
+            "history",
+        ),
+        (
+            "belief",
+            "UPDATE state_revisions SET previous_confidence = 0.2",
+            "history",
+        ),
+        (
             "interest",
             "UPDATE state_revisions SET core_self_version = 'unexpected-core'",
             "history",
@@ -1531,6 +1551,38 @@ def test_corrupt_stored_state_and_revision_metadata_fail_closed(
     }
     with pytest.raises(EventStoreError, match="event store operation failed"):
         calls[operation]()
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "UPDATE state_revisions SET previous_status = 'suspended' "
+        "WHERE revision_number = 2",
+        "UPDATE state_revisions SET previous_confidence = 0.9 "
+        "WHERE revision_number = 2",
+    ),
+)
+def test_revision_history_rejects_deltas_that_contradict_previous_snapshot(
+    state_setup, mutation
+):
+    events, state, context, event_id = state_setup
+    state.create_belief_candidate(context, belief_change(event_id))
+    state.revise_belief_candidate(
+        context,
+        belief_change(
+            event_id,
+            operation="belief-revise",
+            expected=1,
+            confidence=0.72,
+        ),
+    )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(mutation)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        state.retrieve_private_revision_history(
+            context, StateType.BELIEF, "belief-oceans"
+        )
 
 
 def test_revision_history_accepts_well_formed_historical_core_self_versions(

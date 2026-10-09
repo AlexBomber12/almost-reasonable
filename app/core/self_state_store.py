@@ -1189,6 +1189,22 @@ class SelfStateStore:
         state = self._snapshot_from_row(connection, row[:24])
         if row[26] != state.status.value:
             raise ValueError("malformed stored revision")
+        current_confidence = (
+            state.confidence if isinstance(state, BeliefCandidate) else None
+        )
+        if row[28] != current_confidence:
+            raise ValueError("malformed stored revision")
+        previous_status = None
+        previous_confidence = None
+        if row[24] is not None:
+            previous_state = self._snapshot_for_item_revision(
+                connection, row[0], row[24]
+            )
+            previous_status = previous_state.status.value
+            if isinstance(previous_state, BeliefCandidate):
+                previous_confidence = previous_state.confidence
+        if row[25] != previous_status or row[27] != previous_confidence:
+            raise ValueError("malformed stored revision")
         if type(row[31]) is not str or _CORE_SELF_VERSION.fullmatch(row[31]) is None:
             raise ValueError("malformed stored revision")
         self._validate_text("stored revision reason", row[29])
