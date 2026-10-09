@@ -58,7 +58,7 @@ MAX_EVIDENCE_PER_REVISION = 50
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
 _BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/_-]{8,}={0,2}\Z")
 _HEX_ONLY_TEXT = re.compile(r"(?:[A-Fa-f0-9]{2}){4,}\Z")
-_PERCENT_ONLY_TEXT = re.compile(r"(?:%[A-Fa-f0-9]{2}){4,}\Z")
+_PERCENT_ESCAPE = re.compile(r"%[A-Fa-f0-9]{2}")
 _MIXED_SCRIPT_TOKEN = re.compile(
     r"(?i)(?=[^\W_]*[a-z])(?=[^\W_]*[\u0370-\u058f])[^\W_]+"
 )
@@ -104,7 +104,8 @@ _DISALLOWED_STATE_TEXT = (
         r"(?m)^\s*(?:(?:goal|objective|instruction|request)\s*:\s*)?"
         r"(?:(?:please|kindly)\s+)?"
         r"(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
-        r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)\b",
+        r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)"
+        r"(?=\s|[:,.!?]|$)",
         re.IGNORECASE,
     ),
     re.compile(
@@ -1427,23 +1428,31 @@ class SelfStateStore:
         ):
             raise SelfStateValidationError(f"invalid {field}")
         normalized = unicodedata.normalize("NFKC", value)
-        compact = normalized.strip()
-        if not compact:
-            raise SelfStateValidationError(f"invalid {field}")
-        if (
-            SelfStateStore._decodes_to_text(compact)
-            or _MIXED_SCRIPT_TOKEN.search(normalized) is not None
-            or any(pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT)
-        ):
-            raise SelfStateValidationError(f"invalid {field}")
+        representations = [normalized]
+        if _PERCENT_ESCAPE.search(normalized) is not None:
+            try:
+                decoded = unquote_to_bytes(normalized).decode("utf-8")
+            except UnicodeDecodeError:
+                raise SelfStateValidationError(f"invalid {field}") from None
+            representations.append(unicodedata.normalize("NFKC", decoded))
+        for representation in representations:
+            compact = representation.strip()
+            if not compact:
+                raise SelfStateValidationError(f"invalid {field}")
+            if (
+                SelfStateStore._decodes_to_text(compact)
+                or _MIXED_SCRIPT_TOKEN.search(representation) is not None
+                or any(
+                    pattern.search(representation) for pattern in _DISALLOWED_STATE_TEXT
+                )
+            ):
+                raise SelfStateValidationError(f"invalid {field}")
 
     @staticmethod
     def _decodes_to_text(value: str) -> bool:
         candidate = value.translate(str.maketrans("", "", " \n\t"))
         if _HEX_ONLY_TEXT.fullmatch(candidate) is not None:
             return SelfStateStore._bytes_are_printable_text(bytes.fromhex(candidate))
-        if _PERCENT_ONLY_TEXT.fullmatch(candidate) is not None:
-            return SelfStateStore._bytes_are_printable_text(unquote_to_bytes(candidate))
         if len(candidate) % 4 != 0 or _BASE64_ONLY_TEXT.fullmatch(candidate) is None:
             return False
         try:
