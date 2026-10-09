@@ -53,6 +53,7 @@ MAX_REVISION_HISTORY_PER_RETRIEVAL = 100
 MAX_EVIDENCE_PER_REVISION = 50
 
 _CORE_SELF_VERSION = re.compile(r"core-self-v[1-9][0-9]{0,8}\Z")
+_BASE64_ONLY_TEXT = re.compile(r"[A-Za-z0-9+/]{16,}={0,2}\Z")
 _DISALLOWED_STATE_TEXT = (
     re.compile(r"\b[a-z][a-z0-9+.-]{1,20}://", re.IGNORECASE),
     re.compile(r"\bwww\.", re.IGNORECASE),
@@ -80,9 +81,15 @@ _DISALLOWED_STATE_TEXT = (
         r"\bignore\s+(?:(?:all\s+)?(?:previous|prior)\s+)?instructions\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:disregard|discard|forget|override|obey|follow)\b.{0,40}"
+        r"\b(?:directive|instruction|message|prompt|rule|policy)\w*\b",
+        re.IGNORECASE,
+    ),
     re.compile(r"\bигнорируй\s+(?:все\s+)?(?:предыдущие\s+)?инструкц", re.IGNORECASE),
     re.compile(
-        r"(?m)^\s*(?:(?:please|kindly)\s+)?"
+        r"(?m)^\s*(?:(?:goal|objective|instruction|request)\s*:\s*)?"
+        r"(?:(?:please|kindly)\s+)?"
         r"(?:deploy|publish|post|send|delete|execute|run|call|invoke|"
         r"разверни|опубликуй|отправь|удали|выполни|запусти|вызови)\b",
         re.IGNORECASE,
@@ -92,6 +99,12 @@ _DISALLOWED_STATE_TEXT = (
         r"(?:shell|terminal|tool|command|filesystem|secret)\b",
         re.IGNORECASE,
     ),
+    re.compile(
+        r"\b(?:send|transmit|upload|publish|post|export|share|reveal)\b.{0,50}"
+        r"\b(?:private|secret|credential|record|data|prompt)\w*\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bbase64\s*:", re.IGNORECASE),
     re.compile(r"\b(?:bypass|without)\s+(?:approval|authorization)\b", re.IGNORECASE),
     re.compile(r"\b[a-z0-9+/]{80,}={0,2}\b", re.IGNORECASE),
 )
@@ -213,7 +226,7 @@ class SelfStateStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND payload.retention_status = 'active'
-                    ORDER BY item.updated_at DESC, item.item_id DESC
+                    ORDER BY revision.revision_key DESC, item.item_id DESC
                     LIMIT ?
                     """,
                     (
@@ -434,11 +447,19 @@ class SelfStateStore:
                 sources = self._validate_evidence(connection, context, change)
                 item = connection.execute(
                     """
-                    SELECT item_key, state_type, current_revision, created_at
-                    FROM state_items
-                    WHERE scope = 'private_candidate'
-                      AND audience_principal_id = ?
-                      AND item_id = ?
+                    SELECT
+                        item.item_key,
+                        item.state_type,
+                        item.current_revision,
+                        item.created_at,
+                        revision.revision_key
+                    FROM state_items AS item
+                    LEFT JOIN state_revisions AS revision
+                      ON revision.item_key = item.item_key
+                     AND revision.revision_number = item.current_revision
+                    WHERE item.scope = 'private_candidate'
+                      AND item.audience_principal_id = ?
+                      AND item.item_id = ?
                     """,
                     (context.principal_id.value, change.item_id),
                 ).fetchone()
@@ -479,6 +500,13 @@ class SelfStateStore:
                     previous = self._snapshot_for_item_revision(
                         connection, item_key, expected
                     )
+                    previous_change = self._stored_change(connection, item[4])
+                    if self._semantic_change(previous_change) == self._semantic_change(
+                        change
+                    ):
+                        raise SelfStateValidationError(
+                            "state revision has no semantic change"
+                        )
                     previous_revision = expected
                     previous_status = previous.status.value
                     previous_confidence = (
@@ -584,6 +612,43 @@ class SelfStateStore:
             revision.decision_origin,
             revision.model_identifier,
             revision.prompt_version,
+        )
+        if isinstance(change, InterestCandidateChange):
+            return common + (
+                change.topic,
+                change.strength,
+                change.status,
+                change.reason_for_interest,
+            )
+        if isinstance(change, BeliefCandidateChange):
+            return common + (
+                change.proposition,
+                change.stance,
+                change.confidence,
+                change.status,
+                tuple(sorted(change.conflicting_event_ids)),
+                change.alternatives,
+                change.verification,
+            )
+        return common + (
+            change.description,
+            change.rationale,
+            change.priority,
+            change.status,
+            change.constraints,
+            change.review_condition,
+        )
+
+    @staticmethod
+    def _semantic_change(
+        change: InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange,
+    ) -> tuple[object, ...]:
+        common = (
+            type(change),
+            change.item_id,
+            tuple(sorted(change.supporting_event_ids)),
+            change.review_at,
+            change.revision.initiating_event_id,
         )
         if isinstance(change, InterestCandidateChange):
             return common + (
@@ -1304,7 +1369,10 @@ class SelfStateStore:
         ):
             raise SelfStateValidationError(f"invalid {field}")
         normalized = unicodedata.normalize("NFKC", value)
-        if any(pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT):
+        compact = normalized.strip()
+        if _BASE64_ONLY_TEXT.fullmatch(compact) is not None or any(
+            pattern.search(normalized) for pattern in _DISALLOWED_STATE_TEXT
+        ):
             raise SelfStateValidationError(f"invalid {field}")
 
     @staticmethod
