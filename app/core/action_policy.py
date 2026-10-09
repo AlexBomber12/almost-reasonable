@@ -62,6 +62,9 @@ class TrustedActionContext:
 
     correlation_id: str
     principal: TrustedPrincipalContext
+    _route_binding: object = field(
+        default_factory=object, init=False, repr=False, compare=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +113,9 @@ class PolicyDecision:
 
     evidence: PolicyEvidence
     _proposal: AgentProposal | None = field(default=None, repr=False, compare=False)
-    _principal_id: ParticipantId | None = field(default=None, repr=False, compare=False)
+    _trusted_route_binding: object | None = field(
+        default=None, repr=False, compare=False
+    )
 
     @property
     def proposal(self) -> AgentProposal | None:
@@ -121,7 +126,7 @@ class PolicyDecision:
         return (
             self.evidence.outcome is PolicyOutcome.ACCEPTED_INTERNAL
             and isinstance(self._proposal, (ReplyProposal, PublicationProposal))
-            and self._principal_id is not None
+            and self._trusted_route_binding is not None
         )
 
 
@@ -253,7 +258,7 @@ class ActionPolicy:
                 PolicyReason.GRANT_MISMATCH,
                 _capability_for_optional(proposal),
             )
-        if previous._principal_id != trusted.principal.principal_id:
+        if previous._trusted_route_binding is not trusted._route_binding:
             return self._result(
                 trusted,
                 capabilities,
@@ -284,8 +289,8 @@ class ActionPolicy:
             capability=capability,
             operational_state_version=capabilities.version,
         )
-        principal_id = trusted.principal.principal_id if grant else None
-        return PolicyDecision(evidence, proposal, principal_id)
+        trusted_route_binding = trusted._route_binding if grant else None
+        return PolicyDecision(evidence, proposal, trusted_route_binding)
 
 
 def _capability_for(proposal: AgentProposal) -> CapabilityCategory:

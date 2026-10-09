@@ -131,11 +131,14 @@ external effects.
 ## Revalidation
 
 An accepted simulation grant is bound in memory to the exact validated proposal
-object and trusted participant route. `revalidate` checks the current trusted
-context and current capability-state version again. A newly active emergency
-stop, disabled draft capability, route substitution, grant substitution, or
-attempt to leave simulation mode blocks the operation before the fake test sink
-is reached.
+object and exact immutable `TrustedActionContext` instance. The identity-only
+binding avoids copying the protected participant ID, authenticated source
+reference, or correlation value into the private grant. Reconstructing a
+context, even with equal values, does not transfer authority. `revalidate`
+checks that binding and the current capability-state version again. A newly
+active emergency stop, disabled draft capability, route substitution, grant
+substitution, or attempt to leave simulation mode blocks the operation before
+the fake test sink is reached.
 
 Provider-spend suspension is checked for research, the paid operation currently
 represented at this boundary. It is distinct from a capability denial. No

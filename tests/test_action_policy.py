@@ -349,11 +349,10 @@ def test_recheck_rejects_proposal_or_trusted_destination_substitution():
     policy = ActionPolicy()
     original = parse_agent_proposal({"decision": "reply", "content": "A draft"})
     replacement = proposal({"decision": "reply", "content": "B draft"})
-    initial = policy.evaluate(original, trusted("a"), capabilities())
+    route_a = trusted("a")
+    initial = policy.evaluate(original, route_a, capabilities())
 
-    wrong_proposal = policy.revalidate(
-        initial, replacement, trusted("a"), capabilities()
-    )
+    wrong_proposal = policy.revalidate(initial, replacement, route_a, capabilities())
     wrong_principal = policy.revalidate(
         initial, original.proposal, trusted("b"), capabilities()
     )
@@ -362,6 +361,46 @@ def test_recheck_rejects_proposal_or_trusted_destination_substitution():
     assert wrong_proposal.evidence.reason is PolicyReason.GRANT_MISMATCH
     assert wrong_principal.evidence.outcome is PolicyOutcome.REJECTED_BY_POLICY
     assert wrong_principal.evidence.reason is PolicyReason.TRUSTED_ROUTE_MISMATCH
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        TrustedActionContext(
+            "correlation-a",
+            TrustedPrincipalContext(
+                ParticipantId("participant-a"),
+                AuthenticatedSourceReference("session-replacement"),
+            ),
+        ),
+        TrustedActionContext(
+            "correlation-replacement",
+            TrustedPrincipalContext(
+                ParticipantId("participant-a"),
+                AuthenticatedSourceReference("session-a"),
+            ),
+        ),
+        trusted("a"),
+    ],
+)
+def test_recheck_binds_complete_immutable_trusted_context(replacement):
+    policy = ActionPolicy()
+    parsed = parse_agent_proposal({"decision": "reply", "content": "A draft"})
+    original_route = trusted("a")
+    initial = policy.evaluate(parsed, original_route, capabilities())
+
+    result = policy.revalidate(
+        initial, parsed.proposal, replacement, capabilities(version="state-2")
+    )
+
+    assert replacement == original_route or (
+        replacement.correlation_id != original_route.correlation_id
+        or replacement.principal.authenticated_source
+        != original_route.principal.authenticated_source
+    )
+    assert result.evidence.outcome is PolicyOutcome.REJECTED_BY_POLICY
+    assert result.evidence.reason is PolicyReason.TRUSTED_ROUTE_MISMATCH
+    assert result.dispatchable is False
 
 
 def test_denied_or_no_action_decisions_cannot_be_revalidated_as_dispatchable():
@@ -399,24 +438,20 @@ def test_recheck_requires_a_typed_prior_decision():
 def test_same_proposal_for_alternating_participants_has_no_shared_route_state():
     policy = ActionPolicy()
     parsed = parse_agent_proposal({"decision": "reply", "content": "same draft"})
+    route_a = trusted("a")
+    route_b = trusted("b")
 
-    a = policy.evaluate(parsed, trusted("a"), capabilities())
-    b = policy.evaluate(parsed, trusted("b"), capabilities())
-    a_again = policy.evaluate(parsed, trusted("a"), capabilities())
+    a = policy.evaluate(parsed, route_a, capabilities())
+    b = policy.evaluate(parsed, route_b, capabilities())
+    a_again = policy.evaluate(parsed, route_a, capabilities())
 
+    assert policy.revalidate(a, parsed.proposal, route_a, capabilities()).dispatchable
+    assert policy.revalidate(b, parsed.proposal, route_b, capabilities()).dispatchable
     assert policy.revalidate(
-        a, parsed.proposal, trusted("a"), capabilities()
-    ).dispatchable
-    assert policy.revalidate(
-        b, parsed.proposal, trusted("b"), capabilities()
-    ).dispatchable
-    assert policy.revalidate(
-        a_again, parsed.proposal, trusted("a"), capabilities()
+        a_again, parsed.proposal, route_a, capabilities()
     ).dispatchable
     assert (
-        policy.revalidate(
-            a, parsed.proposal, trusted("b"), capabilities()
-        ).evidence.reason
+        policy.revalidate(a, parsed.proposal, route_b, capabilities()).evidence.reason
         is PolicyReason.TRUSTED_ROUTE_MISMATCH
     )
 
