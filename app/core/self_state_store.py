@@ -1239,7 +1239,13 @@ class SelfStateStore:
             type(row[0]) is not str for row in rows
         ):
             raise EventStoreError("event store operation failed")
-        return tuple(row[0] for row in rows)
+        values = tuple(row[0] for row in rows)
+        try:
+            for value in values:
+                SelfStateStore._validate_text("stored list item", value)
+        except SelfStateValidationError:
+            raise EventStoreError("event store operation failed") from None
+        return values
 
     @staticmethod
     def _protected_evidence(
@@ -1422,11 +1428,7 @@ class SelfStateStore:
             encoded = value.encode("utf-8")
         except UnicodeEncodeError:
             raise SelfStateValidationError(f"invalid {field}") from None
-        if len(encoded) > MAX_STATE_TEXT_BYTES or any(
-            (ord(character) < 32 or unicodedata.category(character) in {"Cf", "Cs"})
-            and character not in "\n\t"
-            for character in value
-        ):
+        if len(encoded) > MAX_STATE_TEXT_BYTES:
             raise SelfStateValidationError(f"invalid {field}")
         normalized = unicodedata.normalize("NFKC", value)
         representations = [normalized]
@@ -1442,7 +1444,24 @@ class SelfStateStore:
             representations.append(decoded)
         if _PERCENT_ESCAPE.search(decoded) is not None:
             raise SelfStateValidationError(f"invalid {field}")
-        for representation in representations:
+        inspection_representations = representations + [
+            unicodedata.normalize(
+                "NFKC",
+                "".join(
+                    character
+                    for character in unicodedata.normalize("NFKD", representation)
+                    if not unicodedata.category(character).startswith("M")
+                ),
+            )
+            for representation in representations
+        ]
+        for representation in inspection_representations:
+            if any(
+                (ord(character) < 32 or unicodedata.category(character) in {"Cf", "Cs"})
+                and character not in "\n\t"
+                for character in representation
+            ):
+                raise SelfStateValidationError(f"invalid {field}")
             compact = representation.strip()
             if not compact:
                 raise SelfStateValidationError(f"invalid {field}")
