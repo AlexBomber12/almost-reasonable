@@ -312,6 +312,26 @@ def test_evidence_inspection_revalidates_stored_principal_lineage(state_setup):
     assert "participant-b" not in repr(captured.value)
 
 
+def test_evidence_inspection_preserves_content_free_provenance_after_payload_deletion(
+    state_setup,
+):
+    events, state, context, event_id = state_setup
+    state.create_interest_candidate(context, interest_change(event_id))
+    connection = events._open()
+    try:
+        with connection:
+            connection.execute("DELETE FROM private_payloads")
+    finally:
+        connection.close()
+
+    evidence = state.inspect_private_revision_evidence(
+        context, StateType.INTEREST, "interest-space", 1
+    )
+
+    assert {item.event_id for item in evidence} == {event_id}
+    assert all(item.source_principal_id == "participant-a" for item in evidence)
+
+
 def test_goal_status_changes_are_state_only_and_grant_no_capability(state_setup):
     _, state, context, event_id = state_setup
 
@@ -1311,6 +1331,44 @@ def test_payload_list_and_evidence_type_corruption_guards(state_setup):
 
 
 @pytest.mark.parametrize(
+    ("index", "value"),
+    (
+        (0, 1),
+        (13, "unexpected-payload"),
+        (12, "missing-payload"),
+    ),
+)
+def test_protected_evidence_rejects_malformed_deleted_payload_shapes(index, value):
+    row = [
+        "event-a-origin",
+        "supporting",
+        "private_participant",
+        "participant-a",
+        "participant_assertion",
+        "unverified",
+        "participant_input",
+        "private_chat",
+        "private_participant",
+        "participant-a",
+        "participant_assertion",
+        "unverified",
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        "event-a-origin",
+        "participant-a",
+        "participant_assertion",
+    ]
+    row[index] = value
+
+    with pytest.raises(ValueError, match="malformed evidence"):
+        SelfStateStore._protected_evidence(tuple(row), "participant-a")
+
+
+@pytest.mark.parametrize(
     ("kind", "table", "column"),
     (
         ("belief", "state_payload_alternatives", "alternative"),
@@ -1583,6 +1641,138 @@ def test_revision_history_rejects_deltas_that_contradict_previous_snapshot(
         state.retrieve_private_revision_history(
             context, StateType.BELIEF, "belief-oceans"
         )
+
+
+def test_later_revision_history_survives_predecessor_payload_redaction(state_setup):
+    events, state, context, event_id = state_setup
+    state.create_belief_candidate(context, belief_change(event_id))
+    state.revise_belief_candidate(
+        context,
+        belief_change(
+            event_id,
+            operation="belief-revise-after-redaction",
+            expected=1,
+            confidence=0.72,
+        ),
+    )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE state_revision_payloads SET retention_status = 'deleted' "
+            "WHERE revision_key = ("
+            "SELECT revision_key FROM state_revisions WHERE revision_number = 1)"
+        )
+
+    [revision] = state.retrieve_private_revision_history(
+        context, StateType.BELIEF, "belief-oceans"
+    )
+
+    assert revision.revision == 2
+    assert revision.previous_status == BeliefStatus.ACTIVE.value
+    assert revision.previous_confidence == 0.35
+
+
+def test_nonbelief_history_survives_predecessor_payload_redaction(state_setup):
+    events, state, context, event_id = state_setup
+    state.create_interest_candidate(context, interest_change(event_id))
+    state.revise_interest_candidate(
+        context,
+        interest_change(
+            event_id,
+            operation="interest-revise-after-redaction",
+            expected=1,
+            strength=61,
+        ),
+    )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE state_revision_payloads SET retention_status = 'deleted' "
+            "WHERE revision_key = ("
+            "SELECT revision_key FROM state_revisions WHERE revision_number = 1)"
+        )
+
+    [revision] = state.retrieve_private_revision_history(
+        context, StateType.INTEREST, "interest-space"
+    )
+
+    assert revision.revision == 2
+    assert revision.previous_status == InterestStatus.ACTIVE.value
+    assert revision.previous_confidence is None
+
+
+@pytest.mark.parametrize(
+    ("kind", "mutations"),
+    (
+        (
+            "belief",
+            (
+                "UPDATE state_revision_payloads SET retention_status = 'deleted' "
+                "WHERE revision_key = 1",
+                "UPDATE state_revisions SET new_confidence = NULL "
+                "WHERE revision_number = 1",
+            ),
+        ),
+        (
+            "interest",
+            (
+                "UPDATE state_revision_payloads SET retention_status = 'deleted' "
+                "WHERE revision_key = 1",
+                "UPDATE state_revisions SET new_confidence = 0.5 "
+                "WHERE revision_number = 1",
+            ),
+        ),
+        (
+            "interest",
+            (
+                "UPDATE state_revision_payloads SET retention_status = 'invalid' "
+                "WHERE revision_key = 1",
+            ),
+        ),
+        (
+            "interest",
+            ("DELETE FROM state_revisions WHERE revision_number = 1",),
+        ),
+    ),
+)
+def test_revision_history_rejects_malformed_redacted_predecessor_metadata(
+    tmp_path, kind, mutations
+):
+    events = EventStore(tmp_path / "redacted-corruption.sqlite3")
+    state = SelfStateStore(events)
+    context = principal("a")
+    event_id = append_evidence(events, context, f"{kind}-redacted-corruption")
+    if kind == "belief":
+        state.create_belief_candidate(context, belief_change(event_id))
+        state.revise_belief_candidate(
+            context,
+            belief_change(
+                event_id,
+                operation="belief-redacted-corruption",
+                expected=1,
+                confidence=0.72,
+            ),
+        )
+        state_type = StateType.BELIEF
+        item_id = "belief-oceans"
+    else:
+        state.create_interest_candidate(context, interest_change(event_id))
+        state.revise_interest_candidate(
+            context,
+            interest_change(
+                event_id,
+                operation="interest-redacted-corruption",
+                expected=1,
+                strength=61,
+            ),
+        )
+        state_type = StateType.INTEREST
+        item_id = "interest-space"
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        for mutation in mutations:
+            connection.execute(mutation)
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        state.retrieve_private_revision_history(context, state_type, item_id)
 
 
 def test_revision_history_accepts_well_formed_historical_core_self_versions(

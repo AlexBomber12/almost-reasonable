@@ -408,6 +408,7 @@ class SelfStateStore:
                         event.audience_principal_id,
                         event.provenance_type,
                         event.verification_status,
+                        event.payload_id,
                         payload.audience_type,
                         payload.audience_principal_id,
                         payload.provenance_type,
@@ -1197,12 +1198,44 @@ class SelfStateStore:
         previous_status = None
         previous_confidence = None
         if row[24] is not None:
-            previous_state = self._snapshot_for_item_revision(
-                connection, row[0], row[24]
-            )
-            previous_status = previous_state.status.value
-            if isinstance(previous_state, BeliefCandidate):
-                previous_confidence = previous_state.confidence
+            previous_header = connection.execute(
+                """
+                SELECT revision.new_status, revision.new_confidence,
+                       payload.retention_status
+                FROM state_revisions AS revision
+                JOIN state_revision_payloads AS payload
+                  ON payload.revision_key = revision.revision_key
+                WHERE revision.item_key = ? AND revision.revision_number = ?
+                """,
+                (row[0], row[24]),
+            ).fetchone()
+            if previous_header is None:
+                raise ValueError("malformed stored revision")
+            if previous_header[2] == "active":
+                previous_state = self._snapshot_for_item_revision(
+                    connection, row[0], row[24]
+                )
+                previous_status = previous_state.status.value
+                if isinstance(previous_state, BeliefCandidate):
+                    previous_confidence = previous_state.confidence
+            elif previous_header[2] == "deleted":
+                status_type = {
+                    StateType.INTEREST: InterestStatus,
+                    StateType.BELIEF: BeliefStatus,
+                    StateType.GOAL: GoalStatus,
+                }[StateType(row[2])]
+                previous_status = status_type(previous_header[0]).value
+                previous_confidence = previous_header[1]
+                if isinstance(state, BeliefCandidate):
+                    if (
+                        type(previous_confidence) is not float
+                        or not 0.0 <= previous_confidence <= 1.0
+                    ):
+                        raise ValueError("malformed stored revision")
+                elif previous_confidence is not None:
+                    raise ValueError("malformed stored revision")
+            else:
+                raise ValueError("malformed stored revision")
         if row[25] != previous_status or row[27] != previous_confidence:
             raise ValueError("malformed stored revision")
         if type(row[31]) is not str or _CORE_SELF_VERSION.fullmatch(row[31]) is None:
@@ -1272,29 +1305,46 @@ class SelfStateStore:
     def _protected_evidence(
         row: tuple[object, ...], expected_principal_id: str
     ) -> ProtectedEvidence:
-        if any(type(value) is not str for value in row):
+        if len(row) != 21 or any(
+            type(row[index]) is not str for index in (*range(12), *range(18, 21))
+        ):
             raise ValueError("malformed evidence")
-        expected = (
+        expected_source = (
             AudienceType.PRIVATE_PARTICIPANT.value,
             expected_principal_id,
             ProvenanceType.PARTICIPANT_ASSERTION.value,
             VerificationStatus.UNVERIFIED.value,
+        )
+        expected_event = (
             EventType.PARTICIPANT_INPUT.value,
             EventChannel.PRIVATE_CHAT.value,
             AudienceType.PRIVATE_PARTICIPANT.value,
             expected_principal_id,
             ProvenanceType.PARTICIPANT_ASSERTION.value,
             VerificationStatus.UNVERIFIED.value,
+        )
+        expected_payload = (
             AudienceType.PRIVATE_PARTICIPANT.value,
             expected_principal_id,
             ProvenanceType.PARTICIPANT_ASSERTION.value,
             VerificationStatus.UNVERIFIED.value,
             "active",
+        )
+        expected_taint = (
             row[0],
             expected_principal_id,
             ProvenanceType.PARTICIPANT_ASSERTION.value,
         )
-        if row[2:] != expected:
+        if (
+            row[2:6] != expected_source
+            or row[6:12] != expected_event
+            or row[18:21] != expected_taint
+        ):
+            raise ValueError("malformed evidence")
+        if row[12] is None:
+            if row[13:18] != (None, None, None, None, None):
+                raise ValueError("malformed evidence")
+        elif type(row[12]) is not str or row[13:18] != expected_payload:
             raise ValueError("malformed evidence")
         return ProtectedEvidence(
             event_id=row[0],
