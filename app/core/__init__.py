@@ -1,5 +1,18 @@
 """Core application domain and persistence boundaries."""
 
+from .context import (
+    MAX_CONTEXT_HISTORY_EVENTS,
+    MAX_CONTEXT_UTF8_BYTES,
+    ContextLimits,
+    ContextRole,
+    ContextTrust,
+    ConversationSegment,
+    PrivateContextAssembler,
+    PrivateConversationContext,
+    context_utf8_size,
+    minimum_context_utf8_bytes,
+)
+from .core_self import CORE_SELF_VERSION, CoreSelf, initial_core_self
 from .events import (
     AudienceType,
     AuthenticatedSourceReference,
@@ -30,6 +43,12 @@ __all__ = [
     "AppendStatus",
     "AudienceType",
     "AuthenticatedSourceReference",
+    "CORE_SELF_VERSION",
+    "ContextLimits",
+    "ContextRole",
+    "ContextTrust",
+    "ConversationSegment",
+    "CoreSelf",
     "EventAudience",
     "EventChannel",
     "EventStore",
@@ -38,12 +57,19 @@ __all__ = [
     "EventIdentityConflictError",
     "EventType",
     "EventValidationError",
+    "MAX_CONTEXT_HISTORY_EVENTS",
+    "MAX_CONTEXT_UTF8_BYTES",
     "ParticipantId",
+    "PrivateContextAssembler",
     "PrivateConversationEvent",
+    "PrivateConversationContext",
     "PrivateInputEvent",
     "Provenance",
     "ProvenanceType",
     "TrustedPrincipalContext",
     "UnsupportedSchemaVersionError",
     "VerificationStatus",
+    "context_utf8_size",
+    "initial_core_self",
+    "minimum_context_utf8_bytes",
 ]
