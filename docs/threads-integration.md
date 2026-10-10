@@ -126,9 +126,12 @@ The closed lifecycle is:
    pre-dispatch attempts.
 
 The service rechecks policy and approval immediately before both container
-creation and publication. A stop activated before either call blocks it. A stop
-activated after a request is in flight cannot retract an already accepted
-effect; the resulting success or uncertainty is recorded honestly.
+creation and publication. The same checks obtain a current per-draft privacy
+decision from the application privacy boundary, so revocation after proposal or
+approval still blocks the next effect. A stop activated before either call
+blocks it. A stop activated after a request is in flight cannot retract an
+already accepted effect; the resulting success or uncertainty is recorded
+honestly.
 
 ## Failure and reconciliation rules
 

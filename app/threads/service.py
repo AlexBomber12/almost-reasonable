@@ -54,6 +54,9 @@ class ThreadsService:
         *,
         clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
+        privacy_check: Callable[[OutboxItem, datetime], bool] = (
+            lambda item, _now: item.privacy_authorized
+        ),
     ):
         policy.validate()
         if simulator.account_ref != policy.account_ref:
@@ -63,6 +66,7 @@ class ThreadsService:
         self.policy = policy
         self.clock = clock
         self.utc_now = utc_now
+        self.privacy_check = privacy_check
 
     def propose(
         self,
@@ -339,6 +343,8 @@ class ThreadsService:
                 raise PollingError("poll time limit reached")
             self._check_poll_policy(stream)
             page = self.simulator.poll(stream, cursor)
+            if self.clock() - started >= timeout_seconds:
+                raise PollingError("poll time limit reached")
             if interrupt_after_fetch:
                 raise SimulatedCrash(transmission_possible=False)
             if (
@@ -391,6 +397,10 @@ class ThreadsService:
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
+        if self.privacy_check(item, now) is not True:
+            raise PolicyDeniedError(
+                "current draft privacy authorization is unavailable"
+            )
         unresolved = self.store.unresolved_for_account(item.account_ref)
         unresolved_ids = {candidate.operation_id for candidate in unresolved}
         if item.replacement_of is not None:

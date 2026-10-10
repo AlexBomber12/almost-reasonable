@@ -504,6 +504,28 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
     assert simulator.trace == [("create_container", "operation-1")]
 
 
+def test_current_draft_privacy_is_rechecked_before_each_effect(tmp_path):
+    decisions = iter((True, True, True, False))
+    runtime_policy = make_policy()
+    simulator = ThreadsSimulator(account_ref="account-1")
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        runtime_policy,
+        utc_now=lambda: NOW,
+        privacy_check=lambda _item, _now: next(decisions),
+    )
+    _, approval = ready(service)
+    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+        service.dispatch("operation-1", approval, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.provider_container_id == simulated_provider_id(
+        "container", "operation-1"
+    )
+    assert simulator.trace == [("create_container", "operation-1")]
+
+
 def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")

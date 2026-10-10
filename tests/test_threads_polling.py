@@ -195,6 +195,20 @@ def test_flood_page_and_time_step_limits_fail_closed(tmp_path):
         timed.poll(InboundKind.REPLY, now=NOW)
 
 
+def test_slow_terminal_page_exceeding_deadline_is_not_committed(tmp_path):
+    times = iter((0.0, 0.0, 31.0))
+    threads = service(tmp_path, clock=lambda: next(times))
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor=None,
+        events=(event("slow"),),
+    )
+    with pytest.raises(PollingError, match="time limit"):
+        threads.poll(InboundKind.REPLY, now=NOW)
+    assert threads.store.cursor("account-1", InboundKind.REPLY) is None
+
+
 def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
     threads = service(tmp_path)
     duplicates = (event("1"), event("2"))
