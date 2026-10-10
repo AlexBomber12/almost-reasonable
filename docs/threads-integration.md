@@ -1,0 +1,199 @@
+# Threads integration domain
+
+Status: deterministic simulation only. Reviewed against Meta's official Threads
+documentation on 2026-10-10. This package does not contain an HTTP client, read
+credentials, contact Meta, or enable live publication or polling.
+
+## Provider contract review
+
+The provider facts below come from Meta's current [Threads API
+overview](https://developers.facebook.com/documentation/threads/overview),
+[publishing guide](https://developers.facebook.com/documentation/threads/create-posts),
+[reply documentation](https://developers.facebook.com/documentation/threads/retrieve-and-manage-replies),
+[post and mention retrieval guide](https://developers.facebook.com/documentation/threads/retrieve-and-discover-posts),
+[troubleshooting guide](https://developers.facebook.com/documentation/threads/troubleshooting),
+and [delete documentation](https://developers.facebook.com/documentation/threads/posts/delete-posts).
+Meta's official [Postman collection](https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api)
+was used as a secondary official example set. The documentation and App
+Dashboard must be checked again before a live transport is reviewed.
+
+Verified provider behavior:
+
+- A Threads user access token represents the configured Threads account.
+  `threads_basic` is the base permission. Publishing requires
+  `threads_content_publish`; reply reads require `threads_read_replies`;
+  mention reads require `threads_manage_mentions`; reply moderation uses
+  `threads_manage_replies`; deletion uses `threads_delete`. Permissions for
+  people without an app role require the applicable App Review and a published
+  app.
+- The ordinary publish sequence is provider-specific: `POST
+  /{threads-user-id}/threads` creates a text/image/video container, then `POST
+  /{threads-user-id}/threads_publish` publishes its `creation_id`. Text
+  containers currently also document `auto_publish_text`; this implementation
+  deliberately models the explicit two-step sequence because it exposes both
+  dispatch boundaries for recovery.
+- A public reply is a publication container with `reply_to_id`, followed by the
+  same publish step. The application therefore gives each reply its own outbox
+  operation; there is no direct model-to-send route.
+- Container status can be read with `GET /{container-id}?fields=status,error_message`.
+  The documented states are `EXPIRED`, `ERROR`, `FINISHED`, `IN_PROGRESS`, and
+  `PUBLISHED`. A known container reporting `PUBLISHED` can be useful exact
+  reconciliation evidence; a missing container ID or an inconclusive response
+  cannot prove that no post exists.
+- Replies, conversations, a user's posts, and mentions have authenticated read
+  endpoints. The documented list responses use `data` plus `paging.cursors`
+  (`before`/`after`). The implementation begins with bounded polling and stores
+  one cursor per account and stream.
+- The documented publishing quota is 250 API-published posts per rolling 24
+  hours; the reply quota is 1,000 per rolling 24 hours. Current usage and the
+  provider-returned quota configuration are available from
+  `/{threads-user-id}/threads_publishing_limit`. These are provider ceilings,
+  not engagement targets. A future transport must also handle Graph API
+  authentication, permission, validation, throttling, and transient errors
+  without exposing response bodies or tokens.
+- Meta documents deletion of an owned Threads media object with the
+  `threads_delete` permission. Deletion is not part of this outbox slice and is
+  not simulated.
+
+Not verified or deliberately unsupported:
+
+- The reviewed documentation does not promise an idempotency key for container
+  creation or publication. The simulator and outbox do not invent one.
+- No documented endpoint was found that accepts the application's local
+  operation ID or performs a guaranteed exact lookup by content fingerprint.
+  User-post listings may aid an operator, but content/time similarity is not
+  deterministic proof.
+- A general edit operation was not found in the reviewed contract. The project
+  must not claim edit support. Delete capability does not imply safe rollback of
+  an outcome whose publication identity is unknown.
+- Webhook superiority, delivery guarantees, all error-code retry semantics, and
+  exact production reconciliation behavior still require credentialed smoke
+  tests. This PR performs none.
+- Keyword search requires `threads_keyword_search` and App Review. It is not a
+  prerequisite for inbound replies/mentions and remains unavailable here.
+- App Review approval, production account permissions, token lifetime/refresh,
+  privacy notice, live rate behavior, and provider smoke evidence are absent.
+
+## Architecture and credential boundary
+
+`app/threads/` is an application-owned domain package. `ThreadsStore` owns a
+separate version-1 SQLite database in WAL mode; it does not alter the main
+`EventStore` schema. Application integration will eventually supply the database
+path, configured account reference, authenticated approval objects, privacy and
+Russian-output gate results, emergency-stop state, and a narrow
+credential-owning transport.
+
+The current transport is `ThreadsSimulator`. It has no URL, socket, token, or
+generic HTTP method. Its `network_calls` counter remains zero. Verified poll
+pages carry simulator-owned source evidence that callers cannot create through
+the public API. JSON fields inside a public message never grant authority.
+
+Raw private context is not an outbox field. A proposal contains bounded public
+content or an approved public reference, a closed provenance value, and an
+application-supplied privacy authorization result plus a per-draft Russian
+output authorization result. `private_unauthorized` and a missing privacy or
+Russian-output result fail before persistence. Identifiable private material
+will require exact structured consent, and a factual public claim materially
+derived from private discussion will require independent public evidence, once
+those external gates are integrated.
+
+## Durable lifecycle
+
+Each item preserves an immutable local operation ID, configured account,
+publication type, parent for replies, draft ID, bounded content, fingerprint,
+provenance restriction, approval reference/status, state and revision,
+correlation ID, attempt and dispatch evidence, provider IDs when known,
+reconciliation status, replacement linkage, duplicate-risk acknowledgement, and
+timestamps. Every transition is an atomic row update plus a revisioned transition
+record.
+
+The closed lifecycle is:
+
+1. `proposed` records intent only.
+2. `awaiting_policy_or_operator_approval` makes the lack of authorization
+   explicit.
+3. `ready` requires an authenticated, unexpired, unrevoked, operation-specific
+   operator approval and application-controlled account, scope, stage, privacy,
+   Russian-output, publication-capability, and stop checks.
+4. `sending` durably records intent before a simulated provider call and
+   increments the bounded attempt count.
+5. `confirmed` retains verified provider success evidence.
+6. `unknown` means an effect may have occurred and requires reconciliation.
+7. `unknown_abandoned` means reconciliation ended without resolving the effect;
+   uncertainty and identity remain permanent.
+8. `cancelled` is allowed only before dispatch.
+9. `failed_terminal` records a confirmed rejection or exhausted proven
+   pre-dispatch attempts.
+
+The service rechecks policy and approval immediately before both container
+creation and publication. A stop activated before either call blocks it. A stop
+activated after a request is in flight cannot retract an already accepted
+effect; the resulting success or uncertainty is recorded honestly.
+
+## Failure and reconciliation rules
+
+| Evidence | Durable result | Automatic resend |
+|---|---|---|
+| Request provably not transmitted | `ready` within the two-attempt simulation bound, then `failed_terminal` | Same durable operation only |
+| Transmission/acceptance uncertain | `unknown` | Never |
+| Container/publish response lost or malformed after possible acceptance | `unknown` | Never |
+| Provider explicitly rejects with no publication | `failed_terminal` | No contract-supported retry is assumed |
+| Provider returns verified publication identity | `confirmed` | Not applicable |
+| Reconciliation verifies `PUBLISHED`/exact success | `confirmed` | Not applicable |
+| Reconciliation verifies rejection/no effect | `failed_terminal` | No automatic replacement |
+| Reconciliation is unavailable or inconclusive | remain `unknown`, or authenticated operator moves to `unknown_abandoned` | Never |
+
+A crash in `sending` is recovered from durable dispatch evidence. A proven
+pre-transmission crash returns the same operation to `ready`; possible
+transmission enters `unknown`. Restart never creates a new identity.
+
+Exact operation IDs and provider IDs are unique across restart. A normalized,
+bounded SHA-256 fingerprint produces a likely-duplicate warning; it does not
+claim semantic equivalence. Exact content matching an unresolved operation
+cannot be recreated under a new ID. Any unresolved `unknown` or
+`unknown_abandoned` pauses ordinary readiness for that account. An exceptional
+replacement must link the unresolved operation and carry a separate
+authenticated approval that explicitly acknowledges duplicate-publication risk;
+it never changes or retries the original item.
+
+## Inbound replies, mentions, and conversation outcomes
+
+Polling is split into `reply` and `mention` streams and requires the configured
+account and stream-specific scopes. Each verified event records provider event
+identity, source reference, account, kind, conversation ID, optional parent,
+provider event time, and bounded public content. An event page and its cursor
+commit in one SQLite transaction. A crash before commit safely replays; a replay
+after commit is suppressed by event ID.
+
+The loop has hard page, event, and elapsed-time limits. It rejects account/source
+mismatches, invalid source evidence, stale cursor commits, repeated cursors, and
+oversized pages. Public text is inert data even when it claims to be Meta, the
+owner, or an administrator. No inbound event calls a model or creates a reply by
+itself.
+
+Conversation handling records `no_action`, supported `defer` with a resumption
+condition, `terminate_conversation`, or `cooldown` separately from delivery
+outcomes. A chosen public reply starts as a distinct proposal and traverses the
+same approval, unknown, reconciliation, and duplicate controls as a post.
+
+## Stage 3 readiness and remaining blockers
+
+Simulation is the only executable stage. Selecting Stage 3 always reports
+`live Threads transport is not implemented`. Enabling live use additionally
+requires all of the following outside this PR:
+
+- a reviewed credential-owning transport with no token exposure to models or
+  this public outbox;
+- verified account identity, scopes, token refresh, App Review, and restricted
+  production configuration;
+- integrated privacy/consent, independent-public-evidence, Russian-output, and
+  semantic platform-safety gates;
+- authenticated operator controls, emergency stop, rate telemetry, owner
+  alerts, and deployment approval;
+- credentialed sandbox smoke tests for current endpoints, errors, quotas,
+  container status, pagination, and exact reconciliation evidence;
+- reviewed privacy notice, retention/deletion behavior, operational monitoring,
+  and incident response.
+
+Until those blockers are closed, real Meta credentials, live publication,
+production polling, deletion, and keyword search remain disabled.
