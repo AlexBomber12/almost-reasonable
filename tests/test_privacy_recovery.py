@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -390,6 +391,23 @@ def test_backup_race_never_deletes_a_concurrently_created_file(
         assert not destination.exists()
 
 
+def test_backup_rechecks_sidecars_after_the_copy_hook(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    sidecar = Path(f"{destination}-wal")
+
+    def create_sidecar(_destination):
+        sidecar.write_text("concurrent-sidecar")
+
+    with pytest.raises(BackupError, match="sidecar"):
+        create_sqlite_backup(source, destination, 3, NOW, after_copy=create_sidecar)
+
+    assert sidecar.read_text() == "concurrent-sidecar"
+    assert not destination.exists()
+    assert not Path(f"{destination}.metadata.json").exists()
+
+
 @pytest.mark.parametrize("mutation", ["replace", "remove"])
 def test_backup_cleanup_only_unlinks_the_inode_it_created(tmp_path, mutation):
     source = tmp_path / "source.sqlite3"
@@ -684,6 +702,64 @@ def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkey
     assert marker.read_text() == "concurrent-marker"
 
 
+@pytest.mark.parametrize("mutation", ["seal", "sidecar", "generation"])
+def test_readiness_revalidates_every_bound_input(tmp_path, monkeypatch, mutation):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    marker = Path(f"{quarantine}.ready.json")
+    sidecar = Path(f"{quarantine}-wal")
+    real_fsync = os.fsync
+    mutated = False
+
+    def mutate_after_marker_write(descriptor):
+        nonlocal mutated
+        real_fsync(descriptor)
+        if mutated or not marker.exists():
+            return
+        marker_identity = marker.stat(follow_symlinks=False)
+        descriptor_identity = os.fstat(descriptor)
+        if (marker_identity.st_dev, marker_identity.st_ino) != (
+            descriptor_identity.st_dev,
+            descriptor_identity.st_ino,
+        ):
+            return
+        mutated = True
+        if mutation == "seal":
+            quarantine.chmod(0o600)
+            with quarantine.open("ab") as database:
+                database.write(b"changed")
+        elif mutation == "sidecar":
+            sidecar.write_text("concurrent-sidecar")
+        else:
+            ledger.insert_deletion(
+                DeletionRequest(
+                    "delete-before-readiness",
+                    "participant-a",
+                    "event-before-readiness",
+                    ContentCategory.PRIVATE_PAYLOAD,
+                    NOW,
+                    "actor-a",
+                    "delete-before-readiness-correlation",
+                    "auth-a",
+                ),
+                DeletionDisposition.PENDING,
+                "awaiting_erasure",
+            )
+
+    monkeypatch.setattr(recovery_module.os, "fsync", mutate_after_marker_write)
+    with pytest.raises(BackupError, match="readiness marker write failed"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert mutated is True
+    assert not marker.exists()
+    if mutation == "sidecar":
+        assert sidecar.read_text() == "concurrent-sidecar"
+
+
 def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
     tmp_path, monkeypatch
 ):
@@ -902,6 +978,16 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     marker = json.loads(Path(f"{quarantine}.ready.json").read_text())
     assert marker["restore_id"] == result.restore_id
     assert marker["ledger_generation"] == result.ledger_generation
+    quarantine_identity = quarantine.stat()
+    assert stat.S_IMODE(quarantine_identity.st_mode) == 0o400
+    assert stat.S_IMODE(Path(f"{quarantine}.ready.json").stat().st_mode) == 0o400
+    assert marker["database_device"] == quarantine_identity.st_dev
+    assert marker["database_inode"] == quarantine_identity.st_ino
+    assert marker["database_size"] == quarantine_identity.st_size
+    assert marker["database_mode"] == "0400"
+    assert (
+        marker["database_sha256"] == hashlib.sha256(quarantine.read_bytes()).hexdigest()
+    )
 
     ledger.insert_deletion(
         DeletionRequest(

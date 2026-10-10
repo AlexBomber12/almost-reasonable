@@ -610,6 +610,43 @@ def test_ledger_rejects_malformed_direct_revocations(tmp_path, changes, message)
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
+        ({"principal_id": "private principal"}, "principal id"),
+        ({"content_reference": "private content"}, "content reference"),
+        ({"audience": "private audience"}, "audience"),
+        ({"purpose": "private_purpose"}, "purpose"),
+        ({"correlation_id": "private correlation"}, "correlation id"),
+        ({"actor_reference": "private actor"}, "actor reference"),
+        ({"authentication_event_id": "private auth"}, "authentication event"),
+    ],
+)
+def test_ledger_rejects_malformed_direct_consent_use_fields(tmp_path, changes, message):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    values = {
+        "principal_id": "participant-a",
+        "content_reference": "event-001",
+        "audience": "public-threads",
+        "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        "correlation_id": "direct-use-correlation",
+        "actor_reference": "actor-a",
+        "authentication_event_id": "auth-event-a",
+        "clock": lambda: NOW,
+        "dispatch": lambda: None,
+    }
+    values.update(changes)
+
+    with pytest.raises(ValueError, match=message):
+        ledger.authorize_consent_use(**values)
+
+    assert ledger.audit_records() == ()
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM consent_use_attempts"
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
         ({"correlation_id": "private audit text"}, "correlation id"),
         ({"actor_reference": "private actor text"}, "actor reference"),
         ({"action_type": "arbitrary_action"}, "audit shape"),

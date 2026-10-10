@@ -372,6 +372,14 @@ class PrivacyLedger:
         clock: Callable[[], datetime],
         dispatch: Callable[[], None],
     ) -> ConsentUseResult:
+        require_token(principal_id, "principal id")
+        require_token(content_reference, "content reference")
+        require_token(audience, "audience")
+        if not isinstance(purpose, ConsentPurpose):
+            raise ValueError("invalid consent purpose")
+        require_token(correlation_id, "correlation id")
+        require_token(actor_reference, "actor reference")
+        require_token(authentication_event_id, "authentication event id")
         identity = (
             principal_id,
             content_reference,

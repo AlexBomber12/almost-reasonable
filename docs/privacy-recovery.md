@@ -103,9 +103,12 @@ if that generation changes during its work, and writes the reconciled generation
 into both its typed result and readiness marker. Immediately before an eventual
 database switch, an integration must atomically fence the ledger generation and
 bind the verified quarantine path/inode, readiness marker, and sanitized outcome
-to that exact switch. This package deliberately provides no activation operation
-until that deployment-specific boundary exists. The readiness file and typed
-eligibility result are not activation authority.
+to that exact switch. It must also hold an exclusive database-writer fence,
+reject WAL/shared-memory sidecars, and revalidate the sealed file's size, `0400`
+mode, and SHA-256 digest from the readiness marker before switching. This package
+deliberately provides no activation operation until that deployment-specific
+boundary exists. The readiness file and typed eligibility result are not
+activation authority and become stale if any bound value changes.
 
 Deletion has five operator-visible dispositions: `pending`, `applied`,
 `incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use
@@ -211,6 +214,12 @@ at every validation boundary and before eligibility is recorded.
 Backup metadata is likewise opened through a no-follow pinned descriptor and
 read with a strict size bound, so validation and parsing cannot be redirected to
 a replacement or unbounded special file.
+Before readiness publication, the reconciled quarantine is changed to owner-read
+only mode and its device, inode, size, mode, and SHA-256 digest are recorded in
+the owner-read-only marker. The marker is a revalidation contract, not a durable
+lock: activation must enforce the exclusive fence and comparisons described
+above because a process with the service account's authority can still alter
+owner-controlled files.
 
 Any adapter exception, non-`ErasureReport` deletion response, incomplete cascade,
 revocation failure, rebuild failure, unknown schema, malformed metadata, or

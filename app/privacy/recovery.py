@@ -4,6 +4,7 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from datetime import datetime
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -226,6 +227,29 @@ def _use_rollback_journal(connection: sqlite3.Connection) -> None:
         raise sqlite3.OperationalError("unable to finalize backup journal")
 
 
+def _descriptor_sha256(descriptor: int) -> str:
+    digest = hashlib.sha256()
+    offset = 0
+    while chunk := os.pread(descriptor, 1024 * 1024, offset):
+        digest.update(chunk)
+        offset += len(chunk)
+    return digest.hexdigest()
+
+
+def _sqlite_sidecars_absent(path: Path, parent_descriptor: int) -> bool:
+    for suffix in ("-wal", "-shm"):
+        try:
+            os.stat(
+                f"{path.name}{suffix}",
+                dir_fd=parent_descriptor,
+                follow_symlinks=False,
+            )
+        except FileNotFoundError:
+            continue
+        return False
+    return True
+
+
 def _sqlite_copy(source: _PinnedDatabase, destination_descriptor: int) -> None:
     _require_database_identity(source)
     source_target, source_uri = _database_target(
@@ -310,16 +334,10 @@ def _finalize_sqlite_snapshot(path: Path, descriptor: int) -> bool:
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
             _use_rollback_journal(connection)
         os.fsync(descriptor)
-        for suffix in ("-wal", "-shm"):
-            try:
-                os.stat(
-                    f"{path.name}{suffix}",
-                    dir_fd=parent_descriptor,
-                    follow_symlinks=False,
-                )
-            except FileNotFoundError:
-                continue
+        if not _sqlite_sidecars_absent(path, parent_descriptor):
             return False
+        os.fchmod(descriptor, 0o400)
+        os.fsync(descriptor)
         os.fsync(parent_descriptor)
     except (OSError, sqlite3.Error):
         return False
@@ -393,6 +411,8 @@ def create_sqlite_backup(
                 for output in owned
             ):
                 raise BackupError("backup output identity changed")
+            for sidecar_path in sidecar_paths:
+                _validate_new_file(sidecar_path, "destination sidecar")
             _fsync_owned_parents(owned)
         except sqlite3.OperationalError as error:
             _cleanup_created([*sidecar_reservations, *owned])
@@ -569,6 +589,8 @@ class QuarantinedRestore:
             return self._blocked_restore(
                 restore_id, restored_at, "quarantine_identity_changed"
             )
+        quarantine_identity = os.fstat(quarantine_descriptor)
+        quarantine_sha256 = _descriptor_sha256(quarantine_descriptor)
         self.ledger.record_restore(
             restore_id,
             restored_at,
@@ -580,6 +602,11 @@ class QuarantinedRestore:
                 "restore_id": restore_id,
                 "disposition": "eligible_for_activation",
                 "ledger_generation": snapshot.generation,
+                "database_device": quarantine_identity.st_dev,
+                "database_inode": quarantine_identity.st_ino,
+                "database_size": quarantine_identity.st_size,
+                "database_mode": "0400",
+                "database_sha256": quarantine_sha256,
             },
             sort_keys=True,
         ).encode("utf-8")
@@ -587,10 +614,32 @@ class QuarantinedRestore:
         try:
             descriptor = _open_owned_file(ready_path, os.O_WRONLY, marker_files)
             _write_all(descriptor, marker)
+            os.fchmod(descriptor, 0o400)
             os.fsync(descriptor)
             if not _path_matches_descriptor(ready_path, descriptor):
                 raise BackupError("readiness marker identity changed")
             self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            current_identity = os.fstat(quarantine_descriptor)
+            if (
+                current_identity.st_dev,
+                current_identity.st_ino,
+                current_identity.st_size,
+                stat.S_IMODE(current_identity.st_mode),
+                _descriptor_sha256(quarantine_descriptor),
+            ) != (
+                quarantine_identity.st_dev,
+                quarantine_identity.st_ino,
+                quarantine_identity.st_size,
+                0o400,
+                quarantine_sha256,
+            ):
+                raise BackupError("quarantine seal changed")
+            if not _sqlite_sidecars_absent(
+                quarantine, marker_files[0].parent_descriptor
+            ):
+                raise BackupError("quarantine sidecar appeared")
+            if self.ledger.control_generation() != snapshot.generation:
+                raise BackupError("privacy ledger changed before readiness")
             _fsync_owned_parents(marker_files)
         except Exception as error:
             _cleanup_created(marker_files)
