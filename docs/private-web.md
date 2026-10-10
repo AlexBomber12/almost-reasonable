@@ -66,7 +66,9 @@ Passwords use per-account 128-bit random salts and Python's standard-library
 and a 256-bit result. Neither passwords nor recoverable password equivalents
 are stored. Login comparisons use `hmac.compare_digest`, unknown accounts run a
 dummy scrypt path, and failures are bounded by a durable username/client-key
-window and lockout.
+window plus an aggregate per-client window and lockout. Expired throttle rows
+are removed during login, and overlong login values are rejected after the
+bounded dummy-work path rather than truncated into an accepted credential.
 
 Successful login generates independent 256-bit session and CSRF tokens. Only
 SHA-256 token digests are stored. Sessions have an absolute expiry, can be

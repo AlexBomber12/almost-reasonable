@@ -134,6 +134,36 @@ def test_failure_window_resets_and_is_scoped_by_client(store, clock):
     )
 
 
+def test_rotating_usernames_cannot_bypass_per_client_limit_and_stale_rows_expire(
+    store, clock
+):
+    provision(store)
+    for username in ("unknown-a", "unknown-b", "unknown-c"):
+        assert (
+            store.login(username, "incorrect password value", "one-client").status
+            is LoginStatus.INVALID
+        )
+
+    assert (
+        store.login("alice", "correct horse battery", "one-client").status
+        is LoginStatus.LOCKED
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM login_attempts").fetchone()[0] == 4
+        )
+
+    clock.timestamp += 40
+    assert (
+        store.login("alice", "correct horse battery", "one-client").status
+        is LoginStatus.SUCCESS
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM login_attempts").fetchone()[0] == 0
+        )
+
+
 def test_expired_and_revoked_sessions_are_invalid(store, clock):
     provision(store)
     expired = store.login("alice", "correct horse battery", "browser")
@@ -399,3 +429,16 @@ def test_malformed_login_values_and_password_types_are_generic(store):
     )
     with pytest.raises(ProvisioningError, match="password must be text"):
         store.provision_account("bob", None, "participant-bob")
+
+
+def test_overlong_password_does_not_authenticate_as_its_accepted_prefix(store):
+    maximum_password = "p" * 1024
+    provision(store, password=maximum_password)
+    assert (
+        store.login("alice", maximum_password, "exact-client").status
+        is LoginStatus.SUCCESS
+    )
+    assert (
+        store.login("alice", maximum_password + "suffix", "overlong-client").status
+        is LoginStatus.INVALID
+    )

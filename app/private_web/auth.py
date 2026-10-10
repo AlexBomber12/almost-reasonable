@@ -296,20 +296,38 @@ class AuthStore:
     ) -> LoginResult:
         normalized_username = username if type(username) is str else ""
         normalized_client = client_key if type(client_key) is str else ""
-        attempt_key = hashlib.sha256(
-            f"{normalized_client}\0{normalized_username}".encode("utf-8")
-        ).digest()
+        client_attempt_key = self._attempt_key("client", normalized_client)
+        identity_attempt_key = self._attempt_key(
+            "identity", normalized_client, normalized_username
+        )
         now = self._now()
         connection = self._connect()
         try:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
-                attempt = connection.execute(
-                    "SELECT failure_count, window_started_at, blocked_until "
-                    "FROM login_attempts WHERE attempt_key = ?",
-                    (attempt_key,),
-                ).fetchone()
-                if attempt is not None and attempt[2] is not None and now < attempt[2]:
+                connection.execute(
+                    """
+                    DELETE FROM login_attempts
+                    WHERE (blocked_until IS NULL AND window_started_at <= ?)
+                       OR (blocked_until IS NOT NULL AND blocked_until <= ?)
+                    """,
+                    (now - self._login_window_seconds, now),
+                )
+                attempt_rows = connection.execute(
+                    """
+                    SELECT attempt_key, failure_count, window_started_at, blocked_until
+                    FROM login_attempts WHERE attempt_key IN (?, ?)
+                    """,
+                    (client_attempt_key, identity_attempt_key),
+                ).fetchall()
+                attempts = {row[0]: row[1:] for row in attempt_rows}
+                if any(
+                    attempt is not None and attempt[2] is not None and now < attempt[2]
+                    for attempt in (
+                        attempts.get(client_attempt_key),
+                        attempts.get(identity_attempt_key),
+                    )
+                ):
                     return LoginResult(LoginStatus.LOCKED)
                 row = connection.execute(
                     """
@@ -319,21 +337,35 @@ class AuthStore:
                     """,
                     (normalized_username,),
                 ).fetchone()
-                supplied = self._password_bytes_for_login(password)
+                supplied, supplied_is_valid = self._password_bytes_for_login(password)
                 salt = row[2] if row is not None else _DUMMY_SALT
                 expected = row[3] if row is not None else _DUMMY_DIGEST
                 calculated = self._password_digest(supplied, salt)
+                digest_matches = hmac.compare_digest(calculated, expected)
                 valid = (
                     row is not None
                     and row[4] == 1
-                    and hmac.compare_digest(calculated, expected)
+                    and supplied_is_valid
+                    and digest_matches
                 )
                 if not valid:
-                    self._record_failure(connection, attempt_key, attempt, now)
+                    self._record_failure(
+                        connection,
+                        client_attempt_key,
+                        attempts.get(client_attempt_key),
+                        now,
+                    )
+                    self._record_failure(
+                        connection,
+                        identity_attempt_key,
+                        attempts.get(identity_attempt_key),
+                        now,
+                    )
                     return LoginResult(LoginStatus.INVALID)
 
                 connection.execute(
-                    "DELETE FROM login_attempts WHERE attempt_key = ?", (attempt_key,)
+                    "DELETE FROM login_attempts WHERE attempt_key = ?",
+                    (identity_attempt_key,),
                 )
                 existing_digest = _secret_digest(existing_session_token)
                 if existing_digest is not None:
@@ -485,13 +517,18 @@ class AuthStore:
         return encoded
 
     @staticmethod
-    def _password_bytes_for_login(password: object) -> bytes:
+    def _attempt_key(kind: str, *parts: str) -> bytes:
+        serialized = "\0".join((kind, *parts)).encode("utf-8")
+        return hashlib.sha256(serialized).digest()
+
+    @staticmethod
+    def _password_bytes_for_login(password: object) -> tuple[bytes, bool]:
         if type(password) is not str:
-            return b""
+            return b"", False
         encoded = password.encode("utf-8")
         if len(encoded) > MAX_PASSWORD_UTF8_BYTES:
-            return encoded[:MAX_PASSWORD_UTF8_BYTES]
-        return encoded
+            return encoded[:MAX_PASSWORD_UTF8_BYTES], False
+        return encoded, True
 
     @staticmethod
     def _password_digest(password: bytes, salt: bytes) -> bytes:
