@@ -627,6 +627,34 @@ def test_encoded_private_value_with_internal_slash_in_url_path_is_rejected():
     assert result.reason == "encoded_leakage"
 
 
+def test_folded_encoded_private_value_in_url_path_is_rejected():
+    private_value = "alice@example.com"
+    encoded_value = encoded(private_value)
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion(
+                f"Review https://example.org/{encoded_value[:2]} {encoded_value[2:]}"
+            )
+        ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize("question", ["What is AI?", "Go language", "Hi there"])
+def test_ordinary_two_letter_words_are_not_treated_as_opaque_encoding(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
 def test_benign_short_base64_shaped_text_is_allowed():
     result = build_safe_research_brief(
         records(ResearchQuestion("YWJj")),

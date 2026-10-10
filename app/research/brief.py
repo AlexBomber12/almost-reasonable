@@ -501,13 +501,13 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     )
     delimited_views = (*views, *path_suffixes)
     contiguous = tuple(
-        (match.group(0), True)
+        (match.group(0), len(match.group(0).rstrip("=")) >= 4)
         for view in delimited_views
         for match in _BASE64.finditer(view)
     )
     folded = tuple(
         (match.group(0).replace(" ", ""), False)
-        for view in views
+        for view in delimited_views
         for match in _FOLDED_BASE64.finditer(view)
     )
     return (*contiguous, *folded)
