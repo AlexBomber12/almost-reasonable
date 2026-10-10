@@ -327,6 +327,54 @@ def test_committed_inbound_events_remain_pending_until_outcome_acknowledges_them
         ).fetchone() == (NOW.isoformat(),)
 
 
+def test_pending_events_are_ordered_by_exact_receipt_instant(tmp_path):
+    store = service(tmp_path).store
+    older = event("received-older")
+    newer = event("received-newer")
+    older_received_at = datetime(2026, 10, 10, 12, tzinfo=UTC)
+    newer_received_at = datetime(2026, 10, 10, 8, tzinfo=timezone(-timedelta(hours=5)))
+    store.commit_poll_page(
+        correlation_id="poll-received-older",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor="cursor-received-older",
+        events=(older,),
+        now=older_received_at,
+        precommit_check=lambda: None,
+    )
+    store.commit_poll_page(
+        correlation_id="poll-received-newer",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor="cursor-received-older",
+        next_cursor="cursor-received-newer",
+        events=(newer,),
+        now=newer_received_at,
+        precommit_check=lambda: None,
+    )
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT received_at FROM threads_inbound_events WHERE event_id=?",
+            (newer.event_id,),
+        ).fetchone() == (newer_received_at.astimezone(UTC).isoformat(),)
+        connection.execute(
+            "UPDATE threads_inbound_events SET received_at=? WHERE event_id=?",
+            (older_received_at.isoformat(), older.event_id),
+        )
+        connection.execute(
+            "UPDATE threads_inbound_events SET received_at=? WHERE event_id=?",
+            (newer_received_at.isoformat(), newer.event_id),
+        )
+
+    assert store.pending_inbound_events("account-1", InboundKind.REPLY) == (
+        older,
+        newer,
+    )
+
+
 @pytest.mark.parametrize(
     "stream, limit",
     [

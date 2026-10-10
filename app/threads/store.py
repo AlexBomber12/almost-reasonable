@@ -1148,7 +1148,7 @@ class ThreadsStore:
                         event.parent_message_id,
                         event.occurred_at.astimezone(UTC).isoformat(),
                         event.content,
-                        now.isoformat(),
+                        now.astimezone(UTC).isoformat(),
                     ),
                 ).rowcount
                 if changed:
@@ -1372,7 +1372,8 @@ class ThreadsStore:
                 "AND outcome.inbound_kind=event.kind "
                 "AND outcome.inbound_event_id=event.event_id "
                 "AND outcome.outcome='defer') "
-                "ORDER BY event.received_at, event.event_id LIMIT ?",
+                "ORDER BY threads_utc_timestamp(event.received_at), "
+                "event.event_id LIMIT ?",
                 (account_ref, stream.value, limit),
             ).fetchall()
         return tuple(_inbound_event(row) for row in rows)
