@@ -150,7 +150,8 @@ Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic-link destinations, unsafe parents, existing outputs,
 schema mismatch, integrity failure, interruption, and SQLite busy/locked faults
 fail closed. The source inode remains pinned while schema validation and the
-online copy open the pathname, with identity checks around each open. Outputs
+online copy run; SQLite opens the source through that descriptor, and the
+resulting connection is checked against the same inode. Outputs
 are created with `O_EXCL|O_NOFOLLOW` and mode `0600`; metadata and readiness
 markers are written completely before `fsync`, including retrying short writes.
 Failure removes only files whose filesystem identity proves they were created by

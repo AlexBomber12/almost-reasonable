@@ -152,13 +152,21 @@ def _require_database_identity(source: _PinnedDatabase) -> None:
         raise BackupError("backup source identity changed")
 
 
+def _require_connection_identity(
+    connection: sqlite3.Connection, source: _PinnedDatabase
+) -> None:
+    database_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+    if not _path_matches_descriptor(database_path, source.descriptor):
+        raise BackupError("backup source connection identity changed")
+
+
 def _sqlite_copy(source: _PinnedDatabase, destination_descriptor: int) -> None:
     _require_database_identity(source)
-    source_connection = sqlite3.connect(
-        f"{source.path.as_uri()}?mode=ro", uri=True, timeout=0.1
-    )
+    source_target, source_uri = _database_target(source.descriptor)
+    source_connection = sqlite3.connect(source_target, uri=source_uri, timeout=0.1)
     with closing(source_connection):
         _require_database_identity(source)
+        _require_connection_identity(source_connection, source)
         destination_connection = sqlite3.connect(
             f"file:/proc/self/fd/{destination_descriptor}?mode=rw",
             uri=True,

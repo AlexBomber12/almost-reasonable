@@ -298,6 +298,43 @@ def test_backup_copy_cannot_follow_a_replaced_source_path(tmp_path, monkeypatch)
         ).fetchone() == ("substitute-source",)
 
 
+def test_backup_source_connection_rejects_aba_path_replacement(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source, "intended-source").close()
+    substitute = tmp_path / "substitute.sqlite3"
+    make_source(substitute, "substitute-source").close()
+    held_source = tmp_path / "held-source.sqlite3"
+    destination = tmp_path / "backup.sqlite3"
+    real_connect = recovery_module.sqlite3.connect
+    replaced = False
+
+    def replace_during_connect(target, *args, **kwargs):
+        nonlocal replaced
+        if not replaced and str(target).startswith("file:/proc/self/fd/"):
+            replaced = True
+            source.rename(held_source)
+            substitute.rename(source)
+            connection = real_connect(target, *args, **kwargs)
+            source.rename(substitute)
+            held_source.rename(source)
+            return connection
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr(recovery_module.sqlite3, "connect", replace_during_connect)
+    with pytest.raises(BackupError, match="connection identity"):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert not destination.exists()
+    with sqlite3.connect(source) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("intended-source",)
+    with sqlite3.connect(substitute) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("substitute-source",)
+
+
 @pytest.mark.parametrize("race", ["open", "identity"])
 def test_backup_source_pin_rejects_path_races(tmp_path, monkeypatch, race):
     source = tmp_path / "source.sqlite3"
@@ -505,6 +542,13 @@ def test_backup_classifies_busy_without_leaking_sqlite_details(
     make_source(source).close()
 
     class BusyConnection:
+        def execute(self, statement):
+            assert statement == "PRAGMA database_list"
+            return self
+
+        def fetchone(self):
+            return (0, "main", str(source))
+
         def backup(self, _destination, *, pages, progress, sleep):
             assert pages == recovery_module.BACKUP_PAGE_BATCH
             assert sleep == recovery_module.BACKUP_BUSY_SLEEP_SECONDS
