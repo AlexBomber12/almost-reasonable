@@ -103,6 +103,25 @@ docker image inspect almost-reasonable-openai-worker-stage0:local \
 
 Expected image user: `11001:11001`. No build argument or secret is accepted.
 
+Before starting either service, verify that both non-root identities can traverse
+the package directories, read every copied module, and import the worker and probe.
+These checks keep the root filesystem read-only and networking disabled. They are
+also required when the build context came from a checkout whose source files were
+mode `0600`; the image must normalize their modes without changing the checkout.
+
+```console
+docker run --rm --network none --read-only --user 11001:11001 \
+  --entrypoint python almost-reasonable-openai-worker-stage0:local -B -c \
+  'import os; from pathlib import Path; directories=[Path("/opt/almost-reasonable/app"), Path("/opt/almost-reasonable/app/core"), Path("/opt/almost-reasonable/app/trusted"), Path("/opt/almost-reasonable/app/ops")]; files=[path for directory in directories for path in directory.glob("*.py")]; assert all(os.access(path, os.X_OK) for path in directories); assert files and all(os.access(path, os.R_OK) for path in files); import app.trusted.openai_worker_server; import app.ops.openai_worker_probe; print("worker image imports readable")'
+docker run --rm --network none --read-only --user 11002:11002 \
+  --entrypoint python almost-reasonable-openai-worker-stage0:local -B -c \
+  'import os; from pathlib import Path; directories=[Path("/opt/almost-reasonable/app"), Path("/opt/almost-reasonable/app/core"), Path("/opt/almost-reasonable/app/trusted"), Path("/opt/almost-reasonable/app/ops")]; files=[path for directory in directories for path in directory.glob("*.py")]; assert all(os.access(path, os.X_OK) for path in directories); assert files and all(os.access(path, os.R_OK) for path in files); import app.trusted.openai_worker_server; import app.ops.openai_worker_probe; print("planner image imports readable")'
+```
+
+Both commands must exit zero and print their respective success line. A permission
+failure or import error fails the image validation; do not compensate by running
+the image as root or by changing source-file permissions in the checkout.
+
 ## G. Validate the rendered Compose configuration
 
 ```console

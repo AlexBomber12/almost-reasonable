@@ -5,9 +5,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /opt/almost-reasonable
 
-COPY app/core/agent_proposals.py app/core/context.py app/core/core_self.py app/core/events.py app/core/model_contract.py app/core/openai_worker_client.py app/core/provider_contract.py app/core/provider_spend.py app/core/store.py /opt/almost-reasonable/app/core/
-COPY app/trusted/openai_gateway.py app/trusted/openai_transport.py app/trusted/openai_worker_protocol.py app/trusted/openai_worker_server.py /opt/almost-reasonable/app/trusted/
-COPY app/ops/openai_worker_probe.py /opt/almost-reasonable/app/ops/
+COPY --chmod=0644 app/core/agent_proposals.py app/core/context.py app/core/core_self.py app/core/events.py app/core/model_contract.py app/core/openai_worker_client.py app/core/provider_contract.py app/core/provider_spend.py app/core/store.py /opt/almost-reasonable/app/core/
+COPY --chmod=0644 app/trusted/openai_gateway.py app/trusted/openai_transport.py app/trusted/openai_worker_protocol.py app/trusted/openai_worker_server.py /opt/almost-reasonable/app/trusted/
+COPY --chmod=0644 app/ops/openai_worker_probe.py /opt/almost-reasonable/app/ops/
+
+RUN chmod 0755 /opt/almost-reasonable/app /opt/almost-reasonable/app/core /opt/almost-reasonable/app/trusted /opt/almost-reasonable/app/ops
 
 USER 11001:11001
 

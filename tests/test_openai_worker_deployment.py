@@ -34,6 +34,41 @@ def test_stage0_image_is_pinned_minimal_nonroot_and_bytecode_free():
     assert "OPENAI_API_KEY" not in dockerfile
 
 
+def test_stage0_image_normalizes_source_and_directory_permissions_before_user():
+    dockerfile = deployment_text(DOCKERFILE)
+    copy_lines = [line for line in dockerfile.splitlines() if line.startswith("COPY ")]
+    required_directories = (
+        "/opt/almost-reasonable/app",
+        "/opt/almost-reasonable/app/core",
+        "/opt/almost-reasonable/app/trusted",
+        "/opt/almost-reasonable/app/ops",
+    )
+
+    assert len(copy_lines) == 3
+    assert all(line.startswith("COPY --chmod=0644 app/") for line in copy_lines)
+    permission_line = "RUN chmod 0755 " + " ".join(required_directories)
+    assert permission_line in dockerfile
+    assert dockerfile.index(permission_line) < dockerfile.index("USER 11001:11001")
+
+
+def test_stage0_runbook_checks_nonroot_image_readability_and_imports():
+    runbook = deployment_text(RUNBOOK)
+
+    for user in ("11001:11001", "11002:11002"):
+        assert f"--user {user}" in runbook
+    for module in (
+        "app.trusted.openai_worker_server",
+        "app.ops.openai_worker_probe",
+    ):
+        assert module in runbook
+    assert "--network none" in runbook
+    assert "--read-only" in runbook
+    assert "os.R_OK" in runbook
+    assert "os.X_OK" in runbook
+    assert "mode `0600`" in runbook
+    assert "without changing the checkout" in runbook
+
+
 def test_stage0_compose_has_only_isolated_worker_and_probe():
     compose = deployment_text(COMPOSE)
     worker = service_block(compose, "openai-worker", "planner-probe")
