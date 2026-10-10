@@ -137,14 +137,18 @@ class OpenAIWorkerServer:
                         io_timeout=self._config.io_timeout_seconds,
                     )
                 )
-                result = self._gateway.submit(
-                    request.model_request,
-                    correlation_id=request.correlation_id,
-                    operation_id=request.operation_id,
-                )
-                response = _gateway_response(result)
             except (TypeError, ValueError):
                 response = WorkerResponse(IPC_REJECTED, 0, _INVALID_REQUEST_RU, None)
+            else:
+                try:
+                    result = self._gateway.submit(
+                        request.model_request,
+                        correlation_id=request.correlation_id,
+                        operation_id=request.operation_id,
+                    )
+                except (TypeError, ValueError):
+                    return
+                response = _gateway_response(result)
             try:
                 send_frame(
                     connection,

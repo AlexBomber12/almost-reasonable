@@ -17,6 +17,7 @@ from app.core.store import EventStore
 from app.trusted.openai_gateway import GatewayOutcome, TrustedOpenAIGateway
 from app.trusted.openai_transport import (
     FakeOpenAITransport,
+    OpenAITransportError,
     ProviderContent,
     ProviderOutput,
     ProviderResponse,
@@ -196,6 +197,43 @@ def test_invalid_provider_proposal_returns_sanitized_outcome_without_validation(
     assert result.outcome == "invalid_proposal"
     assert result.validation is None
     assert len(transport.calls) == 1
+
+
+def test_post_provider_gateway_fault_closes_with_uncertain_client_outcome(tmp_path):
+    directory = secure_directory(tmp_path)
+    state = ProviderStateStore(EventStore(directory / "provider.sqlite3"))
+    transport = FakeOpenAITransport([OpenAITransportError(status_code=503)])
+    config = replace(
+        default_openai_provider_config(),
+        deployment_stage=DeploymentStage.STAGE_1,
+        paid_calls_enabled=True,
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        TrustedOpenAIGateway(
+            store=state,
+            transport=transport,
+            config=config,
+            sleeper=lambda _delay: None,
+            jitter=lambda _attempt, _maximum: -1.0,
+        ),
+    )
+    server.start()
+    thread = run_once(server)
+    try:
+        result = OpenAIWorkerClient(directory / "worker.sock").infer(
+            request(directory),
+            operation_id="operation-a",
+            correlation_id="correlation-a",
+        )
+    finally:
+        thread.join(timeout=2)
+        server.close()
+
+    assert result.outcome == "outcome_uncertain"
+    assert len(transport.calls) == 1
+    assert state.usage_attempt_count() == 1
+    assert state.usage_attempt("operation-a:1").outcome == "server_error"
 
 
 @pytest.mark.parametrize(
