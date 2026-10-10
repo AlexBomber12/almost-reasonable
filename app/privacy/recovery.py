@@ -679,15 +679,23 @@ class QuarantinedRestore:
             _cleanup_created(marker_files)
             raise
         try:
-            self.ledger.record_restore(
+            recorded = self.ledger.record_restore(
                 restore_id,
                 restored_at,
                 RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
                 "reconciliation_complete",
+                expected_generation=snapshot.generation,
             )
         except BaseException:
             _cleanup_created(marker_files)
             raise
+        if not recorded:
+            _cleanup_created(marker_files)
+            return self._blocked_restore(
+                restore_id,
+                restored_at,
+                "privacy_ledger_changed_during_restore",
+            )
         _close_owned(marker_files)
         return RestoreResult(
             restore_id,

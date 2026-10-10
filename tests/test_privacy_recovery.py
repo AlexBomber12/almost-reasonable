@@ -808,6 +808,54 @@ def test_readiness_revalidates_every_bound_input(tmp_path, monkeypatch, mutation
         assert sidecar.read_text() == "concurrent-sidecar"
 
 
+def test_restore_generation_check_is_atomic_with_eligibility_record(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    real_record_restore = ledger.record_restore
+    generation_advanced = False
+
+    def advance_before_record(*args, **kwargs):
+        nonlocal generation_advanced
+        if args[2] is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION:
+            assert generation_advanced is False
+            generation_advanced = True
+            ledger.insert_deletion(
+                DeletionRequest(
+                    "delete-at-eligibility",
+                    "participant-a",
+                    "event-at-eligibility",
+                    ContentCategory.PRIVATE_PAYLOAD,
+                    NOW,
+                    "actor-a",
+                    "delete-at-eligibility-correlation",
+                    "auth-a",
+                ),
+                DeletionDisposition.PENDING,
+                "awaiting_erasure",
+            )
+        return real_record_restore(*args, **kwargs)
+
+    monkeypatch.setattr(ledger, "record_restore", advance_before_record)
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert generation_advanced is True
+    assert result.disposition is RestoreDisposition.BLOCKED
+    assert result.reason == "privacy_ledger_changed_during_restore"
+    assert not Path(f"{quarantine}.ready.json").exists()
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute(
+            "SELECT disposition, reason FROM restore_outcomes"
+        ).fetchall() == [("blocked", "privacy_ledger_changed_during_restore")]
+
+
 def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
     tmp_path, monkeypatch
 ):
@@ -1290,7 +1338,7 @@ def test_restore_does_not_publish_readiness_when_outcome_recording_fails(
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
 
-    def fail_record(*_args):
+    def fail_record(*_args, **_kwargs):
         raise RuntimeError("restore outcome unavailable")
 
     monkeypatch.setattr(ledger, "record_restore", fail_record)
@@ -1498,6 +1546,66 @@ def test_restore_outcomes_reject_untrusted_fields(
 
     with pytest.raises(ValueError, match=message):
         ledger.record_restore(restore_id, occurred_at, disposition, reason)
+
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM restore_outcomes"
+        ).fetchone() == (0,)
+
+
+@pytest.mark.parametrize(
+    ("disposition", "reason", "expected_generation"),
+    [
+        (
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            "reconciliation_complete",
+            None,
+        ),
+        (
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            "reconciliation_complete",
+            True,
+        ),
+        (
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            "reconciliation_complete",
+            -1,
+        ),
+        (
+            RestoreDisposition.BLOCKED,
+            "quarantine_integrity_failed",
+            0,
+        ),
+    ],
+)
+def test_restore_outcomes_reject_invalid_generation_guards(
+    tmp_path, disposition, reason, expected_generation
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(ValueError, match="restore generation"):
+        ledger.record_restore(
+            "restore-00000000-0000-4000-8000-000000000001",
+            NOW,
+            disposition,
+            reason,
+            expected_generation=expected_generation,
+        )
+
+
+def test_restore_eligibility_fails_when_control_generation_is_missing(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute("DELETE FROM privacy_control_generation")
+
+    with pytest.raises(RuntimeError, match="generation"):
+        ledger.record_restore(
+            "restore-00000000-0000-4000-8000-000000000001",
+            NOW,
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            "reconciliation_complete",
+            expected_generation=0,
+        )
 
     with sqlite3.connect(ledger.path) as connection:
         assert connection.execute(

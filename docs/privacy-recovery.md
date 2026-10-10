@@ -103,15 +103,18 @@ a complete typed `ErasureReport` and records `applied:erasure_applied`.
 Every committed deletion or revocation advances a monotonic privacy-control
 generation. Restore reconciles one transactionally consistent snapshot, blocks
 if that generation changes during its work, and writes the reconciled generation
-into both its typed result and readiness marker. Immediately before an eventual
-database switch, an integration must atomically fence the ledger generation and
-bind the verified quarantine path/inode, readiness marker, and sanitized outcome
-to that exact switch. It must also hold an exclusive database-writer fence,
-reject WAL/shared-memory sidecars, and revalidate the sealed file's size, `0400`
-mode, and SHA-256 digest from the readiness marker before switching. This package
-deliberately provides no activation operation until that deployment-specific
-boundary exists. The readiness file and typed eligibility result are not
-activation authority and become stale if any bound value changes.
+into both its typed result and readiness marker. Successful eligibility insertion
+rechecks that generation under the same privacy-ledger write transaction, so a
+new control cannot race between the final check and the outcome record.
+Immediately before an eventual database switch, an integration must atomically
+fence the ledger generation and bind the verified quarantine path/inode,
+readiness marker, and sanitized outcome to that exact switch. It must also hold
+an exclusive database-writer fence, reject WAL/shared-memory sidecars, and
+revalidate the sealed file's size, `0400` mode, and SHA-256 digest from the
+readiness marker before switching. This package deliberately provides no
+activation operation until that deployment-specific boundary exists. The
+readiness file and typed eligibility result are not activation authority and
+become stale if any bound value changes.
 
 Deletion has five operator-visible dispositions: `pending`, `applied`,
 `incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use

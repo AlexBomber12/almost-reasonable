@@ -936,7 +936,9 @@ class PrivacyLedger:
         occurred_at: datetime,
         disposition: RestoreDisposition,
         reason: str,
-    ) -> None:
+        *,
+        expected_generation: int | None = None,
+    ) -> bool:
         require_token(restore_id, "restore id")
         try:
             parsed_id = UUID(restore_id.removeprefix("restore-"))
@@ -968,8 +970,23 @@ class PrivacyLedger:
             raise ValueError("invalid restore disposition")
         if reason not in allowed_reasons[disposition]:
             raise ValueError("invalid restore reason")
+        if disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION:
+            if type(expected_generation) is not int or expected_generation < 0:
+                raise ValueError("invalid restore generation")
+        elif expected_generation is not None:
+            raise ValueError("invalid restore generation")
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if expected_generation is not None:
+                generation = connection.execute(
+                    "SELECT generation FROM privacy_control_generation WHERE singleton=1"
+                ).fetchone()
+                if generation is None:
+                    raise RuntimeError("privacy control generation is unavailable")
+                if generation != (expected_generation,):
+                    return False
             connection.execute(
                 "INSERT INTO restore_outcomes VALUES(?,?,?,?)",
                 (restore_id, _stamp(occurred_at), disposition.value, reason),
             )
+        return True
