@@ -77,8 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-3 SQLite database in WAL mode, including atomic migrations
-from versions 1 and 2; it does not alter the main
+separate version-6 SQLite database in WAL mode, including atomic migrations
+through version 6 from every earlier schema version; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -142,8 +142,9 @@ The closed lifecycle is:
    pre-dispatch attempts.
 
 The service resolves current approval and privacy state when an item becomes
-ready, again before entering `sending`, and immediately before both container
-creation and publication. Each effect check occurs after its final durable
+ready, rechecks both after acquiring SQLite's writer lock for the `ready`
+transition, checks again before entering `sending`, and immediately before both
+container creation and publication. Each effect check occurs after its final durable
 dispatch-marker write, so no intervening store update creates an authorization
 gap before the provider call. After all potentially blocking authorization
 lookups, the accepted approval is validated again against a freshly sampled
@@ -243,8 +244,11 @@ identity in their foreign key.
 
 The loop has hard page, event, and elapsed-time limits. Before an atomic page
 commit it passes only the remaining time budget to SQLite's lock wait, then
-checks the deadline after acquiring the write transaction and again before the
-cursor write; an expired transaction rolls back the page. It rejects
+checks the deadline and live polling policy after acquiring the write
+transaction and checks the deadline again before the cursor write; an expired
+or newly unauthorized transaction rolls back every event and the cursor. The
+same commit records a bounded account actor, action, and caller correlation even
+for empty or duplicate-only successful polls. It rejects
 account/source mismatches, invalid source evidence, stale cursor commits,
 repeated cursors, and oversized pages. Public text is inert data even when it
 claims to be Meta, the owner, or an administrator. No inbound event calls a

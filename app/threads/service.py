@@ -167,6 +167,17 @@ class ThreadsService:
                 require_duplicate_ack=item.replacement_of is not None,
                 purpose=ApprovalPurpose.PUBLICATION,
             )
+            return self.store.transition(
+                operation_id,
+                OutboxState.READY,
+                reason="operator_and_policy_approved",
+                now=now,
+                approval_reference=current_approval.reference,
+                approval_status="approved",
+                precommit_check=lambda: self._recheck_immediately_before_effect(
+                    item, approval, self.utc_now()
+                ),
+            )
         except (PolicyDeniedError, ValueError):
             self._audit_policy_denial(
                 item,
@@ -175,14 +186,6 @@ class ThreadsService:
                 expected_state=OutboxState.AWAITING_APPROVAL,
             )
             raise
-        return self.store.transition(
-            operation_id,
-            OutboxState.READY,
-            reason="operator_and_policy_approved",
-            now=now,
-            approval_reference=current_approval.reference,
-            approval_status="approved",
-        )
 
     def cancel(self, operation_id: str, *, now: datetime) -> OutboxItem:
         self._require_owned_item(operation_id)
@@ -620,6 +623,7 @@ class ThreadsService:
             raise PollingError("poll time limit reached")
         try:
             inserted, duplicates = self.store.commit_poll_page(
+                correlation_id=correlation_id,
                 account_ref=self.policy.account_ref,
                 stream=stream,
                 verified_source_ref=self.simulator.source_ref,
@@ -629,9 +633,13 @@ class ThreadsService:
                 now=now,
                 lock_wait_seconds=min(5.0, remaining),
                 deadline_check=lambda: (self.clock() - started < timeout_seconds),
+                precommit_check=lambda: self._check_poll_policy(stream),
             )
         except PollCommitDeadlineError as error:
             raise PollingError("poll time limit reached") from error
+        except PolicyDeniedError:
+            self._record_poll_policy_denial(stream, correlation_id, now)
+            raise
         return PollResult(tuple(inserted), duplicates, pages, final_cursor)
 
     def stage_3_readiness(self) -> tuple[str, ...]:
@@ -891,14 +899,19 @@ class ThreadsService:
         try:
             self._check_poll_policy(stream)
         except PolicyDeniedError:
-            self.store.record_poll_policy_denial(
-                correlation_id=correlation_id,
-                account_ref=self.policy.account_ref,
-                stream=stream,
-                actor_reference=(
-                    f"account-{content_fingerprint(self.policy.account_ref)[:16]}"
-                ),
-                reason="inbound_polling_capability_unavailable",
-                now=now,
-            )
+            self._record_poll_policy_denial(stream, correlation_id, now)
             raise
+
+    def _record_poll_policy_denial(
+        self, stream: InboundKind, correlation_id: str, now: datetime
+    ) -> None:
+        self.store.record_poll_policy_denial(
+            correlation_id=correlation_id,
+            account_ref=self.policy.account_ref,
+            stream=stream,
+            actor_reference=(
+                f"account-{content_fingerprint(self.policy.account_ref)[:16]}"
+            ),
+            reason="inbound_polling_capability_unavailable",
+            now=now,
+        )

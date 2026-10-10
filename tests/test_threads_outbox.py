@@ -174,6 +174,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
         connection.execute("DROP TABLE threads_unknown_effect_locks")
         connection.execute("DROP TABLE threads_operator_decisions")
         connection.execute("DROP TABLE threads_poll_policy_denials")
+        connection.execute("DROP TABLE threads_poll_actions")
         connection.execute(
             "ALTER TABLE threads_inbound_events DROP COLUMN correlation_id"
         )
@@ -185,7 +186,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (5,)
+        ).fetchone() == (6,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -221,6 +222,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert "threads_account_effect_locks" in tables
     assert "threads_operator_decisions" in tables
     assert "threads_poll_policy_denials" in tables
+    assert "threads_poll_actions" in tables
     assert store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
 
 
@@ -303,6 +305,42 @@ def test_approval_is_separate_and_rechecked_for_mismatch_revocation_and_expiry(
     for approval in cases:
         with pytest.raises(ValueError):
             service.authorize("operation-1", approval, now=NOW)
+
+
+def test_ready_transition_rechecks_authorization_inside_write_transaction(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    approval = trust_approval(service, approve())
+    provider = service.authorization_provider
+    current_snapshot = provider.current_publication_authorization
+    checks = 0
+
+    def revoke_at_precommit(**kwargs):
+        nonlocal checks
+        checks += 1
+        if checks == 2:
+            provider.set_approval(approve(revoked=True))
+        return current_snapshot(**kwargs)
+
+    monkeypatch.setattr(
+        provider, "current_publication_authorization", revoke_at_precommit
+    )
+    with pytest.raises(ValueError, match="revoked"):
+        service.authorize("operation-1", approval, now=NOW)
+
+    assert checks == 2
+    assert service.store.get("operation-1").state is OutboxState.AWAITING_APPROVAL
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT reason FROM threads_outbox_transitions "
+            "WHERE operation_id='operation-1' ORDER BY revision DESC LIMIT 1"
+        ).fetchone() == (
+            f"authorize_policy_denied_approval-"
+            f"{content_fingerprint(approval.reference)[:16]}",
+        )
 
 
 @pytest.mark.parametrize(

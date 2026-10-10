@@ -23,7 +23,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 MAX_PENDING_INBOUND_EVENTS = 100
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
@@ -145,6 +145,15 @@ class ThreadsStore:
                     version = 4
                 if version == 4:
                     for statement in _MIGRATION_4_TO_5.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (5,),
+                    )
+                    version = 5
+                if version == 5:
+                    for statement in _MIGRATION_5_TO_6.split(";"):
                         if statement.strip():
                             connection.execute(statement)
                     connection.execute(
@@ -911,6 +920,7 @@ class ThreadsStore:
     def commit_poll_page(
         self,
         *,
+        correlation_id: str,
         account_ref: str,
         stream: InboundKind,
         verified_source_ref: str,
@@ -920,7 +930,9 @@ class ThreadsStore:
         now: datetime,
         lock_wait_seconds: float = 5.0,
         deadline_check: Callable[[], bool] | None = None,
+        precommit_check: Callable[[], None],
     ) -> tuple[tuple[InboundEvent, ...], int]:
+        require_reference("poll correlation ID", correlation_id)
         require_reference("account reference", account_ref)
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
@@ -935,6 +947,8 @@ class ThreadsStore:
             raise ValueError("invalid poll commit lock wait")
         if deadline_check is not None and not callable(deadline_check):
             raise ValueError("invalid poll commit deadline check")
+        if not callable(precommit_check):
+            raise ValueError("invalid poll commit authorization fence")
         page = tuple(events)
         busy_timeout_ms = max(1, int(lock_wait_seconds * 1000))
         with self._open(busy_timeout_ms=busy_timeout_ms) as connection:
@@ -948,6 +962,7 @@ class ThreadsStore:
                 raise
             if deadline_check is not None and not deadline_check():
                 raise PollCommitDeadlineError("poll page commit deadline reached")
+            precommit_check()
             row = connection.execute(
                 "SELECT cursor FROM threads_poll_cursors WHERE account_ref=? AND stream=?",
                 (account_ref, stream.value),
@@ -1012,6 +1027,33 @@ class ThreadsStore:
                     now.isoformat(),
                 ),
             )
+            actor_reference = f"account-{content_fingerprint(account_ref)[:16]}"
+            changed = connection.execute(
+                "INSERT OR IGNORE INTO threads_poll_actions "
+                "(correlation_id, account_ref, stream, actor_reference, action, "
+                "occurred_at) VALUES (?, ?, ?, ?, 'poll_committed', ?)",
+                (
+                    correlation_id,
+                    account_ref,
+                    stream.value,
+                    actor_reference,
+                    now.isoformat(),
+                ),
+            ).rowcount
+            if changed == 0:
+                existing = connection.execute(
+                    "SELECT account_ref, stream, actor_reference, action "
+                    "FROM threads_poll_actions WHERE correlation_id=?",
+                    (correlation_id,),
+                ).fetchone()
+                expected = (
+                    account_ref,
+                    stream.value,
+                    actor_reference,
+                    "poll_committed",
+                )
+                if existing is None or tuple(existing) != expected:
+                    raise ThreadsStoreError("poll action correlation conflict")
             connection.commit()
         return tuple(inserted), duplicates
 
@@ -1291,6 +1333,14 @@ CREATE TABLE threads_poll_policy_denials (
     reason TEXT NOT NULL,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE threads_poll_actions (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action='poll_committed'),
+    occurred_at TEXT NOT NULL
+);
 CREATE TABLE threads_conversation_outcomes (
     outcome_id TEXT PRIMARY KEY,
     correlation_id TEXT NOT NULL,
@@ -1432,5 +1482,17 @@ WHERE EXISTS (
     WHERE outcome.inbound_account_ref=threads_inbound_events.account_ref
       AND outcome.inbound_kind=threads_inbound_events.kind
       AND outcome.inbound_event_id=threads_inbound_events.event_id
+);
+"""
+
+
+_MIGRATION_5_TO_6 = """
+CREATE TABLE threads_poll_actions (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action='poll_committed'),
+    occurred_at TEXT NOT NULL
 );
 """

@@ -141,6 +141,73 @@ def test_interruption_before_atomic_commit_replays_page_without_loss(tmp_path):
     assert recovered.final_cursor == "mention-cursor-1"
 
 
+def test_successful_empty_poll_persists_idempotent_correlated_action_audit(tmp_path):
+    threads = service(tmp_path)
+    for poll_time in (NOW, NOW.replace(minute=NOW.minute + 1)):
+        result = threads.poll(
+            InboundKind.REPLY,
+            now=poll_time,
+            correlation_id="poll-empty-success",
+        )
+        assert result.new_events == ()
+
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*), correlation_id, account_ref, stream, "
+            "actor_reference, action, occurred_at FROM threads_poll_actions"
+        ).fetchone() == (
+            1,
+            "poll-empty-success",
+            "account-1",
+            "reply",
+            f"account-{content_fingerprint('account-1')[:16]}",
+            "poll_committed",
+            NOW.isoformat(),
+        )
+
+
+def test_poll_commit_rechecks_policy_inside_write_transaction(tmp_path, monkeypatch):
+    threads = service(tmp_path)
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor="cursor-never-committed",
+        events=(event("policy-revoked-at-commit"),),
+    )
+    commit_poll_page = threads.store.commit_poll_page
+
+    def enable_stop_after_writer_lock(**kwargs):
+        policy_fence = kwargs["precommit_check"]
+
+        def stopped_policy_fence():
+            threads.policy.emergency_stop = True
+            policy_fence()
+
+        return commit_poll_page(**(kwargs | {"precommit_check": stopped_policy_fence}))
+
+    monkeypatch.setattr(
+        threads.store, "commit_poll_page", enable_stop_after_writer_lock
+    )
+    with pytest.raises(PolicyDeniedError, match="unavailable"):
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW,
+            correlation_id="poll-policy-revoked-at-commit",
+        )
+
+    assert threads.store.cursor("account-1", InboundKind.REPLY) is None
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_inbound_events"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_poll_actions"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT correlation_id FROM threads_poll_policy_denials"
+        ).fetchone() == ("poll-policy-revoked-at-commit",)
+
+
 def test_committed_inbound_events_remain_pending_until_outcome_acknowledges_them(
     tmp_path,
 ):
@@ -238,6 +305,7 @@ def test_pagination_loop_is_detected_before_cursor_or_event_commit(tmp_path):
 def test_stale_cursor_page_cannot_overwrite_newer_progress(tmp_path):
     threads = service(tmp_path)
     threads.store.commit_poll_page(
+        correlation_id="poll-new-progress",
         account_ref="account-1",
         stream=InboundKind.REPLY,
         verified_source_ref="meta-simulator-v1",
@@ -245,9 +313,11 @@ def test_stale_cursor_page_cannot_overwrite_newer_progress(tmp_path):
         next_cursor="cursor-new",
         events=(),
         now=NOW,
+        precommit_check=lambda: None,
     )
     with pytest.raises(CursorConflictError):
         threads.store.commit_poll_page(
+            correlation_id="poll-stale-progress",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             verified_source_ref="meta-simulator-v1",
@@ -255,6 +325,7 @@ def test_stale_cursor_page_cannot_overwrite_newer_progress(tmp_path):
             next_cursor="cursor-stale",
             events=(),
             now=NOW,
+            precommit_check=lambda: None,
         )
 
 
@@ -263,6 +334,7 @@ def test_poll_page_commit_deadline_rolls_back_events_and_cursor(tmp_path):
     checks = iter((True, False))
     with pytest.raises(ThreadsStoreError, match="deadline"):
         store.commit_poll_page(
+            correlation_id="poll-deadline",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             verified_source_ref="meta-simulator-v1",
@@ -272,6 +344,7 @@ def test_poll_page_commit_deadline_rolls_back_events_and_cursor(tmp_path):
             now=NOW,
             lock_wait_seconds=0.1,
             deadline_check=lambda: next(checks),
+            precommit_check=lambda: None,
         )
     assert store.cursor("account-1", InboundKind.REPLY) is None
     with sqlite3.connect(store.database) as connection:
@@ -280,6 +353,7 @@ def test_poll_page_commit_deadline_rolls_back_events_and_cursor(tmp_path):
         ).fetchone() == (0,)
     with pytest.raises(ThreadsStoreError, match="deadline"):
         store.commit_poll_page(
+            correlation_id="poll-deadline",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             verified_source_ref="meta-simulator-v1",
@@ -289,6 +363,7 @@ def test_poll_page_commit_deadline_rolls_back_events_and_cursor(tmp_path):
             now=NOW,
             lock_wait_seconds=0.1,
             deadline_check=lambda: False,
+            precommit_check=lambda: None,
         )
 
 
@@ -299,6 +374,7 @@ def test_poll_page_lock_wait_is_bounded_by_remaining_budget(tmp_path):
     try:
         with pytest.raises(ThreadsStoreError, match="lock-wait budget"):
             store.commit_poll_page(
+                correlation_id="poll-blocked",
                 account_ref="account-1",
                 stream=InboundKind.REPLY,
                 verified_source_ref="meta-simulator-v1",
@@ -308,6 +384,7 @@ def test_poll_page_lock_wait_is_bounded_by_remaining_budget(tmp_path):
                 now=NOW,
                 lock_wait_seconds=0.001,
                 deadline_check=lambda: True,
+                precommit_check=lambda: None,
             )
     finally:
         blocker.rollback()
@@ -331,6 +408,7 @@ def test_poll_page_preserves_non_locking_database_errors(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_open", lambda **_kwargs: BrokenConnection())
     with pytest.raises(sqlite3.OperationalError, match="disk I/O"):
         store.commit_poll_page(
+            correlation_id="poll-disk-error",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             verified_source_ref="meta-simulator-v1",
@@ -340,6 +418,7 @@ def test_poll_page_preserves_non_locking_database_errors(tmp_path, monkeypatch):
             now=NOW,
             lock_wait_seconds=0.1,
             deadline_check=lambda: True,
+            precommit_check=lambda: None,
         )
 
 
@@ -458,6 +537,7 @@ def test_inbound_identity_is_scoped_to_account_and_stream(tmp_path):
         ("account-1", InboundKind.MENTION, mention),
     ):
         inserted, duplicates = store.commit_poll_page(
+            correlation_id=f"poll-{account_ref}-{stream.value}",
             account_ref=account_ref,
             stream=stream,
             verified_source_ref="meta-simulator-v1",
@@ -465,6 +545,7 @@ def test_inbound_identity_is_scoped_to_account_and_stream(tmp_path):
             next_cursor=None,
             events=(inbound,),
             now=NOW,
+            precommit_check=lambda: None,
         )
         assert inserted == (inbound,)
         assert duplicates == 0
@@ -484,6 +565,7 @@ def test_conflicting_inbound_identity_rolls_back_event_and_cursor(tmp_path):
     store = ThreadsStore(tmp_path / "threads.sqlite3")
     original = event("shared")
     store.commit_poll_page(
+        correlation_id="poll-original",
         account_ref="account-1",
         stream=InboundKind.REPLY,
         verified_source_ref="meta-simulator-v1",
@@ -491,9 +573,11 @@ def test_conflicting_inbound_identity_rolls_back_event_and_cursor(tmp_path):
         next_cursor=None,
         events=(original,),
         now=NOW,
+        precommit_check=lambda: None,
     )
     with pytest.raises(ThreadsStoreError, match="identity conflict"):
         store.commit_poll_page(
+            correlation_id="poll-conflicting",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             verified_source_ref="meta-simulator-v1",
@@ -501,6 +585,7 @@ def test_conflicting_inbound_identity_rolls_back_event_and_cursor(tmp_path):
             next_cursor="cursor-conflict",
             events=(replace(original, content="Подмененное содержание"),),
             now=NOW,
+            precommit_check=lambda: None,
         )
     assert store.cursor("account-1", InboundKind.REPLY) is None
     with sqlite3.connect(store.database) as connection:
@@ -509,6 +594,36 @@ def test_conflicting_inbound_identity_rolls_back_event_and_cursor(tmp_path):
             "AND kind=? AND event_id=?",
             ("account-1", "reply", "event-shared"),
         ).fetchone() == (original.content,)
+
+
+def test_poll_action_correlation_conflict_rolls_back_page(tmp_path):
+    store = ThreadsStore(tmp_path / "threads.sqlite3")
+    store.commit_poll_page(
+        correlation_id="poll-shared-correlation",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    with pytest.raises(ThreadsStoreError, match="action correlation conflict"):
+        store.commit_poll_page(
+            correlation_id="poll-shared-correlation",
+            account_ref="account-1",
+            stream=InboundKind.MENTION,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor="mention-conflict",
+            events=(event("mention-conflict", kind=InboundKind.MENTION),),
+            now=NOW,
+            precommit_check=lambda: None,
+        )
+
+    assert store.cursor("account-1", InboundKind.MENTION) is None
+    assert store.pending_inbound_events("account-1", InboundKind.MENTION) == ()
 
 
 def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
@@ -716,6 +831,7 @@ def test_inbound_event_schema_fails_closed(tmp_path, changed):
     threads = service(tmp_path)
     with pytest.raises(ValueError):
         threads.store.commit_poll_page(
+            correlation_id="poll-invalid-event",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             verified_source_ref="meta-simulator-v1",
@@ -723,12 +839,14 @@ def test_inbound_event_schema_fails_closed(tmp_path, changed):
             next_cursor=None,
             events=(changed,),
             now=NOW,
+            precommit_check=lambda: None,
         )
 
 
 def test_cursor_commit_validates_boundary_arguments(tmp_path):
     store = service(tmp_path).store
     cases = [
+        {"correlation_id": "bad value"},
         {"account_ref": "bad value"},
         {"stream": "reply"},
         {"verified_source_ref": "bad value"},
@@ -738,8 +856,10 @@ def test_cursor_commit_validates_boundary_arguments(tmp_path):
         {"lock_wait_seconds": 0},
         {"lock_wait_seconds": True},
         {"deadline_check": object()},
+        {"precommit_check": object()},
     ]
     values = {
+        "correlation_id": "poll-boundary",
         "account_ref": "account-1",
         "stream": InboundKind.REPLY,
         "verified_source_ref": "meta-simulator-v1",
@@ -747,6 +867,7 @@ def test_cursor_commit_validates_boundary_arguments(tmp_path):
         "next_cursor": None,
         "events": (),
         "now": NOW,
+        "precommit_check": lambda: None,
     }
     for changes in cases:
         with pytest.raises(ValueError):
@@ -786,6 +907,7 @@ def test_malicious_public_text_is_bounded_data_not_authority_or_global_stop(tmp_
 def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, resume):
     threads = service(tmp_path)
     threads.store.commit_poll_page(
+        correlation_id="poll-conversation-decision",
         account_ref="account-1",
         stream=InboundKind.REPLY,
         verified_source_ref="meta-simulator-v1",
@@ -793,6 +915,7 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
         next_cursor=None,
         events=(event("decision"),),
         now=NOW,
+        precommit_check=lambda: None,
     )
     threads.store.record_conversation_outcome(
         outcome_id=f"outcome-{outcome.value}",
@@ -817,6 +940,7 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
 def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     store = service(tmp_path).store
     store.commit_poll_page(
+        correlation_id="poll-outcome-validation",
         account_ref="account-1",
         stream=InboundKind.REPLY,
         verified_source_ref="meta-simulator-v1",
@@ -824,6 +948,7 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
         next_cursor=None,
         events=(event("decision"),),
         now=NOW,
+        precommit_check=lambda: None,
     )
     base = {
         "outcome_id": "outcome-1",
