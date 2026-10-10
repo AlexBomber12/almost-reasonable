@@ -73,10 +73,13 @@ _DEFAULT_IGNORABLE_CODEPOINTS = frozenset(
 def _normalize_privacy_text(value: str) -> str:
     normalized = unicodedata.normalize("NFKC", value)
     return "".join(
-        character
+        " " if character.isspace() else character
         for character in normalized
-        if unicodedata.category(character) not in {"Cc", "Cf"}
-        and ord(character) not in _DEFAULT_IGNORABLE_CODEPOINTS
+        if character.isspace()
+        or (
+            unicodedata.category(character) not in {"Cc", "Cf"}
+            and ord(character) not in _DEFAULT_IGNORABLE_CODEPOINTS
+        )
     )
 
 

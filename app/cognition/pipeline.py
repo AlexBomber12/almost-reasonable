@@ -141,6 +141,7 @@ class CognitionEngine:
             identity,
             decided_at,
             frozenset((source_event_id, *evidence_event_ids)),
+            frozenset(candidate.item_id for candidate in current),
         )
 
     def plan_source_invalidation(
@@ -169,6 +170,7 @@ class CognitionEngine:
         identity: ExtractorIdentity,
         decided_at: datetime,
         available_evidence_ids: frozenset[str],
+        visible_candidate_ids: frozenset[str],
     ) -> CognitionOutcome:
         if type(proposal) is NoChangeProposal:
             return self._authorize_no_change(
@@ -256,6 +258,11 @@ class CognitionEngine:
                 proposal.memory_kind,
                 transition=duplicate,
             )
+        if (
+            proposal.context.expected_revision is not None
+            and proposal.item_id not in visible_candidate_ids
+        ):
+            return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
         existing = self._read.retrieve_exact_private_candidate(
             context, proposal.item_id
         )

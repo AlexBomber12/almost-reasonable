@@ -833,7 +833,7 @@ def test_explicit_old_source_event_is_not_lost_to_recent_event_limit(
     assert outcome.status is CognitionOutcomeStatus.PERSISTED
 
 
-def test_explicit_old_candidate_revision_is_not_lost_to_recent_state_limit(
+def test_revision_target_omitted_from_extractor_context_is_rejected(
     cognition_setup,
 ):
     events, state, context, event_id = cognition_setup
@@ -872,12 +872,20 @@ def test_explicit_old_candidate_revision_is_not_lost_to_recent_state_limit(
         strength=70,
     )
 
-    outcome = CognitionEngine(events, state, extractor=FakeExtractor(revision)).process(
+    extractor = FakeExtractor(revision)
+    outcome = CognitionEngine(events, state, extractor=extractor).process(
         context, event_id
     )
 
-    assert outcome.status is CognitionOutcomeStatus.PERSISTED
-    assert outcome.transition.state.revision == 2
+    assert "interest-old-candidate" not in {
+        item.item_id for item in extractor.requests[0].current_candidates
+    }
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STALE_REVISION
+    [stored] = state.retrieve_private_revision_history(
+        context, StateType.INTEREST, "interest-old-candidate"
+    )
+    assert stored.revision == 1
 
 
 @pytest.mark.parametrize(
