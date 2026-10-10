@@ -145,7 +145,9 @@ The service resolves current approval and privacy state when an item becomes
 ready, again before entering `sending`, and immediately before both container
 creation and publication. Each effect check occurs after its final durable
 dispatch-marker write, so no intervening store update creates an authorization
-gap before the provider call. Revocation, expiry, consent withdrawal, or
+gap before the provider call. After all potentially blocking authorization
+lookups, the accepted approval is validated again against a freshly sampled
+clock. Revocation, expiry, consent withdrawal, or
 control-plane unavailability after proposal or approval therefore blocks the
 next effect. The approval actually accepted for dispatch replaces the stored
 approval reference atomically with the durable sending transition. A stop

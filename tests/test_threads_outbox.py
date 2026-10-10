@@ -685,7 +685,7 @@ def test_policy_stop_after_container_persists_and_reuses_proven_safe_container(
 
 
 def test_approval_time_is_refreshed_after_container_creation(tmp_path):
-    times = iter((NOW, NOW, NOW + timedelta(minutes=2)))
+    times = iter((NOW, NOW, NOW, NOW, NOW + timedelta(minutes=2)))
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
     authorization_provider = SimulationAuthorizationProvider()
@@ -843,6 +843,48 @@ def test_mutable_policy_is_rechecked_after_authorization_lookup(tmp_path, monkey
     assert service.simulator.trace == []
 
 
+def test_approval_expiry_is_rechecked_after_final_authorization_lookup(
+    tmp_path, monkeypatch
+):
+    current_time = [NOW]
+    runtime_policy = make_policy()
+    simulator = ThreadsSimulator(account_ref="account-1")
+    authorization_provider = SimulationAuthorizationProvider()
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        runtime_policy,
+        utc_now=lambda: current_time[0],
+        authorization_provider=authorization_provider,
+    )
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    expiring = trust_approval(service, approve(expires_at=NOW + timedelta(minutes=1)))
+    service.authorize("operation-1", expiring, now=NOW)
+    current_privacy = authorization_provider.current_privacy_authorized
+    privacy_checks = 0
+
+    def expire_during_final_privacy_lookup(**kwargs):
+        nonlocal privacy_checks
+        privacy_checks += 1
+        result = current_privacy(**kwargs)
+        if privacy_checks == 4:
+            current_time[0] = NOW + timedelta(minutes=2)
+        return result
+
+    monkeypatch.setattr(
+        authorization_provider,
+        "current_privacy_authorized",
+        expire_during_final_privacy_lookup,
+    )
+    with pytest.raises(ValueError, match="expired"):
+        service.dispatch("operation-1", expiring, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.dispatch_evidence == "publish_not_transmitted"
+    assert simulator.trace == [("create_container", "operation-1")]
+
+
 def test_dispatch_persists_the_current_approval_reference(tmp_path):
     service = make_service(tmp_path)
     _, original = ready(service)
@@ -884,7 +926,7 @@ def test_repeated_pre_publish_denials_obey_attempt_cap(tmp_path):
     def stop_at_publish_boundary():
         nonlocal calls
         calls += 1
-        if calls >= 3:
+        if calls in {5, 8}:
             service.policy.emergency_stop = True
         return NOW
 

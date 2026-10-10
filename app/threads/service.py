@@ -652,7 +652,15 @@ class ThreadsService:
     def _recheck_immediately_before_effect(
         self, item: OutboxItem, approval: Approval, now: datetime
     ) -> None:
-        self._check_ready_policy(item, approval, now=now)
+        current_approval = self._check_ready_policy(item, approval, now=now)
+        validate_approval(
+            current_approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=self.utc_now(),
+            require_duplicate_ack=item.replacement_of is not None,
+            purpose=ApprovalPurpose.PUBLICATION,
+        )
 
     def _record_failure(
         self,
