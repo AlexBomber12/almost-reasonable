@@ -40,6 +40,13 @@ class WakeupPolicy:
     per_action_limits: tuple[tuple[AgentDecision, int], ...]
 
     def __post_init__(self) -> None:
+        if (
+            not isinstance(self.active_start, time)
+            or not isinstance(self.active_end, time)
+            or self.active_start.tzinfo is not None
+            or self.active_end.tzinfo is not None
+        ):
+            raise ValueError("active hours must be naive time values")
         if type(self.max_iterations) is not int or self.max_iterations < 1:
             raise ValueError("max_iterations must be positive")
         if (

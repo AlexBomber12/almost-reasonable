@@ -161,12 +161,15 @@ class RussianOutputPolicy:
                 return DeliveryResult(current, False, attempt, tuple(assessments))
             if regenerate is None or attempt == self._max_regenerations:
                 break
-            current = regenerate(current)
             attempt += 1
+            try:
+                current = regenerate(current)
+            except (OSError, ValueError):
+                break
         return DeliveryResult(
             self.SAFE_FALLBACK,
             True,
-            len(assessments) - 1,
+            attempt,
             tuple(assessments),
         )
 

@@ -86,8 +86,9 @@ identity remain H/M calibration questions.
 
 `RussianOutputPolicy` checks the initial draft, performs zero to two injected
 regeneration attempts, and then returns an application-owned static Russian
-fallback. It never recurses. The H gate does not authorize an action and cannot
-override G-class policy.
+fallback. Expected provider failures during regeneration also terminate at that
+fallback; callback contract errors still surface. It never recurses. The H gate
+does not authorize an action and cannot override G-class policy.
 
 ## Autonomous wake-ups
 
@@ -95,7 +96,9 @@ override G-class policy.
 uses injected clock, persistence, and deliberation callables. `WakeupPolicy`
 supports bounded active hours (including overnight or all-day windows), an
 agent-selected cadence, cooldown, duplicate-retention window, maximum iteration
-and elapsed-time limits, and per-decision technical rate limits.
+and elapsed-time limits, and per-decision technical rate limits. Active-hour
+bounds are deliberately naive wall-clock values interpreted in the injected
+clock's timezone; aware `time` values reject at policy construction.
 
 A run filters out future events, coalesces only currently due unprocessed
 wake-ups to the newest event, records their IDs, and deliberates at most once.
@@ -185,15 +188,20 @@ coherent two-phase revision; non-impersonation and no invented human biography;
 and no optimization for posting frequency.
 
 An `EvaluationCase` contains frozen synthetic prompts and one or more recorded
-outputs. Each output is a separate trial. An injected assessor returns a score
-and typed failure categories; the harness records separate SHA-256 identities
-for the frozen case input and output, plus an artifact identity binding the case,
-trial, output, and rubric dimension. It does not reproduce prompt or output text
-in observations. `EvaluationReport.to_json()` emits a stable machine-readable
-report with per-G/H/M pass/fail counts, categorized failures, observations,
-rubric/harness versions, and explicit limitations.
-Optional human calibration receives every observation and records reviewer,
-calibration version, optional override recommendation, and note.
+outputs together with the generating model, prompt-template, and provider
+configuration identities. Each output is a separate trial. Typed, named
+`BoundAssessor` values keep deterministic, model, and human assessors in separate
+dispatch paths; G rules may only select the deterministic path. The harness
+records the actual assessor kind/identity, separate SHA-256 identities for the
+frozen case input and output, and an artifact identity binding generation
+configuration, case, trial, output, rubric dimension, and assessor. It does not
+reproduce prompt or output text in observations. `EvaluationReport.to_json()`
+emits a stable machine-readable report with per-G/H/M pass/fail counts,
+categorized failures, observations, rubric/harness versions, and explicit
+limitations.
+Optional human calibration receives every observation and records a non-empty
+reviewer identity, calibration version, optional Boolean override
+recommendation, and note; malformed or provenance-free adjudication rejects.
 
 Only the complete v1 dimension-to-assurance mapping may emit
 `behavior-rubric-v1`. Partial or differently classified experimental rubrics

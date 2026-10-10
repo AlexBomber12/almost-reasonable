@@ -2,7 +2,7 @@
 
 from collections import Counter
 from collections.abc import Callable
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from enum import StrEnum
 import hashlib
 import json
@@ -81,6 +81,9 @@ class EvaluationCase:
     prompt: str
     recorded_outputs: tuple[str, ...]
     tags: tuple[str, ...]
+    model_identifier: str
+    prompt_version: str
+    configuration_version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,8 +102,13 @@ class EvaluationObservation:
     case_input_sha256: str
     output_sha256: str
     artifact_sha256: str
+    model_identifier: str
+    prompt_version: str
+    configuration_version: str
     rubric_dimension: RubricDimension
     assurance: AssuranceClass
+    assessor_kind: AssessorKind
+    assessor_identifier: str
     score: float
     threshold: float
     passed: bool
@@ -127,6 +135,7 @@ class EvaluationReport:
             value = asdict(observation)
             value["rubric_dimension"] = observation.rubric_dimension.value
             value["assurance"] = observation.assurance.value
+            value["assessor_kind"] = observation.assessor_kind.value
             value["failures"] = [item.value for item in observation.failures]
             serialized_observations.append(value)
         return json.dumps(
@@ -154,11 +163,18 @@ Assessor = Callable[
 HumanCalibration = Callable[[EvaluationObservation], HumanAdjudication]
 
 
+@dataclass(frozen=True, slots=True)
+class BoundAssessor:
+    kind: AssessorKind
+    identifier: str
+    assess: Assessor
+
+
 class BehavioralEvaluationHarness:
     def __init__(
         self,
         rubric: tuple[RubricRule, ...],
-        assessor: Assessor,
+        assessors: tuple[BoundAssessor, ...],
         human_calibration: HumanCalibration | None = None,
         *,
         rubric_version: str = RUBRIC_VERSION,
@@ -168,9 +184,9 @@ class BehavioralEvaluationHarness:
         for rule in rubric:
             if (
                 rule.assurance is AssuranceClass.G
-                and rule.assessor_kind is AssessorKind.MODEL
+                and rule.assessor_kind is not AssessorKind.DETERMINISTIC
             ):
-                raise ValueError("G-class controls cannot use a model judge")
+                raise ValueError("G-class controls require a deterministic assessor")
             if not 0 <= rule.threshold <= 1 or not rule.description:
                 raise ValueError("rubric rule is invalid")
         if not isinstance(rubric_version, str) or not rubric_version:
@@ -185,8 +201,25 @@ class BehavioralEvaluationHarness:
             for rule in rubric
         ):
             raise ValueError("safe privacy boundaries must remain G-class")
+        if (
+            type(assessors) is not tuple
+            or not assessors
+            or any(
+                not isinstance(binding, BoundAssessor)
+                or not isinstance(binding.kind, AssessorKind)
+                or not isinstance(binding.identifier, str)
+                or not binding.identifier
+                or not callable(binding.assess)
+                for binding in assessors
+            )
+            or len({binding.kind for binding in assessors}) != len(assessors)
+        ):
+            raise ValueError("assessor bindings must be typed, named, and unique")
+        assessor_by_kind = {binding.kind: binding for binding in assessors}
+        if any(rule.assessor_kind not in assessor_by_kind for rule in rubric):
+            raise ValueError("every rubric assessor kind requires a binding")
         self._rubric = rubric
-        self._assessor = assessor
+        self._assessors = assessor_by_kind
         self._human_calibration = human_calibration
         self._rubric_version = rubric_version
 
@@ -204,20 +237,38 @@ class BehavioralEvaluationHarness:
                 or not case.prompt
                 or type(case.tags) is not tuple
                 or any(not isinstance(tag, str) or not tag for tag in case.tags)
+                or any(
+                    not isinstance(value, str) or not value
+                    for value in (
+                        case.model_identifier,
+                        case.prompt_version,
+                        case.configuration_version,
+                    )
+                )
             ):
-                raise ValueError("each case requires a prompt and valid tags")
+                raise ValueError(
+                    "each case requires prompt, tags, and generation identity"
+                )
             if not case.recorded_outputs or any(
                 not isinstance(output, str) or not output
                 for output in case.recorded_outputs
             ):
                 raise ValueError("each case requires a non-empty recorded output")
             case_input_sha256 = _json_sha256(
-                {"case_id": case.case_id, "prompt": case.prompt, "tags": case.tags}
+                {
+                    "case_id": case.case_id,
+                    "prompt": case.prompt,
+                    "tags": case.tags,
+                    "model_identifier": case.model_identifier,
+                    "prompt_version": case.prompt_version,
+                    "configuration_version": case.configuration_version,
+                }
             )
             for trial, output in enumerate(case.recorded_outputs, start=1):
                 output_sha256 = hashlib.sha256(output.encode("utf-8")).hexdigest()
                 for rule in self._rubric:
-                    score, failures = self._assessor(case, output, rule)
+                    assessor = self._assessors[rule.assessor_kind]
+                    score, failures = assessor.assess(case, output, rule)
                     if type(score) not in (int, float) or not 0 <= score <= 1:
                         raise ValueError("assessor score must be between zero and one")
                     if any(not isinstance(item, FailureCategory) for item in failures):
@@ -234,10 +285,17 @@ class BehavioralEvaluationHarness:
                                 "output_sha256": output_sha256,
                                 "trial": trial,
                                 "rubric_dimension": rule.dimension.value,
+                                "assessor_kind": assessor.kind.value,
+                                "assessor_identifier": assessor.identifier,
                             }
                         ),
+                        model_identifier=case.model_identifier,
+                        prompt_version=case.prompt_version,
+                        configuration_version=case.configuration_version,
                         rubric_dimension=rule.dimension,
                         assurance=rule.assurance,
+                        assessor_kind=assessor.kind,
+                        assessor_identifier=assessor.identifier,
                         score=float(score),
                         threshold=rule.threshold,
                         passed=score >= rule.threshold,
@@ -245,15 +303,19 @@ class BehavioralEvaluationHarness:
                         adjudication=None,
                     )
                     if self._human_calibration is not None:
-                        observation = EvaluationObservation(
-                            **{
-                                **asdict(observation),
-                                "rubric_dimension": observation.rubric_dimension,
-                                "assurance": observation.assurance,
-                                "failures": observation.failures,
-                                "adjudication": self._human_calibration(observation),
-                            }
-                        )
+                        adjudication = self._human_calibration(observation)
+                        if (
+                            not isinstance(adjudication, HumanAdjudication)
+                            or not isinstance(adjudication.reviewer_id, str)
+                            or not adjudication.reviewer_id
+                            or not isinstance(adjudication.calibration_version, str)
+                            or not adjudication.calibration_version
+                            or adjudication.override_passed is not None
+                            and type(adjudication.override_passed) is not bool
+                            or not isinstance(adjudication.note, str)
+                        ):
+                            raise ValueError("human adjudication provenance is invalid")
+                        observation = replace(observation, adjudication=adjudication)
                     observations.append(observation)
         return EvaluationReport(
             EVALUATION_HARNESS_VERSION, self._rubric_version, tuple(observations)

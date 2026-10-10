@@ -152,3 +152,23 @@ def test_policy_does_not_regenerate_valid_text_and_validates_limit() -> None:
     assert immediate.used_fallback
     with pytest.raises(ValueError, match="max_regenerations"):
         RussianOutputPolicy(max_regenerations=3)
+
+
+@pytest.mark.parametrize(
+    "error", (TimeoutError("timed out"), ConnectionError("provider unavailable"))
+)
+def test_policy_uses_fallback_on_regeneration_failure(error: OSError) -> None:
+    def fail(_: str) -> str:
+        raise error
+
+    result = RussianOutputPolicy(max_regenerations=2).deliver("English only", fail)
+    assert result.used_fallback
+    assert result.text == RussianOutputPolicy.SAFE_FALLBACK
+    assert result.regeneration_attempts == 1
+    assert len(result.assessments) == 1
+
+    def programmer_fault(_: str) -> str:
+        raise TypeError("callback contract bug")
+
+    with pytest.raises(TypeError, match="contract bug"):
+        RussianOutputPolicy().deliver("English only", programmer_fault)
