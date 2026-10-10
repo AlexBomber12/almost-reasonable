@@ -78,6 +78,12 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
     assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
 
 
+def test_short_majority_foreign_prose_is_not_hidden_by_an_absolute_floor() -> None:
+    assessment = RussianOutputGate().assess("Да. This is English.")
+    assert not assessment.accepted
+    assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
+
+
 def test_compatibility_latin_is_normalized_before_language_scoring() -> None:
     text = "Да. Ｔｈｉｓ ｉｓ ｏｎｌｙ Ｅｎｇｌｉｓｈ ｐｒｏｓｅ."
     assessment = RussianOutputGate().assess(text)

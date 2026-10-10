@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
 
@@ -5,14 +6,17 @@ import pytest
 
 from app.behavior.mission import (
     MISSION_SCHEMA_VERSION,
+    MAX_MISSION_HISTORY_RECORDS,
     CapabilityPolicyInvariants,
     ConfirmationOutcome,
     EvidenceProvenance,
     JsonMissionRepository,
     Mission,
     MissionConfirmation,
+    MissionDocument,
     MissionEvidenceSource,
     MissionProposal,
+    MissionRecord,
     MissionPurpose,
     MissionStateMachine,
     MissionStatus,
@@ -643,3 +647,65 @@ def test_mission_rejects_instruction_text_in_identifier_fields(tmp_path) -> None
     )
     with pytest.raises(ValueError, match="evidence_ids exceeds"):
         machine.confirm(aggregate_confirmation)
+
+
+def test_mission_history_is_bounded_on_transition_save_and_load(tmp_path) -> None:
+    initial = Mission("mission-v1", "Миссия", NOW, None)
+    base = proposal()
+    records = tuple(
+        MissionRecord(
+            replace(
+                base,
+                proposal_id=f"proposal-{index}",
+                version_identity=f"version-{index}",
+            ),
+            MissionStatus.REJECTED,
+            None,
+        )
+        for index in range(MAX_MISSION_HISTORY_RECORDS)
+    )
+
+    class FullRepository:
+        def load(self):
+            return MissionDocument(initial, records, invariants())
+
+        def save(self, document):
+            raise AssertionError("an over-limit transition must not be saved")
+
+    machine = mission_machine(FullRepository())
+    with pytest.raises(ValueError, match="record limit"):
+        machine.propose(
+            replace(
+                base,
+                proposal_id="proposal-over-limit",
+                version_identity="version-over-limit",
+            )
+        )
+
+    path = tmp_path / "history.json"
+    repository = JsonMissionRepository(path, initial)
+    with pytest.raises(ValueError, match="record limit"):
+        repository.save(
+            MissionDocument(
+                initial,
+                (
+                    *records,
+                    MissionRecord(
+                        replace(
+                            base,
+                            proposal_id="proposal-over-limit",
+                            version_identity="version-over-limit",
+                        ),
+                        MissionStatus.REJECTED,
+                        None,
+                    ),
+                ),
+                invariants(),
+            )
+        )
+
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["proposals"] = [{}] * (MAX_MISSION_HISTORY_RECORDS + 1)
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="record limit"):
+        repository.load()

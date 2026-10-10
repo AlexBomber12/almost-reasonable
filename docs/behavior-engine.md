@@ -64,7 +64,8 @@ rejects hidden control/format characters, removes URLs and code from
 conversational-language accounting,
 tolerates bounded Latin technical terminology and proper names, and excludes
 HTTP(S), FTP, `www`, bare-domain URLs, and code regions before comparing
-Cyrillic and foreign prose. Non-Latin letter scripts are converted to bounded
+Cyrillic and foreign prose with no fixed short-reply allowance: unrecognized
+foreign words must not outnumber Russian words. Non-Latin letter scripts are converted to bounded
 word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
 from the ratio. Foreign quotations remain in the language accounting, so their
 Russian framing and explanation must be proportionate to their size. A small
@@ -171,6 +172,13 @@ Threads-oriented behavioral mission while the separately managed Threads
 capability remains unchanged. The lexical screen is deliberately conservative;
 semantic adequacy still receives H/M evaluation, while exact capability
 invariance remains G.
+
+The active mission document is capped at 256 proposal records. The state
+machine refuses a 257th proposal, and repository save/load enforce the same cap,
+so valid proposal/rejection cycles cannot make every future parse and atomic
+rewrite grow without bound. Existing attributed history is retained; reaching
+the cap requires an explicit future retention/archive integration rather than
+silent deletion.
 
 The repository writes a replacement file before atomically replacing the active
 document. Tests reopen it with a new state-machine instance and confirm

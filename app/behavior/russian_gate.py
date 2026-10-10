@@ -126,7 +126,7 @@ class RussianOutputGate:
             return _assessment(
                 False, GateReason.NEARBY_LANGUAGE, len(cyrillic), foreign
             )
-        if not cyrillic or foreign > max(3, len(cyrillic)):
+        if not cyrillic or foreign > len(cyrillic):
             return _assessment(
                 False, GateReason.NON_RUSSIAN_PROSE, len(cyrillic), foreign
             )

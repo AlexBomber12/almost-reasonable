@@ -16,6 +16,7 @@ MAX_MISSION_COLLECTION_ITEMS = 32
 MAX_MISSION_COLLECTION_UTF8_BYTES = 16 * 1024
 MAX_MISSION_IDENTIFIER_COLLECTION_UTF8_BYTES = 2 * 1024
 MAX_MISSION_RECORD_TEXT_UTF8_BYTES = 32 * 1024
+MAX_MISSION_HISTORY_RECORDS = 256
 _FORBIDDEN_MISSION_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -224,6 +225,8 @@ class MissionStateMachine:
             for item in document.proposals
         ):
             raise ValueError("proposal already exists")
+        if len(document.proposals) >= MAX_MISSION_HISTORY_RECORDS:
+            raise ValueError("mission history reached its record limit")
         if any(
             item.status is MissionStatus.PENDING
             and item.proposal.invariants != proposal.invariants
@@ -491,6 +494,8 @@ def _mission_matches_purpose(value: str, purpose: MissionPurpose) -> bool:
 
 
 def _document_to_dict(document: MissionDocument) -> dict[str, object]:
+    if len(document.proposals) > MAX_MISSION_HISTORY_RECORDS:
+        raise ValueError("mission history exceeds its record limit")
     return {
         "schema_version": MISSION_SCHEMA_VERSION,
         "current": _mission_to_dict(document.current),
@@ -558,6 +563,8 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
     proposals_raw = raw["proposals"]
     if not isinstance(proposals_raw, list):
         raise ValueError("mission repository proposals are invalid")
+    if len(proposals_raw) > MAX_MISSION_HISTORY_RECORDS:
+        raise ValueError("mission history exceeds its record limit")
     records: list[MissionRecord] = []
     for item in proposals_raw:
         proposal_raw = item["proposal"]
