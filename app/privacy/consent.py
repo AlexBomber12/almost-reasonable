@@ -55,7 +55,7 @@ class ConsentService:
                 actor_reference=context.actor_reference,
             )
             return OperationResult(False, reason)
-        created = self.ledger.insert_consent(grant)
+        created = self.ledger.insert_consent(context, grant)
         reason = "granted" if created else "already_granted"
         return OperationResult(created, reason)
 

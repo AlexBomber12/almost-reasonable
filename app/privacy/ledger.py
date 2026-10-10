@@ -21,8 +21,10 @@ from .models import (
     DeletionRecord,
     DeletionRequest,
     ErasureReport,
+    OperationOrigin,
     PrivacyReconciliationSnapshot,
     RestoreDisposition,
+    TrustedPrivacyContext,
     require_token,
     require_utc,
 )
@@ -326,7 +328,21 @@ class PrivacyLedger:
             finally:
                 os.close(descriptor)
 
-    def insert_consent(self, grant: ConsentGrant) -> bool:
+    def insert_consent(
+        self, context: TrustedPrivacyContext, grant: ConsentGrant
+    ) -> bool:
+        if (
+            not isinstance(context, TrustedPrivacyContext)
+            or context.origin is not OperationOrigin.CONTROL
+        ):
+            raise ValueError("invalid consent authentication")
+        if context.principal_id != grant.principal_id:
+            raise ValueError("invalid consent authorization")
+        if (
+            context.actor_reference != grant.actor_reference
+            or context.authentication_event_id != grant.authentication_event_id
+        ):
+            raise ValueError("invalid consent authentication")
         values = (
             grant.consent_id,
             grant.operation_id,

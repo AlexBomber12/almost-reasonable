@@ -402,6 +402,33 @@ def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
     )
 
 
+@pytest.mark.parametrize(
+    ("trusted_context", "message"),
+    [
+        (object(), "authentication"),
+        (context(origin=OperationOrigin.CHAT), "authentication"),
+        (context("participant-b"), "authorization"),
+        (context(actor="actor-b"), "authentication"),
+        (
+            TrustedPrivacyContext(
+                "participant-a", "actor-a", "auth-event-b", OperationOrigin.CONTROL
+            ),
+            "authentication",
+        ),
+    ],
+)
+def test_ledger_rejects_unauthenticated_direct_consent_grants(
+    tmp_path, trusted_context, message
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(ValueError, match=message):
+        ledger.insert_consent(trusted_context, grant())
+
+    assert ledger.consent_principal("consent-001") is None
+    assert ledger.audit_records() == ()
+
+
 def test_unauthenticated_consent_operations_reject_before_validation_or_reads(
     service, monkeypatch
 ):
@@ -554,7 +581,7 @@ def test_consent_rejects_duplicate_scope_revision_and_uses_newer_revision(tmp_pa
 
 def test_ledger_rejects_cross_principal_direct_revocation(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    ledger.insert_consent(grant())
+    ledger.insert_consent(context(), grant())
     audit_before = ledger.audit_records()
     generation_before = ledger.control_generation()
 
@@ -588,7 +615,7 @@ def test_ledger_rejects_cross_principal_direct_revocation(tmp_path):
 )
 def test_ledger_rejects_malformed_direct_revocations(tmp_path, changes, message):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    ledger.insert_consent(grant())
+    ledger.insert_consent(context(), grant())
     audit_before = ledger.audit_records()
     values = {
         "consent_id": "consent-001",
@@ -1378,7 +1405,7 @@ def test_missing_control_generation_fails_closed(tmp_path):
 
 def test_revocation_rolls_back_when_control_generation_is_missing(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    ledger.insert_consent(grant())
+    ledger.insert_consent(context(), grant())
     audit_before = ledger.audit_records()
     with sqlite3.connect(ledger.path) as connection:
         connection.execute("DELETE FROM privacy_control_generation")
