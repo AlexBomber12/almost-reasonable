@@ -1,6 +1,7 @@
 """Deterministic authorization bridge from experience to private self-state."""
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import UTC, datetime
 import re
 
@@ -114,8 +115,8 @@ class CognitionEngine:
             proposal = self._extractor.extract(request)
         except Exception:
             return self._rejected(CognitionReason.EXTRACTOR_FAILED)
-        decided_at = self._clock()
-        if not self._valid_time(decided_at):
+        decided_at = self._canonical_time(self._clock())
+        if decided_at is None:
             raise ValueError("clock returned an invalid decision time")
         return self._authorize(
             context,
@@ -176,6 +177,20 @@ class CognitionEngine:
         reason = self._validate_common(context, proposal.context, source_event_id)
         if reason is not None:
             return self._rejected(reason, self._safe_kind(proposal))
+        proposed_at = self._canonical_time(proposal.context.proposed_at)
+        review_at = self._canonical_time(proposal.context.review_at)
+        if proposed_at is None or review_at is None:
+            return self._rejected(
+                CognitionReason.INVALID_PROPOSAL, self._safe_kind(proposal)
+            )
+        proposal = replace(
+            proposal,
+            context=replace(
+                proposal.context,
+                proposed_at=proposed_at,
+                review_at=review_at,
+            ),
+        )
         if isinstance(proposal, GenericMemoryProposal):
             return self._authorize_generic(proposal)
         if not self._valid_specific_types(proposal):
@@ -527,12 +542,27 @@ class CognitionEngine:
 
     @staticmethod
     def _valid_time(value: object) -> bool:
+        return CognitionEngine._canonical_time(value) is not None
+
+    @staticmethod
+    def _canonical_time(value: object) -> datetime | None:
         if not isinstance(value, datetime) or value.tzinfo is None:
-            return False
+            return None
         try:
-            return value.utcoffset() is not None
+            plain = datetime(
+                value.year,
+                value.month,
+                value.day,
+                value.hour,
+                value.minute,
+                value.second,
+                value.microsecond,
+                tzinfo=value.tzinfo,
+                fold=value.fold,
+            )
+            return plain.astimezone(UTC)
         except Exception:
-            return False
+            return None
 
     @staticmethod
     def _rejected(

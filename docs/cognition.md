@@ -125,7 +125,9 @@ authorized belief rather than only its current snapshot. Each revision record
 retains its revision number and rationale, stance, confidence, alternatives,
 supporting/counterevidence counts, review time, decision time, origin, model and
 prompt identifiers, and Core Self version. Other retrieval purposes continue to
-expose only the current belief snapshot.
+expose only the current belief snapshot. Current revisions always rank before
+historical snapshots so a tight record budget cannot return an obsolete stance
+while omitting the chain head.
 
 Ranking is deterministic across topic overlap, active status, confidence or
 priority, recency, and item ID. The selector emits only whole records; a record

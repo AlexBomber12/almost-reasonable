@@ -575,8 +575,8 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
         ),
         "belief-history",
         "Ocean circulation may amplify regional warming.",
-        BeliefStance.UNCERTAIN,
-        0.35,
+        BeliefStance.SUPPORTS,
+        0.9,
         BeliefStatus.ACTIVE,
         ("Atmospheric circulation may dominate instead.",),
         VerificationStatus.UNVERIFIED,
@@ -593,8 +593,9 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
             NOW + timedelta(minutes=9),
             NOW + timedelta(days=14),
         ),
-        stance=BeliefStance.SUPPORTS,
-        confidence=0.7,
+        stance=BeliefStance.UNCERTAIN,
+        confidence=0.3,
+        status=BeliefStatus.SUSPENDED,
         alternatives=("The observed warming may be a short-lived anomaly.",),
     )
     for item, event_id in ((created, supporting_event), (revised, counter_event)):
@@ -613,6 +614,10 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
         context,
         RetrievalRequest(RetrievalPurpose.REVISION, "ocean warming", 8192, 10),
     )
+    current_only = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.REVISION, "ocean warming", 8192, 1),
+    )
 
     ordinary_beliefs = [
         record for record in ordinary.records if record.item_id == "belief-history"
@@ -624,10 +629,10 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
     assert ordinary_beliefs[0].revision == 2
     assert [record.revision for record in revision_beliefs] == [2, 1]
     assert [record.stance for record in revision_beliefs] == [
-        BeliefStance.SUPPORTS,
         BeliefStance.UNCERTAIN,
+        BeliefStance.SUPPORTS,
     ]
-    assert [record.confidence for record in revision_beliefs] == [0.7, 0.35]
+    assert [record.confidence for record in revision_beliefs] == [0.3, 0.9]
     assert [record.counterevidence_count for record in revision_beliefs] == [1, 0]
     assert [record.supporting_evidence_count for record in revision_beliefs] == [1, 1]
     assert [record.revision_reason for record in revision_beliefs] == [
@@ -646,6 +651,9 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
         )
         for record in revision_beliefs
     } == {("core-self-v1", "fake-model-v1", "memory-prompt-v1")}
+    assert current_only.records[0].item_id == "belief-history"
+    assert current_only.records[0].revision == 2
+    assert current_only.records_omitted is True
 
 
 def test_terminal_belief_history_requires_explicit_inclusion(retrieval_setup):

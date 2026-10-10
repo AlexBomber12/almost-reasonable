@@ -104,7 +104,12 @@ class MemoryContextSelector:
                 if record.confidence is not None
                 else (record.priority or 0) / 100
             )
+            current_revision = (
+                request.purpose is not RetrievalPurpose.REVISION
+                or candidate.revision == latest_by_item[candidate.item_id].revision
+            )
             rank = (
+                current_revision,
                 relevance,
                 record.status == "active",
                 strength,

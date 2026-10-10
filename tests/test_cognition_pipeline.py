@@ -56,6 +56,28 @@ class RaisingTimezone(tzinfo):
         return "raising"
 
 
+class SingleUseTimezone(tzinfo):
+    def __init__(self):
+        self.calls = 0
+
+    def utcoffset(self, _value):
+        self.calls += 1
+        if self.calls > 1:
+            raise RuntimeError("synthetic stateful timezone")
+        return timedelta(0)
+
+    def dst(self, _value):
+        return None
+
+    def tzname(self, _value):
+        return "single-use"
+
+
+class HostileDatetime(datetime):
+    def astimezone(self, _timezone=None):
+        raise RuntimeError("synthetic hostile datetime adapter")
+
+
 def principal(name: str, *, owner: bool = False) -> TrustedPrincipalContext:
     return TrustedPrincipalContext(
         ParticipantId(f"participant-{name}"),
@@ -1040,6 +1062,52 @@ def test_hostile_proposal_timezone_is_rejected(cognition_setup, field):
         strength=50,
         status=InterestStatus.ACTIVE,
         reason_for_interest="Untrusted adapters must fail closed.",
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
+
+
+def test_datetime_subclass_is_canonicalized_before_persistence(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    hostile_review_at = HostileDatetime(2026, 3, 8, 10, 0, tzinfo=UTC)
+    proposal = InterestMemoryProposal(
+        context=replace(
+            proposal_context(event_id, "canonical-time"),
+            review_at=hostile_review_at,
+        ),
+        item_id="interest-canonical-time",
+        topic="Canonical timestamps",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="Untrusted datetime subclasses must not reach storage.",
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.status is CognitionOutcomeStatus.PERSISTED
+    assert type(outcome.transition.state.review_at) is datetime
+    assert outcome.transition.state.review_at == datetime(2026, 3, 8, 10, 0, tzinfo=UTC)
+
+
+def test_stateful_timezone_failure_after_validation_is_rejected(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    review_at = datetime(2026, 3, 8, 10, 0, tzinfo=SingleUseTimezone())
+    proposal = InterestMemoryProposal(
+        context=replace(
+            proposal_context(event_id, "stateful-time"), review_at=review_at
+        ),
+        item_id="interest-stateful-time",
+        topic="Stateful timestamps",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="Repeated adapter failures must fail closed.",
     )
 
     outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
