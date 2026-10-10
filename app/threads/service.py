@@ -580,9 +580,10 @@ class ThreadsService:
             raise ValueError("invalid poll timeout")
         started = self.clock()
         cursor = self.store.cursor(self.policy.account_ref, stream)
+        initial_cursor = cursor
         seen_cursors = {cursor}
-        collected = []
-        duplicates = 0
+        pending_events = []
+        final_cursor = cursor
         fetched_count = 0
         pages = 0
         while pages < max_pages:
@@ -605,34 +606,33 @@ class ThreadsService:
                 raise PollingError("poll event limit reached")
             if page.next_cursor is not None and page.next_cursor in seen_cursors:
                 raise PollingError("pagination cursor loop detected")
-            elapsed = self.clock() - started
-            remaining = timeout_seconds - elapsed
-            if remaining <= 0:
-                raise PollingError("poll time limit reached")
-            try:
-                inserted, duplicate_count = self.store.commit_poll_page(
-                    account_ref=self.policy.account_ref,
-                    stream=stream,
-                    verified_source_ref=page.source_ref,
-                    expected_cursor=cursor,
-                    next_cursor=page.next_cursor,
-                    events=page.events,
-                    now=now,
-                    lock_wait_seconds=min(5.0, remaining),
-                    deadline_check=lambda: (self.clock() - started < timeout_seconds),
-                )
-            except PollCommitDeadlineError as error:
-                raise PollingError("poll time limit reached") from error
-            collected.extend(inserted)
-            duplicates += duplicate_count
+            pending_events.extend(page.events)
             fetched_count += len(page.events)
             pages += 1
+            final_cursor = page.next_cursor if page.next_cursor is not None else cursor
             cursor = page.next_cursor
             if cursor is None:
-                cursor = self.store.cursor(self.policy.account_ref, stream)
                 break
             seen_cursors.add(cursor)
-        return PollResult(tuple(collected), duplicates, pages, cursor)
+        self._check_poll_policy_with_audit(stream, correlation_id, now)
+        remaining = timeout_seconds - (self.clock() - started)
+        if remaining <= 0:
+            raise PollingError("poll time limit reached")
+        try:
+            inserted, duplicates = self.store.commit_poll_page(
+                account_ref=self.policy.account_ref,
+                stream=stream,
+                verified_source_ref=self.simulator.source_ref,
+                expected_cursor=initial_cursor,
+                next_cursor=final_cursor,
+                events=pending_events,
+                now=now,
+                lock_wait_seconds=min(5.0, remaining),
+                deadline_check=lambda: (self.clock() - started < timeout_seconds),
+            )
+        except PollCommitDeadlineError as error:
+            raise PollingError("poll time limit reached") from error
+        return PollResult(tuple(inserted), duplicates, pages, final_cursor)
 
     def stage_3_readiness(self) -> tuple[str, ...]:
         stage_3_policy = replace(self.policy, stage=Stage.STAGE_3)

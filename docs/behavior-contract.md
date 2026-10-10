@@ -218,6 +218,8 @@ Threads publishing is a side-effecting, provider-specific multi-step operation. 
 
 Every inbound polling action requires an explicit correlation ID. A policy denial is recorded before returning with the configured account's pseudonymous authenticated actor reference, stream, sanitized reason, and timestamp; it contains no inbound payload or credential material.
 
+A bounded multi-page poll stages its verified pages in memory and commits all inbound events plus the final cursor in one transaction. A timeout, provider failure, policy change, validation failure, or interruption before that commit leaves the prior cursor and event set unchanged so the entire batch remains replayable.
+
 Administrative abandonment and reconciliation-claim recovery revalidate their purpose-bound approval after acquiring the durable write transaction and before changing outbox state, locks, or decision records. Revocation or expiry during database-lock wait therefore rolls the transaction back without applying the administrative change.
 
 The trusted authorization provider supplies approval and per-draft privacy as one atomic publication snapshot. Mutable account policy is rechecked after that snapshot at every external-effect boundary. Exact replacement-proposal retries are identified by their persisted immutable operation data before mutable target state or acknowledgement expiry is evaluated; conflicting operation-ID reuse still fails closed.

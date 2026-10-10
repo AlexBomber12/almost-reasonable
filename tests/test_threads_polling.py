@@ -390,7 +390,7 @@ def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
             correlation_id="poll-duplicates-limit",
             max_events=3,
         )
-    assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-2"
+    assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
 
 
 def test_inbound_identity_is_scoped_to_account_and_stream(tmp_path):
@@ -484,15 +484,40 @@ def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
         threads.poll(
             InboundKind.REPLY, now=NOW, correlation_id="poll-stop-between-pages"
         )
-    assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
+    assert threads.store.cursor("account-1", InboundKind.REPLY) is None
     assert threads.simulator.trace == [("poll_reply", "start")]
     with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_inbound_events"
+        ).fetchone() == (0,)
         assert connection.execute(
             "SELECT correlation_id, reason FROM threads_poll_policy_denials"
         ).fetchone() == (
             "poll-stop-between-pages",
             "inbound_polling_capability_unavailable",
         )
+
+
+def test_later_page_provider_failure_leaves_batch_replayable(tmp_path):
+    threads = service(tmp_path)
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor="cursor-1",
+        events=(event("first-before-failure"),),
+    )
+    threads.simulator.set_fault("reply", "cursor-1", Fault.POLL)
+    with pytest.raises(ProviderFailure, match="poll_failed"):
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW,
+            correlation_id="poll-later-provider-failure",
+        )
+    assert threads.store.cursor("account-1", InboundKind.REPLY) is None
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_inbound_events"
+        ).fetchone() == (0,)
 
 
 @pytest.mark.parametrize(
