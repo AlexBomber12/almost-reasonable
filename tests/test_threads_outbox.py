@@ -805,7 +805,7 @@ def test_recovery_cannot_overlap_a_live_dispatcher(tmp_path, monkeypatch):
     def update_then_attempt_recovery(operation_id, evidence, **kwargs):
         update_evidence(operation_id, evidence, **kwargs)
         if evidence == "publish_dispatch_started":
-            with pytest.raises(ThreadsStoreError, match="dispatcher is still active"):
+            with pytest.raises(ThreadsStoreError, match="active dispatch worker"):
                 service.recover_sending(operation_id, now=NOW)
 
     monkeypatch.setattr(
@@ -1051,6 +1051,38 @@ def test_reconciliation_claim_requires_authenticated_restart_recovery(
         restarted.recover_reconciliation_claim(
             "operation-1", recovery_approval, now=NOW
         )
+
+
+def test_reconciliation_recovery_cannot_overlap_live_worker(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, publication_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", publication_approval, now=NOW)
+    recovery_approval = trust_approval(
+        service,
+        approve(
+            reference="approval-recover-operation-1",
+            purpose=ApprovalPurpose.RECOVER_RECONCILIATION,
+        ),
+    )
+
+    def recover_while_reconciliation_is_live(_item):
+        with pytest.raises(ThreadsStoreError, match="reconciliation worker"):
+            service.recover_reconciliation_claim(
+                "operation-1", recovery_approval, now=NOW
+            )
+        return ReconciliationResult.UNRESOLVED
+
+    monkeypatch.setattr(
+        service.simulator, "reconcile", recover_while_reconciliation_is_live
+    )
+    result = service.reconcile("operation-1", now=NOW)
+    assert result.state is OutboxState.UNKNOWN
+    assert result.reconciliation_status == "unresolved"
+    service.store.claim_reconciliation(
+        operation_id="operation-1", account_ref="account-1", now=NOW
+    )
+    service.recover_reconciliation_claim("operation-1", recovery_approval, now=NOW)
 
 
 def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):

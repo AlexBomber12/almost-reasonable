@@ -70,8 +70,8 @@ class CursorConflictError(ThreadsStoreError):
     """A polling page was based on a stale durable cursor."""
 
 
-class ActiveDispatcherError(ThreadsStoreError):
-    """Recovery or another dispatch overlapped a live account dispatcher."""
+class ActiveEffectWorkerError(ThreadsStoreError):
+    """Recovery overlapped a live external-effect worker."""
 
 
 class ThreadsStore:
@@ -281,17 +281,28 @@ class ThreadsStore:
     @contextmanager
     def account_dispatch_guard(self, account_ref: str) -> Iterator[None]:
         require_reference("account reference", account_ref)
+        with self._effect_worker_guard("dispatch", account_ref):
+            yield
+
+    @contextmanager
+    def reconciliation_worker_guard(self, operation_id: str) -> Iterator[None]:
+        require_reference("operation ID", operation_id)
+        with self._effect_worker_guard("reconciliation", operation_id):
+            yield
+
+    @contextmanager
+    def _effect_worker_guard(self, namespace: str, reference: str) -> Iterator[None]:
         lock_name = (
             f".{self.database.name}."
-            f"{content_fingerprint(account_ref)[:16]}.dispatch.lock"
+            f"{content_fingerprint(f'{namespace}:{reference}')[:16]}.effect.lock"
         )
         lock_path = self.database.with_name(lock_name)
         with lock_path.open("a+b") as lock_file:
             try:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError as error:
-                raise ActiveDispatcherError(
-                    "an account dispatcher is still active"
+                raise ActiveEffectWorkerError(
+                    f"an active {namespace} worker exists"
                 ) from error
             try:
                 yield

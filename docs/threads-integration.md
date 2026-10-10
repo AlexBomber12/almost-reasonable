@@ -204,8 +204,11 @@ transitions delete both reservations in the same SQLite transaction. A process
 death during reconciliation leaves its read claim fail-closed; clearing that
 claim requires a fresh, current `recover_reconciliation` operator approval
 through the explicit restart-recovery path before reconciliation can resume.
-Every recovery occurrence receives its own durable audit identity, including
-when the same still-current approval authorizes more than one recovery.
+The reconciliation worker holds its own operation-scoped OS liveness lock
+through the provider call, and recovery must acquire that lock before clearing
+the durable claim, so recovery cannot overlap the original worker. Every
+recovery occurrence receives its own durable audit identity, including when the
+same still-current approval authorizes more than one recovery.
 
 ## Inbound replies, mentions, and conversation outcomes
 

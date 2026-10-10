@@ -30,7 +30,7 @@ from .simulator import (
     ThreadsSimulator,
     simulated_provider_id,
 )
-from .store import ActiveDispatcherError, ThreadsStore, ThreadsStoreError
+from .store import ActiveEffectWorkerError, ThreadsStore, ThreadsStoreError
 
 
 MAX_DISPATCH_ATTEMPTS = 2
@@ -161,7 +161,7 @@ class ThreadsService:
         try:
             with self.store.account_dispatch_guard(item.account_ref):
                 return self._dispatch_exclusively(operation_id, approval, now=now)
-        except ActiveDispatcherError as error:
+        except ActiveEffectWorkerError as error:
             raise PolicyDeniedError(
                 "publication effect is being dispatched for this account"
             ) from error
@@ -392,6 +392,11 @@ class ThreadsService:
 
     def reconcile(self, operation_id: str, *, now: datetime) -> OutboxItem:
         item = self._require_owned_item(operation_id)
+        with self.store.reconciliation_worker_guard(item.operation_id):
+            return self._reconcile_exclusively(operation_id, now=now)
+
+    def _reconcile_exclusively(self, operation_id: str, *, now: datetime) -> OutboxItem:
+        item = self._require_owned_item(operation_id)
         if item.state is not OutboxState.UNKNOWN:
             raise ThreadsStoreError("reconciliation requires unknown state")
         self.store.claim_reconciliation(
@@ -473,12 +478,13 @@ class ThreadsService:
             purpose=ApprovalPurpose.RECOVER_RECONCILIATION,
             require_duplicate_ack=False,
         )
-        self.store.recover_reconciliation_claim(
-            operation_id=operation_id,
-            account_ref=item.account_ref,
-            approval_reference=current_approval.reference,
-            now=now,
-        )
+        with self.store.reconciliation_worker_guard(item.operation_id):
+            self.store.recover_reconciliation_claim(
+                operation_id=operation_id,
+                account_ref=item.account_ref,
+                approval_reference=current_approval.reference,
+                now=now,
+            )
 
     def poll(
         self,
