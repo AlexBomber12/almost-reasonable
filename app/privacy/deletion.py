@@ -179,7 +179,7 @@ class DeletionCoordinator:
                 request, report, completed_at
             )
         else:
-            updated = self.ledger.update_deletion(
+            updated = self.ledger._record_deletion_status(
                 request, disposition, reason, completed_at
             )
         if not updated:

@@ -338,7 +338,7 @@ def test_concurrent_retry_cannot_regress_an_applied_deletion(tmp_path, monkeypat
                 return ErasureReport(False, False, frozenset(), ("delayed_failure",))
             return ErasureReport(True, True, REQUIRED, ())
 
-    real_update = ledger.update_deletion
+    real_update = ledger._update_deletion
 
     def track_update(deletion, disposition, reason, updated_at):
         updated = real_update(deletion, disposition, reason, updated_at)
@@ -346,7 +346,7 @@ def test_concurrent_retry_cannot_regress_an_applied_deletion(tmp_path, monkeypat
             applied.set()
         return updated
 
-    monkeypatch.setattr(ledger, "update_deletion", track_update)
+    monkeypatch.setattr(ledger, "_update_deletion", track_update)
     coordinator = DeletionCoordinator(ledger, RacingAdapter())
     barrier = threading.Barrier(3)
     outcomes = []
@@ -450,9 +450,9 @@ def test_applied_deletion_requires_a_verified_erasure_report(tmp_path):
     )
     audit_before = ledger.audit_records()
     with pytest.raises(ValueError, match="disposition"):
-        ledger.update_deletion(deletion, "pending", "awaiting_erasure", NOW)
+        ledger._record_deletion_status(deletion, "pending", "awaiting_erasure", NOW)
     with pytest.raises(ValueError, match="verified erasure"):
-        ledger.update_deletion(
+        ledger._record_deletion_status(
             deletion,
             DeletionDisposition.APPLIED,
             "erasure_applied",
@@ -492,11 +492,31 @@ def test_verified_deletion_transition_is_not_public(tmp_path):
     )
 
 
+def test_deletion_status_transition_is_not_public(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    deletion = request()
+    ledger.insert_deletion(
+        context(), deletion, DeletionDisposition.PENDING, "awaiting_erasure"
+    )
+
+    with pytest.raises(AttributeError):
+        ledger.update_deletion(
+            deletion,
+            DeletionDisposition.INCOMPLETE_BLOCKED,
+            "adapter_failure",
+            NOW,
+        )
+
+    assert ledger.deletion(deletion.operation_id).disposition is (
+        DeletionDisposition.PENDING
+    )
+
+
 def test_deletion_update_rejects_a_missing_operation(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     deletion = request(operation_id="delete-operation-missing")
     with pytest.raises(KeyError, match="delete-operation-missing"):
-        ledger.update_deletion(
+        ledger._record_deletion_status(
             deletion,
             DeletionDisposition.INCOMPLETE_BLOCKED,
             "adapter_failure",
@@ -509,7 +529,7 @@ def test_deletion_update_rejects_a_missing_operation(tmp_path):
         context(), existing, DeletionDisposition.PENDING, "awaiting_erasure"
     )
     with pytest.raises(ValueError, match="operation identity conflict"):
-        ledger.update_deletion(
+        ledger._record_deletion_status(
             request(content_reference="event-other"),
             DeletionDisposition.INCOMPLETE_BLOCKED,
             "adapter_failure",

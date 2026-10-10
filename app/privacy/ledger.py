@@ -748,7 +748,7 @@ class PrivacyLedger:
             )
         return True
 
-    def update_deletion(
+    def _record_deletion_status(
         self,
         request: DeletionRequest,
         disposition: DeletionDisposition,
@@ -1018,7 +1018,7 @@ class PrivacyLedger:
             ).fetchone()
         return row is not None
 
-    def record_restore(
+    def _record_restore(
         self,
         restore_id: str,
         occurred_at: datetime,

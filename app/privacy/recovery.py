@@ -838,7 +838,7 @@ class QuarantinedRestore:
             raise
         published_files = owned.copy()
         try:
-            recorded = self.ledger.record_restore(
+            recorded = self.ledger._record_restore(
                 restore_id,
                 restored_at,
                 RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
@@ -877,7 +877,7 @@ class QuarantinedRestore:
             False,
             reason,
         )
-        self.ledger.record_restore(
+        self.ledger._record_restore(
             restore_id, restored_at, result.disposition, result.reason
         )
         return result
