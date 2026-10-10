@@ -487,6 +487,9 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert belief_record.revision_reason == "A synthetic belief rationale."
     assert belief_record.supporting_evidence_count == 1
     assert belief_record.counterevidence_count == 1
+    assert belief_record.core_self_version == "core-self-v1"
+    assert belief_record.model_identifier == "fake-model-v1"
+    assert belief_record.prompt_version == "memory-prompt-v1"
     assert belief_record.review_at == NOW + timedelta(days=7)
     assert belief_record.alternatives == (
         "Network effects may dominate the observed feedback.",
@@ -515,6 +518,9 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         "",
         belief_record.verification.value,
         belief_record.provenance.value,
+        belief_record.core_self_version,
+        belief_record.model_identifier,
+        belief_record.prompt_version,
         belief_record.recency.isoformat(),
         belief_record.review_at.isoformat(),
         belief_record.trust.value,
@@ -632,6 +638,14 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
         ("The observed warming may be a short-lived anomaly.",),
         ("Atmospheric circulation may dominate instead.",),
     ]
+    assert {
+        (
+            record.core_self_version,
+            record.model_identifier,
+            record.prompt_version,
+        )
+        for record in revision_beliefs
+    } == {("core-self-v1", "fake-model-v1", "memory-prompt-v1")}
 
 
 def test_terminal_belief_history_requires_explicit_inclusion(retrieval_setup):

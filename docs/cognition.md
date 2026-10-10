@@ -123,8 +123,9 @@ database paths, preventing cross-shard reads and writes.
 An explicit `revision` retrieval includes every active revision of each
 authorized belief rather than only its current snapshot. Each revision record
 retains its revision number and rationale, stance, confidence, alternatives,
-supporting/counterevidence counts, review time, decision time, and origin. Other
-retrieval purposes continue to expose only the current belief snapshot.
+supporting/counterevidence counts, review time, decision time, origin, model and
+prompt identifiers, and Core Self version. Other retrieval purposes continue to
+expose only the current belief snapshot.
 
 Ranking is deterministic across topic overlap, active status, confidence or
 priority, recency, and item ID. The selector emits only whole records; a record

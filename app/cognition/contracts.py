@@ -337,6 +337,9 @@ class MemoryRecord:
     review_condition: str | None
     verification: VerificationStatus
     provenance: ProvenanceType
+    core_self_version: str
+    model_identifier: str | None
+    prompt_version: str | None
     recency: datetime
     review_at: datetime
     trust: MemoryTrust

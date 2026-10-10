@@ -82,6 +82,9 @@ class MemoryContextSelector:
                 candidate_read.decided_at,
                 candidate_read.decision_origin,
                 candidate_read.revision_reason,
+                candidate_read.core_self_version,
+                candidate_read.model_identifier,
+                candidate_read.prompt_version,
             )
             searchable_values = (
                 record.text,
@@ -137,6 +140,9 @@ class MemoryContextSelector:
         recency: datetime,
         decision_origin: DecisionOrigin,
         revision_reason: str,
+        core_self_version: str,
+        model_identifier: str | None,
+        prompt_version: str | None,
     ) -> MemoryRecord:
         if isinstance(candidate, InterestCandidate):
             kind = MemoryKind.DURABLE_INTEREST
@@ -201,6 +207,9 @@ class MemoryContextSelector:
             "" if review_condition is None else review_condition,
             verification.value,
             provenance.value,
+            core_self_version,
+            "" if model_identifier is None else model_identifier,
+            "" if prompt_version is None else prompt_version,
             recency.isoformat(),
             candidate.review_at.isoformat(),
             MemoryTrust.UNTRUSTED_MEMORY_DATA.value,
@@ -227,6 +236,9 @@ class MemoryContextSelector:
             review_condition=review_condition,
             verification=verification,
             provenance=provenance,
+            core_self_version=core_self_version,
+            model_identifier=model_identifier,
+            prompt_version=prompt_version,
             recency=recency,
             review_at=candidate.review_at,
             trust=MemoryTrust.UNTRUSTED_MEMORY_DATA,

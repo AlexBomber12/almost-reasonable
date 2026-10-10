@@ -36,6 +36,9 @@ class PrivateCandidateRead:
     decided_at: datetime
     decision_origin: DecisionOrigin
     revision_reason: str
+    core_self_version: str
+    model_identifier: str | None
+    prompt_version: str | None
     evidence_event_ids: tuple[str, ...]
     has_invalidated_evidence: bool
 
@@ -288,6 +291,9 @@ class CognitionReadStore:
                             self._state._parse_time(row[27]),
                             DecisionOrigin(row[28]),
                             row[29],
+                            row[30],
+                            row[31],
+                            row[32],
                             tuple(sorted(evidence_by_item.get(row[0], ()))),
                             row[0] in invalidated_items,
                         )
@@ -466,7 +472,10 @@ class CognitionReadStore:
                          WHERE candidate.item_key = item.item_key),
                         revision.decided_at,
                         revision.decision_origin,
-                        payload.revision_reason
+                        payload.revision_reason,
+                        revision.core_self_version,
+                        revision.model_identifier,
+                        revision.prompt_version
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
