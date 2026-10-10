@@ -506,6 +506,9 @@ class ThreadsService:
             reconciliation_status="abandoned_unresolved",
             operator_decision="abandon_unknown",
             operator_approval_reference=current_approval.reference,
+            precommit_check=lambda: self._recheck_administrative_approval(
+                item, approval, ApprovalPurpose.ABANDON_UNKNOWN
+            ),
         )
 
     def recover_reconciliation_claim(
@@ -532,6 +535,9 @@ class ThreadsService:
                 account_ref=item.account_ref,
                 approval_reference=current_approval.reference,
                 now=now,
+                precommit_check=lambda: self._recheck_administrative_approval(
+                    item, approval, ApprovalPurpose.RECOVER_RECONCILIATION
+                ),
             )
 
     def poll(
@@ -740,6 +746,27 @@ class ThreadsService:
         if current_approval.reference != approval.reference:
             raise ValueError("current approval reference mismatch")
         return current_approval
+
+    def _recheck_administrative_approval(
+        self,
+        item: OutboxItem,
+        approval: Approval,
+        purpose: ApprovalPurpose,
+    ) -> None:
+        current_approval = self._resolve_current_approval(
+            item,
+            approval,
+            now=self.utc_now(),
+            purpose=purpose,
+            require_duplicate_ack=False,
+        )
+        validate_approval(
+            current_approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=self.utc_now(),
+            purpose=purpose,
+        )
 
     def _recheck_immediately_before_effect(
         self, item: OutboxItem, approval: Approval, now: datetime

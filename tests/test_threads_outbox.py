@@ -1330,6 +1330,72 @@ def test_administrative_approval_expiry_is_refreshed_after_lookup(
             )
 
 
+@pytest.mark.parametrize("action", ["abandon", "recover"])
+def test_administrative_approval_is_rechecked_inside_write_transaction(
+    tmp_path, monkeypatch, action
+):
+    service = make_service(tmp_path)
+    _, publication_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", publication_approval, now=NOW)
+    purpose = (
+        ApprovalPurpose.ABANDON_UNKNOWN
+        if action == "abandon"
+        else ApprovalPurpose.RECOVER_RECONCILIATION
+    )
+    administrative_approval = trust_approval(
+        service,
+        approve(
+            reference=f"approval-{action}-operation-1",
+            purpose=purpose,
+        ),
+    )
+    if action == "recover":
+        service.store.claim_reconciliation(
+            operation_id="operation-1", account_ref="account-1", now=NOW
+        )
+    current_approval = service.authorization_provider.current_approval
+    administrative_checks = 0
+
+    def revoke_before_precommit_lookup(**kwargs):
+        nonlocal administrative_checks
+        if kwargs["approval_reference"] == administrative_approval.reference:
+            administrative_checks += 1
+            if administrative_checks == 2:
+                service.authorization_provider.set_approval(
+                    approve(
+                        reference=administrative_approval.reference,
+                        revoked=True,
+                        purpose=purpose,
+                    )
+                )
+        return current_approval(**kwargs)
+
+    monkeypatch.setattr(
+        service.authorization_provider,
+        "current_approval",
+        revoke_before_precommit_lookup,
+    )
+    with pytest.raises(ValueError, match="revoked"):
+        if action == "abandon":
+            service.abandon_unknown("operation-1", administrative_approval, now=NOW)
+        else:
+            service.recover_reconciliation_claim(
+                "operation-1", administrative_approval, now=NOW
+            )
+    assert administrative_checks == 2
+    assert service.store.get("operation-1").state is OutboxState.UNKNOWN
+    assert (
+        service.store.operator_decision_reference("operation-1", "abandon_unknown")
+        is None
+    )
+    if action == "recover":
+        with pytest.raises(ThreadsStoreError, match="already reserved"):
+            service.store.claim_reconciliation(
+                operation_id="operation-1", account_ref="account-1", now=NOW
+            )
+
+
 def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -1656,6 +1722,23 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
             now=NOW,
             approval_status="forged",
         )
+    with pytest.raises(ValueError, match="pre-commit check"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            precommit_check=object(),
+        )
+    with pytest.raises(ValueError, match="authorization fence"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            operator_decision="abandon_unknown",
+            operator_approval_reference="approval-operator",
+        )
     with pytest.raises(ValueError, match="supplied together"):
         service.store.transition(
             "operation-1",
@@ -1750,6 +1833,14 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
     with pytest.raises(ThreadsStoreError, match="target is unavailable"):
         service.store.claim_reconciliation(
             operation_id="operation-1", account_ref="account-1", now=NOW
+        )
+    with pytest.raises(ValueError, match="pre-commit check"):
+        service.store.recover_reconciliation_claim(
+            operation_id="operation-1",
+            account_ref="account-1",
+            approval_reference="approval-recovery",
+            now=NOW,
+            precommit_check=object(),
         )
     with pytest.raises(ValueError, match="lock kind"):
         service.store.release_unknown_effect_lock(

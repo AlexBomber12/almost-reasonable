@@ -580,8 +580,27 @@ def test_poll_policy_denial_audit_validation_and_duplicate_protection(
     with pytest.raises(ValueError):
         store.record_poll_policy_denial(**(values | changes))
     store.record_poll_policy_denial(**values)
-    with pytest.raises(ThreadsStoreError, match="not unique"):
-        store.record_poll_policy_denial(**values)
+    store.record_poll_policy_denial(
+        **(values | {"now": NOW.replace(minute=NOW.minute + 1)})
+    )
+    with pytest.raises(ThreadsStoreError, match="correlation conflict"):
+        store.record_poll_policy_denial(**(values | {"reason": "different_reason"}))
+
+
+def test_retried_poll_denial_preserves_policy_result_and_original_audit(tmp_path):
+    threads = service(tmp_path, runtime_policy=policy(emergency_stop=True))
+    for poll_time in (NOW, NOW.replace(minute=NOW.minute + 1)):
+        with pytest.raises(PolicyDeniedError):
+            threads.poll(
+                InboundKind.REPLY,
+                now=poll_time,
+                correlation_id="poll-retried-denial",
+            )
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*), occurred_at FROM threads_poll_policy_denials "
+            "WHERE correlation_id='poll-retried-denial'"
+        ).fetchone() == (1, NOW.isoformat())
 
 
 def test_polling_rejects_invalid_stream_time_and_provider_failure(tmp_path):

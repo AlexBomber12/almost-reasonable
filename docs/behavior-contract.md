@@ -218,6 +218,8 @@ Threads publishing is a side-effecting, provider-specific multi-step operation. 
 
 Every inbound polling action requires an explicit correlation ID. A policy denial is recorded before returning with the configured account's pseudonymous authenticated actor reference, stream, sanitized reason, and timestamp; it contains no inbound payload or credential material.
 
+Administrative abandonment and reconciliation-claim recovery revalidate their purpose-bound approval after acquiring the durable write transaction and before changing outbox state, locks, or decision records. Revocation or expiry during database-lock wait therefore rolls the transaction back without applying the administrative change.
+
 Failure classification depends on the external-dispatch boundary:
 
 - **proven pre-dispatch failure:** no external request was transmitted and no side effect occurred; keep or return the item to `ready` for a bounded safe retry, or use `cancelled`/`failed_terminal` as appropriate;

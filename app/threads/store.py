@@ -398,6 +398,7 @@ class ThreadsStore:
         release_lock_required: bool = False,
         release_account_effect_lock: bool = False,
         account_effect_lock_required: bool = False,
+        precommit_check: Callable[[], None] | None = None,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         if type(new_state) is not OutboxState:
@@ -434,6 +435,10 @@ class ThreadsStore:
             raise ValueError("invalid account-effect lock requirement")
         if account_effect_lock_required and not release_account_effect_lock:
             raise ValueError("required account-effect release is not enabled")
+        if precommit_check is not None and not callable(precommit_check):
+            raise ValueError("invalid transition pre-commit check")
+        if operator_decision is not None and precommit_check is None:
+            raise ValueError("operator decision requires an authorization fence")
         if approval_status is not None and approval_status not in {
             "pending",
             "approved",
@@ -463,6 +468,8 @@ class ThreadsStore:
                     raise ThreadsStoreError(
                         "unknown effect is reserved by an active operation"
                     )
+            if precommit_check is not None:
+                precommit_check()
             revision = row["revision"] + 1
             values = {
                 "approval_reference": approval_reference
@@ -696,16 +703,20 @@ class ThreadsStore:
         account_ref: str,
         approval_reference: str,
         now: datetime,
+        precommit_check: Callable[[], None],
     ) -> None:
         require_reference("operation ID", operation_id)
         require_reference("account reference", account_ref)
         require_reference("approval reference", approval_reference)
         require_aware_time("reconciliation recovery time", now)
+        if not callable(precommit_check):
+            raise ValueError("invalid reconciliation recovery pre-commit check")
         decision_prefix = (
             f"recover_reconciliation-{content_fingerprint(approval_reference)[:16]}"
         )
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            precommit_check()
             changed = connection.execute(
                 "DELETE FROM threads_unknown_effect_locks "
                 "WHERE target_operation_id=? AND holder_operation_id=? "
@@ -856,24 +867,29 @@ class ThreadsStore:
             raise ValueError("invalid inbound stream")
         require_aware_time("poll denial time", now)
         with self._open() as connection:
-            try:
-                connection.execute(
-                    "INSERT INTO threads_poll_policy_denials "
-                    "(correlation_id, account_ref, stream, actor_reference, reason, "
-                    "occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
-                    (
-                        correlation_id,
-                        account_ref,
-                        stream.value,
-                        actor_reference,
-                        reason,
-                        now.isoformat(),
-                    ),
-                )
-            except sqlite3.IntegrityError as error:
-                raise ThreadsStoreError(
-                    "poll denial correlation is not unique"
-                ) from error
+            changed = connection.execute(
+                "INSERT OR IGNORE INTO threads_poll_policy_denials "
+                "(correlation_id, account_ref, stream, actor_reference, reason, "
+                "occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    correlation_id,
+                    account_ref,
+                    stream.value,
+                    actor_reference,
+                    reason,
+                    now.isoformat(),
+                ),
+            ).rowcount
+            if changed == 1:
+                return
+            existing = connection.execute(
+                "SELECT account_ref, stream, actor_reference, reason "
+                "FROM threads_poll_policy_denials WHERE correlation_id=?",
+                (correlation_id,),
+            ).fetchone()
+            expected = (account_ref, stream.value, actor_reference, reason)
+            if tuple(existing) != expected:
+                raise ThreadsStoreError("poll denial correlation conflict")
 
     def commit_poll_page(
         self,
