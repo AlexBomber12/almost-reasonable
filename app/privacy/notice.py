@@ -65,9 +65,6 @@ class NoticeService:
         correlation_id: str,
     ) -> OperationResult:
         require_token(correlation_id, "correlation id")
-        require_utc(acknowledged_at, "acknowledgement timestamp")
-        if notice_version != NOTICE_VERSION:
-            raise ValueError("unsupported notice version")
         if context.origin is not OperationOrigin.CONTROL:
             occurred_at = self._clock()
             require_utc(occurred_at, "notice rejection timestamp")
@@ -83,6 +80,9 @@ class NoticeService:
                 )
             )
             return OperationResult(False, "invalid_authentication")
+        require_utc(acknowledged_at, "acknowledgement timestamp")
+        if notice_version != NOTICE_VERSION:
+            raise ValueError("unsupported notice version")
         created = self.ledger.acknowledge_notice(
             context.principal_id,
             notice_version,

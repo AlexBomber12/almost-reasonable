@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import os
 from pathlib import Path
 import sqlite3
+from weakref import finalize
 
 from .models import (
     AuditRecord,
@@ -121,9 +122,10 @@ class PrivacyLedger:
     """An independently committed control store; it contains no private payload."""
 
     def __init__(self, path: str | Path):
-        self.path = Path(path)
-        if self.path == Path(":memory:"):
+        requested_path = Path(path)
+        if requested_path == Path(":memory:"):
             raise ValueError("in-memory privacy ledgers are not supported")
+        self.path = requested_path.absolute()
         if self.path.exists() and self.path.is_symlink():
             raise ValueError("privacy ledger must not be a symbolic link")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -132,15 +134,9 @@ class PrivacyLedger:
             os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
             0o600,
         )
-        with os.fdopen(descriptor, "r+b") as ledger_file:
-            with closing(sqlite3.connect(self.path, timeout=5.0)) as connection:
-                current = self.path.stat(follow_symlinks=False)
-                identity = os.fstat(ledger_file.fileno())
-                if (current.st_dev, current.st_ino) != (
-                    identity.st_dev,
-                    identity.st_ino,
-                ):
-                    raise RuntimeError("privacy ledger path identity changed")
+        try:
+            with closing(self._connect_descriptor(descriptor)) as connection:
+                self._require_file_identity(connection, descriptor)
                 try:
                     metadata = connection.execute(
                         "SELECT name FROM sqlite_master WHERE type='table' "
@@ -165,7 +161,7 @@ class PrivacyLedger:
                     raise RuntimeError(
                         "unable to validate existing privacy ledger"
                     ) from error
-                os.fchmod(ledger_file.fileno(), 0o600)
+                os.fchmod(descriptor, 0o600)
                 self._configure(connection)
                 with connection:
                     connection.execute("BEGIN IMMEDIATE")
@@ -179,11 +175,58 @@ class PrivacyLedger:
                         connection.execute(
                             "INSERT INTO privacy_control_generation VALUES(1, 0)"
                         )
+        except BaseException:
+            os.close(descriptor)
+            raise
+        self._descriptor = descriptor
+        self._finalizer = finalize(self, os.close, descriptor)
 
     def _open(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5.0)
-        self._configure(connection)
+        self._require_path_identity(self._descriptor)
+        connection = self._connect_descriptor(self._descriptor)
+        try:
+            self._require_file_identity(connection, self._descriptor)
+            self._configure(connection)
+        except BaseException:
+            connection.close()
+            raise
         return connection
+
+    @staticmethod
+    def _connect_descriptor(descriptor: int) -> sqlite3.Connection:
+        return sqlite3.connect(
+            f"file:/proc/self/fd/{descriptor}?mode=rw",
+            uri=True,
+            timeout=5.0,
+        )
+
+    def _require_path_identity(self, descriptor: int) -> None:
+        try:
+            current = self.path.stat(follow_symlinks=False)
+        except OSError as error:
+            raise RuntimeError("privacy ledger path identity changed") from error
+        identity = os.fstat(descriptor)
+        if (current.st_dev, current.st_ino) != (
+            identity.st_dev,
+            identity.st_ino,
+        ):
+            raise RuntimeError("privacy ledger path identity changed")
+
+    def _require_file_identity(
+        self, connection: sqlite3.Connection, descriptor: int
+    ) -> None:
+        self._require_path_identity(descriptor)
+        database_path = Path(connection.execute("PRAGMA database_list").fetchone()[2])
+        try:
+            database_identity = database_path.stat(follow_symlinks=False)
+        except OSError as error:
+            raise RuntimeError("privacy ledger connection identity changed") from error
+        identity = os.fstat(descriptor)
+        if (database_identity.st_dev, database_identity.st_ino) != (
+            identity.st_dev,
+            identity.st_ino,
+        ):
+            raise RuntimeError("privacy ledger connection identity changed")
 
     def _configure(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=ON")

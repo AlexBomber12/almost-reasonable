@@ -63,7 +63,10 @@ Initialization rejects a nonempty database without privacy-ledger metadata, so a
 application/EventStore file cannot silently become the independent ledger. An
 existing file is inspected through an inode-matched connection before its mode
 or journal configuration is changed, so rejection does not mutate an unrelated
-database.
+database. The ledger retains that file descriptor, normalizes relative paths at
+construction, and opens every later SQLite connection through the descriptor;
+both the configured path and SQLite's resolved main file must still match the
+original inode before an operation proceeds.
 Its records contain control metadata, not message payloads, prompts,
 provider responses, secrets, or an unkeyed hash of private content. It stores:
 

@@ -1007,6 +1007,19 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
         "invalid_authentication",
     )
     assert audit.occurred_at == rejection_time
+    rejected_unknown = service.acknowledge(
+        TrustedPrivacyContext(
+            "participant-a", "actor-a", "auth-a", OperationOrigin.MODEL
+        ),
+        "unknown",
+        datetime(2026, 10, 10),
+        "notice-model-unknown",
+    )
+    assert (rejected_unknown.created, rejected_unknown.reason) == (
+        False,
+        "invalid_authentication",
+    )
+    assert ledger.audit_records()[-1].result_code == "invalid_authentication"
     with pytest.raises(ValueError, match="notice version"):
         service.acknowledge(context(), "unknown", NOW, "notice-bad-version")
 

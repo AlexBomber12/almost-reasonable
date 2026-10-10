@@ -554,17 +554,95 @@ def test_privacy_ledger_rejects_path_replacement_before_mutation(tmp_path, monke
     replacement = tmp_path / "replacement.sqlite3"
     replacement.touch(mode=0o644)
     real_connect = sqlite3.connect
+    replaced = False
 
     def replace_after_open(database, *args, **kwargs):
+        nonlocal replaced
         connection = real_connect(database, *args, **kwargs)
-        path.unlink()
-        replacement.rename(path)
+        if not replaced and str(database).startswith("file:/proc/self/fd/"):
+            replaced = True
+            path.unlink()
+            replacement.rename(path)
         return connection
 
     monkeypatch.setattr(ledger_module.sqlite3, "connect", replace_after_open)
     with pytest.raises(RuntimeError, match="identity changed"):
         PrivacyLedger(path)
     assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("mutation", ["remove", "replace"])
+def test_privacy_ledger_operations_reject_path_identity_changes(tmp_path, mutation):
+    path = tmp_path / "privacy.sqlite3"
+    ledger = PrivacyLedger(path)
+    if mutation == "remove":
+        path.unlink()
+    else:
+        substitute_path = tmp_path / "substitute.sqlite3"
+        PrivacyLedger(substitute_path)
+        path.unlink()
+        substitute_path.rename(path)
+
+    with pytest.raises(RuntimeError, match="path identity changed"):
+        ledger.control_generation()
+
+
+def test_privacy_ledger_rejects_a_connection_to_a_substitute_inode(
+    tmp_path, monkeypatch
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    substitute_path = tmp_path / "substitute.sqlite3"
+    PrivacyLedger(substitute_path)
+    real_connect = sqlite3.connect
+    monkeypatch.setattr(
+        ledger,
+        "_connect_descriptor",
+        lambda _descriptor: real_connect(substitute_path),
+    )
+
+    with pytest.raises(RuntimeError, match="connection identity changed"):
+        ledger.control_generation()
+
+
+def test_privacy_ledger_rejects_aba_replacement_during_connection(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "privacy.sqlite3"
+    ledger = PrivacyLedger(path)
+    substitute_path = tmp_path / "substitute.sqlite3"
+    PrivacyLedger(substitute_path)
+    held_path = tmp_path / "held.sqlite3"
+    real_connect = sqlite3.connect
+    replaced = False
+
+    def replace_during_open(database, *args, **kwargs):
+        nonlocal replaced
+        if not replaced and str(database).startswith("file:/proc/self/fd/"):
+            replaced = True
+            path.rename(held_path)
+            substitute_path.rename(path)
+            connection = real_connect(database, *args, **kwargs)
+            path.rename(substitute_path)
+            held_path.rename(path)
+            return connection
+        return real_connect(database, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", replace_during_open)
+    with pytest.raises(RuntimeError, match="connection identity changed"):
+        ledger.control_generation()
+
+
+def test_privacy_ledger_normalizes_relative_path_before_working_directory_change(
+    tmp_path, monkeypatch
+):
+    monkeypatch.chdir(tmp_path)
+    ledger = PrivacyLedger("privacy.sqlite3")
+    other_directory = tmp_path / "other"
+    other_directory.mkdir()
+    monkeypatch.chdir(other_directory)
+
+    assert ledger.path == tmp_path / "privacy.sqlite3"
+    assert ledger.control_generation() == 0
 
 
 def test_privacy_ledger_rejects_an_unrelated_existing_database(tmp_path):
