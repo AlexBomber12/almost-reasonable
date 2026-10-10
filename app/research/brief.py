@@ -20,8 +20,9 @@ _PUBLIC_REFERENCE = re.compile(
     r"(?i)(?:doi|arxiv|pmid|isbn):[A-Za-z0-9][A-Za-z0-9./_()-]{0,255}\Z"
 )
 _EMAIL = re.compile(
-    r"(?i)(?<![\w.!#$%&'*+/=?^_`{|}~-])"
-    r"[\w.!#$%&'*+/=?^_`{|}~-]+@(?:[\w-]+\.)+[\w-]+"
+    r"(?i)(?<![\w.!#$%&'*+/=?^_`{|}~\"-])"
+    r"(?:\"(?:[^\"\\\r\n]|\\.)+\"|[\w.!#$%&'*+/=?^_`{|}~-]+)@"
+    r"(?:(?:[\w-]+\.)+[\w-]+|\[[^\]\s]+\])"
 )
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s()./–—-]{5,}\d)(?!\w)")
 _YEAR_RANGE = re.compile(
@@ -42,6 +43,11 @@ _GROUPED_QUANTITY = re.compile(
 )
 _BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_=-])"
+)
+_SPACED_BASE64 = re.compile(
+    r"(?<![A-Za-z0-9+/_-])"
+    r"(?:[A-Za-z0-9+/_-]{4} +)+[A-Za-z0-9+/_-]{2,4}={0,2}"
+    r"(?![A-Za-z0-9+/_=-])"
 )
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
@@ -483,7 +489,15 @@ def _base64_candidates(values: list[str]) -> tuple[str, ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
     views = (raw,) if normalized == raw else (raw, normalized)
-    return tuple(match.group(0) for view in views for match in _BASE64.finditer(view))
+    contiguous = tuple(
+        match.group(0) for view in views for match in _BASE64.finditer(view)
+    )
+    folded = tuple(
+        match.group(0).replace(" ", "")
+        for view in views
+        for match in _SPACED_BASE64.finditer(view)
+    )
+    return (*contiguous, *folded)
 
 
 def _normalized_for_encoding(value: str) -> str:

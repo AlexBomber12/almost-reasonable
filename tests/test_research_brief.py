@@ -191,6 +191,16 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "direct_identifier",
         ),
         (
+            'Find "alice"@example.com',
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Find alice@[192.0.2.1]",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
             "Find ａｌｉｃｅ＠ｅｘａｍｐｌｅ．ｃｏｍ",
             ResearchScreeningContext(),
             "direct_identifier",
@@ -550,6 +560,22 @@ def test_encoded_private_value_after_query_delimiter_is_rejected():
         records(
             ResearchQuestion(f"Review https://example.org/?q={encoded(private_value)}")
         ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_whitespace_folded_encoded_private_value_is_rejected():
+    private_value = "alice@example.com"
+    encoded_value = encoded(private_value)
+    spaced_value = " ".join(
+        encoded_value[index : index + 4] for index in range(0, len(encoded_value), 4)
+    )
+    result = build_safe_research_brief(
+        records(ResearchQuestion(spaced_value)),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
