@@ -163,6 +163,11 @@ activated before either call blocks it. A stop activated after a request is in
 flight cannot retract an already accepted effect; the resulting success or
 uncertainty is recorded honestly.
 
+If a pre-effect authorization check fails after `sending`, its proven-safe
+rollback rechecks the pinned account inside the classification transaction.
+Account rebinding leaves the operation and any reservations fail-closed for
+`sending` recovery instead of mutating or releasing work for the former account.
+
 A failed initial readiness or dispatch authorization is also durable audit
 evidence: the outbox revision advances with a same-state transition that keeps
 the operation correlation and records the phase plus either a bounded hash of

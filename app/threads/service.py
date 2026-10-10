@@ -265,6 +265,7 @@ class ThreadsService:
                         else "publish_not_transmitted"
                     ),
                     reconciliation_status="not_required",
+                    precommit_check=self._require_account_binding,
                 )
                 raise
             try:
@@ -292,6 +293,7 @@ class ThreadsService:
                         else "publish_not_transmitted"
                     ),
                     reconciliation_status="not_required",
+                    precommit_check=self._require_account_binding,
                 )
                 raise PolicyDeniedError(
                     "publication effect is being dispatched or target is being "
@@ -327,6 +329,7 @@ class ThreadsService:
                         release_lock_required=item.replacement_of is not None,
                         release_account_effect_lock=True,
                         account_effect_lock_required=True,
+                        precommit_check=self._require_account_binding,
                     )
                     raise
                 container_id = self.simulator.create_container(item)
@@ -367,6 +370,7 @@ class ThreadsService:
                     release_lock_required=item.replacement_of is not None,
                     release_account_effect_lock=True,
                     account_effect_lock_required=True,
+                    precommit_check=self._require_account_binding,
                 )
                 raise
             evidence = self.simulator.publish(item, container_id)

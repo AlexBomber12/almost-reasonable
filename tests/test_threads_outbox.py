@@ -738,6 +738,65 @@ def test_authorization_change_after_sending_commit_is_proven_not_transmitted(
 
 
 @pytest.mark.parametrize(
+    "rebind_after, expected_evidence, expected_trace, lock_count",
+    [
+        ("sending", "pre_dispatch_intent", (), 0),
+        ("container_marker", "container_dispatch_started", (), 1),
+        (
+            "publish_marker",
+            "publish_dispatch_started",
+            (("create_container", "operation-1"),),
+            1,
+        ),
+    ],
+)
+def test_pre_effect_denial_rollback_fails_closed_after_account_rebinding(
+    tmp_path,
+    monkeypatch,
+    rebind_after,
+    expected_evidence,
+    expected_trace,
+    lock_count,
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    transition = service.store.transition
+    update_sending_evidence = service.store.update_sending_evidence
+
+    def transition_then_rebind(*args, **kwargs):
+        result = transition(*args, **kwargs)
+        if rebind_after == "sending" and args[1] is OutboxState.SENDING:
+            service.simulator.account_ref = "account-2"
+        return result
+
+    def update_then_rebind(operation_id, evidence, **kwargs):
+        update_sending_evidence(operation_id, evidence, **kwargs)
+        if (
+            rebind_after == "container_marker"
+            and evidence == "container_dispatch_started"
+        ) or (
+            rebind_after == "publish_marker" and evidence == "publish_dispatch_started"
+        ):
+            service.simulator.account_ref = "account-2"
+
+    monkeypatch.setattr(service.store, "transition", transition_then_rebind)
+    monkeypatch.setattr(service.store, "update_sending_evidence", update_then_rebind)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        service.dispatch("operation-1", approval, now=NOW)
+
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.SENDING
+    assert blocked.attempt_count == 1
+    assert blocked.dispatch_evidence == expected_evidence
+    assert tuple(service.simulator.trace) == expected_trace
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_account_effect_locks "
+            "WHERE account_ref='account-1' AND holder_operation_id='operation-1'"
+        ).fetchone() == (lock_count,)
+
+
+@pytest.mark.parametrize(
     "withdrawal, error, message",
     [
         ("privacy", PolicyDeniedError, "current draft privacy"),
