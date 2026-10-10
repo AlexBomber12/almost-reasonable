@@ -8,18 +8,25 @@
 !app/core/events.py
 !app/core/model_contract.py
 !app/core/openai_worker_client.py
+!app/core/openai_stage1_contract.py
 !app/core/provider_contract.py
 !app/core/provider_spend.py
 !app/core/store.py
 !app/trusted/
 !app/trusted/openai_gateway.py
+!app/trusted/openai_credential_files.py
+!app/trusted/openai_stage1_smoke.py
 !app/trusted/openai_transport.py
 !app/trusted/openai_worker_protocol.py
 !app/trusted/openai_worker_server.py
 !app/ops/
 !app/ops/openai_worker_probe.py
+!app/ops/openai_stage1_probe.py
 !ops/
 !ops/Dockerfile.openai-worker-stage0
+!ops/Dockerfile.openai-worker-stage1
+!ops/Dockerfile.openai-planner-probe-stage1
+!ops/requirements.openai-worker-stage1.lock
 
 secrets/
 data/

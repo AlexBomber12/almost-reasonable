@@ -1,0 +1,16 @@
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+WORKDIR /opt/almost-reasonable
+
+COPY --chmod=0644 app/core/agent_proposals.py app/core/context.py app/core/core_self.py app/core/events.py app/core/model_contract.py app/core/openai_stage1_contract.py app/core/openai_worker_client.py app/core/provider_contract.py app/core/store.py /opt/almost-reasonable/app/core/
+COPY --chmod=0644 app/trusted/openai_worker_protocol.py /opt/almost-reasonable/app/trusted/
+COPY --chmod=0644 app/ops/openai_stage1_probe.py /opt/almost-reasonable/app/ops/
+
+RUN chmod 0755 /opt/almost-reasonable/app /opt/almost-reasonable/app/core /opt/almost-reasonable/app/trusted /opt/almost-reasonable/app/ops
+
+USER 11002:11002
+
+CMD ["python", "-B", "-m", "app.ops.openai_stage1_probe", "--socket", "/run/almost-reasonable/openai-worker.sock"]
