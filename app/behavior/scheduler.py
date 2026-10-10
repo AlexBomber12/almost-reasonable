@@ -61,6 +61,8 @@ class WakeupPolicy:
             raise ValueError("cadence and cooldown are invalid")
         if self.duplicate_window <= timedelta(0):
             raise ValueError("duplicate_window must be positive")
+        if type(self.per_action_limits) is not tuple:
+            raise ValueError("per_action_limits are invalid")
         decisions = [item[0] for item in self.per_action_limits]
         if (
             any(

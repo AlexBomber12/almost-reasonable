@@ -864,14 +864,22 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
         repository.load()
 
     missing_parent = json.loads(json.dumps(resolved))
-    orphan = json.loads(json.dumps(pending["proposals"][0]))
+    orphan = json.loads(json.dumps(resolved["proposals"][0]))
     orphan["proposal"]["proposal_id"] = "mp-orphan"
     orphan["proposal"]["version_identity"] = "proposal-orphan"
     orphan["proposal"]["current_mission_version"] = "missing-parent"
-    orphan["status"] = MissionStatus.SUPERSEDED.value
+    orphan["status"] = MissionStatus.REJECTED.value
+    orphan["confirmation"]["proposal_id"] = "mp-orphan"
+    orphan["confirmation"]["outcome"] = ConfirmationOutcome.REJECTED.value
     missing_parent["proposals"].append(orphan)
     path.write_text(json.dumps(missing_parent), encoding="utf-8")
     with pytest.raises(ValueError, match="lacks its parent"):
+        repository.load()
+
+    unsupported_superseded = json.loads(json.dumps(pending))
+    unsupported_superseded["proposals"][0]["status"] = MissionStatus.SUPERSEDED.value
+    path.write_text(json.dumps(unsupported_superseded), encoding="utf-8")
+    with pytest.raises(ValueError, match="superseded"):
         repository.load()
 
     cyclic = json.loads(json.dumps(resolved))

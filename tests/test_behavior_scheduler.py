@@ -224,6 +224,7 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
         {"cadence": timedelta(0)},
         {"duplicate_window": timedelta(0)},
         {"per_action_limits": (("research", 1),)},
+        {"per_action_limits": [(AgentDecision.RESEARCH, 1)]},
         {"per_action_limits": ((AgentDecision.RESEARCH, MAX_ACTION_HISTORY + 1),)},
         {"active_start": time(8, tzinfo=UTC)},
         {"active_end": time(20, tzinfo=UTC)},

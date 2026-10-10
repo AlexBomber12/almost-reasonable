@@ -189,6 +189,8 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         custom_harness((rule,), assessor).run(())
     with pytest.raises(ValueError, match="non-empty tuple"):
         custom_harness((rule,), assessor).run([])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="non-empty and unique"):
+        custom_harness([rule], assessor)  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="recorded output"):
         custom_harness((rule,), assessor).run(
             (evaluation_case("empty", "prompt", (), ()),)

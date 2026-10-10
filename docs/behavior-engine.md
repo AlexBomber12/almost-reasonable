@@ -112,6 +112,8 @@ agent-selected cadence, cooldown, duplicate-retention window, maximum iteration
 and elapsed-time limits, and per-decision technical rate limits. Active-hour
 bounds are deliberately naive wall-clock values interpreted in the injected
 clock's timezone; aware `time` values reject at policy construction.
+Rate limits must be supplied as an immutable tuple, so caller mutation cannot
+change a validated frozen policy.
 
 A run filters out future events, coalesces only currently due unprocessed
 wake-ups to the newest event, records their IDs, and deliberates at most once.
@@ -166,7 +168,8 @@ source label alone is therefore insufficient. Pending proposals never affect
 the active mission. Rejection retains the current mission.
 Confirmation creates a new mission version with the former version as its
 parent and atomically marks other pending proposals for that former parent as
-`superseded`. Resolved or superseded proposals cannot be resolved again. The
+`superseded`. A persisted superseded record is valid only when that confirmed
+sibling exists. Resolved or superseded proposals cannot be resolved again. The
 capability snapshot is frozen only for an individual pending transition: after
 earlier proposals are resolved, a later authenticated operational change may
 supply a new snapshot without rewriting history.
@@ -235,6 +238,8 @@ outputs together with the generating model, prompt-template, and provider
 configuration identities. Each output is a separate trial. Typed, named
 `BoundAssessor` values keep deterministic, model, and human assessors in separate
 dispatch paths; G rules may only select the deterministic path. The harness
+requires an immutable rubric tuple so later caller mutation cannot alter the
+validated experiment. It
 records the actual assessor kind/identity, separate SHA-256 identities for the
 frozen case input and output, and an artifact identity binding generation
 configuration, case, trial, output, rubric dimension, and assessor. It does not

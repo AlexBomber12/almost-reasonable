@@ -179,7 +179,11 @@ class BehavioralEvaluationHarness:
         *,
         rubric_version: str = RUBRIC_VERSION,
     ):
-        if not rubric or len({rule.dimension for rule in rubric}) != len(rubric):
+        if (
+            type(rubric) is not tuple
+            or not rubric
+            or len({rule.dimension for rule in rubric}) != len(rubric)
+        ):
             raise ValueError("rubric dimensions must be non-empty and unique")
         for rule in rubric:
             if (

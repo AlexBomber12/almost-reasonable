@@ -699,6 +699,15 @@ def _validate_active_mission(
     confirmed = tuple(
         record for record in records if record.status is MissionStatus.CONFIRMED
     )
+    confirmed_parents = {
+        record.proposal.current_mission_version for record in confirmed
+    }
+    if any(
+        record.status is MissionStatus.SUPERSEDED
+        and record.proposal.current_mission_version not in confirmed_parents
+        for record in records
+    ):
+        raise ValueError("superseded proposal lacks a confirmed sibling")
     if any(
         record.status is MissionStatus.PENDING
         and record.proposal.current_mission_version != current.version
