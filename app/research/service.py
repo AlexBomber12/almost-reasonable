@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 import math
+import random
 import time
 from typing import Protocol
 
@@ -80,6 +81,7 @@ class ResearchService:
         monotonic: Callable[[], float] = time.monotonic,
         utcnow: Callable[[], datetime] = lambda: datetime.now(UTC),
         sleeper: Callable[[float], None] = time.sleep,
+        jitter: Callable[[], float] = random.random,
     ):
         self._config = config
         self._transport = transport
@@ -89,6 +91,7 @@ class ResearchService:
         self._monotonic = monotonic
         self._utcnow = utcnow
         self._sleeper = sleeper
+        self._jitter = jitter
 
     def run(self, brief: ResearchBrief) -> ResearchResult:
         if type(brief) is not ResearchBrief:
@@ -131,7 +134,8 @@ class ResearchService:
                 if outcome not in _RETRYABLE or attempts >= self._config.max_attempts:
                     return self._result(outcome, attempts)
                 delay = min(
-                    _retry_delay(self._config.initial_backoff_seconds, attempts),
+                    _retry_delay(self._config.initial_backoff_seconds, attempts)
+                    * (0.5 + self._checked_jitter()),
                     self._config.maximum_backoff_seconds,
                 )
                 retry_after = error.retry_after_seconds
@@ -174,6 +178,17 @@ class ResearchService:
             or not math.isfinite(value)
         ):
             raise RuntimeError("monotonic clock returned an invalid value")
+        return float(value)
+
+    def _checked_jitter(self) -> float:
+        value = self._jitter()
+        if (
+            isinstance(value, bool)
+            or not isinstance(value, (int, float))
+            or not math.isfinite(value)
+            or not 0.0 <= value <= 1.0
+        ):
+            raise RuntimeError("jitter source returned an invalid value")
         return float(value)
 
     @staticmethod

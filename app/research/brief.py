@@ -9,6 +9,7 @@ import json
 import re
 import secrets
 import unicodedata
+from urllib.parse import unquote
 
 
 MAX_BRIEF_UTF8_BYTES = 8 * 1024
@@ -417,8 +418,18 @@ def _screen(
     reason = _privacy_reason(values, screening, identifier_values)
     if reason is not None:
         return reason
+    try:
+        percent_decoded = tuple(
+            decoded
+            for value in values
+            if (decoded := unquote(value, errors="strict")) != value
+        )
+    except UnicodeDecodeError:
+        return "encoded_leakage"
     encoded_candidates = _base64_candidates(values)
     if _encoded_depth >= _MAX_ENCODED_SCREEN_DEPTH:
+        if percent_decoded:
+            return "encoded_leakage"
         for candidate, opaque_is_leakage in encoded_candidates:
             decoded = _decode_base64(candidate)
             if decoded is None:
@@ -429,6 +440,17 @@ def _screen(
             if opaque_is_leakage or not has_control:
                 return "encoded_leakage"
         return None
+    for decoded in percent_decoded:
+        if (
+            _screen(
+                [decoded],
+                screening,
+                identifier_values=[decoded],
+                _encoded_depth=_encoded_depth + 1,
+            )
+            is not None
+        ):
+            return "encoded_leakage"
     for candidate, opaque_is_leakage in encoded_candidates:
         decoded = _decode_base64(candidate)
         if decoded is None:

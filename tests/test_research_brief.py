@@ -1,5 +1,6 @@
 import base64
 from dataclasses import replace
+from urllib.parse import quote
 
 import pytest
 
@@ -209,6 +210,16 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "Find alice@company",
             ResearchScreeningContext(),
             "direct_identifier",
+        ),
+        (
+            "Contact alice%40example.com",
+            ResearchScreeningContext(),
+            "encoded_leakage",
+        ),
+        (
+            "Research malformed %FF text",
+            ResearchScreeningContext(),
+            "encoded_leakage",
         ),
         (
             "Find admin@localhost",
@@ -888,6 +899,30 @@ def test_encoded_payloads_receive_the_complete_privacy_screen(private_value, scr
 def test_nested_encoding_fails_closed_at_the_screening_depth_limit():
     result = build_safe_research_brief(
         records(ResearchQuestion(encoded("ordinary public academic text", times=5))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_benign_percent_encoding_is_screened_and_allowed():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("ordinary%20public%20text")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+def test_nested_percent_encoding_fails_closed_at_the_screening_depth_limit():
+    value = "ordinary public text"
+    for _index in range(5):
+        value = quote(value, safe="")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(value)),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),

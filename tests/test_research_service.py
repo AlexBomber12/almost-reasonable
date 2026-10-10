@@ -108,6 +108,7 @@ def service(outcomes, **changes):
         monotonic=lambda: next(times),
         utcnow=changes.pop("utcnow", lambda: NOW),
         sleeper=changes.pop("sleeper", sleeps.append),
+        jitter=changes.pop("jitter", lambda: 0.5),
     )
     assert not changes
     return instance, transport, sleeps, spend_marks
@@ -234,6 +235,30 @@ def test_retry_after_is_bounded_by_trusted_backoff_limit():
 
     assert result.outcome is ResearchOutcome.COMPLETED
     assert sleeps == [4.0]
+
+
+@pytest.mark.parametrize(("jitter", "delay"), [(0.0, 0.5), (1.0, 1.5)])
+def test_exponential_retry_delay_uses_bounded_jitter(jitter, delay):
+    instance, _transport, sleeps, _marks = service(
+        [HostedSearchTransportError("server_error"), success_response()],
+        jitter=lambda: jitter,
+    )
+
+    result = instance.run(brief())
+
+    assert result.outcome is ResearchOutcome.COMPLETED
+    assert sleeps == [delay]
+
+
+@pytest.mark.parametrize("jitter", [True, "bad", float("nan"), -0.1, 1.1])
+def test_invalid_jitter_source_is_rejected(jitter):
+    instance, _transport, _sleeps, _marks = service(
+        [HostedSearchTransportError("server_error"), success_response()],
+        jitter=lambda: jitter,
+    )
+
+    with pytest.raises(RuntimeError, match="jitter"):
+        instance.run(brief())
 
 
 @pytest.mark.parametrize("retry_after", ["later", float("nan"), float("inf"), True])
