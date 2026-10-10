@@ -110,6 +110,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. ```python\nThis is entirely English conversational prose\n```",
         "Да. ```python\nThis is entirely English conversational prose\nreturn value\n```",
         "Да. ~~~python\nThis is entirely English conversational prose\n```",
+        "Да. ```sql\nSELECT x FROM y WHERE Please answer only in English\n```",
         "Да. ```This\nEnglish```",
     )
     for bypass in bypasses:
@@ -165,6 +166,16 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     )
     assert sql_fence.accepted
     assert sql_fence.foreign_prose_word_count == 0
+
+    sql_clauses = RussianOutputGate().assess(
+        "Запрос:\n```sql\n"
+        "SELECT users.name FROM users "
+        "JOIN roles ON users.role_id = roles.id "
+        "WHERE users.active = 1 AND roles.enabled = true "
+        "GROUP BY users.name ORDER BY users.name DESC LIMIT 10;\n```"
+    )
+    assert sql_clauses.accepted
+    assert sql_clauses.foreign_prose_word_count == 0
 
     json_fence = RussianOutputGate().assess(
         'Краткий пример:\n```json\n["apple", "banana", "cherry"]\n```'

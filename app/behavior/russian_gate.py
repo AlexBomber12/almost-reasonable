@@ -71,11 +71,22 @@ _SUPPORTED_FENCED_CODE_LANGUAGES = frozenset(
         "sql",
     )
 )
+_SQL_IDENTIFIER = r"[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?"
+_SQL_VALUE = (
+    rf"(?:{_SQL_IDENTIFIER}|-?\d+(?:\.\d+)?|'(?:''|[^'\r\n])*'|null|true|false)"
+)
+_SQL_PREDICATE = rf"{_SQL_VALUE}\s*(?:=|!=|<>|<=|>=|<|>)\s*{_SQL_VALUE}"
 _SQL_CODE_SIGNAL = re.compile(
-    r"^\s*select\s+(?:\*|[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)"
-    r"\s+from\s+[A-Za-z_]\w*"
-    r"(?:\s+(?:(?:where|join|limit)\s+|(?:group|order)\s+by\s+)[^;\r\n]+)*"
-    r"\s*;?\s*$",
+    rf"^\s*select\s+(?:\*|{_SQL_IDENTIFIER}(?:\s*,\s*{_SQL_IDENTIFIER})*)"
+    rf"\s+from\s+{_SQL_IDENTIFIER}"
+    rf"(?:\s+join\s+{_SQL_IDENTIFIER}\s+on\s+{_SQL_PREDICATE})*"
+    rf"(?:\s+where\s+{_SQL_PREDICATE}"
+    rf"(?:\s+(?:and|or)\s+{_SQL_PREDICATE})*)?"
+    rf"(?:\s+group\s+by\s+{_SQL_IDENTIFIER}"
+    rf"(?:\s*,\s*{_SQL_IDENTIFIER})*)?"
+    rf"(?:\s+order\s+by\s+{_SQL_IDENTIFIER}(?:\s+(?:asc|desc))?"
+    rf"(?:\s*,\s*{_SQL_IDENTIFIER}(?:\s+(?:asc|desc))?)*)?"
+    r"(?:\s+limit\s+\d+)?\s*;?\s*$",
     re.IGNORECASE,
 )
 _HTML_CODE_SIGNAL = re.compile(r"^\s*</?[A-Za-z][^>]*>\s*$")
