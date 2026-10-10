@@ -57,6 +57,9 @@ class ThreadsService:
         privacy_check: Callable[[OutboxItem, datetime], bool] = (
             lambda item, _now: item.privacy_authorized
         ),
+        approval_status_check: Callable[[Approval, datetime], bool] = (
+            lambda approval, _now: not approval.revoked
+        ),
     ):
         policy.validate()
         if simulator.account_ref != policy.account_ref:
@@ -67,6 +70,7 @@ class ThreadsService:
         self.clock = clock
         self.utc_now = utc_now
         self.privacy_check = privacy_check
+        self.approval_status_check = approval_status_check
 
     def propose(
         self,
@@ -164,6 +168,8 @@ class ThreadsService:
             OutboxState.SENDING,
             reason="durable_dispatch_intent",
             now=now,
+            approval_reference=approval.reference,
+            approval_status="approved",
             dispatch_evidence="pre_dispatch_intent",
             increment_attempt=True,
         )
@@ -295,14 +301,18 @@ class ThreadsService:
                 now=now,
                 reconciliation_status="verified_rejection",
             )
-        return self.store.transition(
-            operation_id,
-            OutboxState.CONFIRMED,
-            reason="reconciliation_verified_success",
-            now=now,
-            provider_publication_id=simulated_provider_id("reconciled", operation_id),
-            reconciliation_status="verified_success",
-        )
+        if result is ReconciliationResult.CONFIRMED:
+            return self.store.transition(
+                operation_id,
+                OutboxState.CONFIRMED,
+                reason="reconciliation_verified_success",
+                now=now,
+                provider_publication_id=simulated_provider_id(
+                    "reconciled", operation_id
+                ),
+                reconciliation_status="verified_success",
+            )
+        return self.store.note_reconciliation(operation_id, "invalid_result", now=now)
 
     def abandon_unknown(self, operation_id: str, *, now: datetime) -> OutboxItem:
         return self.store.transition(
@@ -394,6 +404,8 @@ class ThreadsService:
             now=now,
             require_duplicate_ack=item.replacement_of is not None,
         )
+        if self.approval_status_check(approval, now) is not True:
+            raise PolicyDeniedError("current approval is unavailable")
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
@@ -442,17 +454,25 @@ class ThreadsService:
                 reconciliation_status="not_required",
                 **common,
             )
-        latest = self.store.get(item.operation_id)
-        state = (
-            OutboxState.READY
-            if latest.attempt_count < MAX_DISPATCH_ATTEMPTS
-            else OutboxState.FAILED_TERMINAL
-        )
+        if error.effect_class is EffectClass.PROVEN_PRE_DISPATCH:
+            latest = self.store.get(item.operation_id)
+            state = (
+                OutboxState.READY
+                if latest.attempt_count < MAX_DISPATCH_ATTEMPTS
+                else OutboxState.FAILED_TERMINAL
+            )
+            return self.store.transition(
+                item.operation_id,
+                state,
+                reason="proven_pre_dispatch_failure",
+                reconciliation_status="not_required",
+                **common,
+            )
         return self.store.transition(
             item.operation_id,
-            state,
-            reason="proven_pre_dispatch_failure",
-            reconciliation_status="not_required",
+            OutboxState.UNKNOWN,
+            reason="provider_effect_class_unknown",
+            reconciliation_status="required",
             **common,
         )
 

@@ -16,6 +16,7 @@ from app.threads.domain import (
 from app.threads.service import PolicyDeniedError, ThreadsService
 from app.threads.simulator import (
     Fault,
+    ProviderFailure,
     ReconciliationResult,
     SimulatedCrash,
     ThreadsSimulator,
@@ -352,6 +353,20 @@ def test_faults_are_classified_at_every_provider_boundary(
         assert item.reconciliation_status == "required"
 
 
+def test_unknown_provider_effect_class_fails_closed_as_unknown(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+
+    def future_failure(_item):
+        raise ProviderFailure("future_effect_class", "unrecognized_effect")
+
+    monkeypatch.setattr(service.simulator, "create_container", future_failure)
+    item = service.dispatch("operation-1", approval, now=NOW)
+    assert item.state is OutboxState.UNKNOWN
+    assert item.reconciliation_status == "required"
+    assert item.dispatch_evidence == "unrecognized_effect"
+
+
 def test_proven_pre_dispatch_retry_is_bounded_and_reuses_container(tmp_path):
     service = make_service(tmp_path)
     _, approval = ready(service)
@@ -526,6 +541,37 @@ def test_current_draft_privacy_is_rechecked_before_each_effect(tmp_path):
     assert simulator.trace == [("create_container", "operation-1")]
 
 
+def test_current_approval_status_is_rechecked_before_each_effect(tmp_path):
+    decisions = iter((True, True, True, False))
+    simulator = ThreadsSimulator(account_ref="account-1")
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        make_policy(),
+        utc_now=lambda: NOW,
+        approval_status_check=lambda _approval, _now: next(decisions),
+    )
+    _, approval = ready(service)
+    with pytest.raises(PolicyDeniedError, match="current approval"):
+        service.dispatch("operation-1", approval, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.provider_container_id == simulated_provider_id(
+        "container", "operation-1"
+    )
+    assert simulator.trace == [("create_container", "operation-1")]
+
+
+def test_dispatch_persists_the_current_approval_reference(tmp_path):
+    service = make_service(tmp_path)
+    _, original = ready(service)
+    replacement = approve(reference="approval-replacement")
+    confirmed = service.dispatch("operation-1", replacement, now=NOW)
+    assert original.reference == "approval-operation-1"
+    assert confirmed.approval_reference == "approval-replacement"
+    assert confirmed.approval_status == "approved"
+
+
 def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
@@ -597,6 +643,20 @@ def test_reconciliation_requires_verified_result(tmp_path, result, expected):
     assert reconciled.state is expected
     if expected is OutboxState.UNKNOWN:
         assert reconciled.reconciliation_status == "unresolved"
+
+
+@pytest.mark.parametrize("result", [None, "confirmed", object()])
+def test_unknown_reconciliation_result_preserves_uncertainty(
+    tmp_path, monkeypatch, result
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", approval, now=NOW)
+    monkeypatch.setattr(service.simulator, "reconcile", lambda _item: result)
+    unresolved = service.reconcile("operation-1", now=NOW)
+    assert unresolved.state is OutboxState.UNKNOWN
+    assert unresolved.reconciliation_status == "invalid_result"
 
 
 def test_reconciliation_failure_preserves_unknown_and_abandonment_is_permanent(
