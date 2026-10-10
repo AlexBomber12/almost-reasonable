@@ -160,7 +160,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
             "INSERT INTO threads_inbound_events VALUES "
             "('event-legacy', 'correlation-old', 'account-1', "
             "'meta-simulator-v1', 'reply', 'conversation-legacy', "
-            "'parent-legacy', ?, 'Публичное сообщение', ?)",
+            "'parent-legacy', ?, 'Публичное сообщение', ?, NULL)",
             (NOW.isoformat(), NOW.isoformat()),
         )
         connection.execute(
@@ -184,7 +184,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (4,)
+        ).fetchone() == (5,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -209,7 +209,8 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
                 "SELECT name FROM sqlite_master WHERE type='table'"
             )
         }
-    assert "correlation_id" in inbound_columns
+        assert "correlation_id" in inbound_columns
+        assert "processed_at" in inbound_columns
     assert "correlation_id" in outcome_columns
     assert "threads_unknown_effect_locks" in tables
     assert "threads_account_effect_locks" in tables
@@ -586,6 +587,9 @@ def test_simulated_provider_ids_stay_bounded_for_maximum_operation_ids(tmp_path)
     service.simulator.reconciliation[long_reconciled] = ReconciliationResult.CONFIRMED
     reconciled = service.reconcile(long_reconciled, now=NOW)
     assert len(reconciled.provider_publication_id) <= 128
+    assert reconciled.provider_publication_id == simulated_provider_id(
+        "thread", long_reconciled
+    )
 
 
 @pytest.mark.parametrize(

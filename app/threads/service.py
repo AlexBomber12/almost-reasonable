@@ -478,7 +478,7 @@ class ThreadsService:
                     reason="reconciliation_verified_success",
                     now=now,
                     provider_publication_id=simulated_provider_id(
-                        "reconciled", operation_id
+                        "thread", operation_id
                     ),
                     reconciliation_status="verified_success",
                 )

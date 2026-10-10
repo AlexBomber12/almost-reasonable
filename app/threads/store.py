@@ -23,7 +23,8 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+MAX_PENDING_INBOUND_EVENTS = 100
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
     OutboxState.PROPOSED: {
@@ -135,6 +136,15 @@ class ThreadsStore:
                     version = 3
                 if version == 3:
                     for statement in _MIGRATION_3_TO_4.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (4,),
+                    )
+                    version = 4
+                if version == 4:
+                    for statement in _MIGRATION_4_TO_5.split(";"):
                         if statement.strip():
                             connection.execute(statement)
                     connection.execute(
@@ -1033,6 +1043,7 @@ class ThreadsStore:
             raise ValueError("resume condition is only valid for defer")
         require_aware_time("outcome time", now)
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             try:
                 changed = connection.execute(
                     "INSERT INTO threads_conversation_outcomes "
@@ -1062,6 +1073,37 @@ class ThreadsStore:
                 raise ThreadsStoreError(
                     "conversation outcome correlation does not match inbound event"
                 )
+            acknowledged = connection.execute(
+                "UPDATE threads_inbound_events SET processed_at=? "
+                "WHERE account_ref=? AND kind=? AND event_id=? "
+                "AND correlation_id=? AND processed_at IS NULL",
+                (
+                    now.isoformat(),
+                    account_ref,
+                    stream.value,
+                    inbound_event_id,
+                    correlation_id,
+                ),
+            ).rowcount
+            if acknowledged != 1:
+                raise ThreadsStoreError("inbound event is already processed")
+            connection.commit()
+
+    def pending_inbound_events(
+        self, account_ref: str, stream: InboundKind, *, limit: int = 100
+    ) -> tuple[InboundEvent, ...]:
+        require_reference("account reference", account_ref)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
+        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INBOUND_EVENTS:
+            raise ValueError("invalid pending inbound limit")
+        with self._open() as connection:
+            rows = connection.execute(
+                "SELECT * FROM threads_inbound_events WHERE account_ref=? AND kind=? "
+                "AND processed_at IS NULL ORDER BY received_at, event_id LIMIT ?",
+                (account_ref, stream.value, limit),
+            ).fetchall()
+        return tuple(_inbound_event(row) for row in rows)
 
     @staticmethod
     def _record_transition(
@@ -1162,6 +1204,20 @@ def _validate_inbound_event(
     validate_content(event.content, inbound=True)
 
 
+def _inbound_event(row: sqlite3.Row) -> InboundEvent:
+    return InboundEvent(
+        event_id=row["event_id"],
+        correlation_id=row["correlation_id"],
+        account_ref=row["account_ref"],
+        source_ref=row["source_ref"],
+        kind=InboundKind(row["kind"]),
+        conversation_id=row["conversation_id"],
+        parent_message_id=row["parent_message_id"],
+        occurred_at=datetime.fromisoformat(row["occurred_at"]),
+        content=row["content"],
+    )
+
+
 _SCHEMA = """
 CREATE TABLE threads_schema_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -1217,6 +1273,7 @@ CREATE TABLE threads_inbound_events (
     occurred_at TEXT NOT NULL,
     content TEXT NOT NULL,
     received_at TEXT NOT NULL,
+    processed_at TEXT,
     PRIMARY KEY(account_ref, kind, event_id)
 );
 CREATE TABLE threads_poll_cursors (
@@ -1357,4 +1414,9 @@ CREATE TABLE threads_poll_policy_denials (
     reason TEXT NOT NULL,
     occurred_at TEXT NOT NULL
 );
+"""
+
+
+_MIGRATION_4_TO_5 = """
+ALTER TABLE threads_inbound_events ADD COLUMN processed_at TEXT;
 """

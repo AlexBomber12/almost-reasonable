@@ -141,6 +141,59 @@ def test_interruption_before_atomic_commit_replays_page_without_loss(tmp_path):
     assert recovered.final_cursor == "mention-cursor-1"
 
 
+def test_committed_inbound_events_remain_pending_until_outcome_acknowledges_them(
+    tmp_path,
+):
+    threads = service(tmp_path)
+    inbound = event("recover-after-response-loss")
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor="cursor-recovered",
+        events=(inbound,),
+    )
+    threads.poll(
+        InboundKind.REPLY,
+        now=NOW,
+        correlation_id="poll-response-lost-after-commit",
+    )
+    restarted = ThreadsStore(threads.store.database)
+    assert restarted.pending_inbound_events("account-1", InboundKind.REPLY) == (
+        inbound,
+    )
+    restarted.record_conversation_outcome(
+        outcome_id="outcome-recovered",
+        correlation_id=inbound.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=inbound.event_id,
+        outcome=ConversationOutcome.NO_ACTION,
+        reason="recovered_pending_delivery",
+        resume_condition=None,
+        now=NOW,
+    )
+    assert restarted.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+    with sqlite3.connect(restarted.database) as connection:
+        assert connection.execute(
+            "SELECT processed_at FROM threads_inbound_events WHERE event_id=?",
+            (inbound.event_id,),
+        ).fetchone() == (NOW.isoformat(),)
+
+
+@pytest.mark.parametrize(
+    "stream, limit",
+    [
+        ("reply", 1),
+        (InboundKind.REPLY, 0),
+        (InboundKind.REPLY, 101),
+        (InboundKind.REPLY, True),
+    ],
+)
+def test_pending_inbound_query_bounds_are_closed(tmp_path, stream, limit):
+    with pytest.raises(ValueError):
+        service(tmp_path).store.pending_inbound_events("account-1", stream, limit=limit)
+
+
 @pytest.mark.parametrize("field", ["authority", "account", "source", "cursor"])
 def test_unverified_or_mismatched_provider_pages_are_rejected_before_persistence(
     tmp_path, monkeypatch, field
@@ -758,6 +811,7 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
             "WHERE outcome_id=?",
             (f"outcome-{outcome.value}",),
         ).fetchone() == ("correlation-decision",)
+    assert threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
 
 
 def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
@@ -810,7 +864,9 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     store.record_conversation_outcome(**base)
     with pytest.raises(ThreadsStoreError):
         store.record_conversation_outcome(**base)
+    with pytest.raises(ThreadsStoreError, match="already processed"):
+        store.record_conversation_outcome(**(base | {"outcome_id": "outcome-2"}))
     with pytest.raises(ThreadsStoreError):
         store.record_conversation_outcome(
-            **(base | {"outcome_id": "outcome-2", "inbound_event_id": "missing"})
+            **(base | {"outcome_id": "outcome-3", "inbound_event_id": "missing"})
         )
