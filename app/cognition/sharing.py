@@ -46,6 +46,38 @@ _SHAREABLE_KINDS = {
     MemoryKind.UNRESOLVED_QUESTION,
 }
 _MAX_PROTECTED_SOURCES = 50
+_DEFAULT_IGNORABLE_CODEPOINTS = frozenset(
+    codepoint
+    for start, end in (
+        (0x00AD, 0x00AD),
+        (0x034F, 0x034F),
+        (0x061C, 0x061C),
+        (0x115F, 0x1160),
+        (0x17B4, 0x17B5),
+        (0x180B, 0x180F),
+        (0x200B, 0x200F),
+        (0x202A, 0x202E),
+        (0x2060, 0x206F),
+        (0x3164, 0x3164),
+        (0xFE00, 0xFE0F),
+        (0xFEFF, 0xFEFF),
+        (0xFFA0, 0xFFA0),
+        (0x1BCA0, 0x1BCA3),
+        (0x1D173, 0x1D17A),
+        (0xE0000, 0xE0FFF),
+    )
+    for codepoint in range(start, end + 1)
+)
+
+
+def _normalize_privacy_text(value: str) -> str:
+    normalized = unicodedata.normalize("NFKC", value)
+    return "".join(
+        character
+        for character in normalized
+        if unicodedata.category(character) != "Cc"
+        and ord(character) not in _DEFAULT_IGNORABLE_CODEPOINTS
+    )
 
 
 def screen_abstract_candidate(
@@ -54,7 +86,7 @@ def screen_abstract_candidate(
 ) -> PrivacyScreenResult:
     """Conservative H screen for obvious identity, quotation, and copy leakage."""
 
-    normalized_candidate = unicodedata.normalize("NFKC", candidate.value)
+    normalized_candidate = _normalize_privacy_text(candidate.value)
     if _IDENTIFIER.search(normalized_candidate) is not None:
         return PrivacyScreenResult(
             PRIVACY_SCREEN_VERSION,
@@ -93,12 +125,12 @@ def screen_abstract_candidate(
 
 
 def _normalized_words(value: str) -> tuple[str, ...]:
-    normalized = unicodedata.normalize("NFKC", value).casefold()
+    normalized = _normalize_privacy_text(value).casefold()
     return tuple(_WORD.findall(normalized))
 
 
 def _contains_protected_marker(value: str, marker: str) -> bool:
-    normalized_marker = unicodedata.normalize("NFKC", marker).casefold()
+    normalized_marker = _normalize_privacy_text(marker).casefold()
     pattern = re.compile(rf"(?<!\w){re.escape(normalized_marker)}(?!\w)")
     return pattern.search(value) is not None
 
@@ -201,7 +233,7 @@ class AbstractToSharedValidator:
             context.principal_id.value,
             *protected_ids,
         )
-        normalized_value = unicodedata.normalize("NFKC", candidate.value).casefold()
+        normalized_value = _normalize_privacy_text(candidate.value).casefold()
         if any(
             _contains_protected_marker(normalized_value, marker)
             for marker in protected_markers

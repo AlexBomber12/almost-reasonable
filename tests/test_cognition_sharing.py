@@ -150,6 +150,12 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
         ("Read https://private.example.test/profile.", AbstractReason.IDENTIFIER),
         ("Contact ada＠example．test privately.", AbstractReason.IDENTIFIER),
         ("Read https：／／private．example．test/profile.", AbstractReason.IDENTIFIER),
+        ("Contact ada@\u0000example.test privately.", AbstractReason.IDENTIFIER),
+        ("Contact ada@\u200bexample.test privately.", AbstractReason.IDENTIFIER),
+        ("Contact ada@exam\u180bple.test privately.", AbstractReason.IDENTIFIER),
+        ("Contact ada@exam\ufe0fple.test privately.", AbstractReason.IDENTIFIER),
+        ("Contact ada@exam\U000e0100ple.test privately.", AbstractReason.IDENTIFIER),
+        ("Contact ada@exam\u034fple.test privately.", AbstractReason.IDENTIFIER),
         ('A participant said "keep this exact sentence".', AbstractReason.QUOTATION),
         ("A participant said ＂keep this private＂.", AbstractReason.QUOTATION),
         (
@@ -160,13 +166,17 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
             "A general idea with PRIVATE_UNIQUE_CANARY.",
             AbstractReason.EXCESSIVE_SOURCE_OVERLAP,
         ),
+        (
+            "A general idea with PRIVATE_UNIQUE_\u2060CANARY.",
+            AbstractReason.EXCESSIVE_SOURCE_OVERLAP,
+        ),
     ],
 )
 def test_identifier_quotation_and_recognizable_copy_are_rejected(
     sharing_setup, value, reason
 ):
     events, _, context, event_id = sharing_setup
-    if "PRIVATE_UNIQUE_CANARY" in value:
+    if "PRIVATE_UNIQUE" in value:
         event_id = append_event(
             events,
             context,
