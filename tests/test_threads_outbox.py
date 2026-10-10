@@ -855,6 +855,27 @@ def test_current_approval_status_is_rechecked_before_publication(tmp_path, monke
     assert service.simulator.trace == [("create_container", "operation-1")]
 
 
+def test_approval_is_rechecked_after_blocking_privacy_lookup(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    current_privacy = service.authorization_provider.current_privacy_authorized
+
+    def authorize_privacy_then_revoke(**kwargs):
+        result = current_privacy(**kwargs)
+        service.authorization_provider.set_approval(approve(revoked=True))
+        return result
+
+    monkeypatch.setattr(
+        service.authorization_provider,
+        "current_privacy_authorized",
+        authorize_privacy_then_revoke,
+    )
+    with pytest.raises(ValueError, match="revoked"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.READY
+    assert service.simulator.trace == []
+
+
 def test_privacy_is_rechecked_after_final_container_marker(tmp_path, monkeypatch):
     service = make_service(tmp_path)
     _, approval = ready(service)
@@ -1001,7 +1022,7 @@ def test_dispatch_persists_the_current_approval_reference(tmp_path):
     assert confirmed.approval_status == "approved"
 
 
-def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
+def test_expiry_at_initial_dispatch_check_preserves_ready_state(tmp_path):
     current_time = [NOW]
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
@@ -1023,7 +1044,7 @@ def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
         service.dispatch("operation-1", expiring, now=NOW)
     blocked = service.store.get("operation-1")
     assert blocked.state is OutboxState.READY
-    assert blocked.dispatch_evidence == "container_not_transmitted"
+    assert blocked.dispatch_evidence is None
     assert simulator.trace == []
 
 

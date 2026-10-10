@@ -652,7 +652,7 @@ class ThreadsService:
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
-        current_approval = self._resolve_current_approval(
+        self._resolve_current_approval(
             item,
             approval,
             now=now,
@@ -685,7 +685,13 @@ class ThreadsService:
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
-        return current_approval
+        return self._resolve_current_approval(
+            item,
+            approval,
+            now=self.utc_now(),
+            purpose=ApprovalPurpose.PUBLICATION,
+            require_duplicate_ack=item.replacement_of is not None,
+        )
 
     def _resolve_current_approval(
         self,
