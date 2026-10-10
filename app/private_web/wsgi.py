@@ -90,11 +90,13 @@ def _valid_origin(value: object) -> bool:
         return False
     try:
         parsed = urlsplit(value)
-        parsed.port
+        port = parsed.port
     except ValueError:
         return False
+    default_port = {"http": 80, "https": 443}.get(parsed.scheme)
     return (
         parsed.scheme in {"http", "https"}
+        and port != default_port
         and _valid_host(parsed.netloc)
         and not parsed.path
         and not parsed.query

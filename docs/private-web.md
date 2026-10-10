@@ -50,7 +50,9 @@ browser origin (for example, `[::1]:8000`).
 
 The same transport rule is enforced by `PrivateWebConfig`, including for an
 embedded WSGI application: secure cookies require HTTPS origins, while cookies
-without `Secure` require numeric loopback HTTP origins.
+without `Secure` require numeric loopback HTTP origins. Configure browser
+origins in their canonical form without an explicit default `:443` or `:80`
+port, matching the value browsers send in the `Origin` header.
 
 When an HTTPS terminator is required, explicitly list each numeric address from
 which the WSGI process may accept a forwarded client address:
