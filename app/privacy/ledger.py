@@ -824,6 +824,12 @@ class PrivacyLedger:
         acknowledged_at: datetime,
         correlation_id: str,
     ) -> bool:
+        require_token(principal_id, "principal id")
+        require_token(notice_version, "notice version")
+        require_token(actor_reference, "actor reference")
+        require_token(authentication_event_id, "authentication event id")
+        require_utc(acknowledged_at, "acknowledgement timestamp")
+        require_token(correlation_id, "correlation id")
         values = (
             principal_id,
             notice_version,

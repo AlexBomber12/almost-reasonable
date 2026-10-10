@@ -1589,6 +1589,37 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
     assert unsupported.occurred_at == rejection_time
 
 
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"principal_id": "private principal"}, "principal id"),
+        ({"notice_version": "private notice"}, "notice version"),
+        ({"actor_reference": "private actor"}, "actor reference"),
+        ({"authentication_event_id": "private auth"}, "authentication event"),
+        ({"acknowledged_at": datetime(2026, 10, 10)}, "timestamp"),
+        ({"correlation_id": "private correlation"}, "correlation id"),
+    ],
+)
+def test_ledger_rejects_malformed_direct_notice_acknowledgements(
+    tmp_path, changes, message
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    values = {
+        "principal_id": "participant-a",
+        "notice_version": NOTICE_VERSION,
+        "actor_reference": "actor-a",
+        "authentication_event_id": "auth-a",
+        "acknowledged_at": NOW,
+        "correlation_id": "notice-direct",
+    }
+    values.update(changes)
+
+    with pytest.raises(ValueError, match=message):
+        ledger.acknowledge_notice(**values)
+
+    assert not ledger.has_notice("participant-a", NOTICE_VERSION)
+
+
 def test_restore_rejects_existing_or_symlink_quarantine(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
