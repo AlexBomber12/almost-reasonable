@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+import sqlite3
 import threading
 
 import pytest
@@ -358,6 +359,22 @@ def test_deletion_insert_rolls_back_if_atomic_audit_write_fails(tmp_path, monkey
         DeletionCoordinator(ledger, FakeErasureAdapter()).delete(context(), request())
     with pytest.raises(KeyError):
         ledger.deletion(request().operation_id)
+
+
+def test_deletion_insert_rolls_back_when_control_generation_is_missing(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    deletion = request()
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute("DELETE FROM privacy_control_generation")
+
+    with pytest.raises(RuntimeError, match="generation"):
+        ledger.insert_deletion(
+            deletion, DeletionDisposition.PENDING, "awaiting_erasure"
+        )
+
+    with pytest.raises(KeyError):
+        ledger.deletion(deletion.operation_id)
+    assert ledger.audit_records() == ()
 
 
 def test_deletion_update_rejects_a_missing_operation(tmp_path):

@@ -575,10 +575,7 @@ class PrivacyLedger:
                 connection.execute(
                     "INSERT INTO consent_revocations VALUES(?,?,?,?,?,?,?)", values
                 )
-                connection.execute(
-                    "UPDATE privacy_control_generation SET generation=generation+1 "
-                    "WHERE singleton=1"
-                )
+                self._increment_control_generation(connection)
             self._insert_audit(
                 connection,
                 AuditRecord(
@@ -631,10 +628,7 @@ class PrivacyLedger:
             connection.execute(
                 "INSERT INTO deletion_records VALUES(?,?,?,?,?,?,?,?,?,?,?)", values
             )
-            connection.execute(
-                "UPDATE privacy_control_generation SET generation=generation+1 "
-                "WHERE singleton=1"
-            )
+            self._increment_control_generation(connection)
             self._insert_audit(
                 connection,
                 self._deletion_audit(
@@ -736,6 +730,15 @@ class PrivacyLedger:
         if row is None:
             raise RuntimeError("privacy control generation is unavailable")
         return row[0]
+
+    @staticmethod
+    def _increment_control_generation(connection: sqlite3.Connection) -> None:
+        updated = connection.execute(
+            "UPDATE privacy_control_generation SET generation=generation+1 "
+            "WHERE singleton=1"
+        )
+        if updated.rowcount != 1:
+            raise RuntimeError("privacy control generation is unavailable")
 
     def reconciliation_snapshot(self) -> PrivacyReconciliationSnapshot:
         with self._open() as connection:

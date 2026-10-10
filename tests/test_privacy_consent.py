@@ -1150,3 +1150,25 @@ def test_missing_control_generation_fails_closed(tmp_path):
         ledger.control_generation()
     with pytest.raises(RuntimeError, match="generation"):
         ledger.reconciliation_snapshot()
+
+
+def test_revocation_rolls_back_when_control_generation_is_missing(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    ledger.insert_consent(grant())
+    audit_before = ledger.audit_records()
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute("DELETE FROM privacy_control_generation")
+
+    with pytest.raises(RuntimeError, match="generation"):
+        ledger.insert_revocation(
+            consent_id="consent-001",
+            operation_id="revoke-operation-001",
+            principal_id="participant-a",
+            actor_reference="actor-a",
+            authentication_event_id="auth-event-a",
+            revoked_at=NOW,
+            correlation_id="revoke-correlation-001",
+        )
+
+    assert ledger.revocations() == ()
+    assert ledger.audit_records() == audit_before
