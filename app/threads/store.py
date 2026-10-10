@@ -353,16 +353,30 @@ class ThreadsStore:
         return _outbox_item(result)
 
     def update_sending_evidence(
-        self, operation_id: str, evidence: str, *, now: datetime
+        self,
+        operation_id: str,
+        evidence: str,
+        *,
+        now: datetime,
+        provider_container_id: str | None = None,
     ) -> None:
         require_reference("operation ID", operation_id)
         require_reference("dispatch evidence", evidence)
+        if provider_container_id is not None:
+            require_reference("provider container ID", provider_container_id)
         require_aware_time("evidence time", now)
         with self._open() as connection:
             changed = connection.execute(
-                "UPDATE threads_outbox SET dispatch_evidence=?, updated_at=? "
+                "UPDATE threads_outbox SET dispatch_evidence=?, "
+                "provider_container_id=COALESCE(?, provider_container_id), updated_at=? "
                 "WHERE operation_id=? AND state=?",
-                (evidence, now.isoformat(), operation_id, OutboxState.SENDING.value),
+                (
+                    evidence,
+                    provider_container_id,
+                    now.isoformat(),
+                    operation_id,
+                    OutboxState.SENDING.value,
+                ),
             ).rowcount
         if changed != 1:
             raise ThreadsStoreError("dispatch evidence requires sending state")
@@ -429,6 +443,7 @@ class ThreadsStore:
         *,
         account_ref: str,
         stream: InboundKind,
+        verified_source_ref: str,
         expected_cursor: str | None,
         next_cursor: str | None,
         events: Iterable[InboundEvent],
@@ -437,6 +452,7 @@ class ThreadsStore:
         require_reference("account reference", account_ref)
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
+        require_reference("verified source reference", verified_source_ref)
         for cursor in (expected_cursor, next_cursor):
             if cursor is not None:
                 require_reference("pagination cursor", cursor)
@@ -454,7 +470,7 @@ class ThreadsStore:
             inserted = []
             duplicates = 0
             for event in page:
-                _validate_inbound_event(event, account_ref, stream)
+                _validate_inbound_event(event, account_ref, stream, verified_source_ref)
                 changed = connection.execute(
                     """INSERT OR IGNORE INTO threads_inbound_events(
                        event_id, account_ref, source_ref, kind, conversation_id,
@@ -604,7 +620,10 @@ def _outbox_item(row: sqlite3.Row) -> OutboxItem:
 
 
 def _validate_inbound_event(
-    event: InboundEvent, account_ref: str, stream: InboundKind
+    event: InboundEvent,
+    account_ref: str,
+    stream: InboundKind,
+    verified_source_ref: str,
 ) -> None:
     if type(event) is not InboundEvent:
         raise ValueError("invalid inbound event")
@@ -616,6 +635,8 @@ def _validate_inbound_event(
         require_reference(field, value)
     if event.account_ref != account_ref or event.kind is not stream:
         raise ValueError("inbound event account or stream mismatch")
+    if event.source_ref != verified_source_ref:
+        raise ValueError("inbound event source does not match verified page")
     if event.parent_message_id is not None:
         require_reference("parent message ID", event.parent_message_id)
     require_aware_time("event time", event.occurred_at)

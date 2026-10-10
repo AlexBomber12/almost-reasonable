@@ -157,6 +157,7 @@ def test_stale_cursor_page_cannot_overwrite_newer_progress(tmp_path):
     threads.store.commit_poll_page(
         account_ref="account-1",
         stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
         expected_cursor=None,
         next_cursor="cursor-new",
         events=(),
@@ -166,6 +167,7 @@ def test_stale_cursor_page_cannot_overwrite_newer_progress(tmp_path):
         threads.store.commit_poll_page(
             account_ref="account-1",
             stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
             expected_cursor=None,
             next_cursor="cursor-stale",
             events=(),
@@ -209,6 +211,7 @@ def test_poll_bounds_cannot_be_expanded_or_disabled(tmp_path, kwargs):
     "runtime_policy, stream",
     [
         (policy(stage=Stage.DISABLED), InboundKind.REPLY),
+        (policy(stage=Stage.STAGE_3), InboundKind.REPLY),
         (policy(simulation_enabled=False), InboundKind.REPLY),
         (policy(account_authorized=False), InboundKind.REPLY),
         (policy(scopes=frozenset()), InboundKind.REPLY),
@@ -243,6 +246,7 @@ def test_polling_rejects_invalid_stream_time_and_provider_failure(tmp_path):
         object(),
         event("bad-id", event_id="bad value"),
         event("bad-source", source_ref="bad value"),
+        event("forged-source", source_ref="forged-source"),
         event("bad-conversation", conversation_id="bad value"),
         event("wrong-account", account_ref="account-2"),
         event("wrong-kind", kind=InboundKind.MENTION),
@@ -257,6 +261,7 @@ def test_inbound_event_schema_fails_closed(tmp_path, changed):
         threads.store.commit_poll_page(
             account_ref="account-1",
             stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
             expected_cursor=None,
             next_cursor=None,
             events=(changed,),
@@ -269,6 +274,7 @@ def test_cursor_commit_validates_boundary_arguments(tmp_path):
     cases = [
         {"account_ref": "bad value"},
         {"stream": "reply"},
+        {"verified_source_ref": "bad value"},
         {"expected_cursor": "bad value"},
         {"next_cursor": "bad value"},
         {"now": datetime(2026, 1, 1)},
@@ -276,6 +282,7 @@ def test_cursor_commit_validates_boundary_arguments(tmp_path):
     values = {
         "account_ref": "account-1",
         "stream": InboundKind.REPLY,
+        "verified_source_ref": "meta-simulator-v1",
         "expected_cursor": None,
         "next_cursor": None,
         "events": (),
@@ -319,6 +326,7 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
     threads.store.commit_poll_page(
         account_ref="account-1",
         stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
         expected_cursor=None,
         next_cursor=None,
         events=(event("decision"),),
@@ -339,6 +347,7 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     store.commit_poll_page(
         account_ref="account-1",
         stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
         expected_cursor=None,
         next_cursor=None,
         events=(event("decision"),),

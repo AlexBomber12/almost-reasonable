@@ -124,6 +124,8 @@ class ThreadsSimulator:
 
     def publish(self, item: OutboxItem, container_id: str) -> PublishEvidence:
         fault = self.faults.get((item.operation_id, "publish"), Fault.NONE)
+        if fault is Fault.CRASH_BEFORE_TRANSMISSION:
+            raise SimulatedCrash(transmission_possible=False)
         if fault is Fault.BEFORE_PUBLISH:
             raise ProviderFailure(
                 EffectClass.PROVEN_PRE_DISPATCH,
@@ -131,6 +133,8 @@ class ThreadsSimulator:
                 container_id=container_id,
             )
         self.trace.append(("publish_container", container_id))
+        if fault is Fault.CRASH_AFTER_TRANSMISSION:
+            raise SimulatedCrash(transmission_possible=True)
         if fault is Fault.DURING_PUBLISH:
             raise ProviderFailure(
                 EffectClass.UNCERTAIN_DISPATCH,

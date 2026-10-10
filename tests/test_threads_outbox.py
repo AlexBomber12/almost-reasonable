@@ -287,16 +287,20 @@ def test_proven_pre_dispatch_retry_is_bounded_and_reuses_container(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "fault, expected",
+    "stage, fault, expected",
     [
-        (Fault.CRASH_BEFORE_TRANSMISSION, OutboxState.READY),
-        (Fault.CRASH_AFTER_TRANSMISSION, OutboxState.UNKNOWN),
+        ("container", Fault.CRASH_BEFORE_TRANSMISSION, OutboxState.READY),
+        ("container", Fault.CRASH_AFTER_TRANSMISSION, OutboxState.UNKNOWN),
+        ("publish", Fault.CRASH_BEFORE_TRANSMISSION, OutboxState.READY),
+        ("publish", Fault.CRASH_AFTER_TRANSMISSION, OutboxState.UNKNOWN),
     ],
 )
-def test_restart_recovery_uses_durable_dispatch_evidence(tmp_path, fault, expected):
+def test_restart_recovery_uses_durable_dispatch_evidence(
+    tmp_path, stage, fault, expected
+):
     service = make_service(tmp_path)
     _, approval = ready(service)
-    service.simulator.set_fault("operation-1", "container", fault)
+    service.simulator.set_fault("operation-1", stage, fault)
     with pytest.raises(SimulatedCrash):
         service.dispatch("operation-1", approval, now=NOW)
     reopened = ThreadsService(
@@ -306,6 +310,32 @@ def test_restart_recovery_uses_durable_dispatch_evidence(tmp_path, fault, expect
     assert recovered.state is expected
     with pytest.raises(ThreadsStoreError):
         reopened.recover_sending("operation-1", now=NOW)
+
+
+@pytest.mark.parametrize("stage", ["container", "publish"])
+def test_abrupt_process_death_after_durable_boundary_marker_is_unknown(
+    tmp_path, monkeypatch, stage
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+
+    def terminate(*_args):
+        persisted = service.store.get("operation-1")
+        assert persisted.dispatch_evidence == f"{stage}_dispatch_started"
+        if stage == "publish":
+            assert persisted.provider_container_id == "container-operation-1"
+        raise SystemExit("abrupt process death")
+
+    method = "create_container" if stage == "container" else "publish"
+    monkeypatch.setattr(service.simulator, method, terminate)
+    with pytest.raises(SystemExit, match="abrupt"):
+        service.dispatch("operation-1", approval, now=NOW)
+    reopened = ThreadsService(
+        ThreadsStore(service.store.database), service.simulator, service.policy
+    )
+    assert reopened.recover_sending("operation-1", now=NOW).state is (
+        OutboxState.UNKNOWN
+    )
 
 
 def test_stop_before_send_blocks_and_stop_in_flight_cannot_revoke_success(tmp_path):
@@ -409,6 +439,26 @@ def test_exceptional_replacement_requires_separate_duplicate_risk_ack(tmp_path):
     )
 
 
+def test_replacement_is_blocked_if_target_reconciles_before_dispatch(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    risk_approval = approve("operation-2", duplicate_risk_acknowledged=True)
+    propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=risk_approval,
+    )
+    service.submit_for_approval("operation-2", now=NOW)
+    service.authorize("operation-2", risk_approval, now=NOW)
+    service.simulator.reconciliation["operation-1"] = ReconciliationResult.CONFIRMED
+    service.reconcile("operation-1", now=NOW)
+    with pytest.raises(PolicyDeniedError, match="no longer unresolved"):
+        service.dispatch("operation-2", risk_approval, now=NOW)
+
+
 def test_replacement_rejects_resolved_target_and_missing_authenticated_ack(tmp_path):
     service = make_service(tmp_path)
     propose(service)
@@ -486,6 +536,10 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
         )
     with pytest.raises(ThreadsStoreError, match="sending state"):
         service.store.update_sending_evidence("operation-1", "evidence", now=NOW)
+    with pytest.raises(ValueError, match="provider container"):
+        service.store.update_sending_evidence(
+            "operation-1", "evidence", now=NOW, provider_container_id="bad value"
+        )
     with pytest.raises(ThreadsStoreError, match="unknown state"):
         service.store.note_reconciliation("operation-1", "unresolved", now=NOW)
 

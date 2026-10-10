@@ -164,8 +164,17 @@ class ThreadsService:
             container_id = item.provider_container_id
             if container_id is None:
                 self._recheck_immediately_before_effect(item, approval, now)
+                self.store.update_sending_evidence(
+                    operation_id, "container_dispatch_started", now=now
+                )
                 container_id = self.simulator.create_container(item)
             self._recheck_immediately_before_effect(item, approval, now)
+            self.store.update_sending_evidence(
+                operation_id,
+                "publish_dispatch_started",
+                now=now,
+                provider_container_id=container_id,
+            )
             evidence = self.simulator.publish(item, container_id)
         except SimulatedCrash as error:
             marker = (
@@ -291,6 +300,7 @@ class ThreadsService:
             inserted, duplicate_count = self.store.commit_poll_page(
                 account_ref=self.policy.account_ref,
                 stream=stream,
+                verified_source_ref=page.source_ref,
                 expected_cursor=cursor,
                 next_cursor=page.next_cursor,
                 events=page.events,
@@ -327,7 +337,10 @@ class ThreadsService:
             raise PolicyDeniedError("; ".join(blockers))
         unresolved = self.store.unresolved_for_account(item.account_ref)
         unresolved_ids = {candidate.operation_id for candidate in unresolved}
-        if unresolved_ids and item.replacement_of not in unresolved_ids:
+        if item.replacement_of is not None:
+            if item.replacement_of not in unresolved_ids:
+                raise PolicyDeniedError("replacement target is no longer unresolved")
+        elif unresolved_ids:
             raise PolicyDeniedError("account is paused by unresolved publication")
 
     def _recheck_immediately_before_effect(
@@ -383,7 +396,7 @@ class ThreadsService:
             else REQUIRED_MENTION_SCOPES
         )
         if (
-            self.policy.stage is Stage.DISABLED
+            self.policy.stage is not Stage.SIMULATION
             or not self.policy.simulation_enabled
             or not self.policy.account_authorized
             or not required <= self.policy.scopes
