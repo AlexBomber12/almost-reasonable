@@ -146,8 +146,9 @@ def test_secure_mode_may_bind_non_loopback(tmp_path):
         def serve_forever(self):
             observed["served"] = True
 
-    def server_factory(host, _port, _application):
+    def server_factory(host, _port, application):
         observed["host"] = host
+        observed["application"] = application
         return Server()
 
     assert (
@@ -164,12 +165,64 @@ def test_secure_mode_may_bind_non_loopback(tmp_path):
                 "chat.example",
                 "--allowed-origin",
                 "https://chat.example",
+                "--trusted-proxy",
+                "127.0.0.1",
             ],
             server_factory=server_factory,
         )
         == 0
     )
-    assert observed == {"host": "0.0.0.0", "served": True}
+    assert observed["host"] == "0.0.0.0"
+    assert observed["served"] is True
+    assert observed["application"]._config.trusted_proxy_addresses == frozenset(
+        {"127.0.0.1"}
+    )
+
+
+@pytest.mark.parametrize(
+    "origin",
+    ["http://chat.example", "http://127.0.0.1:8000", "https://[invalid"],
+)
+def test_secure_mode_requires_https_browser_origin(tmp_path, origin):
+    with pytest.raises(SystemExit, match="HTTPS browser origin"):
+        main(
+            [
+                "serve",
+                "--auth-db",
+                str(tmp_path / "auth.sqlite3"),
+                "--event-db",
+                str(tmp_path / "events.sqlite3"),
+                "--allowed-host",
+                "chat.example",
+                "--allowed-origin",
+                origin,
+            ],
+            server_factory=lambda *_args: (_ for _ in ()).throw(
+                AssertionError("invalid origin reached server startup")
+            ),
+        )
+    assert not (tmp_path / "auth.sqlite3").exists()
+
+
+def test_invalid_trusted_proxy_is_rejected_before_database_creation(tmp_path):
+    database = tmp_path / "auth.sqlite3"
+    with pytest.raises(ValueError, match="canonical IP"):
+        main(
+            [
+                "serve",
+                "--auth-db",
+                str(database),
+                "--event-db",
+                str(tmp_path / "events.sqlite3"),
+                "--allowed-host",
+                "chat.example",
+                "--allowed-origin",
+                "https://chat.example",
+                "--trusted-proxy",
+                "proxy.example",
+            ]
+        )
+    assert not database.exists()
 
 
 def test_module_entrypoint_invokes_main(tmp_path, monkeypatch):

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from html import escape
 from http import HTTPStatus
+from ipaddress import ip_address
 import json
 import re
 import secrets
@@ -25,6 +26,7 @@ class PrivateWebConfig:
     allowed_origins: frozenset[str]
     secure_cookies: bool = True
     max_body_bytes: int = 16 * 1024
+    trusted_proxy_addresses: frozenset[str] = frozenset()
 
     def __post_init__(self) -> None:
         if not self.allowed_hosts or any(
@@ -38,12 +40,20 @@ class PrivateWebConfig:
             raise ValueError("allowed_origins must contain absolute HTTP(S) origins")
         if type(self.max_body_bytes) is not int or self.max_body_bytes < 1:
             raise ValueError("max_body_bytes must be a positive integer")
+        if any(
+            type(address) is not str or _canonical_ip(address) != address
+            for address in self.trusted_proxy_addresses
+        ):
+            raise ValueError("trusted_proxy_addresses must contain canonical IP values")
 
 
 def _valid_origin(value: object) -> bool:
     if type(value) is not str:
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
     return (
         parsed.scheme in {"http", "https"}
         and bool(parsed.netloc)
@@ -53,6 +63,15 @@ def _valid_origin(value: object) -> bool:
         and parsed.username is None
         and parsed.password is None
     )
+
+
+def _canonical_ip(value: object) -> str | None:
+    if type(value) is not str:
+        return None
+    try:
+        return str(ip_address(value))
+    except ValueError:
+        return None
 
 
 class _RequestError(Exception):
@@ -179,6 +198,7 @@ class PrivateWebApplication:
         self, environ: dict[str, Any]
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         self._require_origin(environ)
+        client_key = self._client_key(environ)
         if self._media_type(environ) != "application/x-www-form-urlencoded":
             raise _RequestError(
                 HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported content type."
@@ -202,7 +222,7 @@ class PrivateWebApplication:
         result = self._auth_store.login(
             fields["username"][0],
             fields["password"][0],
-            environ.get("REMOTE_ADDR", "unknown"),
+            client_key,
             existing_session_token=self._cookie_value(environ, SESSION_COOKIE),
         )
         if result.status is LoginStatus.LOCKED:
@@ -251,7 +271,8 @@ class PrivateWebApplication:
             "<!doctype html><html lang=en><meta charset=utf-8>"
             "<title>Private chat</title><h1>Private chat</h1>"
             f"<p>Authenticated as {escape(session.username)}</p>"
-            '<p role="status">Model responses are currently unavailable or pending.</p>'
+            '<p role="status" id="model-status">'
+            "Model responses are currently unavailable or pending.</p>"
             f"<ol id=history>{history}</ol>"
             f'<form id=message-form data-csrf="{escape(csrf)}">'
             '<label>Message <textarea name="content" required maxlength="8192"></textarea></label>'
@@ -322,6 +343,20 @@ class PrivateWebApplication:
         if environ.get("HTTP_ORIGIN") not in self._config.allowed_origins:
             raise _RequestError(HTTPStatus.FORBIDDEN, "Origin validation failed.")
 
+    def _client_key(self, environ: dict[str, Any]) -> str:
+        remote = _canonical_ip(environ.get("REMOTE_ADDR"))
+        if remote is None:
+            raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid client address.")
+        if remote not in self._config.trusted_proxy_addresses:
+            return remote
+        forwarded = environ.get("HTTP_X_FORWARDED_FOR")
+        if type(forwarded) is not str or "," in forwarded:
+            raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid forwarded client.")
+        client = _canonical_ip(forwarded)
+        if client is None:
+            raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid forwarded client.")
+        return client
+
     def _read_body(self, environ: dict[str, Any]) -> bytes:
         value = environ.get("CONTENT_LENGTH")
         if value in {None, ""}:
@@ -391,15 +426,27 @@ class PrivateWebApplication:
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         body = b"""'use strict';
 const form = document.getElementById('message-form');
+const modelStatus = document.getElementById('model-status');
+let pendingMessageId = null;
 if (form) form.addEventListener('submit', async (event) => {
   event.preventDefault();
   const content = new FormData(form).get('content');
-  const response = await fetch('/api/messages', {
-    method: 'POST', credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': form.dataset.csrf},
-    body: JSON.stringify({message_id: crypto.randomUUID(), content})
-  });
-  if (response.ok) window.location.reload();
+  pendingMessageId ||= crypto.randomUUID();
+  try {
+    const response = await fetch('/api/messages', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': form.dataset.csrf},
+      body: JSON.stringify({message_id: pendingMessageId, content})
+    });
+    if (response.ok) {
+      pendingMessageId = null;
+      window.location.reload();
+      return;
+    }
+    modelStatus.textContent = 'Message was not accepted. Retry or sign in again.';
+  } catch (error) {
+    modelStatus.textContent = 'Delivery is uncertain. Retrying will reuse this message.';
+  }
 });
 const logout = document.getElementById('logout-form');
 if (logout) logout.addEventListener('submit', async (event) => {

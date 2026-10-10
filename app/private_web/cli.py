@@ -33,6 +33,12 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--allowed-host", required=True)
     serve.add_argument("--allowed-origin", required=True)
     serve.add_argument(
+        "--trusted-proxy",
+        action="append",
+        default=[],
+        help="numeric proxy address allowed to supply one X-Forwarded-For client IP",
+    )
+    serve.add_argument(
         "--insecure-http",
         action="store_true",
         help="omit Secure cookie flag for loopback-only HTTP development",
@@ -59,6 +65,13 @@ def _loopback_http_origin(value: str) -> bool:
     )
 
 
+def _https_origin(value: str) -> bool:
+    try:
+        return urlsplit(value).scheme == "https"
+    except ValueError:
+        return False
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -83,7 +96,15 @@ def main(
         raise SystemExit(
             "--insecure-http requires a numeric loopback HTTP bind and origin"
         )
+    if not args.insecure_http and not _https_origin(args.allowed_origin):
+        raise SystemExit("secure mode requires an HTTPS browser origin")
 
+    web_config = PrivateWebConfig(
+        allowed_hosts=frozenset({args.allowed_host}),
+        allowed_origins=frozenset({args.allowed_origin}),
+        secure_cookies=not args.insecure_http,
+        trusted_proxy_addresses=frozenset(args.trusted_proxy),
+    )
     auth = AuthStore(args.auth_db)
     event_store = EventStore(args.event_db)
     assembler = PrivateContextAssembler(
@@ -94,11 +115,7 @@ def main(
     application = PrivateWebApplication(
         auth,
         conversations,
-        PrivateWebConfig(
-            allowed_hosts=frozenset({args.allowed_host}),
-            allowed_origins=frozenset({args.allowed_origin}),
-            secure_cookies=not args.insecure_http,
-        ),
+        web_config,
     )
     server = server_factory(args.listen_host, args.port, application)
     print(f"Serving private chat on {args.listen_host}:{args.port}")

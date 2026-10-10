@@ -43,9 +43,28 @@ python -m app.private_web.cli serve \
 Open `http://127.0.0.1:8000/login`. The `--insecure-http` switch is explicitly
 for loopback development; the CLI rejects it unless both the bind address and
 the HTTP browser origin use a numeric loopback IP. Omit it behind an HTTPS
-endpoint so every session and CSRF cookie has the `Secure` attribute. This PR
-does not configure, deploy, or trust a reverse proxy; `X-Forwarded-*` headers
-are ignored.
+endpoint so every session and CSRF cookie has the `Secure` attribute; secure
+mode rejects a non-HTTPS browser origin.
+
+When an HTTPS terminator is required, explicitly list each numeric address from
+which the WSGI process may accept a forwarded client address:
+
+```bash
+python -m app.private_web.cli serve \
+  --auth-db data/private-web/auth.sqlite3 \
+  --event-db data/private-web/events.sqlite3 \
+  --allowed-host chat.example \
+  --allowed-origin https://chat.example \
+  --trusted-proxy 127.0.0.1
+```
+
+The named proxy boundary must remove any inbound `X-Forwarded-For` value and
+write exactly one validated client IP. The application accepts that header only
+when `REMOTE_ADDR` exactly matches the explicit numeric allowlist. It rejects
+missing, malformed, or chained values from a trusted proxy and ignores all
+forwarding headers from other peers. `X-Forwarded-Host` and
+`X-Forwarded-Proto` are never trusted. This PR does not deploy or configure the
+HTTPS proxy itself.
 
 Run the focused tests with:
 
@@ -117,8 +136,10 @@ Permitted input is stored as `PrivateInputEvent`. History is retrieved through
 the existing `EventStore` with the same trusted context, and model context is
 assembled by `PrivateContextAssembler` only after a newly created input is
 durable. Repeated source message IDs are idempotent and do not repeat context
-assembly or inference. HTML renders participant content with escaping; JSON is
-served only as `application/json`.
+assembly or inference. The browser retains one pending ID across network and
+server-error retries, then creates a new ID only after an acknowledged success.
+HTML renders participant content with escaping; JSON is served only as
+`application/json`.
 
 ## Disabled model execution and integration hook
 

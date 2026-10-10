@@ -75,7 +75,7 @@ class Browser:
                         self.cookies[key] = morsel.value
         return captured["status"], captured["headers"], response_body
 
-    def login(self, username, password):
+    def login(self, username, password, *, extra_environ=None):
         status, _, body = self.request("GET", "/login", origin=False)
         assert status == "200 OK"
         csrf = self.cookies["ar_login_csrf"]
@@ -85,6 +85,7 @@ class Browser:
             "/login",
             body=payload,
             content_type="application/x-www-form-urlencoded",
+            extra_environ=extra_environ,
         )
 
     def submit(self, message_id, content, **changes):
@@ -266,6 +267,44 @@ def test_duplicate_message_is_idempotent(web):
     assert json.loads(body)["message_status"] == "duplicate"
 
 
+def test_retry_after_post_persistence_failure_reuses_id_without_duplicate(web):
+    _, auth, events, _, _ = web
+
+    class FailingInference:
+        def observe(self, _context):
+            raise RuntimeError("synthetic post-persistence failure")
+
+    service = ConversationService(
+        events,
+        PrivateContextAssembler(
+            events, ContextLimits(max_utf8_bytes=32_000, max_history_events=20)
+        ),
+        FailingInference(),
+    )
+    app = PrivateWebApplication(
+        auth,
+        service,
+        PrivateWebConfig(
+            allowed_hosts=frozenset({"chat.test"}),
+            allowed_origins=frozenset({"https://chat.test"}),
+        ),
+    )
+    browser = Browser(app)
+    browser.login("alice", "correct horse battery")
+
+    assert (
+        browser.submit("stable-retry-id", "persist once")[0]
+        == "500 Internal Server Error"
+    )
+    status, _, body = browser.submit("stable-retry-id", "persist once")
+    assert status == "200 OK"
+    assert json.loads(body)["message_status"] == "duplicate"
+    history = json.loads(browser.request("GET", "/api/history", origin=False)[2])[
+        "messages"
+    ]
+    assert [item["content"] for item in history] == ["persist once"]
+
+
 def test_invalid_login_is_generic_and_abuse_is_rate_limited(web):
     *_, app = web
     browser = Browser(app)
@@ -323,6 +362,116 @@ def test_host_is_restricted_and_forwarded_headers_are_ignored(web):
         extra_environ={"HTTP_X_FORWARDED_HOST": "chat.test"},
     )
     assert status == "400 Bad Request"
+
+
+def test_forwarded_client_is_used_only_for_an_explicitly_trusted_proxy(web):
+    _, auth, _, _, _ = web
+    app = PrivateWebApplication(
+        auth,
+        type("NoopService", (), {})(),
+        PrivateWebConfig(
+            allowed_hosts=frozenset({"chat.test"}),
+            allowed_origins=frozenset({"https://chat.test"}),
+            trusted_proxy_addresses=frozenset({"127.0.0.1"}),
+        ),
+    )
+    attacker = Browser(app)
+    for username in ("unknown-a", "unknown-b"):
+        assert (
+            attacker.login(
+                username,
+                "incorrect password value",
+                extra_environ={
+                    "REMOTE_ADDR": "127.0.0.1",
+                    "HTTP_X_FORWARDED_FOR": "198.51.100.10",
+                },
+            )[0]
+            == "401 Unauthorized"
+        )
+    assert (
+        attacker.login(
+            "alice",
+            "correct horse battery",
+            extra_environ={
+                "REMOTE_ADDR": "127.0.0.1",
+                "HTTP_X_FORWARDED_FOR": "198.51.100.10",
+            },
+        )[0]
+        == "429 Too Many Requests"
+    )
+
+    independent = Browser(app)
+    assert (
+        independent.login(
+            "alice",
+            "correct horse battery",
+            extra_environ={
+                "REMOTE_ADDR": "127.0.0.1",
+                "HTTP_X_FORWARDED_FOR": "198.51.100.11",
+            },
+        )[0]
+        == "303 See Other"
+    )
+
+
+@pytest.mark.parametrize(
+    "forwarded", [None, "", "198.51.100.1, 198.51.100.2", "not-an-ip"]
+)
+def test_trusted_proxy_requires_one_valid_forwarded_client(web, forwarded):
+    _, auth, _, _, _ = web
+    app = PrivateWebApplication(
+        auth,
+        type("NoopService", (), {})(),
+        PrivateWebConfig(
+            allowed_hosts=frozenset({"chat.test"}),
+            allowed_origins=frozenset({"https://chat.test"}),
+            trusted_proxy_addresses=frozenset({"127.0.0.1"}),
+        ),
+    )
+    browser = Browser(app)
+    environ = {"REMOTE_ADDR": "127.0.0.1"}
+    if forwarded is not None:
+        environ["HTTP_X_FORWARDED_FOR"] = forwarded
+    assert (
+        browser.login("alice", "correct horse battery", extra_environ=environ)[0]
+        == "400 Bad Request"
+    )
+
+
+def test_untrusted_forwarded_client_header_is_ignored(web):
+    *_, app = web
+    browser = Browser(app)
+    for forwarded in ("198.51.100.1", "198.51.100.2"):
+        assert (
+            browser.login(
+                "unknown",
+                "incorrect password value",
+                extra_environ={"HTTP_X_FORWARDED_FOR": forwarded},
+            )[0]
+            == "401 Unauthorized"
+        )
+    assert (
+        browser.login(
+            "alice",
+            "correct horse battery",
+            extra_environ={"HTTP_X_FORWARDED_FOR": "198.51.100.3"},
+        )[0]
+        == "429 Too Many Requests"
+    )
+
+
+@pytest.mark.parametrize("remote_address", ["not-an-ip", 123])
+def test_login_rejects_invalid_server_supplied_client_address(web, remote_address):
+    *_, app = web
+    browser = Browser(app)
+    assert (
+        browser.login(
+            "alice",
+            "correct horse battery",
+            extra_environ={"REMOTE_ADDR": remote_address},
+        )[0]
+        == "400 Bad Request"
+    )
 
 
 @pytest.mark.parametrize(
@@ -391,6 +540,8 @@ def test_missing_routes_methods_cookie_tampering_and_static_asset(web):
     assert status == "200 OK"
     assert header_values(headers, "Content-Type") == ["text/javascript; charset=utf-8"]
     assert b"crypto.randomUUID" in body
+    assert b"let pendingMessageId = null" in body
+    assert b"pendingMessageId ||= crypto.randomUUID()" in body
 
 
 def test_login_request_validation_and_chat_csrf_cookie(web):
@@ -544,7 +695,10 @@ def test_insecure_local_configuration_omits_secure_cookie_attribute(web):
         {"allowed_origins": frozenset()},
         {"allowed_hosts": frozenset({"BAD HOST"})},
         {"allowed_origins": frozenset({"not-an-origin"})},
+        {"allowed_origins": frozenset({"https://[invalid"})},
         {"allowed_origins": frozenset({1})},
+        {"trusted_proxy_addresses": frozenset({"proxy.example"})},
+        {"trusted_proxy_addresses": frozenset({1})},
         {"max_body_bytes": 0},
     ],
 )
