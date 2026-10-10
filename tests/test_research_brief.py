@@ -382,6 +382,19 @@ def test_underscores_delimit_participant_identifiers(question):
     assert result.reason == "participant_identifier"
 
 
+@pytest.mark.parametrize("question", ["Find Alice  Smith", "Find Alice\u2028Smith"])
+def test_whitespace_variants_do_not_hide_participant_identifiers(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "participant_identifier"
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -477,6 +490,17 @@ def test_aggregate_reference_bytes_are_bounded_before_screening():
 
     assert result.disposition is BriefDisposition.DECLINED
     assert result.reason == "brief_too_large"
+
+
+def test_slash_heavy_bounded_question_is_processed_without_suffix_copies():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("/" * 2048)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+
+    assert result.disposition is BriefDisposition.READY
 
 
 def test_dataclass_replacement_cannot_smuggle_untyped_record_collection():

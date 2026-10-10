@@ -44,9 +44,14 @@ _GROUPED_QUANTITY = re.compile(
 _BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{2,}={0,2}(?![A-Za-z0-9+/_=-])"
 )
+_PATH_BASE64 = re.compile(r"(?<=/)[A-Za-z0-9+/_-]{2,}={0,2}(?![A-Za-z0-9+/_=-])")
 _FOLDED_BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])"
     r"(?:[A-Za-z0-9+/_-]+ +)+[A-Za-z0-9+/_-]+={0,2}"
+    r"(?![A-Za-z0-9+/_=-])"
+)
+_PATH_FOLDED_BASE64 = re.compile(
+    r"(?<=/)(?:[A-Za-z0-9+/_-]+ +)+[A-Za-z0-9+/_-]+={0,2}"
     r"(?![A-Za-z0-9+/_=-])"
 )
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
@@ -365,7 +370,7 @@ def _normalized(value: str) -> str:
         for character in unicodedata.normalize("NFKC", value)
         if unicodedata.category(character) not in {"Cf", "Mn"}
     )
-    return value.translate(_CONFUSABLES).casefold()
+    return " ".join(value.translate(_CONFUSABLES).casefold().split())
 
 
 def _contains(values: list[str], needles: tuple[str, ...]) -> bool:
@@ -503,22 +508,17 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
     views = (raw,) if normalized == raw else (raw, normalized)
-    path_suffixes = tuple(
-        view[index + 1 :]
-        for view in views
-        for index, character in enumerate(view)
-        if character == "/"
-    )
-    delimited_views = (*views, *path_suffixes)
     contiguous = tuple(
         (match.group(0), len(match.group(0).rstrip("=")) >= 4)
-        for view in delimited_views
-        for match in _BASE64.finditer(view)
+        for view in views
+        for pattern in (_BASE64, _PATH_BASE64)
+        for match in pattern.finditer(view)
     )
     folded = tuple(
         (match.group(0).replace(" ", ""), False)
-        for view in delimited_views
-        for match in _FOLDED_BASE64.finditer(view)
+        for view in views
+        for pattern in (_FOLDED_BASE64, _PATH_FOLDED_BASE64)
+        for match in pattern.finditer(view)
     )
     return (*contiguous, *folded)
 
