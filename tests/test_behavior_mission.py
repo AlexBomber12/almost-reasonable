@@ -560,7 +560,7 @@ def test_mission_additional_validation_and_corrupt_store_paths(tmp_path) -> None
     with pytest.raises(ValueError, match="already resolved"):
         machine.confirm(valid_confirmation)
 
-    later_snapshot = MissionProposal(
+    backdated_snapshot = MissionProposal(
         **{
             **{field: getattr(base, field) for field in base.__dataclass_fields__},
             "proposal_id": "mp-after-policy-change",
@@ -570,6 +570,14 @@ def test_mission_additional_validation_and_corrupt_store_paths(tmp_path) -> None
             "invariants": invariants(deployment_stage="production"),
         }
     )
+    with pytest.raises(ValueError, match="overlapping invariant snapshots"):
+        machine.propose(backdated_snapshot)
+    reloaded_after_rejection = JsonMissionRepository(path, initial).load()
+    assert [record.status for record in reloaded_after_rejection.proposals] == [
+        MissionStatus.REJECTED
+    ]
+
+    later_snapshot = replace(backdated_snapshot, decided_at=NOW + timedelta(seconds=2))
     assert machine.propose(later_snapshot).status is MissionStatus.PENDING
 
     raw = json.loads(path.read_text(encoding="utf-8"))

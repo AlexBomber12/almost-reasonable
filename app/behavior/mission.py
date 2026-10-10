@@ -253,10 +253,13 @@ class MissionStateMachine:
         ):
             raise ValueError("capability-policy invariants changed")
         record = MissionRecord(proposal, MissionStatus.PENDING, None)
+        proposals = (*document.proposals, record)
+        if _has_overlapping_invariant_snapshots(proposals):
+            raise ValueError("mission history has overlapping invariant snapshots")
         self._repository.save(
             MissionDocument(
                 document.current,
-                (*document.proposals, record),
+                proposals,
                 proposal.invariants,
             )
         )
@@ -775,37 +778,7 @@ def _validate_active_mission(
         for record in records
     ):
         raise ValueError("superseded proposal has a conflicting invariant snapshot")
-    parent_replaced_at = {
-        record.proposal.current_mission_version: record.confirmation.decided_at
-        for record in confirmed
-        if record.confirmation is not None
-    }
-    resolution_times = {
-        record.proposal.proposal_id: (
-            record.confirmation.decided_at
-            if record.confirmation is not None
-            else parent_replaced_at.get(record.proposal.current_mission_version)
-            if record.status is MissionStatus.SUPERSEDED
-            else None
-        )
-        for record in records
-    }
-    if any(
-        left.proposal.current_mission_version == right.proposal.current_mission_version
-        and left.proposal.invariants != right.proposal.invariants
-        and (
-            resolution_times[right.proposal.proposal_id] is None
-            or _instant(left.proposal.decided_at)
-            < _instant(resolution_times[right.proposal.proposal_id])
-        )
-        and (
-            resolution_times[left.proposal.proposal_id] is None
-            or _instant(right.proposal.decided_at)
-            < _instant(resolution_times[left.proposal.proposal_id])
-        )
-        for index, left in enumerate(records)
-        for right in records[index + 1 :]
-    ):
+    if _has_overlapping_invariant_snapshots(records):
         raise ValueError("mission history has overlapping invariant snapshots")
     if any(
         record.status is MissionStatus.PENDING
@@ -829,6 +802,12 @@ def _validate_active_mission(
             if record.confirmation is not None
         }
     )
+    parent_replaced_at = {
+        record.proposal.current_mission_version: record.confirmation.decided_at
+        for record in records
+        if record.status is MissionStatus.CONFIRMED
+        if record.confirmation is not None
+    }
     invalid_parent = any(
         record.proposal.current_mission_version not in parent_activation
         or _instant(record.proposal.decided_at)
@@ -877,3 +856,40 @@ def _validate_active_mission(
         raise ValueError(
             "mission proposal or resolution predates, outlives, or lacks its parent"
         )
+
+
+def _has_overlapping_invariant_snapshots(
+    records: tuple[MissionRecord, ...],
+) -> bool:
+    parent_replaced_at = {
+        record.proposal.current_mission_version: record.confirmation.decided_at
+        for record in records
+        if record.status is MissionStatus.CONFIRMED
+        if record.confirmation is not None
+    }
+    resolution_times = {
+        record.proposal.proposal_id: (
+            record.confirmation.decided_at
+            if record.confirmation is not None
+            else parent_replaced_at.get(record.proposal.current_mission_version)
+            if record.status is MissionStatus.SUPERSEDED
+            else None
+        )
+        for record in records
+    }
+    return any(
+        left.proposal.current_mission_version == right.proposal.current_mission_version
+        and left.proposal.invariants != right.proposal.invariants
+        and (
+            resolution_times[right.proposal.proposal_id] is None
+            or _instant(left.proposal.decided_at)
+            < _instant(resolution_times[right.proposal.proposal_id])
+        )
+        and (
+            resolution_times[left.proposal.proposal_id] is None
+            or _instant(right.proposal.decided_at)
+            < _instant(resolution_times[left.proposal.proposal_id])
+        )
+        for index, left in enumerate(records)
+        for right in records[index + 1 :]
+    )
