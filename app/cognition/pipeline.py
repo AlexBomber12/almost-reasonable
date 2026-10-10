@@ -1,6 +1,7 @@
 """Deterministic authorization bridge from experience to private self-state."""
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 import re
 
 from app.core.core_self import CORE_SELF_VERSION
@@ -69,12 +70,14 @@ class CognitionEngine:
         *,
         extractor: MemoryExtractor | None = None,
         capabilities: CognitionCapabilities = CognitionCapabilities(),
+        clock: Callable[[], datetime] | None = None,
     ):
         self._events = event_store
         self._state = state_store
         self._read = CognitionReadStore(event_store, state_store)
         self._extractor = extractor
         self._capabilities = capabilities
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def process(
         self, context: TrustedPrincipalContext, source_event_id: str
@@ -109,11 +112,15 @@ class CognitionEngine:
             proposal = self._extractor.extract(request)
         except Exception:
             return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        decided_at = self._clock()
+        if not self._valid_time(decided_at):
+            raise ValueError("clock returned an invalid decision time")
         return self._authorize(
             context,
             source_event_id,
             proposal,
             identity,
+            decided_at,
         )
 
     def plan_source_invalidation(
@@ -139,6 +146,7 @@ class CognitionEngine:
         source_event_id: str,
         proposal: object,
         identity: ExtractorIdentity,
+        decided_at: datetime,
     ) -> CognitionOutcome:
         if isinstance(proposal, NoChangeProposal):
             return self._authorize_no_change(context, proposal, source_event_id)
@@ -194,7 +202,7 @@ class CognitionEngine:
                 return self._rejected(
                     CognitionReason.INCONSISTENT_CONFIDENCE, proposal.memory_kind
                 )
-        change = self._build_change(proposal, identity)
+        change = self._build_change(proposal, identity, decided_at)
         try:
             duplicate = self._read.replay_private_operation(context, change)
         except SelfStateIdentityConflictError:
@@ -215,7 +223,7 @@ class CognitionEngine:
         if reason is not None:
             return self._rejected(reason, proposal.memory_kind)
         try:
-            transition = self._persist(context, proposal, identity)
+            transition = self._persist(context, proposal, identity, decided_at)
         except SelfStateConflictError:
             return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
         except SelfStateIdentityConflictError:
@@ -399,8 +407,9 @@ class CognitionEngine:
         context: TrustedPrincipalContext,
         proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
         identity: ExtractorIdentity,
+        decided_at: datetime,
     ):
-        change = self._build_change(proposal, identity)
+        change = self._build_change(proposal, identity, decided_at)
         creating = proposal.context.expected_revision is None
         if isinstance(proposal, InterestMemoryProposal):
             method = (
@@ -426,12 +435,13 @@ class CognitionEngine:
     def _build_change(
         proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
         identity: ExtractorIdentity,
+        decided_at: datetime,
     ) -> InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange:
         revision = RevisionContext(
             operation_id=proposal.context.operation_id,
             expected_revision=proposal.context.expected_revision,
             reason=proposal.context.reason,
-            decided_at=proposal.context.proposed_at,
+            decided_at=decided_at,
             initiating_event_id=proposal.context.source_event_id,
             kind=(
                 RevisionKind.OPERATIONAL_TRANSITION

@@ -16,6 +16,11 @@ the experience, current participant-private candidates, and Core Self version,
 but no participant ID. Its configured model and prompt identity come from the
 adapter boundary, not its generated output.
 
+The persisted decision timestamp comes from an application-owned clock injected
+into `CognitionEngine`; model-supplied `proposed_at` is only validated proposal
+metadata and never controls durable recency. Duplicate comparison normalizes this
+trusted timestamp so a delayed retry still resolves to its original revision.
+
 The deterministic path is:
 
 ```text
@@ -108,6 +113,10 @@ adapter before calculating any relevance score or applying a result cap. Thus an
 older exact-topic match remains eligible beyond the core 100-record presentation
 window, while a highly relevant candidate owned by another participant never
 enters ranking.
+
+Each selection reads the candidate snapshot, current decision time, and complete
+revision-chain provenance inside one SQLite read transaction. A concurrent
+revision therefore cannot combine old candidate text with new recency or taint.
 
 Ranking is deterministic across topic overlap, active status, confidence or
 priority, recency, and item ID. The selector emits only whole records; a record

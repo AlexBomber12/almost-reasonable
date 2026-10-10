@@ -9,7 +9,6 @@ from app.core.self_state import (
     BeliefCandidate,
     InterestCandidate,
     PrivateCandidate,
-    StateType,
 )
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore
@@ -35,7 +34,6 @@ class MemoryContextSelector:
     """Selects authorized private state before any relevance ranking."""
 
     def __init__(self, event_store: EventStore, state_store: SelfStateStore):
-        self._state = state_store
         self._read = CognitionReadStore(event_store, state_store)
 
     def select(
@@ -46,30 +44,23 @@ class MemoryContextSelector:
 
         # This store call is the privacy boundary. Only its authorized result is
         # transformed or ranked below.
-        authorized = self._read.retrieve_all_private_candidates(context)
+        authorized = self._read.retrieve_all_private_candidate_reads(context)
         invalidated = set(request.invalidated_event_ids)
         ranked: list[tuple[tuple[object, ...], MemoryRecord]] = []
         query_words = set(self._words(request.relevant_topic))
         omitted = False
-        for candidate in authorized:
+        for candidate_read in authorized:
+            candidate = candidate_read.candidate
             if (
                 not request.include_terminal
                 and candidate.status.value in _TERMINAL_STATUSES
             ):
                 omitted = True
                 continue
-            state_type = self._state_type(candidate)
-            evidence_ids = self._read.retrieve_private_candidate_evidence_ids(
-                context, candidate.item_id
-            )
-            if invalidated & set(evidence_ids):
+            if invalidated & set(candidate_read.evidence_event_ids):
                 omitted = True
                 continue
-            history = self._state.retrieve_private_revision_history(
-                context, state_type, candidate.item_id
-            )
-            recency = history[-1].decided_at
-            record = self._record(candidate, recency)
+            record = self._record(candidate, candidate_read.decided_at)
             relevance = len(query_words & set(self._words(record.text)))
             strength = (
                 record.confidence
@@ -155,14 +146,6 @@ class MemoryContextSelector:
             can_instruct=False,
             utf8_bytes=size,
         )
-
-    @staticmethod
-    def _state_type(candidate: PrivateCandidate) -> StateType:
-        if isinstance(candidate, InterestCandidate):
-            return StateType.INTEREST
-        if isinstance(candidate, BeliefCandidate):
-            return StateType.BELIEF
-        return StateType.GOAL
 
     @staticmethod
     def _words(value: str) -> tuple[str, ...]:

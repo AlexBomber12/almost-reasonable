@@ -6,6 +6,8 @@ or ranking bounds, so this adapter performs participant-scoped read-only queries
 It creates no tables and exposes no mutation path.
 """
 
+from dataclasses import dataclass, replace
+from datetime import datetime
 import sqlite3
 
 from app.core.events import PrivateConversationEvent, TrustedPrincipalContext
@@ -25,6 +27,13 @@ from app.core.store import EventStore, MAX_PRIVATE_PAYLOAD_BYTES
 
 
 StateChange = InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange
+
+
+@dataclass(frozen=True, slots=True)
+class PrivateCandidateRead:
+    candidate: PrivateCandidate
+    decided_at: datetime
+    evidence_event_ids: tuple[str, ...]
 
 
 def retrieve_exact_private_event(
@@ -115,12 +124,10 @@ class CognitionReadStore:
     ) -> tuple[PrivateCandidate, ...]:
         return self._retrieve_candidate_rows(context)
 
-    def retrieve_private_candidate_evidence_ids(
-        self,
-        context: TrustedPrincipalContext,
-        item_id: str,
-    ) -> tuple[str, ...]:
-        """Return active protected evidence across the complete revision chain."""
+    def retrieve_all_private_candidate_reads(
+        self, context: TrustedPrincipalContext
+    ) -> tuple[PrivateCandidateRead, ...]:
+        """Read candidate, current recency, and all provenance in one snapshot."""
 
         self._state._validate_context(context)
         connection = self._events._open()
@@ -128,24 +135,35 @@ class CognitionReadStore:
             with connection:
                 connection.execute("BEGIN")
                 self._events._verify_current_schema(connection)
-                rows = connection.execute(
-                    """
-                    SELECT DISTINCT source.event_id
-                    FROM state_items AS item
-                    JOIN state_revisions AS revision
-                      ON revision.item_key = item.item_key
-                    JOIN protected_state_provenance AS source
-                      ON source.revision_key = revision.revision_key
-                    WHERE item.scope = 'private_candidate'
-                      AND item.audience_type = 'private_participant'
-                      AND item.audience_principal_id = ?
-                      AND item.item_id = ?
-                      AND source.retention_status = 'active'
-                    ORDER BY source.event_id
-                    """,
-                    (context.principal_id.value, item_id),
-                ).fetchall()
-                return tuple(row[0] for row in rows)
+                rows = self._query_candidate_rows(
+                    connection, context.principal_id.value, None
+                )
+                records: list[PrivateCandidateRead] = []
+                for row in rows:
+                    evidence = connection.execute(
+                        """
+                        SELECT DISTINCT source.event_id
+                        FROM state_revisions AS revision
+                        JOIN protected_state_provenance AS source
+                          ON source.revision_key = revision.revision_key
+                        WHERE revision.item_key = ?
+                          AND source.retention_status = 'active'
+                        ORDER BY source.event_id
+                        """,
+                        (row[0],),
+                    ).fetchall()
+                    records.append(
+                        PrivateCandidateRead(
+                            self._state._current_snapshot_from_row(connection, row),
+                            self._state._parse_time(row[27]),
+                            tuple(item[0] for item in evidence),
+                        )
+                    )
+                return tuple(records)
+        except (OverflowError, TypeError, ValueError):
+            raise self._events._translated_error(
+                sqlite3.DatabaseError("invalid stored state")
+            ) from None
         except sqlite3.Error as error:
             raise self._events._translated_error(error) from None
         finally:
@@ -208,9 +226,17 @@ class CognitionReadStore:
                 )
                 if revision_key is None:
                     return None
-                if self._state._logical_change(
-                    self._state._stored_change(connection, revision_key)
-                ) != self._state._logical_change(change):
+                stored = self._state._stored_change(connection, revision_key)
+                normalized = replace(
+                    change,
+                    revision=replace(
+                        change.revision,
+                        decided_at=stored.revision.decided_at,
+                    ),
+                )
+                if self._state._logical_change(stored) != self._state._logical_change(
+                    normalized
+                ):
                     raise SelfStateIdentityConflictError("operation identity conflict")
                 return StateTransitionResult(
                     TransitionStatus.DUPLICATE,
@@ -233,12 +259,34 @@ class CognitionReadStore:
             with connection:
                 connection.execute("BEGIN")
                 self._events._verify_current_schema(connection)
-                item_filter = "" if item_id is None else "AND item.item_id = ?"
-                parameters: tuple[object, ...] = (context.principal_id.value,)
-                if item_id is not None:
-                    parameters += (item_id,)
-                rows = connection.execute(
-                    f"""
+                rows = self._query_candidate_rows(
+                    connection, context.principal_id.value, item_id
+                )
+                return tuple(
+                    self._state._current_snapshot_from_row(connection, row)
+                    for row in rows
+                )
+        except (OverflowError, TypeError, ValueError):
+            raise self._events._translated_error(
+                sqlite3.DatabaseError("invalid stored state")
+            ) from None
+        except sqlite3.Error as error:
+            raise self._events._translated_error(error) from None
+        finally:
+            connection.close()
+
+    @staticmethod
+    def _query_candidate_rows(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        item_id: str | None,
+    ) -> list[tuple[object, ...]]:
+        item_filter = "" if item_id is None else "AND item.item_id = ?"
+        parameters: tuple[object, ...] = (principal_id,)
+        if item_id is not None:
+            parameters += (item_id,)
+        return connection.execute(
+            f"""
                     SELECT
                         item.item_key,
                         item.item_id,
@@ -274,7 +322,8 @@ class CognitionReadStore:
                         revision.new_confidence,
                         (SELECT MAX(candidate.revision_number)
                          FROM state_revisions AS candidate
-                         WHERE candidate.item_key = item.item_key)
+                         WHERE candidate.item_key = item.item_key),
+                        revision.decided_at
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
@@ -288,17 +337,5 @@ class CognitionReadStore:
                       {item_filter}
                     ORDER BY revision.revision_key, item.item_id
                     """,
-                    parameters,
-                ).fetchall()
-                return tuple(
-                    self._state._current_snapshot_from_row(connection, row)
-                    for row in rows
-                )
-        except (OverflowError, TypeError, ValueError):
-            raise self._events._translated_error(
-                sqlite3.DatabaseError("invalid stored state")
-            ) from None
-        except sqlite3.Error as error:
-            raise self._events._translated_error(error) from None
-        finally:
-            connection.close()
+            parameters,
+        ).fetchall()

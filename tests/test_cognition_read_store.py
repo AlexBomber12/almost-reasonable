@@ -161,7 +161,18 @@ def test_candidate_sql_failure_is_translated(read_setup, monkeypatch):
         CognitionReadStore(events, state).retrieve_all_private_candidates(context)
 
 
-def test_candidate_evidence_sql_failure_is_translated(read_setup, monkeypatch):
+def test_candidate_snapshot_read_malformed_state_is_translated(read_setup):
+    events, state, context = read_setup
+    connection = sqlite3.connect(events.database_path)
+    with connection:
+        connection.execute("UPDATE state_revision_payloads SET topic = '   '")
+    connection.close()
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        CognitionReadStore(events, state).retrieve_all_private_candidate_reads(context)
+
+
+def test_candidate_snapshot_read_sql_failure_is_translated(read_setup, monkeypatch):
     events, state, context = read_setup
     monkeypatch.setattr(
         events,
@@ -170,9 +181,7 @@ def test_candidate_evidence_sql_failure_is_translated(read_setup, monkeypatch):
     )
 
     with pytest.raises(EventStoreError, match="event store operation failed"):
-        CognitionReadStore(events, state).retrieve_private_candidate_evidence_ids(
-            context, "interest-a"
-        )
+        CognitionReadStore(events, state).retrieve_all_private_candidate_reads(context)
 
 
 def test_revision_reference_sql_failure_is_translated(read_setup, monkeypatch):

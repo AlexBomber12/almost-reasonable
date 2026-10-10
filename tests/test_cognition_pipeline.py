@@ -156,6 +156,57 @@ def test_fake_extractor_creates_durable_interest_with_model_metadata(cognition_s
     assert revision.prompt_version == "memory-prompt-v1"
 
 
+def test_persisted_recency_uses_trusted_clock_not_model_timestamp(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    model_future = datetime(2099, 1, 1, tzinfo=UTC)
+    trusted_time = NOW + timedelta(minutes=2)
+    proposal = InterestMemoryProposal(
+        context=replace(
+            proposal_context(event_id, "trusted-time"), proposed_at=model_future
+        ),
+        item_id="interest-trusted-time",
+        topic="Trusted temporal ordering",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="Model text must not control recency.",
+    )
+
+    outcome = CognitionEngine(
+        events,
+        state,
+        extractor=FakeExtractor(proposal),
+        clock=lambda: trusted_time,
+    ).process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.PERSISTED
+    [revision] = state.retrieve_private_revision_history(
+        context, StateType.INTEREST, "interest-trusted-time"
+    )
+    assert revision.decided_at == trusted_time
+
+
+def test_invalid_trusted_clock_fails_before_persistence(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    proposal = InterestMemoryProposal(
+        proposal_context(event_id, "invalid-clock"),
+        "interest-invalid-clock",
+        "Clock integrity",
+        50,
+        InterestStatus.ACTIVE,
+        "Invalid trusted time must fail closed.",
+    )
+
+    with pytest.raises(ValueError, match="clock returned an invalid decision time"):
+        CognitionEngine(
+            events,
+            state,
+            extractor=FakeExtractor(proposal),
+            clock=lambda: datetime(2026, 1, 1),
+        ).process(context, event_id)
+
+    assert state.retrieve_private_candidates(context) == ()
+
+
 def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_setup):
     events, state, context, event_id = cognition_setup
     counter_id = append_event(events, context, "counter", "A conflicting assertion.")
