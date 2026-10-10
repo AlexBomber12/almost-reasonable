@@ -413,7 +413,10 @@ class QuarantinedRestore:
         owned: list[_OwnedFile] = []
         try:
             _load_metadata(backup, self.expected_schema_version)
-            if _schema_version(backup) != self.expected_schema_version:
+            if (
+                _schema_version(pinned_backup.descriptor)
+                != self.expected_schema_version
+            ):
                 raise BackupError("unsupported backup schema")
             _require_database_identity(pinned_backup)
             try:

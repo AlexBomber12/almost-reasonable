@@ -516,11 +516,20 @@ def test_consent_rejects_duplicate_scope_revision_and_uses_newer_revision(tmp_pa
     [
         ({"correlation_id": "private audit text"}, "correlation id"),
         ({"actor_reference": "private actor text"}, "actor reference"),
-        ({"action_type": "arbitrary_action"}, "action type"),
-        ({"record_category": "arbitrary_category"}, "record category"),
+        ({"action_type": "arbitrary_action"}, "audit shape"),
+        ({"record_category": "arbitrary_category"}, "audit shape"),
         ({"occurred_at": datetime(2026, 10, 10)}, "audit timestamp"),
-        ({"result_code": "synthetic-private-canary"}, "result code"),
-        ({"redaction_status": "contains_payload"}, "redaction status"),
+        ({"result_code": "synthetic-private-canary"}, "audit shape"),
+        ({"redaction_status": "contains_payload"}, "audit shape"),
+        (
+            {
+                "action_type": "consent_grant",
+                "record_category": "privacy_notice",
+                "result_code": "applied:erasure_applied",
+                "redaction_status": "content_free_tombstone",
+            },
+            "audit shape",
+        ),
     ],
 )
 def test_audit_records_reject_unconstrained_or_non_utc_values(changes, message):

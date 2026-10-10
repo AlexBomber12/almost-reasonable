@@ -1105,6 +1105,113 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
+def test_restore_validates_the_pinned_backup_schema_before_adapters(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    with sqlite3.connect(backup) as connection:
+        connection.execute("UPDATE schema_metadata SET version=4")
+        connection.execute("PRAGMA user_version=4")
+
+    real_schema_version = recovery_module._schema_version
+    validated_targets = []
+
+    def schema_version(target):
+        validated_targets.append(target)
+        if target == backup:
+            return 3
+        return real_schema_version(target)
+
+    adapter_called = False
+
+    def adapter_factory(path):
+        nonlocal adapter_called
+        adapter_called = True
+        return RestoreAdapter(path)
+
+    monkeypatch.setattr(recovery_module, "_schema_version", schema_version)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    with pytest.raises(BackupError, match="unsupported backup schema"):
+        QuarantinedRestore(ledger, 3, adapter_factory).restore(
+            backup, tmp_path / "quarantine.sqlite3", NOW
+        )
+
+    assert len(validated_targets) == 1
+    assert type(validated_targets[0]) is int
+    assert adapter_called is False
+
+
+@pytest.mark.parametrize(
+    ("restore_id", "occurred_at", "disposition", "reason", "message"),
+    [
+        (
+            "private restore id",
+            NOW,
+            RestoreDisposition.BLOCKED,
+            "quarantine_integrity_failed",
+            "restore id",
+        ),
+        (
+            "restore-not-a-uuid",
+            NOW,
+            RestoreDisposition.BLOCKED,
+            "quarantine_integrity_failed",
+            "restore id",
+        ),
+        (
+            "00000000-0000-4000-8000-000000000001",
+            NOW,
+            RestoreDisposition.BLOCKED,
+            "quarantine_integrity_failed",
+            "restore id",
+        ),
+        (
+            "restore-00000000-0000-4000-8000-000000000001",
+            datetime(2026, 10, 10),
+            RestoreDisposition.BLOCKED,
+            "quarantine_integrity_failed",
+            "restore timestamp",
+        ),
+        (
+            "restore-00000000-0000-4000-8000-000000000001",
+            NOW,
+            "blocked",
+            "quarantine_integrity_failed",
+            "restore disposition",
+        ),
+        (
+            "restore-00000000-0000-4000-8000-000000000001",
+            NOW,
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            "quarantine_integrity_failed",
+            "restore reason",
+        ),
+        (
+            "restore-00000000-0000-4000-8000-000000000001",
+            NOW,
+            RestoreDisposition.BLOCKED,
+            "private restore reason",
+            "restore reason",
+        ),
+    ],
+)
+def test_restore_outcomes_reject_untrusted_fields(
+    tmp_path, restore_id, occurred_at, disposition, reason, message
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(ValueError, match=message):
+        ledger.record_restore(restore_id, occurred_at, disposition, reason)
+
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM restore_outcomes"
+        ).fetchone() == (0,)
+
+
 def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     tmp_path, monkeypatch
 ):

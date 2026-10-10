@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+from uuid import UUID
 from weakref import finalize
 
 from .files import open_trusted_directory_chain
@@ -21,6 +22,7 @@ from .models import (
     DeletionRequest,
     PrivacyReconciliationSnapshot,
     RestoreDisposition,
+    require_token,
     require_utc,
 )
 
@@ -857,6 +859,36 @@ class PrivacyLedger:
         disposition: RestoreDisposition,
         reason: str,
     ) -> None:
+        require_token(restore_id, "restore id")
+        try:
+            parsed_id = UUID(restore_id.removeprefix("restore-"))
+        except ValueError as error:
+            raise ValueError("invalid restore id") from error
+        if restore_id != f"restore-{parsed_id}":
+            raise ValueError("invalid restore id")
+        require_utc(occurred_at, "restore timestamp")
+        allowed_reasons = {
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION: {"reconciliation_complete"},
+            RestoreDisposition.BLOCKED: {
+                "adapter_initialization_failure",
+                "deletion_adapter_failure",
+                "deletion_reconciliation_incomplete",
+                "dependency_rebuild_failure",
+                "dependency_rebuild_incomplete",
+                "invalid_erasure_report",
+                "post_reconciliation_integrity_failed",
+                "post_reconciliation_schema_invalid",
+                "privacy_ledger_changed_during_restore",
+                "quarantine_identity_changed",
+                "quarantine_integrity_failed",
+                "revocation_adapter_failure",
+                "revocation_reconciliation_incomplete",
+            },
+        }
+        if not isinstance(disposition, RestoreDisposition):
+            raise ValueError("invalid restore disposition")
+        if reason not in allowed_reasons[disposition]:
+            raise ValueError("invalid restore reason")
         with self._open() as connection:
             connection.execute(
                 "INSERT INTO restore_outcomes VALUES(?,?,?,?)",

@@ -228,6 +228,92 @@ class PrivacyReconciliationSnapshot:
     revocations: tuple[tuple[str, datetime], ...]
 
 
+_CONSENT_USE_RESULTS = {
+    "already_dispatched",
+    "authorized",
+    "dispatch_uncertain",
+    "expired",
+    "invalid_authentication",
+    "invalid_authorization",
+    "no_matching_consent",
+    "not_yet_valid",
+    "pre_dispatch_failure",
+    "revoked",
+}
+_DELETION_RESULTS = {
+    "pending:awaiting_erasure",
+    "incomplete_blocked:adapter_failure",
+    "incomplete_blocked:erasure_incomplete",
+    "incomplete_blocked:invalid_erasure_report",
+}
+_AUDIT_SHAPES = frozenset(
+    {
+        *(
+            ("consent_grant", "consent", result, "payload_free")
+            for result in {
+                "already_granted",
+                "granted",
+                "invalid_authentication",
+                "invalid_authorization",
+            }
+        ),
+        *(
+            ("consent_revocation", "consent", result, "payload_free")
+            for result in {
+                "already_revoked",
+                "invalid_authentication",
+                "invalid_authorization",
+                "revoked",
+            }
+        ),
+        ("consent_use_attempt", "consent", "dispatch_pending", "payload_free"),
+        *(
+            ("consent_use", "consent", result, "payload_free")
+            for result in _CONSENT_USE_RESULTS
+        ),
+        *(
+            (
+                "notice_acknowledgement",
+                "privacy_notice",
+                result,
+                "payload_free",
+            )
+            for result in {"invalid_authentication", "unsupported_notice_version"}
+        ),
+        *(
+            ("deletion", category.value, result, "payload_free")
+            for category in ContentCategory
+            if category is not ContentCategory.PUBLIC_ACTION
+            for result in _DELETION_RESULTS
+        ),
+        *(
+            (
+                "deletion",
+                category.value,
+                "applied:erasure_applied",
+                "content_free_tombstone",
+            )
+            for category in ContentCategory
+            if category is not ContentCategory.PUBLIC_ACTION
+        ),
+        (
+            "deletion",
+            ContentCategory.PUBLIC_ACTION.value,
+            "not_eligible:public_action_not_erasable",
+            "payload_free",
+        ),
+        *(
+            ("deletion_rejected", category.value, result, "payload_free")
+            for category in ContentCategory
+            for result in {
+                "invalid_authorization:invalid_authentication",
+                "invalid_authorization:wrong_principal",
+            }
+        ),
+    }
+)
+
+
 @dataclass(frozen=True, slots=True)
 class AuditRecord:
     correlation_id: str
@@ -241,53 +327,15 @@ class AuditRecord:
     def __post_init__(self) -> None:
         require_token(self.correlation_id, "audit correlation id")
         require_token(self.actor_reference, "audit actor reference")
-        if self.action_type not in {
-            "consent_grant",
-            "consent_revocation",
-            "consent_use",
-            "consent_use_attempt",
-            "deletion",
-            "deletion_rejected",
-            "notice_acknowledgement",
-        }:
-            raise ValueError("invalid audit action type")
-        if self.record_category not in {
-            "consent",
-            "privacy_notice",
-            *(category.value for category in ContentCategory),
-        }:
-            raise ValueError("invalid audit record category")
         require_utc(self.occurred_at, "audit timestamp")
-        if self.result_code not in {
-            "acknowledged",
-            "already_acknowledged",
-            "already_dispatched",
-            "already_granted",
-            "already_revoked",
-            "authorized",
-            "dispatch_pending",
-            "dispatch_uncertain",
-            "expired",
-            "granted",
-            "invalid_authentication",
-            "invalid_authorization",
-            "no_matching_consent",
-            "not_yet_valid",
-            "pre_dispatch_failure",
-            "revoked",
-            "unsupported_notice_version",
-            "pending:awaiting_erasure",
-            "applied:erasure_applied",
-            "incomplete_blocked:adapter_failure",
-            "incomplete_blocked:erasure_incomplete",
-            "incomplete_blocked:invalid_erasure_report",
-            "invalid_authorization:invalid_authentication",
-            "invalid_authorization:wrong_principal",
-            "not_eligible:public_action_not_erasable",
-        }:
-            raise ValueError("invalid audit result code")
-        if self.redaction_status not in {"payload_free", "content_free_tombstone"}:
-            raise ValueError("invalid audit redaction status")
+        shape = (
+            self.action_type,
+            self.record_category,
+            self.result_code,
+            self.redaction_status,
+        )
+        if shape not in _AUDIT_SHAPES:
+            raise ValueError("invalid audit shape")
 
 
 @dataclass(frozen=True, slots=True)
