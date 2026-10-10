@@ -512,14 +512,20 @@ def test_serve_loop_counts_only_handled_connections(tmp_path):
     assert worker.is_alive() is False
 
 
-def test_serve_loop_reaps_a_completed_handler_before_next_connection(tmp_path):
+@pytest.mark.parametrize(
+    ("accept_timeout", "delay"),
+    [(1.0, 0.0), (0.01, 0.03)],
+)
+def test_serve_loop_reaps_a_completed_handler_before_next_connection(
+    tmp_path, accept_timeout, delay
+):
     directory = secure_directory(tmp_path)
     instance, _transport = gateway(directory)
     server = OpenAIWorkerServer(
         WorkerServerConfig(
             directory / "worker.sock",
             frozenset((os.getuid(),)),
-            accept_timeout_seconds=0.01,
+            accept_timeout_seconds=accept_timeout,
         ),
         instance,
     )
@@ -530,7 +536,7 @@ def test_serve_loop_reaps_a_completed_handler_before_next_connection(tmp_path):
     first = OpenAIWorkerClient(directory / "worker.sock").infer(
         model, operation_id="operation-a", correlation_id="correlation-a"
     )
-    time.sleep(0.03)
+    time.sleep(delay)
     second = OpenAIWorkerClient(directory / "worker.sock").infer(
         model, operation_id="operation-b", correlation_id="correlation-b"
     )

@@ -181,6 +181,9 @@ class OpenAIWorkerServer:
                 if connection is None:
                     continue
                 accepted += 1
+                if active is not None and not active.is_alive():
+                    active.join()
+                    active = None
                 if active is not None:
                     connection.close()
                     continue
