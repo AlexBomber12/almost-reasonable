@@ -96,9 +96,12 @@ dummy-work path rather than truncated into an accepted credential.
 Successful login generates independent 256-bit session and CSRF tokens. Only
 SHA-256 token digests are stored. Sessions have an absolute expiry, can be
 revoked, are invalid after account disablement, survive a process restart, and
-are rotated rather than accepting a pre-login session identifier. Logout
-revokes the server-side record before clearing cookies. Session bearer tokens
-must therefore be protected like credentials.
+are rotated rather than accepting a pre-login session identifier. A successful
+login removes expired/revoked records and invalidates any earlier session for
+that account, bounding storage and leaving one active session per account.
+Logout revokes the server-side record before clearing cookies, and the browser
+only navigates to the login page after that response succeeds. Session bearer
+tokens must therefore be protected like credentials.
 
 Local account provisioning is an operator filesystem/terminal operation, not
 an administrative web interface. Any future owner or administrative operation

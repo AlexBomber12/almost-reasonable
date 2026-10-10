@@ -366,12 +366,16 @@ class AuthStore:
                     (account_attempt_key,),
                 )
                 existing_digest = _secret_digest(existing_session_token)
-                if existing_digest is not None:
-                    connection.execute(
-                        "UPDATE sessions SET revoked_at = ? "
-                        "WHERE token_digest = ? AND revoked_at IS NULL",
-                        (now, existing_digest),
-                    )
+                connection.execute(
+                    """
+                    DELETE FROM sessions
+                    WHERE revoked_at IS NOT NULL
+                       OR expires_at <= ?
+                       OR account_id = ?
+                       OR token_digest = ?
+                    """,
+                    (now, row[0], existing_digest),
+                )
                 session_token = secrets.token_urlsafe(32)
                 csrf_token = secrets.token_urlsafe(32)
                 expires_at = now + self._session_ttl_seconds

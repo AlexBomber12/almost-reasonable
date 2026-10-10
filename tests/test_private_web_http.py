@@ -544,6 +544,25 @@ def test_missing_routes_methods_cookie_tampering_and_static_asset(web):
     assert b"pendingMessage.content !== content" in body
     assert b"pendingMessage = {id: crypto.randomUUID(), content}" in body
     assert b"if (requestInFlight) return" in body
+    assert b"if (response.ok)" in body
+    assert b"Logout failed; your session is still active." in body
+
+
+def test_failed_logout_keeps_session_active_and_reports_failure(web):
+    _, auth, _, _, app = web
+    browser = Browser(app)
+    browser.login("alice", "correct horse battery")
+    token = browser.cookies["ar_session"]
+
+    assert (
+        browser.request(
+            "POST",
+            "/logout",
+            extra_environ={"HTTP_X_CSRF_TOKEN": "incorrect"},
+        )[0]
+        == "403 Forbidden"
+    )
+    assert auth.authenticate(token) is not None
 
 
 def test_bracketed_ipv6_host_is_accepted(web):

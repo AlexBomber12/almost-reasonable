@@ -210,6 +210,21 @@ def test_successful_login_rotates_existing_session_and_csrf_is_constant_time_che
     assert session.accepts_csrf("wrong-csrf-token") is False
 
 
+def test_repeated_logins_keep_one_active_session_row_per_account(store):
+    provision(store)
+    results = [
+        store.login("alice", "correct horse battery", f"browser-{index}")
+        for index in range(5)
+    ]
+
+    with sqlite3.connect(store.database_path) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM sessions").fetchone()[0] == 1
+    assert all(
+        store.authenticate(result.session_token) is None for result in results[:-1]
+    )
+    assert store.authenticate(results[-1].session_token) is not None
+
+
 def test_session_survives_process_restart(store, clock):
     provision(store)
     result = store.login("alice", "correct horse battery", "browser")

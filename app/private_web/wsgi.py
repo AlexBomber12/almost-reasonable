@@ -488,9 +488,17 @@ if (form) form.addEventListener('submit', async (event) => {
 const logout = document.getElementById('logout-form');
 if (logout) logout.addEventListener('submit', async (event) => {
   event.preventDefault();
-  await fetch('/logout', {method: 'POST', credentials: 'same-origin',
-    headers: {'X-CSRF-Token': form.dataset.csrf}});
-  window.location.assign('/login');
+  try {
+    const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
+      headers: {'X-CSRF-Token': form.dataset.csrf}});
+    if (response.ok) {
+      window.location.assign('/login');
+      return;
+    }
+    modelStatus.textContent = 'Logout failed; your session is still active.';
+  } catch (error) {
+    modelStatus.textContent = 'Logout is uncertain; verify before leaving this device.';
+  }
 });
 """
         return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body
