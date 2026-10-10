@@ -57,13 +57,26 @@ def _open_directory_chain(directory: Path) -> int:
     descriptor = os.open("/", flags)
     try:
         for component in directory.parts[1:]:
+            if not _directory_is_trusted(os.fstat(descriptor), has_descendant=True):
+                raise PermissionError("unsafe directory permissions")
             next_descriptor = os.open(component, flags, dir_fd=descriptor)
             os.close(descriptor)
             descriptor = next_descriptor
+        if not _directory_is_trusted(os.fstat(descriptor), has_descendant=False):
+            raise PermissionError("unsafe directory permissions")
     except BaseException:
         os.close(descriptor)
         raise
     return descriptor
+
+
+def _directory_is_trusted(identity: os.stat_result, *, has_descendant: bool) -> bool:
+    if identity.st_uid not in {0, os.geteuid()}:
+        return False
+    writable_by_other_accounts = identity.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    if not writable_by_other_accounts:
+        return True
+    return has_descendant and bool(identity.st_mode & stat.S_ISVTX)
 
 
 def _validate_parent_chain(path: Path, label: str) -> None:
@@ -277,7 +290,10 @@ def _is_busy(error: sqlite3.OperationalError) -> bool:
 def _integrity_ok(path_or_descriptor: Path | int) -> bool:
     target, uri = _database_target(path_or_descriptor)
     with sqlite3.connect(target, uri=uri) as connection:
-        return connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+        return (
+            connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+            and connection.execute("PRAGMA foreign_key_check").fetchone() is None
+        )
 
 
 def _safe_integrity_ok(path_or_descriptor: Path | int) -> bool:

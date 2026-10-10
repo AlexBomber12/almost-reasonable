@@ -163,6 +163,73 @@ def test_backup_percent_escapes_sqlite_uri_metacharacters(tmp_path):
         ).fetchone() == ("literal metacharacter source",)
 
 
+@pytest.mark.parametrize(
+    ("mode", "uid", "has_descendant", "expected"),
+    [
+        (0o700, os.geteuid(), False, True),
+        (0o700, os.geteuid() + 1, False, False),
+        (0o770, os.geteuid(), False, False),
+        (0o1777, 0, True, True),
+        (0o1777, 0, False, False),
+    ],
+)
+def test_recovery_directory_trust_policy(mode, uid, has_descendant, expected):
+    identity = os.stat_result((stat.S_IFDIR | mode, 0, 0, 0, uid, 0, 0, 0, 0, 0))
+    assert (
+        recovery_module._directory_is_trusted(identity, has_descendant=has_descendant)
+        is expected
+    )
+
+
+def test_backup_rejects_direct_or_ancestor_writable_by_other_accounts(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    unsafe = tmp_path / "unsafe"
+    nested = unsafe / "nested"
+    nested.mkdir(parents=True)
+    unsafe.chmod(0o777)
+
+    for destination in (unsafe / "direct.sqlite3", nested / "nested.sqlite3"):
+        with pytest.raises(BackupError, match="parent is unsafe"):
+            create_sqlite_backup(source, destination, 3, NOW)
+
+
+def test_backup_rejects_foreign_key_violations(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    with make_source(source) as connection:
+        connection.execute("CREATE TABLE parents(parent_id TEXT PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE children(parent_id TEXT REFERENCES parents(parent_id))"
+        )
+        connection.execute("INSERT INTO children VALUES('missing-parent')")
+
+    destination = tmp_path / "backup.sqlite3"
+    with pytest.raises(BackupError, match="consistency verification failed"):
+        create_sqlite_backup(source, destination, 3, NOW)
+    assert not destination.exists()
+
+
+def test_restore_blocks_foreign_key_violations_before_reconciliation(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    with make_source(source) as connection:
+        connection.execute("CREATE TABLE parents(parent_id TEXT PRIMARY KEY)")
+        connection.execute(
+            "CREATE TABLE children(parent_id TEXT REFERENCES parents(parent_id))"
+        )
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    with sqlite3.connect(backup) as connection:
+        connection.execute("INSERT INTO children VALUES('missing-parent')")
+
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, tmp_path / "quarantine.sqlite3", NOW
+    )
+
+    assert result.disposition is RestoreDisposition.BLOCKED
+    assert result.reason == "quarantine_integrity_failed"
+
+
 def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()

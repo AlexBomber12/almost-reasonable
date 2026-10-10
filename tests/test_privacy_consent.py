@@ -749,6 +749,26 @@ def test_privacy_ledger_rejects_tampered_schema_without_mutation(tmp_path, schem
         )
 
 
+def test_privacy_ledger_configuration_requires_wal_mode(tmp_path):
+    class JournalModeCursor:
+        @staticmethod
+        def fetchone():
+            return ("delete",)
+
+    class WalUnavailableConnection:
+        @staticmethod
+        def execute(statement):
+            if statement == "PRAGMA foreign_keys=ON":
+                return None
+            assert statement == "PRAGMA journal_mode=WAL"
+            return JournalModeCursor()
+
+    ledger = object.__new__(PrivacyLedger)
+    ledger.path = tmp_path / "privacy.sqlite3"
+    with pytest.raises(RuntimeError, match="requires WAL"):
+        ledger._configure(WalUnavailableConnection())
+
+
 @pytest.mark.parametrize(
     "factory",
     [

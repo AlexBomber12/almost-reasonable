@@ -258,7 +258,9 @@ class PrivacyLedger:
 
     def _configure(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA journal_mode=WAL")
+        journal_mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()
+        if journal_mode != ("wal",):
+            raise RuntimeError("privacy ledger requires WAL journal mode")
         for suffix in ("-wal", "-shm"):
             sidecar = Path(f"{self.path}{suffix}")
             if sidecar.exists():
