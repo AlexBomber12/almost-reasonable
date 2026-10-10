@@ -179,6 +179,10 @@ class JsonMissionRepository:
 
     def __init__(self, path: Path, initial_mission: Mission):
         self._path = Path(path)
+        _validate_stored_mission(initial_mission)
+        if initial_mission.parent_version is not None:
+            raise ValueError("initial mission must be a trusted root")
+        self._initial_mission = initial_mission
         if not self._path.exists():
             self.save(MissionDocument(initial_mission, (), None))
 
@@ -186,7 +190,7 @@ class JsonMissionRepository:
         raw = json.loads(self._path.read_text(encoding="utf-8"))
         if raw.get("schema_version") != MISSION_SCHEMA_VERSION:
             raise ValueError("unsupported mission repository schema")
-        return _document_from_dict(raw)
+        return _document_from_dict(raw, self._initial_mission)
 
     def save(self, document: MissionDocument) -> None:
         payload = _document_to_dict(document)
@@ -215,6 +219,8 @@ class MissionStateMachine:
         _validate_proposal(proposal)
         if proposal.current_mission_version != document.current.version:
             raise ValueError("proposal does not reference the current mission")
+        if proposal.decided_at < document.current.activated_at:
+            raise ValueError("proposal predates the current mission")
         if proposal.version_identity == document.current.version or any(
             item.proposal.version_identity == proposal.version_identity
             for item in document.proposals
@@ -545,7 +551,9 @@ def _record_to_dict(record: MissionRecord) -> dict[str, object]:
     }
 
 
-def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
+def _document_from_dict(
+    raw: dict[str, object], trusted_root: Mission
+) -> MissionDocument:
     current_raw = raw["current"]
     if not isinstance(current_raw, dict):
         raise ValueError("mission repository current record is invalid")
@@ -624,7 +632,7 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
                 parsed_confirmation,
             )
         )
-    _validate_active_mission(current, tuple(records))
+    _validate_active_mission(current, tuple(records), trusted_root)
     return MissionDocument(current, tuple(records), stored_invariants)
 
 
@@ -645,24 +653,64 @@ def _validate_stored_mission(mission: Mission) -> None:
 
 
 def _validate_active_mission(
-    current: Mission, records: tuple[MissionRecord, ...]
+    current: Mission,
+    records: tuple[MissionRecord, ...],
+    trusted_root: Mission,
 ) -> None:
+    proposal_ids = tuple(record.proposal.proposal_id for record in records)
+    version_ids = tuple(record.proposal.version_identity for record in records)
+    if (
+        len(set(proposal_ids)) != len(proposal_ids)
+        or len(set(version_ids)) != len(version_ids)
+        or trusted_root.version in version_ids
+    ):
+        raise ValueError("mission history contains duplicate identifiers")
     confirmed = tuple(
         record for record in records if record.status is MissionStatus.CONFIRMED
     )
     if current.parent_version is None:
+        if current != trusted_root:
+            raise ValueError("stored root mission differs from trusted initial state")
         if confirmed:
             raise ValueError("root mission conflicts with confirmed history")
-        return
-    matches = tuple(
-        record
-        for record in confirmed
-        if record.proposal.version_identity == current.version
-        and record.proposal.current_mission_version == current.parent_version
-        and record.proposal.proposed_mission == current.text
-        and record.proposal.purpose is current.purpose
-        and record.confirmation is not None
-        and record.confirmation.decided_at == current.activated_at
+    confirmed_by_version = {
+        record.proposal.version_identity: record for record in confirmed
+    }
+    parent_activation = {trusted_root.version: trusted_root.activated_at}
+    parent_activation.update(
+        {
+            version: record.confirmation.decided_at
+            for version, record in confirmed_by_version.items()
+            if record.confirmation is not None
+        }
     )
-    if len(matches) != 1:
+    if current.parent_version is None:
+        return
+
+    current_record = confirmed_by_version.get(current.version)
+    if (
+        current_record is None
+        or current_record.proposal.current_mission_version != current.parent_version
+        or current_record.proposal.proposed_mission != current.text
+        or current_record.proposal.purpose is not current.purpose
+        or current_record.confirmation is None
+        or current_record.confirmation.decided_at != current.activated_at
+    ):
         raise ValueError("active mission does not match confirmed history")
+
+    chain_versions: set[str] = set()
+    cursor = current.version
+    while cursor != trusted_root.version:
+        if cursor in chain_versions or cursor not in confirmed_by_version:
+            raise ValueError("confirmed mission history is not rooted")
+        chain_versions.add(cursor)
+        cursor = confirmed_by_version[cursor].proposal.current_mission_version
+    if chain_versions != set(confirmed_by_version):
+        raise ValueError("confirmed mission history contains a branch")
+    if any(
+        record.proposal.current_mission_version not in parent_activation
+        or record.proposal.decided_at
+        < parent_activation[record.proposal.current_mission_version]
+        for record in records
+    ):
+        raise ValueError("mission proposal predates or lacks its parent")

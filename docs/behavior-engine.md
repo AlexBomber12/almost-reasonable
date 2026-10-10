@@ -199,7 +199,11 @@ Repository loads re-run proposal and confirmation validation and enforce status 
 confirmation consistency before returning a document; persisted text never
 becomes trusted merely because it came from the mission JSON file. A non-root
 active mission must match exactly one confirmed proposal, parent, purpose, text,
-and confirmation timestamp in that validated history.
+and confirmation timestamp in that validated history. The root mission must
+equal the application-supplied trusted initial mission. Global proposal/version
+identifiers are unique, the confirmed chain must terminate at that root without
+branches, and every proposal timestamp is no earlier than its parent's
+activation.
 
 ## Behavioral evaluation artifacts
 
