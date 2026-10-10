@@ -756,7 +756,7 @@ class PrivacyLedger:
             raise ValueError("applied deletion requires verified erasure")
         return self._update_deletion(request, disposition, reason, updated_at)
 
-    def record_verified_deletion(
+    def _record_verified_deletion(
         self,
         request: DeletionRequest,
         report: ErasureReport,

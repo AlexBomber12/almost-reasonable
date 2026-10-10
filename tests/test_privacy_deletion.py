@@ -443,12 +443,29 @@ def test_applied_deletion_requires_a_verified_erasure_report(tmp_path):
     )
     for report in incomplete_reports:
         with pytest.raises(ValueError, match="verified erasure"):
-            ledger.record_verified_deletion(deletion, report, NOW)
+            ledger._record_verified_deletion(deletion, report, NOW)
 
     assert ledger.deletion(deletion.operation_id).disposition is (
         DeletionDisposition.PENDING
     )
     assert ledger.audit_records() == audit_before
+
+
+def test_verified_deletion_transition_is_not_public(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    deletion = request()
+    ledger.insert_deletion(
+        context(), deletion, DeletionDisposition.PENDING, "awaiting_erasure"
+    )
+    forged_report = ErasureReport(True, True, REQUIRED, ())
+
+    with pytest.raises(AttributeError):
+        ledger.record_verified_deletion(deletion, forged_report, NOW)
+
+    assert (
+        ledger.deletion(deletion.operation_id).disposition
+        is DeletionDisposition.PENDING
+    )
 
 
 def test_deletion_update_rejects_a_missing_operation(tmp_path):

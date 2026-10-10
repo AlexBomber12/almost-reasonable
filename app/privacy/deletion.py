@@ -175,7 +175,7 @@ class DeletionCoordinator:
         completed_at = self.clock()
         require_utc(completed_at, "deletion transition timestamp")
         if disposition is DeletionDisposition.APPLIED:
-            updated = self.ledger.record_verified_deletion(
+            updated = self.ledger._record_verified_deletion(
                 request, report, completed_at
             )
         else:
