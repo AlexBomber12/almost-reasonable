@@ -21,6 +21,10 @@ _PUBLIC_REFERENCE = re.compile(
 )
 _EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)")
+_YEAR_RANGE = re.compile(
+    r"(?<!\d)(?:1[5-9]\d{2}|20\d{2}|21\d{2})\s*[-–—]\s*"
+    r"(?:1[5-9]\d{2}|20\d{2}|21\d{2})(?!\d)"
+)
 _BASE64 = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=])")
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
@@ -56,6 +60,7 @@ _INJECTION_PATTERNS = (
 )
 _BRIEF_AUTHORITY = object()
 _BRIEF_INTEGRITY_KEY = secrets.token_bytes(32)
+_MAX_ENCODED_SCREEN_DEPTH = 4
 
 
 class BriefDisposition(StrEnum):
@@ -337,6 +342,37 @@ def _screen(
     screening: ResearchScreeningContext,
     *,
     identifier_values: list[str] | None = None,
+    _encoded_depth: int = 0,
+) -> str | None:
+    reason = _privacy_reason(values, screening, identifier_values)
+    if reason is not None:
+        return reason
+    if _encoded_depth >= _MAX_ENCODED_SCREEN_DEPTH:
+        return None
+    combined = "\n".join(values)
+    for match in _BASE64.finditer(combined):
+        decoded = _decode_base64(match.group(0))
+        if decoded is None:
+            continue
+        if any(unicodedata.category(character) == "Cc" for character in decoded):
+            return "encoded_leakage"
+        if (
+            _screen(
+                [decoded],
+                screening,
+                identifier_values=[decoded],
+                _encoded_depth=_encoded_depth + 1,
+            )
+            is not None
+        ):
+            return "encoded_leakage"
+    return None
+
+
+def _privacy_reason(
+    values: list[str],
+    screening: ResearchScreeningContext,
+    identifier_values: list[str] | None,
 ) -> str | None:
     if _contains(values, screening.private_canaries):
         return "private_canary"
@@ -350,21 +386,15 @@ def _screen(
     identifier_text = "\n".join(
         values if identifier_values is None else identifier_values
     )
-    if _EMAIL.search(identifier_text) or _PHONE.search(identifier_text):
+    normalized_identifiers = _normalized(identifier_text)
+    without_year_ranges = _YEAR_RANGE.sub(" ", normalized_identifiers)
+    if _EMAIL.search(normalized_identifiers) or _PHONE.search(without_year_ranges):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):
         return "recognizable_private_overlap"
     normalized = _normalized(combined)
     if any(pattern in normalized for pattern in _INJECTION_PATTERNS):
         return "prompt_injection"
-    for match in _BASE64.finditer(combined):
-        decoded = _decode_base64(match.group(0))
-        if decoded is not None and any(
-            pattern in _normalized(decoded) for pattern in _INJECTION_PATTERNS
-        ):
-            return "encoded_leakage"
-        if decoded is not None and _contains([decoded], screening.private_canaries):
-            return "encoded_leakage"
     return None
 
 
@@ -377,8 +407,6 @@ def _decode_base64(value: str) -> str | None:
         raw = base64.b64decode(value, validate=True)
         decoded = raw.decode("utf-8")
     except (binascii.Error, UnicodeDecodeError):
-        return None
-    if not decoded.isprintable():
         return None
     return decoded
 

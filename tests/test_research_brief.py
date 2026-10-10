@@ -1,3 +1,4 @@
+import base64
 from dataclasses import replace
 
 import pytest
@@ -19,6 +20,12 @@ from app.research.brief import (
 
 def records(*records):
     return ResearchRecordSet(tuple(records))
+
+
+def encoded(value, times=1):
+    for _ in range(times):
+        value = base64.b64encode(value.encode("utf-8")).decode("ascii")
+    return value
 
 
 @pytest.mark.parametrize(
@@ -75,6 +82,19 @@ def test_valid_isbn_and_pmid_references_are_not_misclassified_as_phone_numbers()
     )
 
 
+def test_year_range_is_allowed_as_a_public_recency_requirement():
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion("How did the field change?"),
+            TimeRequirement("Compare publications from 2010-2020"),
+        ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
 @pytest.mark.parametrize(
     ("record", "reason"),
     [
@@ -111,6 +131,21 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
         ),
         (
             "Call +39 055 555 0101 about the study",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Find alice@\u200bexample.com",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Find ａｌｉｃｅ＠ｅｘａｍｐｌｅ．ｃｏｍ",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Call +39 055\u200b 555 0101",
             ResearchScreeningContext(),
             "direct_identifier",
         ),
@@ -331,7 +366,11 @@ def test_builder_rejects_forged_containers_wrong_types_and_missing_question():
             "encoded_leakage",
         ),
         ("AAAAAAAAAAAAAAAAA", ResearchScreeningContext(), None),
-        ("AAECAwQFBgcICQoLDA0ODw==", ResearchScreeningContext(), None),
+        (
+            "AAECAwQFBgcICQoLDA0ODw==",
+            ResearchScreeningContext(),
+            "encoded_leakage",
+        ),
         (
             "These four public words are unrelated",
             ResearchScreeningContext(
@@ -351,3 +390,53 @@ def test_encoded_canary_and_benign_nondecodable_or_nonoverlapping_text(
         screening=screening,
     )
     assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("private_value", "screening"),
+    [
+        ("alice@example.com", ResearchScreeningContext()),
+        ("+39 055 555 0101", ResearchScreeningContext()),
+        (
+            "participant-b-771",
+            ResearchScreeningContext(participant_identifiers=("participant-b-771",)),
+        ),
+        (
+            "blue marble orchard",
+            ResearchScreeningContext(private_quotations=("blue marble orchard",)),
+        ),
+        (
+            "stage-four synthetic condition Z",
+            ResearchScreeningContext(
+                sensitive_details=("stage-four synthetic condition Z",)
+            ),
+        ),
+        (
+            "midnight copper telescope result",
+            ResearchScreeningContext(
+                private_texts=(
+                    "We discussed the midnight copper telescope result privately",
+                )
+            ),
+        ),
+    ],
+)
+def test_encoded_payloads_receive_the_complete_privacy_screen(private_value, screening):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded(private_value, times=2))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=screening,
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_bounded_nested_encoding_does_not_reject_benign_public_text():
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded("ordinary public academic text", times=5))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
