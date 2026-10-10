@@ -169,6 +169,13 @@ def test_backup_percent_escapes_sqlite_uri_metacharacters(tmp_path):
         ).fetchone() == ("literal metacharacter source",)
 
 
+def test_schema_version_accepts_a_database_path(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+
+    assert recovery_module._schema_version(source) == 3
+
+
 @pytest.mark.parametrize(
     ("mode", "uid", "has_descendant", "expected"),
     [
@@ -267,6 +274,65 @@ def test_backup_rejects_an_unsafe_source_wal_before_copying(tmp_path):
         writer.close()
 
     assert not destination.exists()
+
+
+def test_backup_rejects_an_unsafe_source_wal_created_after_pinning(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    real_copy = recovery_module._sqlite_copy
+    writers = []
+
+    def create_wal_after_pinning(pinned_source, destination_descriptor):
+        writer = sqlite3.connect(source)
+        writers.append(writer)
+        writer.execute(
+            "INSERT INTO synthetic_private VALUES('event-late', 'unsafe WAL row')"
+        )
+        writer.commit()
+        Path(f"{source}-wal").chmod(0o666)
+        real_copy(pinned_source, destination_descriptor)
+
+    monkeypatch.setattr(recovery_module, "_sqlite_copy", create_wal_after_pinning)
+    try:
+        with pytest.raises(BackupError, match="source identity"):
+            create_sqlite_backup(source, destination, 3, NOW)
+    finally:
+        for writer in writers:
+            writer.close()
+
+    assert not destination.exists()
+
+
+def test_backup_rejects_a_source_swap_during_sidecar_repinning(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source, "intended source").close()
+    held_source = tmp_path / "held-source.sqlite3"
+    substitute = tmp_path / "substitute.sqlite3"
+    make_source(substitute, "substitute source").close()
+    pinned_source = recovery_module._pin_database(
+        source, "backup source", pin_sidecars=True
+    )
+    real_pin = recovery_module._pin_database
+
+    def swap_before_repinning(path, label, **kwargs):
+        source.rename(held_source)
+        substitute.rename(source)
+        return real_pin(path, label, **kwargs)
+
+    monkeypatch.setattr(recovery_module, "_pin_database", swap_before_repinning)
+    try:
+        with pytest.raises(BackupError, match="source identity"):
+            recovery_module._require_database_identity(pinned_source)
+    finally:
+        recovery_module._close_pinned_database(pinned_source)
+
+    with sqlite3.connect(source) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("substitute source",)
 
 
 def test_backup_pin_closes_source_and_sidecars_when_validation_errors(

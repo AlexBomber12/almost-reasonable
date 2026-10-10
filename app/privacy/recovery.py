@@ -111,12 +111,16 @@ def _schema_version(path_or_descriptor: Path | int, *, immutable: bool = False) 
     target, uri = _database_target(path_or_descriptor, immutable=immutable)
     try:
         with sqlite3.connect(target, timeout=0.1, uri=uri) as connection:
-            row = connection.execute(
-                "SELECT version FROM schema_metadata WHERE singleton=1"
-            ).fetchone()
-            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
+            return _connection_schema_version(connection)
     except sqlite3.Error as error:
         raise BackupError("unable to validate database schema") from error
+
+
+def _connection_schema_version(connection: sqlite3.Connection) -> int:
+    row = connection.execute(
+        "SELECT version FROM schema_metadata WHERE singleton=1"
+    ).fetchone()
+    user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     if row is None or type(row[0]) is not int or user_version != row[0]:
         raise BackupError("unable to validate database schema")
     return row[0]
@@ -135,6 +139,7 @@ class _PinnedDatabase:
     descriptor: int
     immutable: bool = False
     sidecars: tuple[tuple[Path, int], ...] = ()
+    expected_schema_version: int | None = None
 
 
 def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
@@ -221,6 +226,7 @@ def _pin_database(
     *,
     immutable: bool = False,
     pin_sidecars: bool = False,
+    expected_schema_version: int | None = None,
 ) -> _PinnedDatabase:
     try:
         parent_descriptor = _open_directory_chain(path.parent)
@@ -269,7 +275,9 @@ def _pin_database(
         raise
     finally:
         os.close(parent_descriptor)
-    return _PinnedDatabase(path, descriptor, immutable, tuple(sidecars))
+    return _PinnedDatabase(
+        path, descriptor, immutable, tuple(sidecars), expected_schema_version
+    )
 
 
 def _close_pinned_database(database: _PinnedDatabase) -> None:
@@ -284,6 +292,14 @@ def _require_database_identity(source: _PinnedDatabase) -> None:
         for path, descriptor in source.sidecars
     ):
         raise BackupError("backup source identity changed")
+    current = _pin_database(source.path, "backup source", pin_sidecars=True)
+    try:
+        expected = os.fstat(source.descriptor)
+        observed = os.fstat(current.descriptor)
+        if (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino):
+            raise BackupError("backup source identity changed")
+    finally:
+        _close_pinned_database(current)
 
 
 def _require_connection_identity(
@@ -358,6 +374,15 @@ def _sqlite_copy(source: _PinnedDatabase, destination_descriptor: int) -> None:
             )
             destination_connection.commit()
             _use_rollback_journal(destination_connection)
+            if source.expected_schema_version is not None:
+                try:
+                    source_schema_version = _connection_schema_version(
+                        source_connection
+                    )
+                except sqlite3.Error as error:
+                    raise BackupError("unable to validate source schema") from error
+                if source_schema_version != source.expected_schema_version:
+                    raise BackupError("unsupported source schema")
         _require_database_identity(source)
 
 
@@ -487,10 +512,13 @@ def create_sqlite_backup(
     _validate_new_file(metadata_path, "metadata destination")
     for sidecar_path in sidecar_paths:
         _validate_new_file(sidecar_path, "destination sidecar")
-    pinned_source = _pin_database(source, "backup source", pin_sidecars=True)
+    pinned_source = _pin_database(
+        source,
+        "backup source",
+        pin_sidecars=True,
+        expected_schema_version=expected_schema_version,
+    )
     try:
-        if _schema_version(source) != expected_schema_version:
-            raise BackupError("unsupported source schema")
         _require_database_identity(pinned_source)
         owned: list[_OwnedFile] = []
         sidecar_reservations: list[_OwnedFile] = []
