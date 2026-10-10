@@ -318,6 +318,7 @@ def test_deliberation_input_rejects_every_untrusted_shape() -> None:
         replace(base, budget=DeliberationBudget(-1, 1, 1.0)),
         replace(base, budget=DeliberationBudget(1, 1, float("nan"))),
         replace(base, budget=DeliberationBudget(1, 1, float("inf"))),
+        replace(base, budget=DeliberationBudget(1, 1, 10**400)),
         replace(base, now=NOW.replace(tzinfo=None)),
     )
     for invalid in invalid_values:

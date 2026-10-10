@@ -90,9 +90,18 @@ _CODE_SIGNAL = re.compile(
     r"\s+from\s+[A-Za-z_]\w*(?:\s*;|\s+(?:where|join|group\s+by|"
     r"order\s+by|limit)\b)|"
     r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
-    r"\b[A-Za-z_]\w*\s*=\s*(?:[\"']|\d|[\[({]|(?:True|False|None|null)\b|"
-    r"[A-Za-z_]\w*\s*\()|</?[A-Za-z][^>]*>|"
+    r"</?[A-Za-z][^>]*>|"
     r"\{[^{}]*(?::|=)[^{}]*\})",
+    re.IGNORECASE,
+)
+_ASSIGNMENT_CODE_SIGNAL = re.compile(
+    r"^\s*[A-Za-z_]\w*\s*=\s*(?:"
+    r"\"(?:\\.|[^\"\\])*\"|\'(?:\\.|[^\'\\])*\'|"
+    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)|"
+    r"(?:True|False|None|null)\b|"
+    r"\[[^\r\n]*\]|\{[^\r\n]*\}|\([^\r\n]*\)|"
+    r"[A-Za-z_]\w*\s*\([^\r\n]*\)"
+    r")\s*;?\s*$",
     re.IGNORECASE,
 )
 _TAGGED_FENCED_CODE_SIGNAL = re.compile(
@@ -367,15 +376,21 @@ def _replace_fenced_code_span(match: re.Match[str]) -> str:
     if (
         language is not None
         and language.casefold() in _FENCED_CODE_LANGUAGES
-        and (_CODE_SIGNAL.search(content) or _TAGGED_FENCED_CODE_SIGNAL.search(content))
+        and (_has_code_signal(content) or _TAGGED_FENCED_CODE_SIGNAL.search(content))
     ):
         return " "
-    return " " if _CODE_SIGNAL.search(content) else content
+    return " " if _has_code_signal(content) else content
 
 
 def _replace_code_span(match: re.Match[str]) -> str:
     content = match.group(1)
-    return " " if _CODE_SIGNAL.search(content) else content
+    return " " if _has_code_signal(content) else content
+
+
+def _has_code_signal(content: str) -> bool:
+    return bool(
+        _CODE_SIGNAL.search(content) or _ASSIGNMENT_CODE_SIGNAL.fullmatch(content)
+    )
 
 
 def _foreign_script_units(text: str) -> int:

@@ -347,7 +347,16 @@ class BehavioralEvaluationHarness:
                             or not _valid_utf8_text(adjudication.note)
                         ):
                             raise ValueError("human adjudication provenance is invalid")
-                        observation = replace(observation, adjudication=adjudication)
+                        observation = replace(
+                            observation,
+                            artifact_sha256=_json_sha256(
+                                {
+                                    "assessment_artifact_sha256": observation.artifact_sha256,
+                                    "adjudication": asdict(adjudication),
+                                }
+                            ),
+                            adjudication=adjudication,
+                        )
                     observations.append(observation)
         return EvaluationReport(
             EVALUATION_HARNESS_VERSION, self._rubric_version, tuple(observations)

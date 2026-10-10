@@ -334,6 +334,31 @@ def test_artifact_identity_binds_prompt_tags_output_and_dimension() -> None:
     )
 
 
+def test_artifact_identity_binds_human_adjudication() -> None:
+    rule = RubricRule(
+        RubricDimension.INTELLECTUAL_HONESTY,
+        AssuranceClass.M,
+        0.5,
+        AssessorKind.MODEL,
+        "Честность",
+    )
+    accepted = custom_harness(
+        (rule,),
+        assessor,
+        lambda _: HumanAdjudication("reviewer-a", "cal-v1", True, "Принято"),
+    ).run((evaluation_case("case", "prompt", ("output",), ("tag",)),))
+    rejected = custom_harness(
+        (rule,),
+        assessor,
+        lambda _: HumanAdjudication("reviewer-b", "cal-v1", False, "Отклонено"),
+    ).run((evaluation_case("case", "prompt", ("output",), ("tag",)),))
+
+    assert (
+        accepted.observations[0].artifact_sha256
+        != rejected.observations[0].artifact_sha256
+    )
+
+
 def test_harness_dispatches_through_typed_assessor_bindings() -> None:
     calls: list[AssessorKind] = []
 

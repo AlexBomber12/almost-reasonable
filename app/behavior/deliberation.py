@@ -461,7 +461,7 @@ def _validate_input(value: DeliberationInput) -> None:
         type(value.budget.max_steps) is not int
         or type(value.budget.max_model_calls) is not int
         or type(value.budget.max_execution_seconds) not in (int, float)
-        or not math.isfinite(float(value.budget.max_execution_seconds))
+        or not _is_finite_number(value.budget.max_execution_seconds)
         or value.budget.max_steps < 0
         or value.budget.max_model_calls < 0
         or value.budget.max_execution_seconds < 0
@@ -479,6 +479,13 @@ def _validate_input(value: DeliberationInput) -> None:
 def _validate_clock_time(value: datetime) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("clock must return a timezone-aware datetime")
+
+
+def _is_finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _result(outcome: DeliberationOutcome) -> DeliberationResult:
