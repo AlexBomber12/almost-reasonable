@@ -317,6 +317,45 @@ def test_backup_interrupt_cleans_owned_files_and_descriptors(tmp_path, monkeypat
             os.fstat(owned_file.parent_descriptor)
 
 
+def test_restore_copy_interrupt_cleans_quarantine_and_descriptors(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    opened = []
+    real_open_owned_file = recovery_module._open_owned_file
+
+    def track_open(path, access, owned):
+        descriptor = real_open_owned_file(path, access, owned)
+        opened.append(owned[-1])
+        return descriptor
+
+    monkeypatch.setattr(recovery_module, "_open_owned_file", track_open)
+    monkeypatch.setattr(
+        recovery_module,
+        "_sqlite_copy",
+        lambda *_args: (_ for _ in ()).throw(SimulatedInterrupt()),
+    )
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    for owned_file in opened:
+        with pytest.raises(OSError):
+            os.fstat(owned_file.descriptor)
+        with pytest.raises(OSError):
+            os.fstat(owned_file.parent_descriptor)
+
+
 @pytest.mark.parametrize("race_target", ["destination", "metadata"])
 def test_backup_race_never_deletes_a_concurrently_created_file(
     tmp_path, monkeypatch, race_target

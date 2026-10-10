@@ -446,6 +446,9 @@ class QuarantinedRestore:
             except (OSError, sqlite3.Error, BackupError) as error:
                 _cleanup_created(owned)
                 raise BackupError("quarantine copy failed") from error
+            except BaseException:
+                _cleanup_created(owned)
+                raise
         finally:
             os.close(pinned_backup.descriptor)
         try:
