@@ -377,14 +377,56 @@ def test_deletion_insert_rolls_back_when_control_generation_is_missing(tmp_path)
     assert ledger.audit_records() == ()
 
 
+def test_applied_deletion_requires_a_verified_erasure_report(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    deletion = request()
+    generation_before = ledger.control_generation()
+
+    with pytest.raises(ValueError, match="disposition"):
+        ledger.insert_deletion(deletion, "pending", "awaiting_erasure")
+    with pytest.raises(ValueError, match="verified erasure"):
+        ledger.insert_deletion(deletion, DeletionDisposition.APPLIED, "erasure_applied")
+    with pytest.raises(KeyError):
+        ledger.deletion(deletion.operation_id)
+    assert ledger.control_generation() == generation_before
+    assert ledger.audit_records() == ()
+
+    ledger.insert_deletion(deletion, DeletionDisposition.PENDING, "awaiting_erasure")
+    audit_before = ledger.audit_records()
+    with pytest.raises(ValueError, match="disposition"):
+        ledger.update_deletion(deletion, "pending", "awaiting_erasure", NOW)
+    with pytest.raises(ValueError, match="verified erasure"):
+        ledger.update_deletion(
+            deletion,
+            DeletionDisposition.APPLIED,
+            "erasure_applied",
+            NOW,
+        )
+    incomplete_reports = (
+        None,
+        ErasureReport(False, True, REQUIRED, ()),
+        ErasureReport(True, False, REQUIRED, ()),
+        ErasureReport(True, True, REQUIRED, ("erasure_incomplete",)),
+        ErasureReport(True, True, frozenset(), ()),
+    )
+    for report in incomplete_reports:
+        with pytest.raises(ValueError, match="verified erasure"):
+            ledger.record_verified_deletion(deletion, report, NOW)
+
+    assert ledger.deletion(deletion.operation_id).disposition is (
+        DeletionDisposition.PENDING
+    )
+    assert ledger.audit_records() == audit_before
+
+
 def test_deletion_update_rejects_a_missing_operation(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     deletion = request(operation_id="delete-operation-missing")
     with pytest.raises(KeyError, match="delete-operation-missing"):
         ledger.update_deletion(
             deletion,
-            DeletionDisposition.APPLIED,
-            "erasure_applied",
+            DeletionDisposition.INCOMPLETE_BLOCKED,
+            "adapter_failure",
             deletion.requested_at,
         )
     assert ledger.audit_records() == ()
@@ -394,8 +436,8 @@ def test_deletion_update_rejects_a_missing_operation(tmp_path):
     with pytest.raises(ValueError, match="operation identity conflict"):
         ledger.update_deletion(
             request(content_reference="event-other"),
-            DeletionDisposition.APPLIED,
-            "erasure_applied",
+            DeletionDisposition.INCOMPLETE_BLOCKED,
+            "adapter_failure",
             existing.requested_at,
         )
     assert (

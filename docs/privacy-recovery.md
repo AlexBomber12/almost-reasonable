@@ -96,6 +96,9 @@ missing provenance, an incomplete invalidation set, or an unwritten tombstone is
 `incomplete_blocked`, never `applied`. A reconciled transition records its actual
 completion time, not the original request time. Once `applied`, an operation is
 monotonic: a concurrent late failure cannot regress its ledger disposition.
+The ledger rejects an initially `applied` record and its general update method
+cannot create that terminal state. Only the verified-erasure transition accepts
+a complete typed `ErasureReport` and records `applied:erasure_applied`.
 
 Every committed deletion or revocation advances a monotonic privacy-control
 generation. Restore reconciles one transactionally consistent snapshot, blocks

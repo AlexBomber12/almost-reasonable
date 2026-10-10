@@ -17,9 +17,11 @@ from .models import (
     ConsentGrant,
     ConsentPurpose,
     ConsentUseResult,
+    ContentCategory,
     DeletionDisposition,
     DeletionRecord,
     DeletionRequest,
+    ErasureReport,
     PrivacyReconciliationSnapshot,
     RestoreDisposition,
     require_token,
@@ -621,6 +623,11 @@ class PrivacyLedger:
     def insert_deletion(
         self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
     ) -> bool:
+        if not isinstance(disposition, DeletionDisposition):
+            raise ValueError("invalid deletion disposition")
+        if disposition is DeletionDisposition.APPLIED:
+            raise ValueError("applied deletion requires verified erasure")
+        require_token(reason, "deletion reason")
         values = (
             request.operation_id,
             request.principal_id,
@@ -665,6 +672,43 @@ class PrivacyLedger:
         reason: str,
         updated_at: datetime,
     ) -> bool:
+        if disposition is DeletionDisposition.APPLIED:
+            raise ValueError("applied deletion requires verified erasure")
+        return self._update_deletion(request, disposition, reason, updated_at)
+
+    def record_verified_deletion(
+        self,
+        request: DeletionRequest,
+        report: ErasureReport,
+        updated_at: datetime,
+    ) -> bool:
+        required = frozenset(ContentCategory.required_erasure_categories())
+        if (
+            not isinstance(report, ErasureReport)
+            or not report.payload_removed
+            or not report.tombstone_written
+            or report.blockers
+            or not required <= report.invalidated_categories
+        ):
+            raise ValueError("applied deletion requires verified erasure")
+        return self._update_deletion(
+            request,
+            DeletionDisposition.APPLIED,
+            "erasure_applied",
+            updated_at,
+        )
+
+    def _update_deletion(
+        self,
+        request: DeletionRequest,
+        disposition: DeletionDisposition,
+        reason: str,
+        updated_at: datetime,
+    ) -> bool:
+        if not isinstance(disposition, DeletionDisposition):
+            raise ValueError("invalid deletion disposition")
+        require_token(reason, "deletion reason")
+        require_utc(updated_at, "deletion transition timestamp")
         identity = (
             request.operation_id,
             request.principal_id,

@@ -116,7 +116,12 @@ class DeletionCoordinator:
             return self._finish(
                 request, DeletionDisposition.INCOMPLETE_BLOCKED, "erasure_incomplete"
             )
-        return self._finish(request, DeletionDisposition.APPLIED, "erasure_applied")
+        return self._finish(
+            request,
+            DeletionDisposition.APPLIED,
+            "erasure_applied",
+            report=report,
+        )
 
     def _terminal(
         self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
@@ -153,13 +158,23 @@ class DeletionCoordinator:
         )
 
     def _finish(
-        self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
+        self,
+        request: DeletionRequest,
+        disposition: DeletionDisposition,
+        reason: str,
+        *,
+        report: ErasureReport | None = None,
     ) -> DeletionOutcome:
         completed_at = self.clock()
         require_utc(completed_at, "deletion transition timestamp")
-        updated = self.ledger.update_deletion(
-            request, disposition, reason, completed_at
-        )
+        if disposition is DeletionDisposition.APPLIED:
+            updated = self.ledger.record_verified_deletion(
+                request, report, completed_at
+            )
+        else:
+            updated = self.ledger.update_deletion(
+                request, disposition, reason, completed_at
+            )
         if not updated:
             record = self.ledger.deletion(request.operation_id)
             return DeletionOutcome(
