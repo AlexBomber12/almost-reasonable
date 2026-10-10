@@ -117,13 +117,16 @@ network, and no reference to the production `compose.yaml` services.
 ## H. Start only the offline worker
 
 ```console
-docker compose -f ops/compose.openai-worker.stage0.yaml up -d --no-deps openai-worker
+docker compose -f ops/compose.openai-worker.stage0.yaml up -d --no-deps --wait --wait-timeout 30 openai-worker
 docker compose -f ops/compose.openai-worker.stage0.yaml ps
 ```
 
 This command does not start Cloudflare, OAuth, or the probe. The worker executable
 hard-wires `default_openai_provider_config()` and `FakeOpenAITransport([])`; no CLI
-flag can select Stage 1 or a credential transport.
+flag can select Stage 1 or a credential transport. Compose waits at most 30 seconds
+for a shell-free health check to observe the worker-owned `0660` AF_UNIX socket.
+If the service does not become healthy, stop here and inspect its sanitized logs;
+do not launch the one-shot probe against an unready worker.
 
 ## I. Run only the synthetic planner probe
 

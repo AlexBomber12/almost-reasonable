@@ -5,6 +5,7 @@ import re
 ROOT = Path(__file__).parents[1]
 COMPOSE = ROOT / "ops" / "compose.openai-worker.stage0.yaml"
 DOCKERFILE = ROOT / "ops" / "Dockerfile.openai-worker-stage0"
+RUNBOOK = ROOT / "docs" / "openai-worker-stage0-deployment.md"
 
 
 def deployment_text(path):
@@ -76,6 +77,21 @@ def test_stage0_bind_mounts_require_precreated_host_directories():
     assert "STAGE0_DATABASE_DIR" in compose
     assert "secrets/" not in compose
     assert "compose.yaml" not in compose
+
+
+def test_worker_readiness_is_bounded_before_the_one_shot_probe():
+    compose = deployment_text(COMPOSE)
+    worker = service_block(compose, "openai-worker", "planner-probe")
+    runbook = deployment_text(RUNBOOK)
+
+    assert "healthcheck:" in worker
+    assert 'test: ["CMD", "python", "-B", "-c"' in worker
+    assert "timeout: 2s" in worker
+    assert "retries: 30" in worker
+    assert "up -d --no-deps --wait --wait-timeout 30 openai-worker" in runbook
+    assert runbook.index("--wait-timeout 30") < runbook.index(
+        "--name almost-reasonable-stage0-probe"
+    )
 
 
 def test_dockerignore_is_an_explicit_allowlist_and_excludes_sensitive_state():
