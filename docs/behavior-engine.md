@@ -214,12 +214,14 @@ and confirmation timestamp in that validated history. The root mission must
 equal the application-supplied trusted initial mission. Global proposal/version
 identifiers are unique, the confirmed chain must terminate at that root without
 branches, and every proposal timestamp is no earlier than its parent's
-activation.
+activation and no later than the confirmation that replaces that parent. Any
+recorded resolution must also occur before or at that replacement boundary.
 Every pending proposal must target the active mission; stale historical siblings
 may remain only as resolved or `superseded` records.
-Every state-machine load additionally rechecks all confirmed source/provenance
-records through the application-owned `EvidenceAuthority`, including after a
-restart; structurally valid JSON cannot substitute for protected authorization.
+Every state-machine load additionally rechecks all confirmed and rejected
+source/provenance records through the application-owned `EvidenceAuthority`,
+including after a restart; structurally valid JSON cannot substitute for
+protected authorization.
 
 ## Behavioral evaluation artifacts
 

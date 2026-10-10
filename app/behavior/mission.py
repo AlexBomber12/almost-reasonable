@@ -317,10 +317,10 @@ class MissionStateMachine:
     def _load_authorized_document(self) -> MissionDocument:
         document = self._repository.load()
         for record in document.proposals:
-            if record.status is not MissionStatus.CONFIRMED:
-                continue
             confirmation = record.confirmation
-            if confirmation is None or (
+            if confirmation is None:
+                continue
+            if (
                 self._evidence_authority(
                     record.proposal.initiating_source_id,
                     confirmation.evidence_sources,
@@ -730,15 +730,32 @@ def _validate_active_mission(
             if record.confirmation is not None
         }
     )
+    parent_replaced_at = {
+        record.proposal.current_mission_version: record.confirmation.decided_at
+        for record in confirmed
+        if record.confirmation is not None
+    }
     invalid_parent = any(
         record.proposal.current_mission_version not in parent_activation
         or record.proposal.decided_at
         < parent_activation[record.proposal.current_mission_version]
+        or (
+            record.proposal.current_mission_version in parent_replaced_at
+            and (
+                record.proposal.decided_at
+                > parent_replaced_at[record.proposal.current_mission_version]
+                or record.confirmation is not None
+                and record.confirmation.decided_at
+                > parent_replaced_at[record.proposal.current_mission_version]
+            )
+        )
         for record in records
     )
     if current.parent_version is None:
         if invalid_parent:
-            raise ValueError("mission proposal predates or lacks its parent")
+            raise ValueError(
+                "mission proposal or resolution predates, outlives, or lacks its parent"
+            )
         return
 
     current_record = confirmed_by_version.get(current.version)
@@ -762,4 +779,6 @@ def _validate_active_mission(
     if chain_versions != set(confirmed_by_version):
         raise ValueError("confirmed mission history contains a branch")
     if invalid_parent:
-        raise ValueError("mission proposal predates or lacks its parent")
+        raise ValueError(
+            "mission proposal or resolution predates, outlives, or lacks its parent"
+        )

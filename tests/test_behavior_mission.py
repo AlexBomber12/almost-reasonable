@@ -882,6 +882,38 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     with pytest.raises(ValueError, match="superseded"):
         repository.load()
 
+    late_superseded = json.loads(json.dumps(resolved))
+    late_sibling = json.loads(json.dumps(pending["proposals"][0]))
+    late_sibling["proposal"]["proposal_id"] = "mp-late"
+    late_sibling["proposal"]["version_identity"] = "proposal-late"
+    late_sibling["proposal"]["initiating_event_id"] = "event-late"
+    late_sibling["proposal"]["correlation_id"] = "corr-late"
+    late_sibling["proposal"]["decided_at"] = (NOW + timedelta(minutes=2)).isoformat()
+    late_sibling["status"] = MissionStatus.SUPERSEDED.value
+    late_superseded["proposals"].append(late_sibling)
+    path.write_text(json.dumps(late_superseded), encoding="utf-8")
+    with pytest.raises(ValueError, match="outlives"):
+        repository.load()
+
+    late_rejection = json.loads(json.dumps(resolved))
+    rejected_sibling = json.loads(json.dumps(resolved["proposals"][0]))
+    rejected_sibling["proposal"]["proposal_id"] = "mp-rejected-late"
+    rejected_sibling["proposal"]["version_identity"] = "proposal-rejected-late"
+    rejected_sibling["proposal"]["initiating_event_id"] = "event-rejected-late"
+    rejected_sibling["proposal"]["correlation_id"] = "corr-rejected-late"
+    rejected_sibling["confirmation"]["proposal_id"] = "mp-rejected-late"
+    rejected_sibling["confirmation"]["event_id"] = "confirm-rejected-late"
+    rejected_sibling["confirmation"]["correlation_id"] = "confirm-corr-rejected-late"
+    rejected_sibling["confirmation"]["decided_at"] = (
+        NOW + timedelta(minutes=2)
+    ).isoformat()
+    rejected_sibling["confirmation"]["outcome"] = ConfirmationOutcome.REJECTED.value
+    rejected_sibling["status"] = MissionStatus.REJECTED.value
+    late_rejection["proposals"].append(rejected_sibling)
+    path.write_text(json.dumps(late_rejection), encoding="utf-8")
+    with pytest.raises(ValueError, match="outlives"):
+        repository.load()
+
     cyclic = json.loads(json.dumps(resolved))
     first = cyclic["proposals"][0]
     first["proposal"]["current_mission_version"] = "proposal-cycle-b"
@@ -906,8 +938,13 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
         repository.load()
 
 
-def test_state_machine_reauthorizes_confirmed_evidence_after_restart(tmp_path) -> None:
-    path = tmp_path / "reauthorization.json"
+@pytest.mark.parametrize(
+    "outcome", (ConfirmationOutcome.CONFIRMED, ConfirmationOutcome.REJECTED)
+)
+def test_state_machine_reauthorizes_resolved_evidence_after_restart(
+    tmp_path, outcome
+) -> None:
+    path = tmp_path / f"reauthorization-{outcome.value}.json"
     initial = Mission("mission-v1", "Миссия", NOW, None)
     repository = JsonMissionRepository(path, initial)
     machine = mission_machine(repository)
@@ -918,7 +955,7 @@ def test_state_machine_reauthorizes_confirmed_evidence_after_restart(tmp_path) -
             "event-2",
             "corr-2",
             NOW + timedelta(minutes=1),
-            ConfirmationOutcome.CONFIRMED,
+            outcome,
             ("Независимая причина",),
             ("Учтён контраргумент",),
             ("evidence-2",),
