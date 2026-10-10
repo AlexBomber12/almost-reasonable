@@ -340,10 +340,16 @@ def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
     [
         {"max_pages": 0},
         {"max_pages": 6},
+        {"max_pages": 1.5},
+        {"max_pages": True},
         {"max_events": 0},
         {"max_events": 101},
+        {"max_events": 1.5},
+        {"max_events": True},
         {"timeout_seconds": 0},
         {"timeout_seconds": 31},
+        {"timeout_seconds": True},
+        {"timeout_seconds": "1"},
     ],
 )
 def test_poll_bounds_cannot_be_expanded_or_disabled(tmp_path, kwargs):

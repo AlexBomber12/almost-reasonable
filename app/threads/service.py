@@ -492,11 +492,13 @@ class ThreadsService:
     ) -> PollResult:
         self._check_poll_policy(stream)
         require_aware_time("poll time", now)
-        if not 1 <= max_pages <= MAX_POLL_PAGES:
+        if type(max_pages) is not int or not 1 <= max_pages <= MAX_POLL_PAGES:
             raise ValueError("invalid poll page limit")
-        if not 1 <= max_events <= MAX_POLL_EVENTS:
+        if type(max_events) is not int or not 1 <= max_events <= MAX_POLL_EVENTS:
             raise ValueError("invalid poll event limit")
-        if not 0 < timeout_seconds <= MAX_POLL_SECONDS:
+        if type(timeout_seconds) not in {int, float} or not (
+            0 < timeout_seconds <= MAX_POLL_SECONDS
+        ):
             raise ValueError("invalid poll timeout")
         started = self.clock()
         cursor = self.store.cursor(self.policy.account_ref, stream)
