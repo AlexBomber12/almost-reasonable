@@ -457,6 +457,13 @@ class ThreadsService:
             purpose=ApprovalPurpose.ABANDON_UNKNOWN,
             require_duplicate_ack=False,
         )
+        validate_approval(
+            current_approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=self.utc_now(),
+            purpose=ApprovalPurpose.ABANDON_UNKNOWN,
+        )
         return self.store.transition(
             operation_id,
             OutboxState.UNKNOWN_ABANDONED,
@@ -479,6 +486,13 @@ class ThreadsService:
             require_duplicate_ack=False,
         )
         with self.store.reconciliation_worker_guard(item.operation_id):
+            validate_approval(
+                current_approval,
+                account_ref=item.account_ref,
+                operation_id=item.operation_id,
+                now=self.utc_now(),
+                purpose=ApprovalPurpose.RECOVER_RECONCILIATION,
+            )
             self.store.recover_reconciliation_claim(
                 operation_id=operation_id,
                 account_ref=item.account_ref,

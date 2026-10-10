@@ -1127,6 +1127,58 @@ def test_reconciliation_recovery_cannot_overlap_live_worker(tmp_path, monkeypatc
     service.recover_reconciliation_claim("operation-1", recovery_approval, now=NOW)
 
 
+@pytest.mark.parametrize("action", ["abandon", "recover"])
+def test_administrative_approval_expiry_is_refreshed_after_lookup(
+    tmp_path, monkeypatch, action
+):
+    current_time = [NOW]
+    service = make_service(tmp_path)
+    service.utc_now = lambda: current_time[0]
+    _, publication_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", publication_approval, now=NOW)
+    purpose = (
+        ApprovalPurpose.ABANDON_UNKNOWN
+        if action == "abandon"
+        else ApprovalPurpose.RECOVER_RECONCILIATION
+    )
+    administrative_approval = trust_approval(
+        service,
+        approve(
+            reference=f"approval-{action}-operation-1",
+            expires_at=NOW + timedelta(minutes=1),
+            purpose=purpose,
+        ),
+    )
+    if action == "recover":
+        service.store.claim_reconciliation(
+            operation_id="operation-1", account_ref="account-1", now=NOW
+        )
+    current_approval = service.authorization_provider.current_approval
+
+    def authorize_then_expire(**kwargs):
+        result = current_approval(**kwargs)
+        current_time[0] = NOW + timedelta(minutes=2)
+        return result
+
+    monkeypatch.setattr(
+        service.authorization_provider, "current_approval", authorize_then_expire
+    )
+    with pytest.raises(ValueError, match="expired"):
+        if action == "abandon":
+            service.abandon_unknown("operation-1", administrative_approval, now=NOW)
+        else:
+            service.recover_reconciliation_claim(
+                "operation-1", administrative_approval, now=NOW
+            )
+    assert service.store.get("operation-1").state is OutboxState.UNKNOWN
+    if action == "recover":
+        with pytest.raises(ThreadsStoreError, match="already reserved"):
+            service.store.claim_reconciliation(
+                operation_id="operation-1", account_ref="account-1", now=NOW
+            )
+
+
 def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)

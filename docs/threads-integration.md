@@ -211,6 +211,9 @@ through the provider call, and recovery must acquire that lock before clearing
 the durable claim, so recovery cannot overlap the original worker. Every
 recovery occurrence receives its own durable audit identity, including when the
 same still-current approval authorizes more than one recovery.
+Both reconciliation-claim recovery and permanent abandonment validate the
+provider-returned purpose-bound approval against a freshly sampled clock
+immediately before their durable administrative change.
 
 ## Inbound replies, mentions, and conversation outcomes
 
