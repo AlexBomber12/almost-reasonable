@@ -165,6 +165,7 @@ class PrivacyLedger:
         try:
             if not regular_file_is_trusted(os.fstat(descriptor)):
                 raise ValueError("privacy ledger file is unsafe")
+            self._require_trusted_sidecars()
             with closing(self._connect_descriptor(descriptor)) as connection:
                 self._require_file_identity(connection, descriptor)
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -305,6 +306,24 @@ class PrivacyLedger:
                 os.fchmod(sidecar_descriptor, 0o600)
             finally:
                 os.close(sidecar_descriptor)
+
+    def _require_trusted_sidecars(self) -> None:
+        for suffix in ("-wal", "-shm"):
+            try:
+                descriptor = os.open(
+                    f"{self.path.name}{suffix}",
+                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                    dir_fd=self._parent_descriptor,
+                )
+            except FileNotFoundError:
+                continue
+            except OSError as error:
+                raise RuntimeError("privacy ledger sidecar is unsafe") from error
+            try:
+                if not regular_file_is_trusted(os.fstat(descriptor)):
+                    raise RuntimeError("privacy ledger sidecar is unsafe")
+            finally:
+                os.close(descriptor)
 
     def insert_consent(self, grant: ConsentGrant) -> bool:
         values = (

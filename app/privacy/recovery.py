@@ -119,7 +119,7 @@ def _schema_version(path_or_descriptor: Path | int, *, immutable: bool = False) 
     return row[0]
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class _OwnedFile:
     path: Path
     descriptor: int
@@ -131,6 +131,7 @@ class _PinnedDatabase:
     path: Path
     descriptor: int
     immutable: bool = False
+    sidecars: tuple[tuple[Path, int], ...] = ()
 
 
 def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
@@ -198,6 +199,7 @@ def _publish_owned_file(source: Path, destination: Path, output: _OwnedFile) -> 
     if not _path_matches_descriptor(destination, output.descriptor):
         raise BackupError("quarantine publication identity changed")
     os.unlink(source.name, dir_fd=output.parent_descriptor)
+    output.path = destination
     os.fsync(output.parent_descriptor)
 
 
@@ -211,32 +213,73 @@ def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
 
 
 def _pin_database(
-    path: Path, label: str, *, immutable: bool = False
+    path: Path,
+    label: str,
+    *,
+    immutable: bool = False,
+    pin_sidecars: bool = False,
 ) -> _PinnedDatabase:
     try:
         parent_descriptor = _open_directory_chain(path.parent)
     except OSError as error:
         raise BackupError(f"{label} identity changed") from error
+    descriptor: int | None = None
+    sidecars: list[tuple[Path, int]] = []
+    opened_descriptors: list[int] = []
     try:
         descriptor = os.open(
             path.name,
             os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=parent_descriptor,
         )
+        opened_descriptors.append(descriptor)
+        if pin_sidecars:
+            for suffix in ("-wal", "-shm"):
+                sidecar_path = Path(f"{path}{suffix}")
+                try:
+                    sidecar_descriptor = os.open(
+                        sidecar_path.name,
+                        os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                        dir_fd=parent_descriptor,
+                    )
+                except FileNotFoundError:
+                    continue
+                sidecars.append((sidecar_path, sidecar_descriptor))
+                opened_descriptors.append(sidecar_descriptor)
+        trusted = _regular_file_is_trusted(
+            os.fstat(descriptor)
+        ) and _path_matches_descriptor(path, descriptor)
+        trusted = trusted and all(
+            _regular_file_is_trusted(os.fstat(sidecar_descriptor))
+            and _path_matches_descriptor(sidecar_path, sidecar_descriptor)
+            for sidecar_path, sidecar_descriptor in sidecars
+        )
+        if not trusted:
+            raise BackupError(f"{label} identity changed")
     except OSError as error:
-        os.close(parent_descriptor)
+        for opened_descriptor in opened_descriptors:
+            os.close(opened_descriptor)
         raise BackupError(f"{label} identity changed") from error
-    os.close(parent_descriptor)
-    if not _regular_file_is_trusted(
-        os.fstat(descriptor)
-    ) or not _path_matches_descriptor(path, descriptor):
+    except BaseException:
+        for opened_descriptor in opened_descriptors:
+            os.close(opened_descriptor)
+        raise
+    finally:
+        os.close(parent_descriptor)
+    return _PinnedDatabase(path, descriptor, immutable, tuple(sidecars))
+
+
+def _close_pinned_database(database: _PinnedDatabase) -> None:
+    os.close(database.descriptor)
+    for _sidecar_path, descriptor in database.sidecars:
         os.close(descriptor)
-        raise BackupError(f"{label} identity changed")
-    return _PinnedDatabase(path, descriptor, immutable)
 
 
 def _require_database_identity(source: _PinnedDatabase) -> None:
-    if not _path_matches_descriptor(source.path, source.descriptor):
+    if not _path_matches_descriptor(source.path, source.descriptor) or not all(
+        _path_matches_descriptor(path, descriptor)
+        for path, descriptor in source.sidecars
+    ):
         raise BackupError("backup source identity changed")
 
 
@@ -393,7 +436,7 @@ def create_sqlite_backup(
     _validate_new_file(metadata_path, "metadata destination")
     for sidecar_path in sidecar_paths:
         _validate_new_file(sidecar_path, "destination sidecar")
-    pinned_source = _pin_database(source, "backup source")
+    pinned_source = _pin_database(source, "backup source", pin_sidecars=True)
     try:
         if _schema_version(source) != expected_schema_version:
             raise BackupError("unsupported source schema")
@@ -456,7 +499,7 @@ def create_sqlite_backup(
             raise
         _close_owned(owned)
     finally:
-        os.close(pinned_source.descriptor)
+        _close_pinned_database(pinned_source)
     return BackupMetadata(metadata_path, expected_schema_version, created_at)
 
 
@@ -489,7 +532,7 @@ def _load_metadata(backup: Path, expected_schema_version: int) -> BackupMetadata
     except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as error:
         raise BackupError("invalid backup metadata") from error
     finally:
-        os.close(pinned_metadata.descriptor)
+        _close_pinned_database(pinned_metadata)
     if not valid:
         raise BackupError("invalid backup metadata")
     return BackupMetadata(metadata_path, expected_schema_version, created_at)
@@ -543,7 +586,7 @@ class QuarantinedRestore:
                 _cleanup_created(owned)
                 raise
         finally:
-            os.close(pinned_backup.descriptor)
+            _close_pinned_database(pinned_backup)
         try:
             try:
                 result = self._finish_restore(
@@ -560,7 +603,7 @@ class QuarantinedRestore:
                     _publish_owned_file(staging, quarantine, owned[0])
                 return result
             except BaseException:
-                if _path_matches_descriptor(staging, quarantine_descriptor):
+                if _path_matches_descriptor(owned[0].path, quarantine_descriptor):
                     _cleanup_created(owned)
                     owned.clear()
                 raise

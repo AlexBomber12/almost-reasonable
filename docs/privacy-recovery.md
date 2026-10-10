@@ -173,7 +173,9 @@ The destination WAL and shared-memory names are exclusively reserved during the
 copy, and the completed database is normalized to rollback-journal mode before
 those owned reservations are removed. Descriptor-backed validation then treats
 the self-contained snapshot as immutable, so it does not create or consume
-undeclared sidecars. Restore uses the same immutable view of the backup.
+undeclared sidecars. Existing source WAL and shared-memory files are trust-checked
+and pinned before the first source connection, then identity-checked throughout
+the copy. Restore uses the same immutable view of the backup.
 
 Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic links anywhere in a parent chain, unsafe parents,
@@ -215,15 +217,18 @@ successfully is insufficient. The workflow:
    and SQLite integrity verification against an immutable view of the main file;
 7. confirms that every applicable ledger deletion was applied to this quarantine
    without changing the live database disposition;
-8. durably records a payload-free restore outcome; and
-9. only then writes an owner-only `.ready.json` eligibility marker.
+8. writes and validates an owner-only `.ready.json` eligibility marker; and
+9. rechecks the reconciled generation under the privacy-ledger write lock while
+   durably recording the payload-free eligible outcome.
 
 Copying, adapter reconciliation, finalization, and immutable verification occur
 under an unguessable staging name in the trusted destination directory; the
 requested quarantine pathname remains absent during that interval. Only the
 sealed, verified inode is linked to the requested path with no-replace semantics,
 so a concurrent file at that path fails publication rather than contributing
-unreconciled rows to the eligible snapshot.
+unreconciled rows to the eligible snapshot. If readiness creation or validation
+then fails, that published inode is still tracked as owned and is identity-safely
+removed; a concurrent replacement is preserved.
 
 The owned quarantine descriptor remains open through integrity checks,
 reconciliation, schema revalidation, and readiness publication. Restore adapters

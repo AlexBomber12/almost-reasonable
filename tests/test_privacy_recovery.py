@@ -250,6 +250,50 @@ def test_backup_pin_rejects_a_source_owned_by_another_account(tmp_path, monkeypa
     assert not destination.exists()
 
 
+def test_backup_rejects_an_unsafe_source_wal_before_copying(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    writer = make_source(source, "row-present-only-through-wal")
+    wal = Path(f"{source}-wal")
+    wal.chmod(0o666)
+    destination = tmp_path / "backup.sqlite3"
+
+    try:
+        with pytest.raises(BackupError, match="source identity"):
+            create_sqlite_backup(source, destination, 3, NOW)
+    finally:
+        writer.close()
+
+    assert not destination.exists()
+
+
+def test_backup_pin_closes_source_and_sidecars_when_validation_errors(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    writer = make_source(source)
+    source_identity = source.stat()
+    destination = tmp_path / "backup.sqlite3"
+    real_fstat = os.fstat
+
+    def fail_source_fstat(descriptor):
+        identity = real_fstat(descriptor)
+        if (identity.st_dev, identity.st_ino) == (
+            source_identity.st_dev,
+            source_identity.st_ino,
+        ):
+            raise OSError("source identity unavailable")
+        return identity
+
+    monkeypatch.setattr(recovery_module.os, "fstat", fail_source_fstat)
+    try:
+        with pytest.raises(BackupError, match="source identity"):
+            create_sqlite_backup(source, destination, 3, NOW)
+    finally:
+        writer.close()
+
+    assert not destination.exists()
+
+
 def test_backup_rejects_foreign_key_violations(tmp_path):
     source = tmp_path / "source.sqlite3"
     with make_source(source) as connection:
@@ -774,6 +818,7 @@ def test_zero_length_writes_fail_closed_and_remove_partial_outputs(
     monkeypatch.setattr(recovery_module.os, "write", lambda _descriptor, _data: 0)
     with pytest.raises(BackupError, match="readiness marker write failed"):
         QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+    assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
@@ -797,6 +842,28 @@ def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkey
     with pytest.raises(BackupError, match="readiness marker write failed"):
         QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
     assert marker.read_text() == "concurrent-marker"
+
+
+def test_readiness_failure_preserves_a_replaced_quarantine(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+
+    def replace_quarantine_and_fail(_descriptor, _payload):
+        quarantine.unlink()
+        quarantine.write_text("concurrent-quarantine")
+        raise OSError("marker write interrupted")
+
+    monkeypatch.setattr(recovery_module, "_write_all", replace_quarantine_and_fail)
+
+    with pytest.raises(BackupError, match="readiness marker write failed"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert quarantine.read_text() == "concurrent-quarantine"
+    assert not Path(f"{quarantine}.ready.json").exists()
 
 
 @pytest.mark.parametrize("mutation", ["seal", "sidecar", "generation"])

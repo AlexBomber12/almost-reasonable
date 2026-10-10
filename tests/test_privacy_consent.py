@@ -1,6 +1,7 @@
 from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
 import os
+from pathlib import Path
 import sqlite3
 import stat
 import threading
@@ -1167,6 +1168,42 @@ def test_privacy_ledger_rejects_non_regular_sidecars(tmp_path):
             ledger._configure(WalConnection())
     finally:
         os.close(ledger._parent_descriptor)
+
+
+@pytest.mark.parametrize("sidecar_kind", ["writable", "symlink"])
+def test_privacy_ledger_rejects_unsafe_sidecars_before_connecting(
+    tmp_path, monkeypatch, sidecar_kind
+):
+    path = tmp_path / "privacy.sqlite3"
+    PrivacyLedger(path)
+    sidecar = Path(f"{path}-wal")
+    if sidecar_kind == "writable":
+        sidecar.write_bytes(b"untrusted-wal")
+        sidecar.chmod(0o666)
+    else:
+        target = tmp_path / "foreign-wal"
+        target.write_bytes(b"untrusted-wal")
+        sidecar.symlink_to(target)
+    connection_attempted = False
+
+    def reject_connection(_descriptor):
+        nonlocal connection_attempted
+        connection_attempted = True
+        raise AssertionError("connected before validating sidecars")
+
+    monkeypatch.setattr(
+        PrivacyLedger, "_connect_descriptor", staticmethod(reject_connection)
+    )
+
+    with pytest.raises(RuntimeError, match="sidecar is unsafe"):
+        PrivacyLedger(path)
+
+    assert connection_attempted is False
+    assert sidecar.read_bytes() == b"untrusted-wal"
+    if sidecar_kind == "writable":
+        assert stat.S_IMODE(sidecar.stat().st_mode) == 0o666
+    else:
+        assert sidecar.is_symlink()
 
 
 def run_concurrently(operation):
