@@ -209,6 +209,13 @@ successfully is insufficient. The workflow:
 8. durably records a payload-free restore outcome; and
 9. only then writes an owner-only `.ready.json` eligibility marker.
 
+Copying, adapter reconciliation, finalization, and immutable verification occur
+under an unguessable staging name in the trusted destination directory; the
+requested quarantine pathname remains absent during that interval. Only the
+sealed, verified inode is linked to the requested path with no-replace semantics,
+so a concurrent file at that path fails publication rather than contributing
+unreconciled rows to the eligible snapshot.
+
 The owned quarantine descriptor remains open through integrity checks,
 reconciliation, schema revalidation, and readiness publication. Restore adapters
 receive a descriptor-backed path valid for that callback lifetime, rather than

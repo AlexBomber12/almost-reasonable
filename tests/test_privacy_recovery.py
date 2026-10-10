@@ -429,6 +429,47 @@ def test_backup_cleanup_only_unlinks_the_inode_it_created(tmp_path, mutation):
         assert not destination.exists()
 
 
+def test_quarantine_publication_rejects_a_replaced_staging_path(tmp_path):
+    staging = tmp_path / "staging.sqlite3"
+    destination = tmp_path / "quarantine.sqlite3"
+    held = tmp_path / "held.sqlite3"
+    owned = []
+    recovery_module._open_owned_file(staging, os.O_RDWR, owned)
+    staging.rename(held)
+    staging.write_text("concurrent-staging")
+
+    with pytest.raises(BackupError, match="staging identity"):
+        recovery_module._publish_owned_file(staging, destination, owned[0])
+
+    assert staging.read_text() == "concurrent-staging"
+    assert not destination.exists()
+    recovery_module._close_owned(owned)
+
+
+def test_quarantine_publication_rejects_a_substituted_destination(
+    tmp_path, monkeypatch
+):
+    staging = tmp_path / "staging.sqlite3"
+    destination = tmp_path / "quarantine.sqlite3"
+    owned = []
+    recovery_module._open_owned_file(staging, os.O_RDWR, owned)
+    real_matches = recovery_module._path_matches_descriptor
+
+    def reject_destination(path, descriptor):
+        if path == destination:
+            return False
+        return real_matches(path, descriptor)
+
+    monkeypatch.setattr(recovery_module, "_path_matches_descriptor", reject_destination)
+    with pytest.raises(BackupError, match="publication identity"):
+        recovery_module._publish_owned_file(staging, destination, owned[0])
+
+    assert staging.exists()
+    assert destination.exists()
+    recovery_module._cleanup_created(owned)
+    destination.unlink()
+
+
 def test_backup_copy_cannot_follow_a_replaced_destination_path(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source, "intended-source").close()
@@ -1050,8 +1091,9 @@ def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
         RestoreDisposition.BLOCKED,
         "quarantine_finalization_failed",
     )
-    assert Path(f"{quarantine}-wal").exists()
-    assert Path(f"{quarantine}-shm").exists()
+    assert quarantine.exists()
+    assert list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
+    assert list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
     assert not Path(f"{quarantine}.ready.json").exists()
     adapters[0].connection.close()
 
@@ -1071,7 +1113,10 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
         calls += 1
         real_use_rollback_journal(connection)
         if calls == 2:
-            Path(f"{quarantine}-wal").write_text("concurrent-sidecar")
+            database_path = Path(
+                connection.execute("PRAGMA database_list").fetchone()[2]
+            ).resolve()
+            Path(f"{database_path}-wal").write_text("concurrent-sidecar")
 
     monkeypatch.setattr(recovery_module, "_use_rollback_journal", create_sidecar)
     result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
@@ -1082,7 +1127,9 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
         RestoreDisposition.BLOCKED,
         "quarantine_finalization_failed",
     )
-    assert Path(f"{quarantine}-wal").read_text() == "concurrent-sidecar"
+    sidecars = list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
+    assert len(sidecars) == 1
+    assert sidecars[0].read_text() == "concurrent-sidecar"
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
@@ -1099,6 +1146,36 @@ def test_snapshot_finalization_rejects_an_unpinnable_parent(tmp_path, monkeypatc
         assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is False
     finally:
         os.close(descriptor)
+
+
+def test_restore_never_blesses_a_public_path_created_before_publication(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    real_finalize = recovery_module._finalize_sqlite_snapshot
+
+    def create_public_path_before_publish(staging, descriptor):
+        assert not quarantine.exists()
+        finalized = real_finalize(staging, descriptor)
+        quarantine.write_text("concurrent-public-file")
+        return finalized
+
+    monkeypatch.setattr(
+        recovery_module,
+        "_finalize_sqlite_snapshot",
+        create_public_path_before_publish,
+    )
+    with pytest.raises(BackupError, match="publication"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert quarantine.read_text() == "concurrent-public-file"
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
 
 
 def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_path):
@@ -1475,8 +1552,9 @@ def test_restore_rejects_a_replaced_quarantine_before_reconciliation(
 
     def replace_after_copy(pinned_source, destination_descriptor):
         real_copy(pinned_source, destination_descriptor)
-        quarantine.rename(held_quarantine)
-        substitute.rename(quarantine)
+        staging = Path(os.readlink(f"/proc/self/fd/{destination_descriptor}"))
+        staging.rename(held_quarantine)
+        substitute.rename(staging)
 
     monkeypatch.setattr(recovery_module, "_sqlite_copy", replace_after_copy)
     result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
@@ -1487,8 +1565,10 @@ def test_restore_rejects_a_replaced_quarantine_before_reconciliation(
         RestoreDisposition.BLOCKED,
         "quarantine_identity_changed",
     )
+    assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
-    with sqlite3.connect(quarantine) as connection:
+    staging = next(tmp_path.glob(".privacy-restore-*.sqlite3"))
+    with sqlite3.connect(staging) as connection:
         assert connection.execute(
             "SELECT content FROM synthetic_private WHERE event_id='event-001'"
         ).fetchone() == ("substitute-quarantine",)
@@ -1507,8 +1587,9 @@ def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
 
     class SwappingAdapter(RestoreAdapter):
         def rebuild_dependencies(self):
-            quarantine.rename(held_quarantine)
-            substitute.rename(quarantine)
+            staging = Path(os.readlink(self.path))
+            staging.rename(held_quarantine)
+            substitute.rename(staging)
             try:
                 with sqlite3.connect(self.path) as connection:
                     content = connection.execute(
@@ -1516,8 +1597,8 @@ def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
                         "WHERE event_id='event-001'"
                     ).fetchone()
             finally:
-                quarantine.rename(substitute)
-                held_quarantine.rename(quarantine)
+                staging.rename(substitute)
+                held_quarantine.rename(staging)
             return content == ("intended-backup",)
 
     result = QuarantinedRestore(ledger, 3, SwappingAdapter).restore(
