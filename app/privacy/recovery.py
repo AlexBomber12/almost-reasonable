@@ -290,11 +290,42 @@ def _integrity_ok(path_or_descriptor: Path | int, *, immutable: bool = False) ->
         )
 
 
-def _safe_integrity_ok(path_or_descriptor: Path | int) -> bool:
+def _safe_integrity_ok(
+    path_or_descriptor: Path | int, *, immutable: bool = False
+) -> bool:
     try:
-        return _integrity_ok(path_or_descriptor)
+        return _integrity_ok(path_or_descriptor, immutable=immutable)
     except sqlite3.Error:
         return False
+
+
+def _finalize_sqlite_snapshot(path: Path, descriptor: int) -> bool:
+    try:
+        parent_descriptor = _open_directory_chain(path.parent)
+    except OSError:
+        return False
+    try:
+        target = f"file:/proc/self/fd/{descriptor}?mode=rw"
+        with closing(sqlite3.connect(target, uri=True, timeout=0.1)) as connection:
+            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+            _use_rollback_journal(connection)
+        os.fsync(descriptor)
+        for suffix in ("-wal", "-shm"):
+            try:
+                os.stat(
+                    f"{path.name}{suffix}",
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                continue
+            return False
+        os.fsync(parent_descriptor)
+    except (OSError, sqlite3.Error):
+        return False
+    finally:
+        os.close(parent_descriptor)
+    return True
 
 
 def create_sqlite_backup(
@@ -505,9 +536,14 @@ class QuarantinedRestore:
             if reason is not None:
                 return self._blocked_restore(restore_id, restored_at, reason)
             self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            if not _finalize_sqlite_snapshot(quarantine, quarantine_descriptor):
+                return self._blocked_restore(
+                    restore_id, restored_at, "quarantine_finalization_failed"
+                )
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
             try:
                 schema_matches = (
-                    _schema_version(quarantine_descriptor)
+                    _schema_version(quarantine_descriptor, immutable=True)
                     == self.expected_schema_version
                 )
             except BackupError:
@@ -517,7 +553,7 @@ class QuarantinedRestore:
                     restore_id, restored_at, "post_reconciliation_schema_invalid"
                 )
             self._require_quarantine_identity(quarantine, quarantine_descriptor)
-            if not _safe_integrity_ok(quarantine_descriptor):
+            if not _safe_integrity_ok(quarantine_descriptor, immutable=True):
                 return self._blocked_restore(
                     restore_id, restored_at, "post_reconciliation_integrity_failed"
                 )

@@ -890,6 +890,8 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
     assert result.activation_eligible is True
     assert result.ledger_generation == ledger.control_generation()
+    assert not Path(f"{quarantine}-wal").exists()
+    assert not Path(f"{quarantine}-shm").exists()
     with sqlite3.connect(quarantine) as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
@@ -916,6 +918,101 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
         "awaiting_erasure",
     )
     assert result.ledger_generation != ledger.control_generation()
+
+
+def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+    adapters = []
+
+    class LongLivedWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            assert self.connection.execute("PRAGMA journal_mode=WAL").fetchone() == (
+                "wal",
+            )
+
+        def apply_deletion(self, record):
+            self.connection.execute(
+                "DELETE FROM synthetic_private WHERE event_id=?",
+                (record.content_reference,),
+            )
+            self.connection.commit()
+            return ErasureReport(
+                True,
+                True,
+                frozenset(ContentCategory.required_erasure_categories()),
+                (),
+            )
+
+    def adapter_factory(path):
+        adapter = LongLivedWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "quarantine_finalization_failed",
+    )
+    assert Path(f"{quarantine}-wal").exists()
+    assert Path(f"{quarantine}-shm").exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    adapters[0].connection.close()
+
+
+def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    real_use_rollback_journal = recovery_module._use_rollback_journal
+    calls = 0
+
+    def create_sidecar(connection):
+        nonlocal calls
+        calls += 1
+        real_use_rollback_journal(connection)
+        if calls == 2:
+            Path(f"{quarantine}-wal").write_text("concurrent-sidecar")
+
+    monkeypatch.setattr(recovery_module, "_use_rollback_journal", create_sidecar)
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "quarantine_finalization_failed",
+    )
+    assert Path(f"{quarantine}-wal").read_text() == "concurrent-sidecar"
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+
+def test_snapshot_finalization_rejects_an_unpinnable_parent(tmp_path, monkeypatch):
+    database = tmp_path / "snapshot.sqlite3"
+    sqlite3.connect(database).close()
+    descriptor = os.open(database, os.O_RDWR)
+    monkeypatch.setattr(
+        recovery_module,
+        "_open_directory_chain",
+        lambda _path: (_ for _ in ()).throw(OSError("parent unavailable")),
+    )
+    try:
+        assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is False
+    finally:
+        os.close(descriptor)
 
 
 def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_path):
@@ -1048,7 +1145,7 @@ def test_restore_checks_quarantine_integrity_before_adapter_or_readiness(
         adapter_called = True
         return RestoreAdapter(path)
 
-    def integrity(_path):
+    def integrity(_path, **_kwargs):
         if isinstance(integrity_outcome, Exception):
             raise integrity_outcome
         return integrity_outcome
@@ -1080,7 +1177,7 @@ def test_restore_rechecks_integrity_after_reconciliation(
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     outcomes = iter((True, post_integrity_outcome))
 
-    def integrity(_path):
+    def integrity(_path, **_kwargs):
         outcome = next(outcomes)
         if isinstance(outcome, Exception):
             raise outcome

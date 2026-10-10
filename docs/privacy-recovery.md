@@ -191,8 +191,9 @@ successfully is insufficient. The workflow:
    than the snapshot, through `RestoreAdapter`;
 5. applies every current consent revocation;
 6. requires the adapter to rebuild or invalidate dependent state and indexes,
-   then repeats schema-version and SQLite integrity verification after those
-   writes;
+   checkpoints those writes into a self-contained rollback-journal database,
+   rejects remaining WAL/shared-memory sidecars, and then repeats schema-version
+   and SQLite integrity verification against an immutable view of the main file;
 7. confirms that every applicable ledger deletion was applied to this quarantine
    without changing the live database disposition;
 8. durably records a payload-free restore outcome; and

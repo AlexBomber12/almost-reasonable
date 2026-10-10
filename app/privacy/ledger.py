@@ -882,6 +882,7 @@ class PrivacyLedger:
                 "post_reconciliation_integrity_failed",
                 "post_reconciliation_schema_invalid",
                 "privacy_ledger_changed_during_restore",
+                "quarantine_finalization_failed",
                 "quarantine_identity_changed",
                 "quarantine_integrity_failed",
                 "revocation_adapter_failure",
