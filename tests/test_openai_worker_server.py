@@ -9,6 +9,7 @@ import time
 
 import pytest
 
+from app.core.openai_worker_client import OpenAIWorkerClient
 from app.core.model_contract import build_model_request
 from app.core.provider_contract import DeploymentStage, default_openai_provider_config
 from app.core.provider_spend import ProviderStateStore
@@ -305,6 +306,40 @@ def test_peer_credential_failure_is_sanitized():
     assert "CANARY" not in str(captured.value)
 
 
+def test_server_closes_connection_when_peer_credentials_cannot_be_read(
+    tmp_path, monkeypatch
+):
+    directory = secure_directory(tmp_path)
+    instance, transport = gateway(directory)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        instance,
+    )
+    monkeypatch.setattr(
+        server_module,
+        "_peer_uid",
+        lambda _connection: (_ for _ in ()).throw(
+            WorkerProtocolError("peer authentication failed")
+        ),
+    )
+    server.start()
+    thread = run_once(server)
+    peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    peer.connect(str(directory / "worker.sock"))
+    peer.sendall(struct.pack("!I", 2) + b"{}")
+    peer.shutdown(socket.SHUT_WR)
+    try:
+        peer.recv(1)
+    except ConnectionResetError:
+        pass
+    peer.close()
+    thread.join(timeout=2)
+    server.close()
+
+    assert thread.is_alive() is False
+    assert transport.calls == []
+
+
 @pytest.mark.parametrize(
     "uids",
     [
@@ -441,6 +476,9 @@ def test_server_lifecycle_and_type_validation(tmp_path):
         assert server.serve_once() is False
         with pytest.raises(ValueError):
             server.serve(max_connections=0)
+        with pytest.raises(TypeError):
+            server.serve(should_stop=None)
+        server.serve(should_stop=lambda: True)
     finally:
         server.close()
 
@@ -471,6 +509,36 @@ def test_serve_loop_counts_only_handled_connections(tmp_path):
     client.close()
     worker.join(timeout=2)
     server.close()
+    assert worker.is_alive() is False
+
+
+def test_serve_loop_reaps_a_completed_handler_before_next_connection(tmp_path):
+    directory = secure_directory(tmp_path)
+    instance, _transport = gateway(directory)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            directory / "worker.sock",
+            frozenset((os.getuid(),)),
+            accept_timeout_seconds=0.01,
+        ),
+        instance,
+    )
+    server.start()
+    worker = Thread(target=lambda: server.serve(max_connections=2))
+    worker.start()
+    model = request(directory)
+    first = OpenAIWorkerClient(directory / "worker.sock").infer(
+        model, operation_id="operation-a", correlation_id="correlation-a"
+    )
+    time.sleep(0.03)
+    second = OpenAIWorkerClient(directory / "worker.sock").infer(
+        model, operation_id="operation-b", correlation_id="correlation-b"
+    )
+    worker.join(timeout=2)
+    server.close()
+
+    assert first.outcome == "disabled"
+    assert second.outcome == "disabled"
     assert worker.is_alive() is False
 
 

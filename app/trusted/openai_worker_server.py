@@ -1,6 +1,7 @@
 """Authenticated AF_UNIX server owning the trusted OpenAI gateway."""
 
 import argparse
+from collections.abc import Callable
 from dataclasses import dataclass
 import os
 from pathlib import Path
@@ -8,6 +9,7 @@ import signal
 import socket
 import stat
 import struct
+from threading import Thread
 import time
 
 from app.core.provider_contract import default_openai_provider_config
@@ -103,15 +105,29 @@ class OpenAIWorkerServer:
             raise RuntimeError("worker socket creation failed") from None
 
     def serve_once(self) -> bool:
+        connection = self._accept_connection()
+        if connection is None:
+            return False
+        self._handle_connection(connection)
+        return True
+
+    def _accept_connection(self) -> socket.socket | None:
         if self._listener is None:
             raise RuntimeError("worker server is not started")
         try:
             connection, _address = self._listener.accept()
         except TimeoutError:
-            return False
+            return None
+        return connection
+
+    def _handle_connection(self, connection: socket.socket) -> None:
         with connection:
-            if _peer_uid(connection) not in self._config.permitted_peer_uids:
-                return True
+            try:
+                peer_uid = _peer_uid(connection)
+            except WorkerProtocolError:
+                return
+            if peer_uid not in self._config.permitted_peer_uids:
+                return
             deadline = time.monotonic() + self._config.connection_lifetime_seconds
             try:
                 request = decode_request(
@@ -139,17 +155,40 @@ class OpenAIWorkerServer:
                 connection.shutdown(socket.SHUT_WR)
             except (OSError, WorkerProtocolError):
                 pass
-        return True
 
-    def serve(self, *, max_connections: int | None = None) -> None:
+    def serve(
+        self,
+        *,
+        max_connections: int | None = None,
+        should_stop: Callable[[], bool] = lambda: False,
+    ) -> None:
         if max_connections is not None and (
             type(max_connections) is not int or max_connections < 1
         ):
             raise ValueError("max_connections is invalid")
-        handled = 0
-        while max_connections is None or handled < max_connections:
-            if self.serve_once():
-                handled += 1
+        if not callable(should_stop):
+            raise TypeError("should_stop must be callable")
+        accepted = 0
+        active: Thread | None = None
+        try:
+            while not should_stop() and (
+                max_connections is None or accepted < max_connections
+            ):
+                if active is not None and not active.is_alive():
+                    active.join()
+                    active = None
+                connection = self._accept_connection()
+                if connection is None:
+                    continue
+                accepted += 1
+                if active is not None:
+                    connection.close()
+                    continue
+                active = Thread(target=self._handle_connection, args=(connection,))
+                active.start()
+        finally:
+            if active is not None:
+                active.join()
 
     def close(self) -> None:
         if self._listener is not None:
@@ -209,12 +248,10 @@ def main(argv: list[str] | None = None) -> int:
     previous_int = signal.signal(signal.SIGINT, request_stop)
     try:
         server.start()
-        handled = 0
-        while not stopping and (
-            arguments.max_connections is None or handled < arguments.max_connections
-        ):
-            if server.serve_once():
-                handled += 1
+        server.serve(
+            max_connections=arguments.max_connections,
+            should_stop=lambda: stopping,
+        )
     finally:
         server.close()
         signal.signal(signal.SIGTERM, previous_term)

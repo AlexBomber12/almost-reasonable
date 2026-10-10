@@ -9,7 +9,7 @@ import stat
 import subprocess
 import sys
 import runpy
-from threading import Thread
+from threading import Event, Thread
 import time
 
 import pytest
@@ -388,6 +388,66 @@ def test_response_wait_covers_slow_gateway_call_beyond_io_timeout(tmp_path):
     assert transport.calls == 1
 
 
+def test_busy_worker_rejects_instead_of_queueing_a_second_provider_call(tmp_path):
+    directory = secure_directory(tmp_path)
+    model = request(directory)
+    entered = Event()
+    release = Event()
+
+    class BlockingTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def call(self, _request, *, timeout_seconds):
+            self.calls += 1
+            entered.set()
+            assert release.wait(timeout=2)
+            return response()
+
+    transport = BlockingTransport()
+    config = replace(
+        default_openai_provider_config(),
+        deployment_stage=DeploymentStage.STAGE_1,
+        paid_calls_enabled=True,
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        TrustedOpenAIGateway(
+            store=ProviderStateStore(EventStore(directory / "provider.sqlite3")),
+            transport=transport,
+            config=config,
+        ),
+    )
+    server.start()
+    serving = Thread(target=lambda: server.serve(max_connections=2))
+    first_results = []
+    first_client = Thread(
+        target=lambda: first_results.append(
+            OpenAIWorkerClient(directory / "worker.sock").infer(
+                model,
+                operation_id="operation-a",
+                correlation_id="correlation-a",
+            )
+        )
+    )
+    serving.start()
+    first_client.start()
+    assert entered.wait(timeout=2)
+
+    second = OpenAIWorkerClient(directory / "worker.sock").infer(
+        model, operation_id="operation-b", correlation_id="correlation-b"
+    )
+    release.set()
+    first_client.join(timeout=2)
+    serving.join(timeout=2)
+    server.close()
+
+    assert second.outcome == CLIENT_OUTCOME_UNCERTAIN
+    assert first_results[0].outcome == "completed"
+    assert transport.calls == 1
+    assert serving.is_alive() is False
+
+
 @pytest.mark.parametrize("suspension", [False, True])
 def test_worker_restart_preserves_duplicate_or_spend_suspension(tmp_path, suspension):
     directory = secure_directory(tmp_path)
@@ -531,9 +591,10 @@ def test_main_signal_callback_stops_loop_and_always_closes(monkeypatch, tmp_path
         def start(self):
             pass
 
-        def serve_once(self):
+        def serve(self, *, max_connections, should_stop):
+            assert max_connections is None
             handlers[signal.SIGTERM](signal.SIGTERM, None)
-            return False
+            assert should_stop() is True
 
         def close(self):
             self.closed = True

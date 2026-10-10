@@ -73,6 +73,13 @@ The durable gateway reservation prevents the same operation identity from being
 executed twice, but no SQLite transaction can prove whether a provider call
 completed after a worker crash or lost response.
 
+The executable serve loop permits exactly one active gateway operation. It keeps
+accepting while that operation is in flight and immediately closes excess local
+connections, so a request cannot wait in the listen backlog and later trigger a
+paid call after its client lifetime expired. A client that already began
+transmission conservatively reports `outcome_uncertain`; the rejected request is
+not processed or queued.
+
 ## Peer and filesystem authentication
 
 On Linux, the server requires `SO_PEERCRED` and compares the kernel-reported UID
