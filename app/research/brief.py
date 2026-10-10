@@ -37,7 +37,7 @@ _CALENDAR_DATE = re.compile(
 )
 _GROUPED_QUANTITY = re.compile(
     r"(?<![\d+])(?<!\d[ .\u00a0\u202f])"
-    r"\d{1,3}(?:[ .\u00a0\u202f]\d{3})+"
+    r"\d{1,2}(?:[ .\u00a0\u202f]\d{3})+"
     r"(?!\d)(?![ .\u00a0\u202f]\d)"
 )
 _BASE64 = re.compile(
