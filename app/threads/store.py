@@ -80,6 +80,10 @@ class ActiveEffectWorkerError(ThreadsStoreError):
     """Recovery overlapped a live external-effect worker."""
 
 
+class PublicationEffectReservationError(ThreadsStoreError):
+    """A publication effect could not be reserved for exclusive dispatch."""
+
+
 class ThreadsStore:
     def __init__(self, database: str | Path):
         self.database = Path(database)
@@ -447,6 +451,7 @@ class ThreadsStore:
         release_lock_required: bool = False,
         release_account_effect_lock: bool = False,
         account_effect_lock_required: bool = False,
+        reserve_publication_effect: bool = False,
         precommit_check: Callable[[], None] | None = None,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
@@ -489,6 +494,14 @@ class ThreadsStore:
             raise ValueError("invalid account-effect lock requirement")
         if account_effect_lock_required and not release_account_effect_lock:
             raise ValueError("required account-effect release is not enabled")
+        if type(reserve_publication_effect) is not bool:
+            raise ValueError("invalid publication-effect reservation requirement")
+        if reserve_publication_effect and new_state is not OutboxState.SENDING:
+            raise ValueError("publication effects can only be reserved for dispatch")
+        if reserve_publication_effect and (
+            release_lock_target_operation_id is not None or release_account_effect_lock
+        ):
+            raise ValueError("publication-effect reservation cannot release locks")
         if precommit_check is not None and not callable(precommit_check):
             raise ValueError("invalid transition pre-commit check")
         if operator_decision is not None and precommit_check is None:
@@ -579,6 +592,14 @@ class ThreadsStore:
                 reason,
                 now.isoformat(),
             )
+            if reserve_publication_effect:
+                self._reserve_publication_effect(
+                    connection,
+                    operation_id=operation_id,
+                    account_ref=row["account_ref"],
+                    replacement_target_operation_id=row["replacement_of"],
+                    now=now,
+                )
             if reconciliation_correlation_id is not None:
                 changed = connection.execute(
                     "UPDATE threads_reconciliation_attempts "
@@ -636,88 +657,81 @@ class ThreadsStore:
             connection.commit()
         return _outbox_item(result)
 
-    def reserve_publication_effect(
-        self,
+    @staticmethod
+    def _reserve_publication_effect(
+        connection: sqlite3.Connection,
         *,
         operation_id: str,
         account_ref: str,
         replacement_target_operation_id: str | None,
         now: datetime,
     ) -> None:
-        require_reference("operation ID", operation_id)
-        require_reference("account reference", account_ref)
-        if replacement_target_operation_id is not None:
-            require_reference(
-                "replacement target operation ID", replacement_target_operation_id
+        if replacement_target_operation_id is None:
+            reservable = connection.execute(
+                "SELECT 1 FROM threads_outbox WHERE operation_id=? "
+                "AND account_ref=? AND state=? AND replacement_of IS NULL "
+                "AND NOT EXISTS (SELECT 1 FROM threads_outbox "
+                "WHERE account_ref=? AND state IN (?, ?))",
+                (
+                    operation_id,
+                    account_ref,
+                    OutboxState.SENDING.value,
+                    account_ref,
+                    OutboxState.UNKNOWN.value,
+                    OutboxState.UNKNOWN_ABANDONED.value,
+                ),
+            ).fetchone()
+        else:
+            reservable = connection.execute(
+                "SELECT 1 FROM threads_outbox AS replacement "
+                "JOIN threads_outbox AS target ON target.operation_id=? "
+                "WHERE replacement.operation_id=? "
+                "AND replacement.account_ref=? AND target.account_ref=? "
+                "AND replacement.state=? AND replacement.replacement_of=? "
+                "AND target.state IN (?, ?) "
+                "AND NOT EXISTS (SELECT 1 FROM threads_outbox AS other "
+                "WHERE other.account_ref=? AND other.operation_id<>? "
+                "AND other.state IN (?, ?))",
+                (
+                    replacement_target_operation_id,
+                    operation_id,
+                    account_ref,
+                    account_ref,
+                    OutboxState.SENDING.value,
+                    replacement_target_operation_id,
+                    OutboxState.UNKNOWN.value,
+                    OutboxState.UNKNOWN_ABANDONED.value,
+                    account_ref,
+                    replacement_target_operation_id,
+                    OutboxState.UNKNOWN.value,
+                    OutboxState.UNKNOWN_ABANDONED.value,
+                ),
+            ).fetchone()
+        if reservable is None:
+            raise PublicationEffectReservationError(
+                "publication effect is no longer reservable"
             )
-        require_aware_time("reservation time", now)
-        with self._open() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            if replacement_target_operation_id is None:
-                reservable = connection.execute(
-                    "SELECT 1 FROM threads_outbox WHERE operation_id=? "
-                    "AND account_ref=? AND state=? AND replacement_of IS NULL "
-                    "AND NOT EXISTS (SELECT 1 FROM threads_outbox "
-                    "WHERE account_ref=? AND state IN (?, ?))",
-                    (
-                        operation_id,
-                        account_ref,
-                        OutboxState.SENDING.value,
-                        account_ref,
-                        OutboxState.UNKNOWN.value,
-                        OutboxState.UNKNOWN_ABANDONED.value,
-                    ),
-                ).fetchone()
-            else:
-                reservable = connection.execute(
-                    "SELECT 1 FROM threads_outbox AS replacement "
-                    "JOIN threads_outbox AS target ON target.operation_id=? "
-                    "WHERE replacement.operation_id=? "
-                    "AND replacement.account_ref=? AND target.account_ref=? "
-                    "AND replacement.state=? AND replacement.replacement_of=? "
-                    "AND target.state IN (?, ?) "
-                    "AND NOT EXISTS (SELECT 1 FROM threads_outbox AS other "
-                    "WHERE other.account_ref=? AND other.operation_id<>? "
-                    "AND other.state IN (?, ?))",
-                    (
-                        replacement_target_operation_id,
-                        operation_id,
-                        account_ref,
-                        account_ref,
-                        OutboxState.SENDING.value,
-                        replacement_target_operation_id,
-                        OutboxState.UNKNOWN.value,
-                        OutboxState.UNKNOWN_ABANDONED.value,
-                        account_ref,
-                        replacement_target_operation_id,
-                        OutboxState.UNKNOWN.value,
-                        OutboxState.UNKNOWN_ABANDONED.value,
-                    ),
-                ).fetchone()
-            if reservable is None:
-                raise ThreadsStoreError("publication effect is no longer reservable")
-            try:
-                if replacement_target_operation_id is not None:
-                    connection.execute(
-                        "INSERT INTO threads_unknown_effect_locks "
-                        "(target_operation_id, holder_operation_id, lock_kind, "
-                        "created_at) VALUES (?, ?, 'replacement_publication', ?)",
-                        (
-                            replacement_target_operation_id,
-                            operation_id,
-                            now.isoformat(),
-                        ),
-                    )
+        try:
+            if replacement_target_operation_id is not None:
                 connection.execute(
-                    "INSERT INTO threads_account_effect_locks "
-                    "(account_ref, holder_operation_id, created_at) VALUES (?, ?, ?)",
-                    (account_ref, operation_id, now.isoformat()),
+                    "INSERT INTO threads_unknown_effect_locks "
+                    "(target_operation_id, holder_operation_id, lock_kind, "
+                    "created_at) VALUES (?, ?, 'replacement_publication', ?)",
+                    (
+                        replacement_target_operation_id,
+                        operation_id,
+                        now.isoformat(),
+                    ),
                 )
-            except sqlite3.IntegrityError as error:
-                raise ThreadsStoreError(
-                    "publication effect is already reserved"
-                ) from error
-            connection.commit()
+            connection.execute(
+                "INSERT INTO threads_account_effect_locks "
+                "(account_ref, holder_operation_id, created_at) VALUES (?, ?, ?)",
+                (account_ref, operation_id, now.isoformat()),
+            )
+        except sqlite3.IntegrityError as error:
+            raise PublicationEffectReservationError(
+                "publication effect is already reserved"
+            ) from error
 
     def claim_reconciliation(
         self,

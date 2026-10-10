@@ -740,7 +740,7 @@ def test_authorization_change_after_sending_commit_is_proven_not_transmitted(
 @pytest.mark.parametrize(
     "rebind_after, expected_evidence, expected_trace, lock_count",
     [
-        ("sending", "pre_dispatch_intent", (), 0),
+        ("sending", "pre_dispatch_intent", (), 1),
         ("container_marker", "container_dispatch_started", (), 1),
         (
             "publish_marker",
@@ -2411,6 +2411,53 @@ def test_account_effect_reservation_serializes_container_and_publish(
         ).fetchone() == (0,)
 
 
+def test_reserved_effect_contention_does_not_consume_dispatch_attempts(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    _, second_approval = ready(service, "operation-2")
+    service.simulator.set_fault(
+        "operation-1", "publish", Fault.CRASH_AFTER_TRANSMISSION
+    )
+    with pytest.raises(SimulatedCrash):
+        service.dispatch("operation-1", first_approval, now=NOW)
+
+    for _ in range(2):
+        with pytest.raises(PolicyDeniedError, match="being dispatched"):
+            service.dispatch("operation-2", second_approval, now=NOW)
+        blocked = service.store.get("operation-2")
+        assert blocked.state is OutboxState.READY
+        assert blocked.attempt_count == 0
+        assert blocked.dispatch_evidence is None
+
+    assert all(
+        operation_id != "operation-2"
+        for _effect, operation_id in service.simulator.trace
+    )
+
+
+def test_atomic_effect_reservation_rolls_back_when_no_longer_reservable(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    ready(service, "operation-2")
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    assert service.dispatch("operation-1", first_approval, now=NOW).state is (
+        OutboxState.UNKNOWN
+    )
+
+    with pytest.raises(ThreadsStoreError, match="no longer reservable"):
+        service.store.transition(
+            "operation-2",
+            OutboxState.SENDING,
+            reason="durable_dispatch_intent",
+            now=NOW,
+            increment_attempt=True,
+            reserve_publication_effect=True,
+        )
+    blocked = service.store.get("operation-2")
+    assert blocked.state is OutboxState.READY
+    assert blocked.attempt_count == 0
+
+
 def test_replacement_waits_when_target_reconciliation_claim_exists(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -2438,7 +2485,8 @@ def test_replacement_waits_when_target_reconciliation_claim_exists(tmp_path):
         service.dispatch("operation-2", risk_approval, now=NOW)
     blocked = service.store.get("operation-2")
     assert blocked.state is OutboxState.READY
-    assert blocked.dispatch_evidence == "container_not_transmitted"
+    assert blocked.attempt_count == 0
+    assert blocked.dispatch_evidence is None
     service.store.release_unknown_effect_lock(
         target_operation_id="operation-1",
         holder_operation_id="operation-1",
@@ -2850,13 +2898,6 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
         service.store.operator_decision_reference("operation-1", "abandon_unknown")
         is None
     )
-    with pytest.raises(ThreadsStoreError, match="no longer reservable"):
-        service.store.reserve_publication_effect(
-            operation_id="operation-1",
-            account_ref="account-1",
-            replacement_target_operation_id="operation-1",
-            now=NOW,
-        )
     with pytest.raises(ThreadsStoreError, match="target is unavailable"):
         service.store.claim_reconciliation(
             operation_id="operation-1",
@@ -2917,6 +2958,31 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
             reason="review",
             now=NOW,
             account_effect_lock_required=1,
+        )
+    with pytest.raises(ValueError, match="reservation requirement"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            reserve_publication_effect=1,
+        )
+    with pytest.raises(ValueError, match="only be reserved for dispatch"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            reserve_publication_effect=True,
+        )
+    with pytest.raises(ValueError, match="cannot release locks"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.SENDING,
+            reason="dispatch",
+            now=NOW,
+            reserve_publication_effect=True,
+            release_account_effect_lock=True,
         )
     with pytest.raises(ThreadsStoreError, match="account-effect reservation"):
         service.store.transition(

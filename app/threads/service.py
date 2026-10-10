@@ -37,6 +37,7 @@ from .simulator import (
 from .store import (
     ActiveEffectWorkerError,
     PollCommitDeadlineError,
+    PublicationEffectReservationError,
     ThreadsStore,
     ThreadsStoreError,
     UnknownPublicationRiskError,
@@ -231,10 +232,16 @@ class ThreadsService:
                 approval_status="approved",
                 dispatch_evidence="pre_dispatch_intent",
                 increment_attempt=True,
+                reserve_publication_effect=True,
                 precommit_check=lambda: self._recheck_immediately_before_effect(
                     item, approval, self.utc_now()
                 ),
             )
+        except PublicationEffectReservationError as error:
+            raise PolicyDeniedError(
+                "publication effect is being dispatched or target is being "
+                "reconciled or resolved"
+            ) from error
         except (PolicyDeniedError, ValueError):
             self._audit_policy_denial(
                 item,
@@ -265,40 +272,18 @@ class ThreadsService:
                         else "publish_not_transmitted"
                     ),
                     reconciliation_status="not_required",
+                    release_lock_target_operation_id=item.replacement_of,
+                    release_lock_kind=(
+                        "replacement_publication"
+                        if item.replacement_of is not None
+                        else None
+                    ),
+                    release_lock_required=item.replacement_of is not None,
+                    release_account_effect_lock=True,
+                    account_effect_lock_required=True,
                     precommit_check=self._require_account_binding,
                 )
                 raise
-            try:
-                self.store.reserve_publication_effect(
-                    operation_id=item.operation_id,
-                    account_ref=item.account_ref,
-                    replacement_target_operation_id=item.replacement_of,
-                    now=now,
-                )
-            except ThreadsStoreError as error:
-                state = (
-                    OutboxState.READY
-                    if item.attempt_count < MAX_DISPATCH_ATTEMPTS
-                    else OutboxState.FAILED_TERMINAL
-                )
-                self.store.transition(
-                    operation_id,
-                    state,
-                    reason="publication_effect_not_reserved",
-                    now=now,
-                    provider_container_id=container_id,
-                    dispatch_evidence=(
-                        "container_not_transmitted"
-                        if container_id is None
-                        else "publish_not_transmitted"
-                    ),
-                    reconciliation_status="not_required",
-                    precommit_check=self._require_account_binding,
-                )
-                raise PolicyDeniedError(
-                    "publication effect is being dispatched or target is being "
-                    "reconciled or resolved"
-                ) from error
             if container_id is None:
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
