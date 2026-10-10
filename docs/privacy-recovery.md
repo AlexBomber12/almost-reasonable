@@ -47,6 +47,8 @@ audits by the trusted authentication-event reference. Rejection audit timestamps
 always come from the service clock rather than rejected request fields. The
 ledger persistence boundary independently validates every notice-acknowledgement
 token and its UTC timestamp before inserting trusted acknowledgement state.
+Revocation persistence likewise validates all raw fields and confirms consent
+ownership inside the same write transaction before changing control state.
 
 Ordinary derivatives must retain every source audience. The only proposed
 cross-scope transition is `abstract_to_shared`. Its validator requires a valid

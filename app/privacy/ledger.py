@@ -550,6 +550,13 @@ class PrivacyLedger:
         revoked_at: datetime,
         correlation_id: str,
     ) -> bool:
+        require_token(consent_id, "consent id")
+        require_token(operation_id, "operation id")
+        require_token(principal_id, "principal id")
+        require_token(actor_reference, "actor reference")
+        require_token(authentication_event_id, "authentication event id")
+        require_utc(revoked_at, "revocation timestamp")
+        require_token(correlation_id, "correlation id")
         values = (
             consent_id,
             operation_id,
@@ -561,6 +568,12 @@ class PrivacyLedger:
         )
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            owner = connection.execute(
+                "SELECT 1 FROM consent_grants WHERE consent_id=? AND principal_id=?",
+                (consent_id, principal_id),
+            ).fetchone()
+            if owner is None:
+                raise ValueError("revocation consent ownership mismatch")
             existing = connection.execute(
                 "SELECT consent_id, operation_id, principal_id, actor_reference, "
                 "authentication_event_id, revoked_at, correlation_id "

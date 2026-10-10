@@ -551,6 +551,62 @@ def test_consent_rejects_duplicate_scope_revision_and_uses_newer_revision(tmp_pa
     assert (result.allowed, result.consent_id) == (True, "consent-003")
 
 
+def test_ledger_rejects_cross_principal_direct_revocation(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    ledger.insert_consent(grant())
+    audit_before = ledger.audit_records()
+    generation_before = ledger.control_generation()
+
+    with pytest.raises(ValueError, match="ownership"):
+        ledger.insert_revocation(
+            consent_id="consent-001",
+            operation_id="revoke-direct",
+            principal_id="participant-b",
+            actor_reference="actor-b",
+            authentication_event_id="auth-event-b",
+            revoked_at=NOW,
+            correlation_id="revoke-direct-correlation",
+        )
+
+    assert ledger.revocations() == ()
+    assert ledger.control_generation() == generation_before
+    assert ledger.audit_records() == audit_before
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"consent_id": "private consent"}, "consent id"),
+        ({"operation_id": "private operation"}, "operation id"),
+        ({"principal_id": "private principal"}, "principal id"),
+        ({"actor_reference": "private actor"}, "actor reference"),
+        ({"authentication_event_id": "private auth"}, "authentication event"),
+        ({"revoked_at": datetime(2026, 10, 10)}, "timestamp"),
+        ({"correlation_id": "private correlation"}, "correlation id"),
+    ],
+)
+def test_ledger_rejects_malformed_direct_revocations(tmp_path, changes, message):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    ledger.insert_consent(grant())
+    audit_before = ledger.audit_records()
+    values = {
+        "consent_id": "consent-001",
+        "operation_id": "revoke-direct",
+        "principal_id": "participant-a",
+        "actor_reference": "actor-a",
+        "authentication_event_id": "auth-event-a",
+        "revoked_at": NOW,
+        "correlation_id": "revoke-direct-correlation",
+    }
+    values.update(changes)
+
+    with pytest.raises(ValueError, match=message):
+        ledger.insert_revocation(**values)
+
+    assert ledger.revocations() == ()
+    assert ledger.audit_records() == audit_before
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [
