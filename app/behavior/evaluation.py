@@ -189,6 +189,8 @@ class BehavioralEvaluationHarness:
         self._rubric_version = rubric_version
 
     def run(self, cases: tuple[EvaluationCase, ...]) -> EvaluationReport:
+        if type(cases) is not tuple or not cases:
+            raise ValueError("evaluation requires a non-empty tuple of cases")
         observations: list[EvaluationObservation] = []
         case_ids: set[str] = set()
         for case in cases:

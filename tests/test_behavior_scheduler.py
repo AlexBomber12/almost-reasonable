@@ -41,7 +41,8 @@ def test_scheduler_coalesces_missed_wakeups_and_allows_inactivity() -> None:
     clock = MutableClock(NOW)
     calls: list[str] = []
 
-    def deliberate(wakeup: WakeupEvent) -> AgentDecision:
+    def deliberate(wakeup: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+        assert timeout_seconds == 2.0
         calls.append(wakeup.event_id)
         return AgentDecision.NO_ACTION
 
@@ -74,7 +75,8 @@ def test_scheduler_operational_skips_do_not_call_model(
 ) -> None:
     clock = MutableClock(NOW.replace(hour=hour))
 
-    def forbidden(_: WakeupEvent) -> AgentDecision:
+    def forbidden(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+        assert timeout_seconds == 2.0
         raise AssertionError("model must not run")
 
     result = TestScheduler(policy(), InMemorySchedulerStore(), clock, forbidden).run(
@@ -94,7 +96,9 @@ def test_duplicate_cooldown_rate_limit_and_later_eligibility() -> None:
             AgentDecision.PROPOSE_PUBLICATION,
         )
     )
-    scheduler = TestScheduler(policy(), store, clock, lambda _: next(decisions))
+    scheduler = TestScheduler(
+        policy(), store, clock, lambda _, timeout: next(decisions)
+    )
 
     first = scheduler.run((event("one"),))
     duplicate = scheduler.run((event("one"),))
@@ -112,18 +116,26 @@ def test_duplicate_cooldown_rate_limit_and_later_eligibility() -> None:
 def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
     store = InMemorySchedulerStore()
     clock = MutableClock(NOW)
-    scheduler = TestScheduler(policy(), store, clock, lambda _: AgentDecision.NO_ACTION)
+    scheduler = TestScheduler(
+        policy(), store, clock, lambda _, timeout: AgentDecision.NO_ACTION
+    )
     assert scheduler.run(()).outcome is SchedulerOutcome.NOTHING_DUE
     assert scheduler.run((event("one"),)).outcome is SchedulerOutcome.NO_ACTION
     assert scheduler.run((event("two", NOW),)).outcome is SchedulerOutcome.COOLDOWN
 
     clock.advance(timedelta(minutes=11))
-    invalid = TestScheduler(policy(), store, clock, lambda _: "reply")  # type: ignore[arg-type]
+    invalid = TestScheduler(
+        policy(),
+        store,
+        clock,
+        lambda _, timeout: "reply",  # type: ignore[arg-type]
+    )
     assert (
         invalid.run((event("three", clock.now()),)).outcome is SchedulerOutcome.FAILED
     )
 
-    def slow(_: WakeupEvent) -> AgentDecision:
+    def slow(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+        assert timeout_seconds == 2.0
         clock.advance(timedelta(seconds=3))
         return AgentDecision.REPLY
 
@@ -135,13 +147,25 @@ def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
         is SchedulerOutcome.EXECUTION_LIMIT
     )
 
+    timeout_clock = MutableClock(NOW)
+
+    def timed_out(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+        assert timeout_seconds == 2.0
+        raise TimeoutError
+
+    timeout_result = TestScheduler(
+        policy(), InMemorySchedulerStore(), timeout_clock, timed_out
+    ).run((event("timeout"),))
+    assert timeout_result.outcome is SchedulerOutcome.EXECUTION_LIMIT
+    assert timeout_result.decision is None
+
 
 def test_overnight_active_hours_expired_duplicate_and_validation() -> None:
     overnight = policy(active_start=time(22), active_end=time(6))
     clock = MutableClock(NOW.replace(hour=23))
     store = InMemorySchedulerStore()
     scheduler = TestScheduler(
-        overnight, store, clock, lambda _: AgentDecision.NO_ACTION
+        overnight, store, clock, lambda _, timeout: AgentDecision.NO_ACTION
     )
     assert (
         scheduler.run((event("night", clock.now()),)).outcome
@@ -177,7 +201,7 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
         policy(active_start=time(0), active_end=time(0)),
         InMemorySchedulerStore(),
         MutableClock(NOW),
-        lambda _: AgentDecision.NO_ACTION,
+        lambda _, timeout: AgentDecision.NO_ACTION,
     )
     assert scheduler.run((event("all-day"),)).outcome is SchedulerOutcome.NO_ACTION
     with pytest.raises(TypeError, match="pending"):
@@ -194,7 +218,8 @@ def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
         policy(),
         store,
         clock,
-        lambda wakeup: calls.append(wakeup.event_id) or AgentDecision.NO_ACTION,
+        lambda wakeup, timeout: calls.append(wakeup.event_id)
+        or AgentDecision.NO_ACTION,
     )
 
     future = event("future", NOW + timedelta(hours=1))
@@ -218,7 +243,9 @@ def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
 def test_rejected_decisions_do_not_refresh_rate_limit_window() -> None:
     store = InMemorySchedulerStore()
     clock = MutableClock(NOW)
-    scheduler = TestScheduler(policy(), store, clock, lambda _: AgentDecision.RESEARCH)
+    scheduler = TestScheduler(
+        policy(), store, clock, lambda _, timeout: AgentDecision.RESEARCH
+    )
 
     assert scheduler.run((event("accepted"),)).outcome is SchedulerOutcome.PROPOSED
     clock.advance(timedelta(minutes=11))

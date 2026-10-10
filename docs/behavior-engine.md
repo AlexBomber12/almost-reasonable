@@ -59,8 +59,9 @@ for future behavior intents.
 ## Russian H-class output gate
 
 `app.behavior.russian_gate` provides `russian-h-gate-v1` and the frozen
-`russian-h-corpus-v1`. The gate normalizes text, rejects hidden control/format
-characters, removes URLs and code from conversational-language accounting,
+`russian-h-corpus-v1`. The gate applies NFKC compatibility normalization,
+rejects hidden control/format characters, removes URLs and code from
+conversational-language accounting,
 tolerates bounded Latin technical terminology and proper names, and excludes
 HTTP(S), FTP, `www`, bare-domain URLs, and code regions before comparing
 Cyrillic and Latin prose. Foreign quotations remain in the language accounting,
@@ -97,7 +98,9 @@ A run filters out future events, coalesces only currently due unprocessed
 wake-ups to the newest event, records their IDs, and deliberates at most once.
 Future events remain eligible when their time arrives, and a duplicate newest
 event cannot starve an older unprocessed due event. The input batch itself is
-bounded to 1,024 wake-ups, and there is no catch-up loop.
+bounded to 1,024 wake-ups, and there is no catch-up loop. The application-owned
+deliberation callback receives the hard elapsed-time limit and must enforce it;
+`TimeoutError` and a late return both produce `execution_limit`.
 Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
 rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
@@ -174,7 +177,9 @@ Only the complete v1 dimension-to-assurance mapping may emit
 `behavior-rubric-v1`. Partial or differently classified experimental rubrics
 must carry a distinct caller-supplied version, so their reports cannot be
 mistaken for complete release evidence. A G dimension can never use a model
-assessor in either official or custom rubrics.
+assessor in either official or custom rubrics. Every report requires at least
+one case and every case requires at least one recorded trial, preventing an
+empty official-looking evaluation artifact.
 
 G, H, and M results remain separate. The harness rejects a model assessor for a
 G-class rule; model agreement can never establish access control. M rules do not

@@ -85,7 +85,7 @@ class RussianOutputGate:
     def assess(self, text: object) -> GateAssessment:
         if not isinstance(text, str) or not text.strip():
             return _assessment(False, GateReason.EMPTY, 0, 0)
-        normalized = unicodedata.normalize("NFC", text)
+        normalized = unicodedata.normalize("NFKC", text)
         if any(_is_disallowed_control(character) for character in normalized):
             return _assessment(False, GateReason.DISALLOWED_CONTROL, 0, 0)
 

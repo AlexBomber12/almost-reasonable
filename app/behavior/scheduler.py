@@ -141,7 +141,7 @@ class TestScheduler:
         policy: WakeupPolicy,
         store: SchedulerStore,
         clock: Clock,
-        deliberate: Callable[[WakeupEvent], AgentDecision],
+        deliberate: Callable[[WakeupEvent, float], AgentDecision],
     ):
         self._policy = policy
         self._store = store
@@ -226,26 +226,31 @@ class TestScheduler:
             )
 
         started_at = now
-        decision = self._deliberate(selected)
-        finished_at = self._clock.now()
-        if not isinstance(decision, AgentDecision):
-            outcome = SchedulerOutcome.FAILED
-            valid_decision = None
-        elif (
-            finished_at - started_at
-        ).total_seconds() > self._policy.max_execution_seconds:
+        try:
+            decision = self._deliberate(selected, self._policy.max_execution_seconds)
+        except TimeoutError:
             outcome = SchedulerOutcome.EXECUTION_LIMIT
-            valid_decision = decision
-        elif self._rate_limited(state, decision, now):
-            outcome = SchedulerOutcome.RATE_LIMITED
-            valid_decision = decision
+            valid_decision = None
         else:
-            outcome = (
-                SchedulerOutcome.NO_ACTION
-                if decision is AgentDecision.NO_ACTION
-                else SchedulerOutcome.PROPOSED
-            )
-            valid_decision = decision
+            finished_at = self._clock.now()
+            if not isinstance(decision, AgentDecision):
+                outcome = SchedulerOutcome.FAILED
+                valid_decision = None
+            elif (
+                finished_at - started_at
+            ).total_seconds() > self._policy.max_execution_seconds:
+                outcome = SchedulerOutcome.EXECUTION_LIMIT
+                valid_decision = decision
+            elif self._rate_limited(state, decision, now):
+                outcome = SchedulerOutcome.RATE_LIMITED
+                valid_decision = decision
+            else:
+                outcome = (
+                    SchedulerOutcome.NO_ACTION
+                    if decision is AgentDecision.NO_ACTION
+                    else SchedulerOutcome.PROPOSED
+                )
+                valid_decision = decision
 
         history = state.action_history
         if outcome in (SchedulerOutcome.PROPOSED, SchedulerOutcome.NO_ACTION):
