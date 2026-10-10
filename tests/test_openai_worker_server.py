@@ -32,6 +32,7 @@ from app.trusted.openai_worker_protocol import (
     receive_frame,
 )
 from app.trusted.openai_worker_server import (
+    GROUP_SOCKET_MODE,
     SOCKET_MODE,
     OpenAIWorkerServer,
     WorkerServerConfig,
@@ -134,6 +135,68 @@ def test_server_accepts_authenticated_peer_and_returns_stage_zero_result(tmp_pat
     finally:
         server.close()
     assert not socket_path.exists()
+
+
+def test_restricted_group_mode_sets_and_verifies_socket_permissions(tmp_path):
+    directory = secure_directory(tmp_path)
+    directory.chmod(0o710)
+    socket_path = directory / "worker.sock"
+    instance, transport = gateway(directory)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            socket_path,
+            frozenset((os.getuid(),)),
+            trusted_ipc_gid=os.getgid(),
+        ),
+        instance,
+    )
+
+    server.start()
+    try:
+        assert stat.S_IMODE(socket_path.stat().st_mode) == GROUP_SOCKET_MODE
+        assert socket_path.stat().st_gid == os.getgid()
+        assert transport.calls == []
+    finally:
+        server.close()
+
+
+def test_peer_uid_diagnostic_reports_kernel_result_without_request_data(
+    tmp_path, capsys
+):
+    directory = secure_directory(tmp_path)
+    instance, _transport = gateway(directory)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            directory / "worker.sock",
+            frozenset((os.getuid(),)),
+            log_peer_uids=True,
+        ),
+        instance,
+    )
+    server.start()
+    try:
+        payload = encode_request(
+            InferenceRequest("operation-a", "correlation-a", request(directory))
+        )
+        result = raw_exchange(server, struct.pack("!I", len(payload)) + payload)
+    finally:
+        server.close()
+
+    captured = capsys.readouterr()
+    assert result.outcome == "disabled"
+    assert captured.out == ""
+    assert captured.err == f"openai-worker peer uid={os.getuid()} authorized=true\n"
+    assert "operation-a" not in captured.err
+
+
+@pytest.mark.parametrize("trusted_ipc_gid", [-1, 2**32 - 1, True, "1000"])
+def test_restricted_group_mode_rejects_invalid_trusted_gid(tmp_path, trusted_ipc_gid):
+    with pytest.raises(ValueError, match="IPC GID"):
+        WorkerServerConfig(
+            tmp_path / "worker.sock",
+            frozenset((os.getuid(),)),
+            trusted_ipc_gid=trusted_ipc_gid,
+        )
 
 
 def test_server_returns_validated_untrusted_proposal_without_executing_it(tmp_path):
@@ -268,6 +331,8 @@ def test_expended_ipc_lifetime_blocks_gateway_submission(tmp_path, monkeypatch):
         lambda data: data.update(protocol_version="v2"),
         lambda data: data.update(operation_type="shell"),
         lambda data: data.update(headers={"Authorization": "CANARY"}),
+        lambda data: data.update(peer_uid=os.getuid()),
+        lambda data: data.update(deployment_stage="stage_1", paid_calls_enabled=True),
         lambda data: data["model_request"]["core_self"].update(identity="forged"),
     ],
 )
@@ -359,6 +424,42 @@ def test_unauthorized_peer_is_closed_before_request_processing(tmp_path, monkeyp
     assert transport.calls == []
 
 
+def test_group_access_does_not_authorize_uid_or_json_peer_uid(tmp_path, monkeypatch):
+    directory = secure_directory(tmp_path)
+    directory.chmod(0o710)
+    instance, transport = gateway(
+        directory, [response()], stage=DeploymentStage.STAGE_1
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            directory / "worker.sock",
+            frozenset((os.getuid(),)),
+            trusted_ipc_gid=os.getgid(),
+        ),
+        instance,
+    )
+    monkeypatch.setattr(server_module, "_peer_uid", lambda _connection: os.getuid() + 1)
+    server.start()
+    try:
+        thread = run_once(server)
+        peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        peer.connect(str(directory / "worker.sock"))
+        forged = b'{"peer_uid":' + str(os.getuid()).encode() + b"}"
+        peer.sendall(struct.pack("!I", len(forged)) + forged)
+        peer.shutdown(socket.SHUT_WR)
+        try:
+            assert peer.recv(1) == b""
+        except ConnectionResetError:
+            pass
+        peer.close()
+        thread.join(timeout=2)
+    finally:
+        server.close()
+
+    assert thread.is_alive() is False
+    assert transport.calls == []
+
+
 class BrokenPeerSocket:
     def getsockopt(self, *_args):
         raise OSError("private detail CANARY")
@@ -427,6 +528,7 @@ def test_malformed_trusted_peer_configuration_is_rejected(tmp_path, uids):
         {"accept_timeout_seconds": 0},
         {"accept_timeout_seconds": 11},
         {"accept_timeout_seconds": True},
+        {"log_peer_uids": 1},
     ],
 )
 def test_server_configuration_rejects_invalid_paths_and_accept_timeouts(
@@ -490,6 +592,94 @@ def test_unsafe_or_symlinked_socket_directory_fails_closed(tmp_path):
         )
         with pytest.raises(ValueError):
             server.start()
+
+
+def test_group_mode_rejects_wrong_gid_permissions_and_unowned_directory(
+    tmp_path, monkeypatch
+):
+    directory = secure_directory(tmp_path)
+    instance, _transport = gateway(directory)
+
+    for mode in (0o700, 0o720, 0o711):
+        directory.chmod(mode)
+        server = OpenAIWorkerServer(
+            WorkerServerConfig(
+                directory / "worker.sock",
+                frozenset((os.getuid(),)),
+                trusted_ipc_gid=os.getgid(),
+            ),
+            instance,
+        )
+        with pytest.raises(ValueError, match="unsafe"):
+            server.start()
+
+    directory.chmod(0o710)
+    config = WorkerServerConfig(
+        directory / "worker.sock",
+        frozenset((os.getuid(),)),
+        trusted_ipc_gid=os.getgid() + 1,
+    )
+    with pytest.raises(ValueError, match="unsafe"):
+        OpenAIWorkerServer(config, instance).start()
+
+    monkeypatch.setattr(server_module.os, "geteuid", lambda: os.getuid() + 1)
+    config = WorkerServerConfig(
+        directory / "worker.sock",
+        frozenset((os.getuid(),)),
+        trusted_ipc_gid=os.getgid(),
+    )
+    with pytest.raises(ValueError, match="unsafe"):
+        OpenAIWorkerServer(config, instance).start()
+
+
+def test_group_mode_rejects_wrong_or_world_accessible_created_socket(
+    tmp_path, monkeypatch
+):
+    directory = secure_directory(tmp_path)
+    directory.chmod(0o710)
+    path = directory / "worker.sock"
+    instance, _transport = gateway(directory)
+    original_lstat = Path.lstat
+
+    def wrong_gid(candidate):
+        result = original_lstat(candidate)
+        if candidate == path and stat.S_ISSOCK(result.st_mode):
+            values = list(result)
+            values[5] = result.st_gid + 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(Path, "lstat", wrong_gid)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            path,
+            frozenset((os.getuid(),)),
+            trusted_ipc_gid=os.getgid(),
+        ),
+        instance,
+    )
+    with pytest.raises(RuntimeError, match="creation"):
+        server.start()
+    assert not path.exists()
+
+    monkeypatch.undo()
+    original_chmod = os.chmod
+
+    def world_chmod(candidate, _mode, **kwargs):
+        original_chmod(candidate, 0o666, **kwargs)
+
+    monkeypatch.setattr(os, "chmod", world_chmod)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            path,
+            frozenset((os.getuid(),)),
+            trusted_ipc_gid=os.getgid(),
+        ),
+        instance,
+    )
+    with pytest.raises(RuntimeError, match="creation"):
+        server.start()
+    assert not path.exists()
 
 
 def test_close_does_not_remove_substituted_or_already_missing_path(tmp_path):
@@ -622,7 +812,11 @@ def test_socket_bind_and_post_bind_failures_are_sanitized_and_cleaned(
         WorkerServerConfig(path, frozenset((os.getuid(),))), instance
     )
     path.touch()
-    monkeypatch.setattr(server_module, "_validate_socket_location", lambda _path: None)
+    monkeypatch.setattr(
+        server_module,
+        "_validate_socket_location",
+        lambda _path, **_kwargs: None,
+    )
     with pytest.raises(RuntimeError, match="creation"):
         server.start()
     path.unlink()

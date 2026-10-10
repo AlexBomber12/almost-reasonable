@@ -94,22 +94,27 @@ the peer facility is unavailable or unreadable, the worker fails closed.
 
 The socket path must be absolute, absent, and at most 107 UTF-8 bytes. Its immediate
 directory must already exist, resolve without symbolic links, be owned by the
-worker effective UID, and have no group/world write bits. Startup uses a restrictive
-umask and sets the socket to mode `0600`. It never deletes a pre-existing file,
-socket, or symlink. Shutdown records the created socket's device/inode and removes
-only that exact still-present socket, so path substitution cannot cause deletion
-of another resource.
+worker effective UID, and have no group/world write bits. Private mode remains the
+default: startup uses a restrictive umask and verifies a worker-owned `0600`
+socket. Restricted group mode is enabled only by an explicit trusted IPC GID. It
+requires a worker-owned `0710` parent in that GID, changes the new socket to that
+GID, and verifies the same inode is worker-owned, in the configured GID, and
+exactly `0660`. World socket access is never accepted. It never deletes a
+pre-existing file, socket, or symlink. Shutdown records the created socket's
+device/inode and removes only that exact still-present socket, so path substitution
+cannot cause deletion of another resource.
 
 Create a dedicated directory owned by the worker before startup. After an
 unclean crash, an operator must verify that no worker is running, inspect the exact
 path with `lstat`, remove only the confirmed stale socket, and restart. The worker
 does not silently perform stale-socket recovery.
 
-Mode `0600` supports the same-UID Stage 0 harness. A real distinct-UID deployment
-must separately design and validate narrowly scoped socket access, for example a
-dedicated group/ACL and secure execute permission on the parent directory, before
-changing these permissions. Merely listing another UID in worker configuration
-does not grant filesystem access.
+Mode `0660` grants filesystem access only through the dedicated IPC group; it does
+not authorize a request. Every connection is still checked against the nonempty
+kernel UID allowlist before any frame is read. Group membership alone, a UID in
+JSON, or an unexpected user-namespace mapping has no authority. The optional
+Stage 0 peer-UID diagnostic logs only the kernel UID and authorization result so an
+operator can verify the effective mapping.
 
 ## Persistence and credentials
 
@@ -130,9 +135,9 @@ values.
 
 ## Running the offline harness
 
-Prepare a private directory, then run the worker and a client as separate
-processes. The directory and paths below are examples; do not place real provider
-secrets in the environment or database:
+For the same-UID development harness, prepare a private directory and run the
+worker and client as separate processes. The directory and paths below are
+examples; do not place real provider secrets in the environment or database:
 
 ```console
 install -d -m 0700 /tmp/almost-reasonable-worker
@@ -149,11 +154,24 @@ no option that enables Stage 1, paid calls, a real transport, tools, or public
 effects. `scripts/ci.sh` exercises real loopback Unix sockets and a worker in a
 separate OS process without Docker or root privileges.
 
+The opt-in cross-UID container topology is defined separately in
+`ops/compose.openai-worker.stage0.yaml`. It uses worker UID/GID `11001:11001`,
+planner UID/GID `11002:11002`, and IPC GID `11000` only as overridable examples.
+Both services use `network_mode: none`, read-only roots, no capabilities,
+no-new-privileges, bounded memory/PIDs, and no published ports or Docker socket.
+Only the worker mounts its database directory; the probe receives only a read-only
+bind of the socket directory. See `docs/openai-worker-stage0-deployment.md` for
+safe host preparation and the mandatory rootless/userns checks.
+
 ## Remaining deployment work and Stage 1
 
-Process separation is not complete credential isolation when both processes share
-one Linux UID: same-UID code may be able to inspect accessible files or process
-state. Before a live Stage 1 smoke test, a separately reviewed deployment must:
+Process separation was implemented before this deployment preparation. This PR
+adds configurable distinct container identities and testable filesystem policy,
+but actual kernel enforcement still depends on the operator's Docker, bind-mount,
+rootless, and user-namespace configuration. The offline topology demonstrates the
+absence of a planner credential mount; it cannot demonstrate secrecy of a real
+credential because none is present. Provider networking is intentionally absent.
+Before a live Stage 1 smoke test, a separately reviewed deployment must:
 
 - run planner and worker under distinct, least-privileged Linux/container users;
 - give only the worker a dedicated secret mount and provider-database write mount;
