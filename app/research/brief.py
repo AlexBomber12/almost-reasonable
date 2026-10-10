@@ -42,7 +42,7 @@ _GROUPED_QUANTITY = re.compile(
     r"(?!\d)(?![ .\u00a0\u202f]\d)"
 )
 _BASE64 = re.compile(
-    r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_=-])"
+    r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{2,}={0,2}(?![A-Za-z0-9+/_=-])"
 )
 _FOLDED_BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])"
@@ -493,7 +493,13 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
     views = (raw,) if normalized == raw else (raw, normalized)
-    delimited_views = (*views, *(view.replace("/", "\n") for view in views))
+    path_suffixes = tuple(
+        view[index + 1 :]
+        for view in views
+        for index, character in enumerate(view)
+        if character == "/"
+    )
+    delimited_views = (*views, *path_suffixes)
     contiguous = tuple(
         (match.group(0), True)
         for view in delimited_views

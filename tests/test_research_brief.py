@@ -517,6 +517,22 @@ def test_short_encoded_private_values_are_rejected(private_value, screening):
     assert result.reason == "encoded_leakage"
 
 
+@pytest.mark.parametrize("remove_padding", [False, True])
+def test_one_or_two_byte_encoded_private_values_are_rejected(remove_padding):
+    private_value = "Al"
+    encoded_value = encoded(private_value)
+    if remove_padding:
+        encoded_value = encoded_value.rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded_value)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
 @pytest.mark.parametrize("question", ["ＱＷ５ｕ", "QW\u200b5u"])
 def test_disguised_encoded_private_values_are_rejected(question):
     result = build_safe_research_brief(
@@ -597,6 +613,20 @@ def test_encoded_private_value_in_url_path_is_rejected():
     assert result.reason == "encoded_leakage"
 
 
+def test_encoded_private_value_with_internal_slash_in_url_path_is_rejected():
+    private_value = "Пётр"
+    encoded_value = encoded(private_value)
+    assert "/" in encoded_value
+    result = build_safe_research_brief(
+        records(ResearchQuestion(f"Review https://example.org/{encoded_value}")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
 def test_benign_short_base64_shaped_text_is_allowed():
     result = build_safe_research_brief(
         records(ResearchQuestion("YWJj")),
@@ -609,7 +639,7 @@ def test_benign_short_base64_shaped_text_is_allowed():
 
 def test_ambiguous_folded_control_bytes_are_allowed():
     result = build_safe_research_brief(
-        records(ResearchQuestion("AA AA")),
+        records(ResearchQuestion("A A A A")),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
@@ -690,7 +720,7 @@ def test_benign_encoding_at_the_screening_depth_limit_is_allowed():
 
 def test_folded_control_bytes_at_the_screening_depth_limit_are_allowed():
     result = build_safe_research_brief(
-        records(ResearchQuestion(encoded("AA AA", times=4))),
+        records(ResearchQuestion(encoded("A A A A", times=4))),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
