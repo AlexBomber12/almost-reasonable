@@ -343,8 +343,8 @@ def _validate_response_fields(response: WorkerResponse) -> None:
             raise ValueError("response message is too large")
     if response.validation is not None:
         _proposal_data(response.validation)
-        if response.outcome != "completed":
-            raise ValueError("only completed responses may contain a proposal")
+    if (response.outcome == "completed") != (response.validation is not None):
+        raise ValueError("completed response and proposal are inconsistent")
 
 
 def _encode_json(value: object) -> bytes:

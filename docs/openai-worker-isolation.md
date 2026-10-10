@@ -80,6 +80,11 @@ paid call after its client lifetime expired. A client that already began
 transmission conservatively reports `outcome_uncertain`; the rejected request is
 not processed or queued.
 
+After decoding, the worker verifies that the IPC lifetime still contains the
+existing maximum gateway overall timeout plus response-I/O allowance. If a peer
+consumed that reserve while slowly framing its request, the worker returns a
+sanitized timeout without invoking the gateway or provider.
+
 ## Peer and filesystem authentication
 
 On Linux, the server requires `SO_PEERCRED` and compares the kernel-reported UID

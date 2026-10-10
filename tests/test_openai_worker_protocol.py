@@ -188,6 +188,7 @@ def test_response_round_trip_without_proposal():
         WorkerResponse("disabled", 4, None),
         WorkerResponse("disabled", 0, ""),
         WorkerResponse("disabled", 0, "x" * 513),
+        WorkerResponse("completed", 1, None),
         WorkerResponse("completed", 1, None, ProposalValidation(None, None)),
         WorkerResponse(
             "disabled",
@@ -225,6 +226,14 @@ def test_response_decoder_rejects_malformed_values(change):
     data = response_data()
     change(data)
     with pytest.raises(WorkerProtocolError):
+        decode_response(json.dumps(data).encode())
+
+
+def test_response_decoder_rejects_completed_outcome_without_proposal():
+    data = response_data()
+    data["outcome"] = "completed"
+    data["attempts"] = 1
+    with pytest.raises(WorkerProtocolError, match="invalid worker response"):
         decode_response(json.dumps(data).encode())
 
 

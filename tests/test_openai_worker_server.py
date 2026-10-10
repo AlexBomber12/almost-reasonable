@@ -236,6 +236,32 @@ def test_post_provider_gateway_fault_closes_with_uncertain_client_outcome(tmp_pa
     assert state.usage_attempt("operation-a:1").outcome == "server_error"
 
 
+def test_expended_ipc_lifetime_blocks_gateway_submission(tmp_path, monkeypatch):
+    directory = secure_directory(tmp_path)
+    instance, transport = gateway(
+        directory, [response()], stage=DeploymentStage.STAGE_1
+    )
+    base = time.monotonic()
+    clock = iter((base, base + 319.0))
+    monkeypatch.setattr(server_module, "monotonic", lambda: next(clock))
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        instance,
+    )
+    server.start()
+    try:
+        payload = encode_request(
+            InferenceRequest("operation-a", "correlation-a", request(directory))
+        )
+        result = raw_exchange(server, struct.pack("!I", len(payload)) + payload)
+    finally:
+        server.close()
+
+    assert result.outcome == "timeout"
+    assert result.attempts == 0
+    assert transport.calls == []
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

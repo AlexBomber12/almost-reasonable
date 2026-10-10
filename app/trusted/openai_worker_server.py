@@ -10,9 +10,12 @@ import socket
 import stat
 import struct
 from threading import Thread
-import time
+from time import monotonic
 
-from app.core.provider_contract import default_openai_provider_config
+from app.core.provider_contract import (
+    MAX_OVERALL_TIMEOUT_SECONDS,
+    default_openai_provider_config,
+)
 from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore
 from app.trusted.openai_gateway import GatewayResult, TrustedOpenAIGateway
@@ -32,6 +35,7 @@ from app.trusted.openai_worker_protocol import (
 SOCKET_MODE = 0o600
 MAX_LINUX_UID = 2**32 - 2
 _INVALID_REQUEST_RU = "Локальный запрос к модели отклонён."
+_TIMEOUT_RU = "Сервис модели временно недоступен. Попробуйте позже."
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,7 +132,7 @@ class OpenAIWorkerServer:
                 return
             if peer_uid not in self._config.permitted_peer_uids:
                 return
-            deadline = time.monotonic() + self._config.connection_lifetime_seconds
+            deadline = monotonic() + self._config.connection_lifetime_seconds
             try:
                 request = decode_request(
                     receive_frame(
@@ -140,15 +144,21 @@ class OpenAIWorkerServer:
             except (TypeError, ValueError):
                 response = WorkerResponse(IPC_REJECTED, 0, _INVALID_REQUEST_RU, None)
             else:
-                try:
-                    result = self._gateway.submit(
-                        request.model_request,
-                        correlation_id=request.correlation_id,
-                        operation_id=request.operation_id,
-                    )
-                except (TypeError, ValueError):
-                    return
-                response = _gateway_response(result)
+                gateway_allowance = (
+                    MAX_OVERALL_TIMEOUT_SECONDS + self._config.io_timeout_seconds
+                )
+                if deadline - monotonic() < gateway_allowance:
+                    response = WorkerResponse("timeout", 0, _TIMEOUT_RU, None)
+                else:
+                    try:
+                        result = self._gateway.submit(
+                            request.model_request,
+                            correlation_id=request.correlation_id,
+                            operation_id=request.operation_id,
+                        )
+                    except (TypeError, ValueError):
+                        return
+                    response = _gateway_response(result)
             try:
                 send_frame(
                     connection,
