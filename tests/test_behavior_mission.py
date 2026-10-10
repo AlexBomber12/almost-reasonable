@@ -761,6 +761,24 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
         )
     )
     resolved = json.loads(path.read_text(encoding="utf-8"))
+    rolled_back_current = json.loads(json.dumps(resolved))
+    rolled_back_current["current"] = pending["current"]
+    path.write_text(json.dumps(rolled_back_current), encoding="utf-8")
+    with pytest.raises(ValueError, match="root mission conflicts"):
+        repository.load()
+
+    forged_current = json.loads(json.dumps(resolved))
+    forged_current["current"] = {
+        "version": "forged-version",
+        "text": "Вести содержательный диалог без обязательной публикации",
+        "activated_at": (NOW + timedelta(minutes=1)).isoformat(),
+        "parent_version": "mission-v1",
+        "purpose": MissionPurpose.DIALOGUE.value,
+    }
+    path.write_text(json.dumps(forged_current), encoding="utf-8")
+    with pytest.raises(ValueError, match="confirmed history"):
+        repository.load()
+
     resolved["proposals"][0]["confirmation"]["proposal_id"] = "other-proposal"
     path.write_text(json.dumps(resolved), encoding="utf-8")
     with pytest.raises(ValueError, match="does not match"):

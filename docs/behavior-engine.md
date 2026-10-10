@@ -197,7 +197,9 @@ to an `EvidenceAuthority` implementation without rendering private provenance
 into ordinary model context.
 Repository loads re-run proposal and confirmation validation and enforce status /
 confirmation consistency before returning a document; persisted text never
-becomes trusted merely because it came from the mission JSON file.
+becomes trusted merely because it came from the mission JSON file. A non-root
+active mission must match exactly one confirmed proposal, parent, purpose, text,
+and confirmation timestamp in that validated history.
 
 ## Behavioral evaluation artifacts
 
@@ -226,6 +228,8 @@ limitations.
 Recorded outputs must be a non-empty tuple (never a string implicitly treated as
 characters/trials). Every below-threshold observation requires at least one
 typed failure category, while passing observations cannot carry failure labels.
+Case, generation, assessor, rubric, adjudication, and recorded-output strings
+must all be non-empty UTF-8-encodable text before hashing or serialization.
 Optional human calibration receives every observation and records a non-empty
 reviewer identity, calibration version, optional Boolean override
 recommendation, and note; malformed or provenance-free adjudication rejects.

@@ -187,9 +187,9 @@ class BehavioralEvaluationHarness:
                 and rule.assessor_kind is not AssessorKind.DETERMINISTIC
             ):
                 raise ValueError("G-class controls require a deterministic assessor")
-            if not 0 <= rule.threshold <= 1 or not rule.description:
+            if not 0 <= rule.threshold <= 1 or not _valid_utf8_text(rule.description):
                 raise ValueError("rubric rule is invalid")
-        if not isinstance(rubric_version, str) or not rubric_version:
+        if not _valid_utf8_text(rubric_version):
             raise ValueError("rubric_version must be non-empty")
         if rubric_version == RUBRIC_VERSION and rubric != default_rubric():
             raise ValueError(
@@ -207,8 +207,7 @@ class BehavioralEvaluationHarness:
             or any(
                 not isinstance(binding, BoundAssessor)
                 or not isinstance(binding.kind, AssessorKind)
-                or not isinstance(binding.identifier, str)
-                or not binding.identifier
+                or not _valid_utf8_text(binding.identifier)
                 or not callable(binding.assess)
                 for binding in assessors
             )
@@ -229,16 +228,15 @@ class BehavioralEvaluationHarness:
         observations: list[EvaluationObservation] = []
         case_ids: set[str] = set()
         for case in cases:
-            if not case.case_id or case.case_id in case_ids:
+            if not _valid_utf8_text(case.case_id) or case.case_id in case_ids:
                 raise ValueError("case IDs must be non-empty and unique")
             case_ids.add(case.case_id)
             if (
-                not isinstance(case.prompt, str)
-                or not case.prompt
+                not _valid_utf8_text(case.prompt)
                 or type(case.tags) is not tuple
-                or any(not isinstance(tag, str) or not tag for tag in case.tags)
+                or any(not _valid_utf8_text(tag) for tag in case.tags)
                 or any(
-                    not isinstance(value, str) or not value
+                    not _valid_utf8_text(value)
                     for value in (
                         case.model_identifier,
                         case.prompt_version,
@@ -252,10 +250,7 @@ class BehavioralEvaluationHarness:
             if (
                 type(case.recorded_outputs) is not tuple
                 or not case.recorded_outputs
-                or any(
-                    not isinstance(output, str) or not output
-                    for output in case.recorded_outputs
-                )
+                or any(not _valid_utf8_text(output) for output in case.recorded_outputs)
             ):
                 raise ValueError("each case requires a non-empty recorded output")
             case_input_sha256 = _json_sha256(
@@ -319,13 +314,11 @@ class BehavioralEvaluationHarness:
                         adjudication = self._human_calibration(observation)
                         if (
                             not isinstance(adjudication, HumanAdjudication)
-                            or not isinstance(adjudication.reviewer_id, str)
-                            or not adjudication.reviewer_id
-                            or not isinstance(adjudication.calibration_version, str)
-                            or not adjudication.calibration_version
+                            or not _valid_utf8_text(adjudication.reviewer_id)
+                            or not _valid_utf8_text(adjudication.calibration_version)
                             or adjudication.override_passed is not None
                             and type(adjudication.override_passed) is not bool
-                            or not isinstance(adjudication.note, str)
+                            or not _valid_utf8_text(adjudication.note)
                         ):
                             raise ValueError("human adjudication provenance is invalid")
                         observation = replace(observation, adjudication=adjudication)
@@ -362,6 +355,16 @@ def _json_sha256(value: object) -> str:
         separators=(",", ":"),
     )
     return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _valid_utf8_text(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return True
 
 
 def _default_assurance(dimension: RubricDimension) -> AssuranceClass:

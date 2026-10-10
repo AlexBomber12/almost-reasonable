@@ -624,6 +624,7 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
                 parsed_confirmation,
             )
         )
+    _validate_active_mission(current, tuple(records))
     return MissionDocument(current, tuple(records), stored_invariants)
 
 
@@ -641,3 +642,27 @@ def _validate_stored_mission(mission: Mission) -> None:
         mission.text, mission.purpose
     ):
         raise ValueError("stored current mission does not match its purpose")
+
+
+def _validate_active_mission(
+    current: Mission, records: tuple[MissionRecord, ...]
+) -> None:
+    confirmed = tuple(
+        record for record in records if record.status is MissionStatus.CONFIRMED
+    )
+    if current.parent_version is None:
+        if confirmed:
+            raise ValueError("root mission conflicts with confirmed history")
+        return
+    matches = tuple(
+        record
+        for record in confirmed
+        if record.proposal.version_identity == current.version
+        and record.proposal.current_mission_version == current.parent_version
+        and record.proposal.proposed_mission == current.text
+        and record.proposal.purpose is current.purpose
+        and record.confirmation is not None
+        and record.confirmation.decided_at == current.activated_at
+    )
+    if len(matches) != 1:
+        raise ValueError("active mission does not match confirmed history")

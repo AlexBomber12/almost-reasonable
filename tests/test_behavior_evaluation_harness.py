@@ -200,6 +200,10 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
                 ),
             )
         )
+    with pytest.raises(ValueError, match="recorded output"):
+        custom_harness((rule,), assessor).run(
+            (evaluation_case("surrogate", "prompt", ("Привет \ud800",), ()),)
+        )
     for invalid in (
         evaluation_case("empty-prompt", "", ("output",), ()),
         evaluation_case("invalid-tags", "prompt", ("output",), ("",)),
