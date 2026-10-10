@@ -159,6 +159,26 @@ def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
     assert timeout_result.outcome is SchedulerOutcome.EXECUTION_LIMIT
     assert timeout_result.decision is None
 
+    for error in (ConnectionError("provider unavailable"), ValueError("bad output")):
+        failure_store = InMemorySchedulerStore()
+
+        def failed(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+            raise error
+
+        failed_result = TestScheduler(
+            policy(), failure_store, MutableClock(NOW), failed
+        ).run((event(type(error).__name__),))
+        assert failed_result.outcome is SchedulerOutcome.FAILED
+        assert failure_store.load().processed_event_ids == (type(error).__name__,)
+
+    def programmer_fault(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+        raise TypeError("adapter contract bug")
+
+    with pytest.raises(TypeError, match="contract bug"):
+        TestScheduler(
+            policy(), InMemorySchedulerStore(), MutableClock(NOW), programmer_fault
+        ).run((event("programmer-fault"),))
+
 
 def test_overnight_active_hours_expired_duplicate_and_validation() -> None:
     overnight = policy(active_start=time(22), active_end=time(6))

@@ -64,9 +64,11 @@ rejects hidden control/format characters, removes URLs and code from
 conversational-language accounting,
 tolerates bounded Latin technical terminology and proper names, and excludes
 HTTP(S), FTP, `www`, bare-domain URLs, and code regions before comparing
-Cyrillic and Latin prose. Foreign quotations remain in the language accounting,
-so their Russian framing and explanation must be proportionate to their size. A
-small marker set rejects clear Ukrainian and Belarusian proximity cases.
+Cyrillic and foreign prose. Non-Latin letter scripts are converted to bounded
+word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
+from the ratio. Foreign quotations remain in the language accounting, so their
+Russian framing and explanation must be proportionate to their size. A small
+marker set rejects clear Ukrainian and Belarusian proximity cases.
 
 The corpus contains ten labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, English-only,
@@ -100,7 +102,10 @@ Future events remain eligible when their time arrives, and a duplicate newest
 event cannot starve an older unprocessed due event. The input batch itself is
 bounded to 1,024 wake-ups, and there is no catch-up loop. The application-owned
 deliberation callback receives the hard elapsed-time limit and must enforce it;
-`TimeoutError` and a late return both produce `execution_limit`.
+`TimeoutError` and a late return both produce `execution_limit`. Expected
+adapter/provider failures (`OSError` and malformed-output `ValueError`) produce
+and persist `failed`; programmer contract errors such as `TypeError` continue to
+surface for diagnosis.
 Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
 rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
@@ -119,14 +124,26 @@ policy snapshots. No provider or Threads execution is enabled here.
 repository rather than changing the shared `EventStore` schema. A proposal
 records proposed text, current mission reference, initiating event, supporting
 reasons, counterevidence, version identity, time, correlation, model/prompt
-versions, and the capability-policy invariant snapshot.
+versions, a closed purpose category, the initiating source, and the
+capability-policy invariant snapshot. The purpose category is a structured
+allowlist; the proposed text must equal its application-owned canonical Russian
+text, in addition to passing the closed-field screen. Supporting reasons carry
+the proposal-specific nuance without becoming active mission instructions.
 
 Only a later `MissionConfirmation` can confirm or reject it. The confirmation
 must have a later timestamp, a different event and correlation, independent
 evidence, explicit reasons/counterevidence, and exactly the same invariant
-snapshot. Pending proposals never affect the active mission. Rejection retains
-the current mission. Confirmation creates a new mission version with the former
-version as its parent. Resolved proposals cannot be resolved again.
+snapshot. Each evidence identifier is bound to a typed provenance and source
+identifier, and at least one source must differ from the proposal's initiating
+source. A required application-owned `EvidenceAuthority` then verifies those
+records against protected provenance; event-ID inequality or a model-supplied
+source label alone is therefore insufficient. Pending proposals never affect
+the active mission. Rejection retains the current mission.
+Confirmation creates a new mission version with the former version as its
+parent. Resolved proposals cannot be resolved again. The capability snapshot is
+frozen only for an individual pending transition: after earlier proposals are
+resolved, a later authenticated operational change may supply a new snapshot
+without rewriting history.
 
 Mission text, reasons, and counterevidence use Unicode-normalized, fail-closed
 screening for hidden controls, links, instruction/prompt language, credentials,
@@ -150,7 +167,8 @@ proposal/rejection/history recovery. Final application integration should place
 the repository under the deployment's protected durable data directory, add it
 to consistent backup/restore and retention procedures, serialize writes through
 the application's single-writer discipline, and connect protected evidence IDs
-without rendering private provenance into ordinary model context.
+to an `EvidenceAuthority` implementation without rendering private provenance
+into ordinary model context.
 
 ## Behavioral evaluation artifacts
 

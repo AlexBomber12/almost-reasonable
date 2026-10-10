@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+import math
 import re
 import unicodedata
 
@@ -98,6 +99,7 @@ class RussianOutputGate:
         )
         nearby_letters = sum(character in "іїєґўІЇЄҐЎ" for character in prose)
         foreign = sum(word not in _COMMON_LATIN_TERMS for word in latin)
+        foreign += _foreign_script_units(prose)
         if nearby_letters and nearby_score >= 2:
             return _assessment(
                 False, GateReason.NEARBY_LANGUAGE, len(cyrillic), foreign
@@ -228,6 +230,16 @@ def _strip_non_prose_regions(text: str) -> str:
     without_code = _FENCED_CODE.sub(" ", text)
     without_code = _INLINE_CODE.sub(" ", without_code)
     return _URL.sub(" ", without_code)
+
+
+def _foreign_script_units(text: str) -> int:
+    letters = sum(
+        unicodedata.category(character).startswith("L")
+        and not ("A" <= character <= "Z" or "a" <= character <= "z")
+        and _CYRILLIC_WORD.fullmatch(character) is None
+        for character in text
+    )
+    return math.ceil(letters / 4)
 
 
 def _is_disallowed_control(character: str) -> bool:

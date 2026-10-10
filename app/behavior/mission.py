@@ -50,6 +50,43 @@ class ConfirmationOutcome(StrEnum):
     REJECTED = "rejected"
 
 
+class MissionPurpose(StrEnum):
+    GENERAL_INQUIRY = "general_inquiry"
+    RESEARCH = "research"
+    DIALOGUE = "dialogue"
+    REFLECTION = "reflection"
+    DISCONTINUE_OPTIONAL_CHANNEL = "discontinue_optional_channel"
+
+
+_MISSION_PURPOSE_TEXT = {
+    MissionPurpose.GENERAL_INQUIRY: (
+        "Исследовать проверяемые идеи и поддерживать содержательный диалог"
+    ),
+    MissionPurpose.RESEARCH: (
+        "Исследовать проверяемые идеи без обязательной публикации"
+    ),
+    MissionPurpose.DIALOGUE: "Вести содержательный диалог без обязательной публикации",
+    MissionPurpose.REFLECTION: "Осмыслять и пересматривать долгосрочное направление",
+    MissionPurpose.DISCONTINUE_OPTIONAL_CHANNEL: (
+        "Прекратить необязательную публикацию в Threads"
+    ),
+}
+
+
+class EvidenceProvenance(StrEnum):
+    PARTICIPANT = "participant"
+    PUBLIC_SOURCE = "public_source"
+    AGENT_OBSERVATION = "agent_observation"
+    VERIFIED_SOURCE = "verified_source"
+
+
+@dataclass(frozen=True, slots=True)
+class MissionEvidenceSource:
+    evidence_id: str
+    source_id: str
+    provenance: EvidenceProvenance
+
+
 @dataclass(frozen=True, slots=True)
 class CapabilityPolicyInvariants:
     core_self_version: str
@@ -70,6 +107,7 @@ class Mission:
     text: str
     activated_at: datetime
     parent_version: str | None
+    purpose: MissionPurpose = MissionPurpose.GENERAL_INQUIRY
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +124,8 @@ class MissionProposal:
     model_identifier: str
     prompt_version: str
     invariants: CapabilityPolicyInvariants
+    purpose: MissionPurpose
+    initiating_source_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,6 +139,7 @@ class MissionConfirmation:
     counterevidence: tuple[str, ...]
     evidence_ids: tuple[str, ...]
     invariants: CapabilityPolicyInvariants
+    evidence_sources: tuple[MissionEvidenceSource, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +160,16 @@ class MissionRepository(Protocol):
     def load(self) -> MissionDocument: ...
 
     def save(self, document: MissionDocument) -> None: ...
+
+
+class EvidenceAuthority(Protocol):
+    """Application-owned verifier for protected source/provenance records."""
+
+    def __call__(
+        self,
+        initiating_source_id: str,
+        evidence_sources: tuple[MissionEvidenceSource, ...],
+    ) -> bool: ...
 
 
 class JsonMissionRepository:
@@ -148,8 +199,11 @@ class JsonMissionRepository:
 
 
 class MissionStateMachine:
-    def __init__(self, repository: MissionRepository):
+    def __init__(
+        self, repository: MissionRepository, evidence_authority: EvidenceAuthority
+    ):
         self._repository = repository
+        self._evidence_authority = evidence_authority
 
     def current_mission(self) -> Mission:
         return self._repository.load().current
@@ -169,9 +223,10 @@ class MissionStateMachine:
             for item in document.proposals
         ):
             raise ValueError("proposal already exists")
-        if (
-            document.invariants is not None
-            and proposal.invariants != document.invariants
+        if any(
+            item.status is MissionStatus.PENDING
+            and item.proposal.invariants != proposal.invariants
+            for item in document.proposals
         ):
             raise ValueError("capability-policy invariants changed")
         record = MissionRecord(proposal, MissionStatus.PENDING, None)
@@ -200,7 +255,15 @@ class MissionStateMachine:
             raise ValueError("proposal is already resolved")
         if existing.proposal.current_mission_version != document.current.version:
             raise ValueError("proposal parent is no longer the current mission")
-        _validate_confirmation(existing.proposal, confirmation, document.invariants)
+        _validate_confirmation(existing.proposal, confirmation)
+        if (
+            self._evidence_authority(
+                existing.proposal.initiating_source_id,
+                confirmation.evidence_sources,
+            )
+            is not True
+        ):
+            raise ValueError("confirmation evidence is not independently authorized")
         status = MissionStatus(confirmation.outcome.value)
         resolved = MissionRecord(existing.proposal, status, confirmation)
         proposals = list(document.proposals)
@@ -212,6 +275,7 @@ class MissionStateMachine:
                 existing.proposal.proposed_mission,
                 confirmation.decided_at,
                 existing.proposal.current_mission_version,
+                existing.proposal.purpose,
             )
         self._repository.save(
             MissionDocument(current, tuple(proposals), document.invariants)
@@ -230,6 +294,7 @@ def _validate_proposal(proposal: MissionProposal) -> None:
         "correlation_id",
         "model_identifier",
         "prompt_version",
+        "initiating_source_id",
     ):
         if not _valid_identifier(getattr(proposal, name)):
             raise ValueError(f"{name} is invalid")
@@ -244,6 +309,10 @@ def _validate_proposal(proposal: MissionProposal) -> None:
         raise ValueError(
             "closed mission text rejects instructions, links, and policy changes"
         )
+    if not isinstance(proposal.purpose, MissionPurpose) or not _mission_matches_purpose(
+        proposal.proposed_mission, proposal.purpose
+    ):
+        raise ValueError("proposed_mission does not match its allowed purpose")
     _validate_text_tuple(proposal.supporting_reasons, "supporting_reasons")
     _validate_text_tuple(proposal.counterevidence, "counterevidence")
     _validate_aggregate_text(
@@ -260,7 +329,6 @@ def _validate_proposal(proposal: MissionProposal) -> None:
 def _validate_confirmation(
     proposal: MissionProposal,
     confirmation: MissionConfirmation,
-    invariants: CapabilityPolicyInvariants | None,
 ) -> None:
     if confirmation.event_id == proposal.initiating_event_id:
         raise ValueError("confirmation requires an independent event")
@@ -284,6 +352,11 @@ def _validate_confirmation(
             "closed confirmation text rejects instructions, links, and policy changes"
         )
     _validate_identifier_tuple(confirmation.evidence_ids, "evidence_ids")
+    _validate_evidence_sources(confirmation.evidence_sources)
+    if tuple(source.evidence_id for source in confirmation.evidence_sources) != (
+        confirmation.evidence_ids
+    ):
+        raise ValueError("each evidence ID requires matching source provenance")
     _validate_aggregate_text(
         (
             *confirmation.reasons,
@@ -291,10 +364,13 @@ def _validate_confirmation(
             *confirmation.evidence_ids,
         )
     )
-    if proposal.initiating_event_id in confirmation.evidence_ids:
+    if proposal.initiating_event_id in confirmation.evidence_ids or not any(
+        source.source_id != proposal.initiating_source_id
+        for source in confirmation.evidence_sources
+    ):
         raise ValueError("confirmation requires independent evidence")
     _validate_invariants(confirmation.invariants)
-    if invariants is None or confirmation.invariants != invariants:
+    if confirmation.invariants != proposal.invariants:
         raise ValueError("capability-policy invariants changed")
 
 
@@ -354,6 +430,22 @@ def _validate_identifier_tuple(value: tuple[str, ...], name: str) -> None:
         raise ValueError(f"{name} exceeds its aggregate byte bound")
 
 
+def _validate_evidence_sources(value: tuple[MissionEvidenceSource, ...]) -> None:
+    if (
+        type(value) is not tuple
+        or not value
+        or len(value) > MAX_MISSION_COLLECTION_ITEMS
+        or any(
+            not isinstance(source, MissionEvidenceSource)
+            or not _valid_identifier(source.evidence_id)
+            or not _valid_identifier(source.source_id)
+            or not isinstance(source.provenance, EvidenceProvenance)
+            for source in value
+        )
+    ):
+        raise ValueError("evidence_sources must contain bounded typed provenance")
+
+
 def _validate_time(value: datetime) -> None:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("decision timestamp must be timezone-aware")
@@ -382,6 +474,12 @@ def _contains_forbidden_mission_content(value: str) -> bool:
     return any(pattern.search(normalized) for pattern in _FORBIDDEN_MISSION_PATTERNS)
 
 
+def _mission_matches_purpose(value: str, purpose: MissionPurpose) -> bool:
+    normalized = unicodedata.normalize("NFKC", value).casefold().strip()
+    expected = unicodedata.normalize("NFKC", _MISSION_PURPOSE_TEXT[purpose]).casefold()
+    return normalized == expected
+
+
 def _document_to_dict(document: MissionDocument) -> dict[str, object]:
     return {
         "schema_version": MISSION_SCHEMA_VERSION,
@@ -399,6 +497,7 @@ def _mission_to_dict(mission: Mission) -> dict[str, object]:
         "text": mission.text,
         "activated_at": mission.activated_at.isoformat(),
         "parent_version": mission.parent_version,
+        "purpose": mission.purpose.value,
     }
 
 
@@ -438,6 +537,7 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
         current_raw["text"],
         datetime.fromisoformat(current_raw["activated_at"]),
         current_raw["parent_version"],
+        MissionPurpose(current_raw["purpose"]),
     )
     invariants_raw = raw["invariants"]
     stored_invariants = (
@@ -459,6 +559,7 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
             proposal_values["supporting_reasons"]
         )
         proposal_values["counterevidence"] = tuple(proposal_values["counterevidence"])
+        proposal_values["purpose"] = MissionPurpose(proposal_values["purpose"])
         proposal_values["invariants"] = CapabilityPolicyInvariants(
             **proposal_values["invariants"]
         )
@@ -475,6 +576,14 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
             )
             for key in ("reasons", "counterevidence", "evidence_ids"):
                 confirmation_values[key] = tuple(confirmation_values[key])
+            confirmation_values["evidence_sources"] = tuple(
+                MissionEvidenceSource(
+                    source["evidence_id"],
+                    source["source_id"],
+                    EvidenceProvenance(source["provenance"]),
+                )
+                for source in confirmation_values["evidence_sources"]
+            )
             confirmation_values["invariants"] = CapabilityPolicyInvariants(
                 **confirmation_values["invariants"]
             )

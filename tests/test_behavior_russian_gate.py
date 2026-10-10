@@ -76,6 +76,21 @@ def test_compatibility_latin_is_normalized_before_language_scoring() -> None:
 
 
 @pytest.mark.parametrize(
+    "foreign",
+    (
+        "这是一个完全用中文写的很长的对话回答",
+        "هذه إجابة حوارية طويلة مكتوبة بالعربية فقط",
+        "Αυτή είναι μια μεγάλη απάντηση μόνο στα ελληνικά",
+    ),
+)
+def test_non_latin_foreign_scripts_participate_in_language_ratio(foreign: str) -> None:
+    assessment = RussianOutputGate().assess(f"Да. {foreign}.")
+    assert not assessment.accepted
+    assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
+    assert assessment.foreign_prose_word_count > 3
+
+
+@pytest.mark.parametrize(
     "url",
     (
         "www.example.com/docs",

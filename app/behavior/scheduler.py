@@ -231,6 +231,9 @@ class TestScheduler:
         except TimeoutError:
             outcome = SchedulerOutcome.EXECUTION_LIMIT
             valid_decision = None
+        except (OSError, ValueError):
+            outcome = SchedulerOutcome.FAILED
+            valid_decision = None
         else:
             finished_at = self._clock.now()
             if not isinstance(decision, AgentDecision):
