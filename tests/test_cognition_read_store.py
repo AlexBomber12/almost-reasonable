@@ -192,6 +192,54 @@ def test_candidate_snapshot_read_sql_failure_is_translated(read_setup, monkeypat
         CognitionReadStore(events, state).retrieve_all_private_candidate_reads(context)
 
 
+def test_candidate_snapshot_batches_provenance_reads(read_setup, monkeypatch):
+    events, state, context = read_setup
+    second = InterestMemoryProposal(
+        ProposalContext(
+            "operation-b",
+            "event-a",
+            ("event-a",),
+            (),
+            None,
+            "Second synthetic rationale.",
+            NOW + timedelta(minutes=2),
+            NOW + timedelta(days=1),
+        ),
+        "interest-b",
+        "Bounded database work",
+        60,
+        InterestStatus.ACTIVE,
+        "Retrieval must not issue one provenance query per candidate.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(second))
+        .process(context, "event-a")
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    statements = []
+    original_open = events._open
+
+    def traced_open():
+        connection = original_open()
+        connection.set_trace_callback(statements.append)
+        return connection
+
+    monkeypatch.setattr(events, "_open", traced_open)
+
+    reads = CognitionReadStore(events, state).retrieve_all_private_candidate_reads(
+        context
+    )
+
+    provenance_queries = [
+        statement
+        for statement in statements
+        if "source.retention_status IN ('active', 'invalidated')" in statement
+    ]
+    assert len(reads) == 2
+    assert len(provenance_queries) == 1
+
+
 def test_revision_reference_sql_failure_is_translated(read_setup, monkeypatch):
     events, state, context = read_setup
     monkeypatch.setattr(

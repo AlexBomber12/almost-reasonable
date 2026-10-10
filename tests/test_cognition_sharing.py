@@ -143,6 +143,10 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
     [
         ("Contact ada@example.test about uncertainty.", AbstractReason.IDENTIFIER),
         ("Contact иван@пример.рф about uncertainty.", AbstractReason.IDENTIFIER),
+        (
+            "Discuss broad lessons without contacting @иван directly.",
+            AbstractReason.IDENTIFIER,
+        ),
         ("Read https://private.example.test/profile.", AbstractReason.IDENTIFIER),
         ("Contact ada＠example．test privately.", AbstractReason.IDENTIFIER),
         ("Read https：／／private．example．test/profile.", AbstractReason.IDENTIFIER),
@@ -210,6 +214,51 @@ def test_missing_fake_cross_scope_and_exposed_provenance_fail_closed(sharing_set
         validator.validate(context_a, too_many).reason
         is AbstractReason.MISSING_PROVENANCE
     )
+
+
+def test_short_protected_ids_require_token_boundaries(tmp_path):
+    events = EventStore(tmp_path / "events.sqlite3")
+    context = TrustedPrincipalContext(
+        ParticipantId("1"),
+        AuthenticatedSourceReference("session-short-ids"),
+    )
+    events.append_private_input(
+        context,
+        PrivateInputEvent(
+            "a",
+            "payload-short-ids",
+            "message-short-ids",
+            NOW,
+            EventType.PARTICIPANT_INPUT,
+            EventChannel.PRIVATE_CHAT,
+            "correlation-short-ids",
+            EventAudience.private_for(context.principal_id),
+            Provenance(
+                ProvenanceType.PARTICIPANT_ASSERTION,
+                VerificationStatus.UNVERIFIED,
+            ),
+            "A private source about astronomy.",
+        ),
+    )
+    validator = AbstractToSharedValidator(events)
+
+    safe = validator.validate(
+        context,
+        proposal("a", "General themes concern resilient communities."),
+    )
+    event_exposed = validator.validate(
+        context,
+        proposal("a", "General themes explicitly cite (a) as their source."),
+    )
+    participant_exposed = validator.validate(
+        context,
+        proposal("a", "General themes explicitly identify group 1."),
+    )
+
+    assert safe.status is AbstractDecisionStatus.QUARANTINED
+    assert safe.reason is AbstractReason.SHARED_COMMIT_DISABLED
+    assert event_exposed.reason is AbstractReason.PROTECTED_METADATA
+    assert participant_exposed.reason is AbstractReason.PROTECTED_METADATA
 
 
 def test_capability_verification_kind_and_shape_validation(sharing_setup):

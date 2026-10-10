@@ -32,7 +32,7 @@ _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _IDENTIFIER = re.compile(
     r"(?:(?<![\w@])[\w.!#$%&'*+/=?^`{|}~-]+@"
     r"[\w-]+(?:\.[\w-]+)+(?![\w@])|"
-    r"(?<!\w)@[A-Za-z0-9_]{2,32}\b|"
+    r"(?<!\w)@\w{2,32}\b|"
     r"\b(?:https?://|www\.)\S+|"
     r"\b(?:\+?\d[\d ()-]{7,}\d)\b)",
     re.IGNORECASE,
@@ -95,6 +95,12 @@ def screen_abstract_candidate(
 def _normalized_words(value: str) -> tuple[str, ...]:
     normalized = unicodedata.normalize("NFKC", value).casefold()
     return tuple(_WORD.findall(normalized))
+
+
+def _contains_protected_marker(value: str, marker: str) -> bool:
+    normalized_marker = unicodedata.normalize("NFKC", marker).casefold()
+    pattern = re.compile(rf"(?<!\w){re.escape(normalized_marker)}(?!\w)")
+    return pattern.search(value) is not None
 
 
 class AbstractToSharedValidator:
@@ -196,7 +202,10 @@ class AbstractToSharedValidator:
             *protected_ids,
         )
         normalized_value = unicodedata.normalize("NFKC", candidate.value).casefold()
-        if any(marker.casefold() in normalized_value for marker in protected_markers):
+        if any(
+            _contains_protected_marker(normalized_value, marker)
+            for marker in protected_markers
+        ):
             return self._result(
                 AbstractDecisionStatus.REJECTED,
                 AbstractReason.PROTECTED_METADATA,
