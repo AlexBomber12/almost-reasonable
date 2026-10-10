@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 import hmac
+from ipaddress import ip_address
 import json
 import re
 import secrets
@@ -560,6 +561,11 @@ def _valid_https_url(value: object) -> bool:
 def _valid_hostname(value: str | None) -> bool:
     if value is None:
         return False
+    try:
+        ip_address(value)
+        return True
+    except ValueError:
+        pass
     try:
         ascii_hostname = value.encode("idna").decode("ascii")
     except UnicodeError:

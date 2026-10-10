@@ -44,9 +44,9 @@ _GROUPED_QUANTITY = re.compile(
 _BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_=-])"
 )
-_SPACED_BASE64 = re.compile(
+_FOLDED_BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])"
-    r"(?:[A-Za-z0-9+/_-]{4} +)+[A-Za-z0-9+/_-]{2,4}={0,2}"
+    r"(?:[A-Za-z0-9+/_-]+ +)+[A-Za-z0-9+/_-]+={0,2}"
     r"(?![A-Za-z0-9+/_=-])"
 )
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
@@ -402,20 +402,24 @@ def _screen(
         return reason
     encoded_candidates = _base64_candidates(values)
     if _encoded_depth >= _MAX_ENCODED_SCREEN_DEPTH:
-        return (
-            "encoded_leakage"
-            if any(
-                _decode_base64(candidate) is not None
-                for candidate in encoded_candidates
+        for candidate, opaque_is_leakage in encoded_candidates:
+            decoded = _decode_base64(candidate)
+            if decoded is None:
+                continue
+            has_control = any(
+                unicodedata.category(character) == "Cc" for character in decoded
             )
-            else None
-        )
-    for candidate in encoded_candidates:
+            if opaque_is_leakage or not has_control:
+                return "encoded_leakage"
+        return None
+    for candidate, opaque_is_leakage in encoded_candidates:
         decoded = _decode_base64(candidate)
         if decoded is None:
             continue
         if any(unicodedata.category(character) == "Cc" for character in decoded):
-            return "encoded_leakage"
+            if opaque_is_leakage:
+                return "encoded_leakage"
+            continue
         if (
             _screen(
                 [decoded],
@@ -485,17 +489,20 @@ def _decode_base64(value: str) -> str | None:
     return decoded
 
 
-def _base64_candidates(values: list[str]) -> tuple[str, ...]:
+def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
     views = (raw,) if normalized == raw else (raw, normalized)
+    delimited_views = (*views, *(view.replace("/", "\n") for view in views))
     contiguous = tuple(
-        match.group(0) for view in views for match in _BASE64.finditer(view)
+        (match.group(0), True)
+        for view in delimited_views
+        for match in _BASE64.finditer(view)
     )
     folded = tuple(
-        match.group(0).replace(" ", "")
+        (match.group(0).replace(" ", ""), False)
         for view in views
-        for match in _SPACED_BASE64.finditer(view)
+        for match in _FOLDED_BASE64.finditer(view)
     )
     return (*contiguous, *folded)
 

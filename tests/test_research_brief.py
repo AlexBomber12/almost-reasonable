@@ -568,14 +568,27 @@ def test_encoded_private_value_after_query_delimiter_is_rejected():
     assert result.reason == "encoded_leakage"
 
 
-def test_whitespace_folded_encoded_private_value_is_rejected():
+@pytest.mark.parametrize("split_at", [2, 4])
+def test_whitespace_folded_encoded_private_value_is_rejected(split_at):
     private_value = "alice@example.com"
     encoded_value = encoded(private_value)
-    spaced_value = " ".join(
-        encoded_value[index : index + 4] for index in range(0, len(encoded_value), 4)
-    )
+    spaced_value = f"{encoded_value[:split_at]} {encoded_value[split_at:]}"
     result = build_safe_research_brief(
         records(ResearchQuestion(spaced_value)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_encoded_private_value_in_url_path_is_rejected():
+    private_value = "alice@example.com"
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion(f"Review https://example.org/{encoded(private_value)}")
+        ),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
@@ -587,6 +600,16 @@ def test_whitespace_folded_encoded_private_value_is_rejected():
 def test_benign_short_base64_shaped_text_is_allowed():
     result = build_safe_research_brief(
         records(ResearchQuestion("YWJj")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+def test_ambiguous_folded_control_bytes_are_allowed():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("AA AA")),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
@@ -658,6 +681,16 @@ def test_nested_encoding_fails_closed_at_the_screening_depth_limit():
 def test_benign_encoding_at_the_screening_depth_limit_is_allowed():
     result = build_safe_research_brief(
         records(ResearchQuestion(encoded("ordinary public academic text", times=4))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+def test_folded_control_bytes_at_the_screening_depth_limit_are_allowed():
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded("AA AA", times=4))),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),

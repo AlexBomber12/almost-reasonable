@@ -89,6 +89,23 @@ def test_trailing_dot_dns_hostname_is_accepted():
     assert parsed.sources[0].status is SourceStatus.RECORDED
 
 
+def test_ipv6_literal_source_hostname_is_accepted():
+    url = "https://[2001:db8::1]/paper"
+    parsed = parse_hosted_search_response(response(url=url), retrieved_at=NOW)
+    verified = register_independently_verified_source(
+        reference="source-ipv6",
+        url=url,
+        title="IPv6 source",
+        publisher=None,
+        source_language="en",
+        publication_date=None,
+        evidence=VerificationEvidence("manual_check", "audit:ipv6", NOW),
+    )
+
+    assert parsed.sources[0].status is SourceStatus.RECORDED
+    assert verified.is_sourced is True
+
+
 @pytest.mark.parametrize(
     ("provider_response", "status"),
     [
