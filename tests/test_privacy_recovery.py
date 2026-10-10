@@ -426,6 +426,35 @@ def test_restore_rechecks_integrity_after_reconciliation(
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
+@pytest.mark.parametrize("schema_mutation", ["change", "drop"])
+def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    class SchemaMutatingAdapter(RestoreAdapter):
+        def rebuild_dependencies(self):
+            with sqlite3.connect(self.path) as connection:
+                if schema_mutation == "change":
+                    connection.execute("UPDATE schema_metadata SET version=4")
+                else:
+                    connection.execute("DROP TABLE schema_metadata")
+            return True
+
+    quarantine = tmp_path / f"quarantine-{schema_mutation}.sqlite3"
+    result = QuarantinedRestore(ledger, 3, SchemaMutatingAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "post_reconciliation_schema_invalid",
+    )
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+
 def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     tmp_path, monkeypatch
 ):

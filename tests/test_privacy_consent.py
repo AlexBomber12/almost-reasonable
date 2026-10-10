@@ -257,6 +257,22 @@ def test_abstraction_boundary_is_closed_and_preserves_hidden_provenance():
 
 
 @pytest.mark.parametrize(
+    ("source_audiences", "target_audience"),
+    [
+        ([], "private:participant-a"),
+        (("",), ""),
+        (("bad audience",), "bad audience"),
+        (("private:participant-a",), ""),
+    ],
+)
+def test_ordinary_derivation_rejects_malformed_audiences(
+    source_audiences, target_audience
+):
+    result = validate_ordinary_derivation(source_audiences, target_audience)
+    assert (result.accepted, result.reason) == (False, "invalid_audience")
+
+
+@pytest.mark.parametrize(
     ("changes", "reason"),
     [
         ({"kind": "memory"}, "unsupported_abstraction_kind"),

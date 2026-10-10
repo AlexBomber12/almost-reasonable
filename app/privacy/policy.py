@@ -25,9 +25,13 @@ def _valid_source_references(value: object) -> bool:
 def validate_ordinary_derivation(
     source_audiences: tuple[str, ...], target_audience: str
 ) -> BoundaryDecision:
-    if not source_audiences or any(
-        audience != target_audience for audience in source_audiences
-    ):
+    if not _valid_source_references(source_audiences):
+        return BoundaryDecision(False, "invalid_audience")
+    try:
+        require_token(target_audience, "target audience")
+    except ValueError:
+        return BoundaryDecision(False, "invalid_audience")
+    if any(audience != target_audience for audience in source_audiences):
         return BoundaryDecision(False, "ordinary_derivation_must_inherit_audience")
     return BoundaryDecision(True, "audience_inherited")
 

@@ -280,6 +280,21 @@ class QuarantinedRestore:
                 restore_id, restored_at, result.disposition, reason
             )
             return result
+        try:
+            schema_matches = _schema_version(quarantine) == self.expected_schema_version
+        except BackupError:
+            schema_matches = False
+        if not schema_matches:
+            result = RestoreResult(
+                restore_id,
+                RestoreDisposition.BLOCKED,
+                False,
+                "post_reconciliation_schema_invalid",
+            )
+            self.ledger.record_restore(
+                restore_id, restored_at, result.disposition, result.reason
+            )
+            return result
         if not _safe_integrity_ok(quarantine):
             result = RestoreResult(
                 restore_id,
