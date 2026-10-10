@@ -288,6 +288,19 @@ class MissionStateMachine:
         ):
             raise ValueError("confirmation evidence is not independently authorized")
         status = MissionStatus(confirmation.outcome.value)
+        if status is MissionStatus.CONFIRMED and any(
+            sibling_index != index
+            and item.proposal.current_mission_version
+            == existing.proposal.current_mission_version
+            and (
+                _instant(item.proposal.decided_at) > _instant(confirmation.decided_at)
+                or item.confirmation is not None
+                and _instant(item.confirmation.decided_at)
+                > _instant(confirmation.decided_at)
+            )
+            for sibling_index, item in enumerate(document.proposals)
+        ):
+            raise ValueError("confirmation predates a sibling mission transition")
         resolved = MissionRecord(existing.proposal, status, confirmation)
         proposals = list(document.proposals)
         proposals[index] = resolved

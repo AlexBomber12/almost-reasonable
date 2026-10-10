@@ -141,6 +141,45 @@ def test_rejection_retains_current_mission(tmp_path) -> None:
     assert machine.current_mission() == initial
 
 
+def test_confirmation_cannot_predate_a_pending_sibling(tmp_path) -> None:
+    path = tmp_path / "sibling-order.json"
+    initial = Mission("mission-v1", "Миссия", NOW, None)
+    machine = mission_machine(JsonMissionRepository(path, initial))
+    first = proposal()
+    later_sibling = replace(
+        first,
+        proposal_id="mp-later",
+        version_identity="proposal-later",
+        initiating_event_id="event-later",
+        correlation_id="corr-later",
+        decided_at=NOW + timedelta(minutes=2),
+    )
+    machine.propose(first)
+    machine.propose(later_sibling)
+
+    with pytest.raises(ValueError, match="predates a sibling"):
+        machine.confirm(
+            MissionConfirmation(
+                "mp-1",
+                "confirm-1",
+                "confirm-corr-1",
+                NOW + timedelta(minutes=1),
+                ConfirmationOutcome.CONFIRMED,
+                ("Причина",),
+                ("Контраргумент",),
+                ("evidence-2",),
+                invariants(),
+                independent_sources(),
+            )
+        )
+
+    reloaded = JsonMissionRepository(path, initial).load()
+    assert [record.status for record in reloaded.proposals] == [
+        MissionStatus.PENDING,
+        MissionStatus.PENDING,
+    ]
+
+
 @pytest.mark.parametrize(
     ("change", "match"),
     [
