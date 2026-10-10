@@ -278,6 +278,9 @@ class ThreadsStore:
         increment_attempt: bool = False,
         operator_decision: str | None = None,
         operator_approval_reference: str | None = None,
+        release_lock_target_operation_id: str | None = None,
+        release_lock_kind: str | None = None,
+        release_lock_required: bool = False,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         if type(new_state) is not OutboxState:
@@ -292,6 +295,7 @@ class ThreadsStore:
             ("reconciliation status", reconciliation_status),
             ("operator decision", operator_decision),
             ("operator approval reference", operator_approval_reference),
+            ("release-lock target operation ID", release_lock_target_operation_id),
         ):
             if value is not None:
                 require_reference(field, value)
@@ -299,6 +303,14 @@ class ThreadsStore:
             raise ValueError("operator decision and approval must be supplied together")
         if operator_decision is not None and operator_decision != "abandon_unknown":
             raise ValueError("invalid operator decision")
+        if (release_lock_target_operation_id is None) != (release_lock_kind is None):
+            raise ValueError("release-lock target and kind must be supplied together")
+        if release_lock_kind not in {None, "replacement_publication"}:
+            raise ValueError("invalid transition release-lock kind")
+        if type(release_lock_required) is not bool:
+            raise ValueError("invalid transition release-lock requirement")
+        if release_lock_required and release_lock_target_operation_id is None:
+            raise ValueError("required release lock is missing its target")
         if approval_status is not None and approval_status not in {
             "pending",
             "approved",
@@ -390,6 +402,21 @@ class ThreadsStore:
                         now.isoformat(),
                     ),
                 )
+            if release_lock_target_operation_id is not None:
+                changed = connection.execute(
+                    "DELETE FROM threads_unknown_effect_locks "
+                    "WHERE target_operation_id=? AND holder_operation_id=? "
+                    "AND lock_kind=?",
+                    (
+                        release_lock_target_operation_id,
+                        operation_id,
+                        release_lock_kind,
+                    ),
+                ).rowcount
+                if release_lock_required and changed != 1:
+                    raise ThreadsStoreError(
+                        "required unknown-effect reservation is missing"
+                    )
             result = connection.execute(
                 "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
             ).fetchone()
@@ -497,6 +524,47 @@ class ThreadsStore:
             ).rowcount
         if required and changed != 1:
             raise ThreadsStoreError("unknown-effect reservation is missing")
+
+    def recover_reconciliation_claim(
+        self,
+        *,
+        operation_id: str,
+        account_ref: str,
+        approval_reference: str,
+        now: datetime,
+    ) -> None:
+        require_reference("operation ID", operation_id)
+        require_reference("account reference", account_ref)
+        require_reference("approval reference", approval_reference)
+        require_aware_time("reconciliation recovery time", now)
+        decision = (
+            f"recover_reconciliation-{content_fingerprint(approval_reference)[:16]}"
+        )
+        with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            changed = connection.execute(
+                "DELETE FROM threads_unknown_effect_locks "
+                "WHERE target_operation_id=? AND holder_operation_id=? "
+                "AND lock_kind='reconciliation' AND EXISTS ("
+                "SELECT 1 FROM threads_outbox WHERE operation_id=? "
+                "AND account_ref=? AND state=?)",
+                (
+                    operation_id,
+                    operation_id,
+                    operation_id,
+                    account_ref,
+                    OutboxState.UNKNOWN.value,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ThreadsStoreError("recoverable reconciliation claim is missing")
+            connection.execute(
+                "INSERT INTO threads_operator_decisions "
+                "(operation_id, decision, approval_reference, occurred_at) "
+                "VALUES (?, ?, ?, ?)",
+                (operation_id, decision, approval_reference, now.isoformat()),
+            )
+            connection.commit()
 
     def operator_decision_reference(
         self, operation_id: str, decision: str

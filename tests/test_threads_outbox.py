@@ -12,6 +12,7 @@ from app.threads.domain import (
     PublicationType,
     SourceProvenance,
     Stage,
+    content_fingerprint,
     issue_approval,
 )
 from app.threads.service import PolicyDeniedError, ThreadsService
@@ -901,6 +902,59 @@ def test_reconciliation_failure_preserves_unknown_and_abandonment_is_permanent(
         service.dispatch("operation-1", approval, now=NOW)
 
 
+def test_reconciliation_claim_requires_authenticated_restart_recovery(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, publication_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", publication_approval, now=NOW)
+    reconcile = service.simulator.reconcile
+    monkeypatch.setattr(
+        service.simulator,
+        "reconcile",
+        lambda _item: (_ for _ in ()).throw(SystemExit("process terminated")),
+    )
+    with pytest.raises(SystemExit, match="terminated"):
+        service.reconcile("operation-1", now=NOW)
+    with pytest.raises(ThreadsStoreError, match="reserved"):
+        service.reconcile("operation-1", now=NOW)
+    with pytest.raises(ValueError, match="purpose"):
+        service.recover_reconciliation_claim(
+            "operation-1", publication_approval, now=NOW
+        )
+
+    recovery_approval = trust_approval(
+        service,
+        approve(
+            reference="approval-recover-operation-1",
+            purpose=ApprovalPurpose.RECOVER_RECONCILIATION,
+        ),
+    )
+    restarted = ThreadsService(
+        ThreadsStore(service.store.database),
+        service.simulator,
+        service.policy,
+        utc_now=lambda: NOW,
+        authorization_provider=service.authorization_provider,
+    )
+    restarted.recover_reconciliation_claim("operation-1", recovery_approval, now=NOW)
+    decision = (
+        "recover_reconciliation-"
+        f"{content_fingerprint(recovery_approval.reference)[:16]}"
+    )
+    assert (
+        restarted.store.operator_decision_reference("operation-1", decision)
+        == recovery_approval.reference
+    )
+    monkeypatch.setattr(service.simulator, "reconcile", reconcile)
+    assert restarted.reconcile("operation-1", now=NOW).state is OutboxState.UNKNOWN
+    with pytest.raises(ThreadsStoreError, match="claim is missing"):
+        restarted.recover_reconciliation_claim(
+            "operation-1", recovery_approval, now=NOW
+        )
+
+
 def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -1175,6 +1229,49 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
             now=NOW,
             operator_decision="invalid_decision",
             operator_approval_reference="approval-operator",
+        )
+    with pytest.raises(ValueError, match="target and kind"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_lock_target_operation_id="operation-1",
+        )
+    with pytest.raises(ValueError, match="release-lock kind"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_lock_target_operation_id="operation-1",
+            release_lock_kind="invalid",
+        )
+    with pytest.raises(ValueError, match="release-lock requirement"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_lock_required=1,
+        )
+    with pytest.raises(ValueError, match="missing its target"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_lock_required=True,
+        )
+    with pytest.raises(ThreadsStoreError, match="required unknown-effect"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_lock_target_operation_id="operation-1",
+            release_lock_kind="replacement_publication",
+            release_lock_required=True,
         )
     with pytest.raises(ThreadsStoreError, match="unknown operation"):
         service.store.transition(

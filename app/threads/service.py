@@ -171,6 +171,7 @@ class ThreadsService:
             dispatch_evidence="pre_dispatch_intent",
             increment_attempt=True,
         )
+        replacement_reserved = False
         try:
             container_id = item.provider_container_id
             if container_id is None:
@@ -229,6 +230,7 @@ class ThreadsService:
                         account_ref=item.account_ref,
                         now=now,
                     )
+                    replacement_reserved = True
                 except ThreadsStoreError as error:
                     state = (
                         OutboxState.READY
@@ -263,10 +265,13 @@ class ThreadsService:
             self.store.update_sending_evidence(operation_id, marker, now=now)
             raise
         except ProviderFailure as error:
-            result = self._record_failure(item, error, now=now)
-            self._release_replacement_reservation(item)
-            return result
-        result = self.store.transition(
+            return self._record_failure(
+                item,
+                error,
+                now=now,
+                release_replacement_lock=replacement_reserved,
+            )
+        return self.store.transition(
             operation_id,
             OutboxState.CONFIRMED,
             reason="provider_confirmed_success",
@@ -275,9 +280,12 @@ class ThreadsService:
             provider_publication_id=evidence.publication_id,
             dispatch_evidence=evidence.evidence,
             reconciliation_status="not_required",
+            release_lock_target_operation_id=item.replacement_of,
+            release_lock_kind=(
+                "replacement_publication" if replacement_reserved else None
+            ),
+            release_lock_required=replacement_reserved,
         )
-        self._release_replacement_reservation(item)
-        return result
 
     def recover_sending(self, operation_id: str, *, now: datetime) -> OutboxItem:
         item = self._require_owned_item(operation_id)
@@ -299,6 +307,12 @@ class ThreadsService:
                 reason="recovered_proven_pre_dispatch",
                 now=now,
                 dispatch_evidence="recovery_no_effect",
+                release_lock_target_operation_id=item.replacement_of,
+                release_lock_kind=(
+                    "replacement_publication"
+                    if item.replacement_of is not None
+                    else None
+                ),
             )
         else:
             result = self.store.transition(
@@ -308,8 +322,13 @@ class ThreadsService:
                 now=now,
                 dispatch_evidence="recovery_effect_unknown",
                 reconciliation_status="required",
+                release_lock_target_operation_id=item.replacement_of,
+                release_lock_kind=(
+                    "replacement_publication"
+                    if item.replacement_of is not None
+                    else None
+                ),
             )
-        self._release_replacement_reservation(item, required=False)
         return result
 
     def reconcile(self, operation_id: str, *, now: datetime) -> OutboxItem:
@@ -382,6 +401,24 @@ class ThreadsService:
             reconciliation_status="abandoned_unresolved",
             operator_decision="abandon_unknown",
             operator_approval_reference=current_approval.reference,
+        )
+
+    def recover_reconciliation_claim(
+        self, operation_id: str, approval: Approval, *, now: datetime
+    ) -> None:
+        item = self._require_owned_item(operation_id)
+        current_approval = self._resolve_current_approval(
+            item,
+            approval,
+            now=now,
+            purpose=ApprovalPurpose.RECOVER_RECONCILIATION,
+            require_duplicate_ack=False,
+        )
+        self.store.recover_reconciliation_claim(
+            operation_id=operation_id,
+            account_ref=item.account_ref,
+            approval_reference=current_approval.reference,
+            now=now,
         )
 
     def poll(
@@ -542,31 +579,32 @@ class ThreadsService:
             raise ValueError("current approval reference mismatch")
         return current_approval
 
-    def _release_replacement_reservation(
-        self, item: OutboxItem, *, required: bool = True
-    ) -> None:
-        if item.replacement_of is None:
-            return
-        self.store.release_unknown_effect_lock(
-            target_operation_id=item.replacement_of,
-            holder_operation_id=item.operation_id,
-            lock_kind="replacement_publication",
-            required=required,
-        )
-
     def _recheck_immediately_before_effect(
         self, item: OutboxItem, approval: Approval, now: datetime
     ) -> None:
         self._check_ready_policy(item, approval, now=now)
 
     def _record_failure(
-        self, item: OutboxItem, error: ProviderFailure, *, now: datetime
+        self,
+        item: OutboxItem,
+        error: ProviderFailure,
+        *,
+        now: datetime,
+        release_replacement_lock: bool,
     ) -> OutboxItem:
         common = {
             "now": now,
             "provider_container_id": error.container_id,
             "dispatch_evidence": error.evidence,
         }
+        if release_replacement_lock:
+            common.update(
+                {
+                    "release_lock_target_operation_id": item.replacement_of,
+                    "release_lock_kind": "replacement_publication",
+                    "release_lock_required": True,
+                }
+            )
         if error.effect_class is EffectClass.UNCERTAIN_DISPATCH:
             return self.store.transition(
                 item.operation_id,

@@ -181,8 +181,11 @@ Immediately before a replacement publication, the store atomically reserves
 its unresolved target. Reconciliation takes an exclusive claim on the same
 target. These durable claims serialize the two operations, closing the window
 where reconciliation could confirm the original after the last policy check but
-before replacement publication. A crash leaves the reservation fail-closed;
-dispatch recovery releases it only after the replacement is durably classified.
+before replacement publication. Replacement final-state and crash-recovery
+transitions delete their reservation in the same SQLite transaction. A process
+death during reconciliation leaves its read claim fail-closed; clearing that
+claim requires a fresh, current `recover_reconciliation` operator approval
+through the explicit restart-recovery path before reconciliation can resume.
 
 ## Inbound replies, mentions, and conversation outcomes
 
