@@ -81,6 +81,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "«This response contains only English conversational prose.» Да.",
         "Да. `This is entirely English prose`",
         "Да. `This class is entirely English prose`",
+        "Да. `This is entirely English prose (really)`",
         "Да. ```This is entirely English prose```",
     )
     for bypass in bypasses:

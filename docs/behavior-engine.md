@@ -77,7 +77,7 @@ and margin thresholds. This broadens detection beyond exact marker tokens while
 remaining an explicitly imperfect, corpus-calibrated H heuristic. The profile
 runs from three Cyrillic words onward. Backtick spans are excluded only when
 syntax or keywords make them code-like; prose merely wrapped as inline or fenced
-Markdown remains in language accounting.
+Markdown remains in language accounting, including ordinary parentheticals.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
@@ -207,6 +207,8 @@ equal the application-supplied trusted initial mission. Global proposal/version
 identifiers are unique, the confirmed chain must terminate at that root without
 branches, and every proposal timestamp is no earlier than its parent's
 activation.
+Every pending proposal must target the active mission; stale historical siblings
+may remain only as resolved or `superseded` records.
 Every state-machine load additionally rechecks all confirmed source/provenance
 records through the application-owned `EvidenceAuthority`, including after a
 restart; structurally valid JSON cannot substitute for protected authorization.

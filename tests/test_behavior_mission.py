@@ -583,7 +583,7 @@ def test_mission_rejects_duplicate_versions_and_stale_parallel_parent(tmp_path) 
     raw = json.loads(path.read_text(encoding="utf-8"))
     raw["proposals"][1]["status"] = MissionStatus.PENDING.value
     path.write_text(json.dumps(raw), encoding="utf-8")
-    with pytest.raises(ValueError, match="parent"):
+    with pytest.raises(ValueError, match="stale pending"):
         machine.confirm(
             MissionConfirmation(
                 "mp-2",
@@ -824,6 +824,7 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     orphan["proposal"]["proposal_id"] = "mp-orphan"
     orphan["proposal"]["version_identity"] = "proposal-orphan"
     orphan["proposal"]["current_mission_version"] = "missing-parent"
+    orphan["status"] = MissionStatus.SUPERSEDED.value
     missing_parent["proposals"].append(orphan)
     path.write_text(json.dumps(missing_parent), encoding="utf-8")
     with pytest.raises(ValueError, match="lacks its parent"):
@@ -877,3 +878,33 @@ def test_state_machine_reauthorizes_confirmed_evidence_after_restart(tmp_path) -
     restarted = MissionStateMachine(repository, lambda initiating, sources: False)
     with pytest.raises(ValueError, match="persisted confirmation evidence"):
         restarted.current_mission()
+
+
+def test_state_machine_defends_against_stale_custom_repository() -> None:
+    stale_record = MissionRecord(proposal(), MissionStatus.PENDING, None)
+
+    class StaleRepository:
+        def load(self):
+            return MissionDocument(
+                Mission("other-current", "Миссия", NOW, None),
+                (stale_record,),
+                invariants(),
+            )
+
+        def save(self, document):
+            raise AssertionError("stale confirmation must not be saved")
+
+    confirmation = MissionConfirmation(
+        "mp-1",
+        "event-2",
+        "corr-2",
+        NOW + timedelta(minutes=1),
+        ConfirmationOutcome.REJECTED,
+        ("Причина",),
+        ("Контраргумент",),
+        ("evidence-2",),
+        invariants(),
+        independent_sources(),
+    )
+    with pytest.raises(ValueError, match="parent is no longer"):
+        mission_machine(StaleRepository()).confirm(confirmation)

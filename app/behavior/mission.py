@@ -686,6 +686,12 @@ def _validate_active_mission(
     confirmed = tuple(
         record for record in records if record.status is MissionStatus.CONFIRMED
     )
+    if any(
+        record.status is MissionStatus.PENDING
+        and record.proposal.current_mission_version != current.version
+        for record in records
+    ):
+        raise ValueError("stale pending proposal does not target the active mission")
     if current.parent_version is None:
         if current != trusted_root:
             raise ValueError("stored root mission differs from trusted initial state")
