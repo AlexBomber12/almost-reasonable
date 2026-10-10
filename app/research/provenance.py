@@ -395,7 +395,7 @@ def _parse_message(
     if type(output) is not dict or output.get("type") != "output_text":
         raise ValueError("unsupported provider message content")
     text = output.get("text")
-    if not isinstance(text, str) or not text:
+    if not isinstance(text, str) or not text.strip():
         raise ValueError("missing provider output text")
     if len(text.encode("utf-8")) > MAX_RESPONSE_TEXT_UTF8_BYTES:
         raise ValueError("provider output text exceeds byte bound")

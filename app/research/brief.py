@@ -474,7 +474,7 @@ def _privacy_reason(
     if _recognizable_overlap(values, screening.private_texts):
         return "recognizable_private_overlap"
     normalized = _normalized(combined)
-    if any(pattern in normalized for pattern in _INJECTION_PATTERNS):
+    if any(_normalized(pattern) in normalized for pattern in _INJECTION_PATTERNS):
         return "prompt_injection"
     return None
 

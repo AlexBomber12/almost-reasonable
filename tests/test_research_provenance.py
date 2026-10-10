@@ -81,6 +81,20 @@ def test_valid_provider_annotation_records_provenance_without_semantic_claim():
     assert source.retrieved_at == NOW
 
 
+def test_whitespace_only_provider_text_is_rejected():
+    valid = response()
+    message = dict(valid.output[1])
+    content = dict(message["content"][0])
+    content["text"] = "   "
+    message["content"] = [content]
+    malformed = HostedSearchResponse(
+        valid.response_id, valid.status, (valid.output[0], message)
+    )
+
+    with pytest.raises(ValueError, match="missing provider output text"):
+        parse_hosted_search_response(malformed, retrieved_at=NOW)
+
+
 def test_trailing_dot_dns_hostname_is_accepted():
     parsed = parse_hosted_search_response(
         response(url="https://example.org./paper"), retrieved_at=NOW
