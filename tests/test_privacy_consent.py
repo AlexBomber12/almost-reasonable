@@ -437,7 +437,7 @@ def test_unauthenticated_consent_operations_reject_before_validation_or_reads(
     def unexpected_ledger_access(*_args, **_kwargs):
         raise AssertionError("unauthenticated request accessed consent state")
 
-    monkeypatch.setattr(ledger, "authorize_consent_use", unexpected_ledger_access)
+    monkeypatch.setattr(ledger, "_authorize_consent_use", unexpected_ledger_access)
     use = consent.authorize(
         context(origin=OperationOrigin.MODEL),
         principal_id="bad principal",
@@ -671,7 +671,7 @@ def test_ledger_rejects_malformed_direct_consent_use_fields(tmp_path, changes, m
     values.update(changes)
 
     with pytest.raises(ValueError, match=message):
-        ledger.authorize_consent_use(**values)
+        ledger._authorize_consent_use(**values)
 
     assert ledger.audit_records() == ()
     with sqlite3.connect(ledger.path) as connection:
@@ -690,7 +690,7 @@ def test_ledger_requires_control_context_for_direct_consent_use_and_revocation(
     generation = ledger.control_generation()
 
     with pytest.raises(ValueError, match="authentication"):
-        ledger.authorize_consent_use(
+        ledger._authorize_consent_use(
             context=untrusted,
             principal_id="participant-a",
             content_reference="event-001",
@@ -721,6 +721,56 @@ def test_ledger_requires_control_context_for_direct_consent_use_and_revocation(
         assert connection.execute(
             "SELECT COUNT(*) FROM consent_use_attempts"
         ).fetchone() == (0,)
+
+
+def test_consent_use_with_a_caller_controlled_clock_is_not_public(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    ledger.insert_consent(context(), grant())
+    ledger.insert_revocation(
+        context=context(),
+        consent_id="consent-001",
+        operation_id="revoke-before-direct-use",
+        principal_id="participant-a",
+        actor_reference="actor-a",
+        authentication_event_id="auth-event-a",
+        revoked_at=NOW + timedelta(minutes=10),
+        correlation_id="revoke-before-direct-use-correlation",
+    )
+    dispatched = []
+
+    with pytest.raises(AttributeError):
+        ledger.authorize_consent_use(
+            context=context(),
+            principal_id="participant-a",
+            content_reference="event-001",
+            audience="public-threads",
+            purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+            correlation_id="backdated-direct-use",
+            actor_reference="actor-a",
+            authentication_event_id="auth-event-a",
+            clock=lambda: NOW + timedelta(minutes=5),
+            dispatch=lambda: dispatched.append("sent"),
+        )
+
+    assert dispatched == []
+
+
+def test_ledger_rejects_duck_typed_audit_records(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    class ForgedAudit:
+        correlation_id = "audit-correlation"
+        actor_reference = "actor-a"
+        action_type = "consent_use"
+        record_category = "consent"
+        occurred_at = NOW
+        result_code = "synthetic-private-canary"
+        redaction_status = "payload_free"
+
+    with pytest.raises(ValueError, match="audit record"):
+        ledger.record_audit(ForgedAudit())
+
+    assert ledger.audit_records() == ()
 
 
 @pytest.mark.parametrize(

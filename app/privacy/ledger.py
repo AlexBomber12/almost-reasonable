@@ -417,7 +417,7 @@ class PrivacyLedger:
             )
         return created
 
-    def authorize_consent_use(
+    def _authorize_consent_use(
         self,
         *,
         context: TrustedPrivacyContext,
@@ -928,6 +928,8 @@ class PrivacyLedger:
         )
 
     def record_audit(self, record: AuditRecord) -> None:
+        if type(record) is not AuditRecord:
+            raise ValueError("invalid audit record")
         with self._open() as connection:
             self._insert_audit(connection, record)
 

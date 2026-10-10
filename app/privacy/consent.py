@@ -85,7 +85,7 @@ class ConsentService:
             if context.principal_id != principal_id:
                 result = ConsentUseResult(False, "invalid_authorization")
             else:
-                return self.ledger.authorize_consent_use(
+                return self.ledger._authorize_consent_use(
                     context=context,
                     principal_id=principal_id,
                     content_reference=content_reference,
