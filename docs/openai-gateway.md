@@ -17,11 +17,14 @@ headers, tools, `previous_response_id`, conversation continuation, retry setting
 or model selection from participant/model data.
 
 `app/trusted/openai_transport.py` is the only credential-holding module. Its
-explicit `from_environment()` factory reads `OPENAI_API_KEY`, imports the official
-SDK lazily, disables SDK retries, and pins `https://api.openai.com/v1` rather than
-honoring an environment-supplied base URL. The gateway owns the single bounded retry
-policy. Credentials are absent from domain dataclasses, request bodies, results,
-telemetry, exception text, and representations.
+explicit `from_environment()` factory requires `OPENAI_API_KEY`,
+`OPENAI_PROJECT_ID`, and `OPENAI_ORG_ID`; passes the project and organization
+explicitly so the SDK cannot infer another billing scope from ambient state;
+imports the official SDK lazily; disables SDK retries; and pins
+`https://api.openai.com/v1` rather than honoring an environment-supplied base URL.
+The gateway owns the single bounded retry policy. Credentials are absent from
+domain dataclasses, request bodies, results, telemetry, exception text, and
+representations.
 
 This module split is a code trust boundary, not OS isolation. A later deployment
 must run planner and credential holder under separate identities; mount no provider
@@ -76,9 +79,10 @@ never enables hosted `web_search`.
 
 Configuration bounds every attempt timeout, overall allowance, output size, number
 of attempts (maximum three), exponential backoff, and injected jitter. The gateway
-rechecks the trusted emergency stop and durable spend suspension before every paid
-attempt. A request already transmitted may still complete; the stop cannot revoke
-it.
+rechecks the trusted emergency stop and atomically reserves against durable spend
+suspension before every paid attempt, then rechecks the overall deadline after that
+reservation. A request already transmitted may still complete; the stop cannot
+revoke it.
 
 Only ordinary documented rate limits, transport timeouts/connections, and 5xx
 server failures retry. Confirmed spend limits, other billing/quota conditions,
@@ -109,10 +113,11 @@ or raw provider message. Missing usage or matching versioned pricing is represen
 as unavailable/incomplete, never zero.
 
 Cost uses exact `Decimal` arithmetic and only explicit operator-supplied per-million
-token prices. It is informational, not a reservation ledger or invoice. The
-provider's USD 10 monthly project hard limit is the primary monetary boundary, but
-provider timing, token accounting, delayed reporting, taxes, credits, and an
-in-flight/lost response mean it is not a mathematical invoice guarantee.
+token prices, bounded to USD 1,000,000 per million tokens so arithmetic remains
+total over accepted usage. It is informational, not a reservation ledger or
+invoice. The provider's USD 10 monthly project hard limit is the primary monetary
+boundary, but provider timing, token accounting, delayed reporting, taxes, credits,
+and an in-flight/lost response mean it is not a mathematical invoice guarantee.
 
 Attempt IDs are bounded. Before provider contact, SQLite atomically checks the
 durable spend suspension and reserves the attempt ID; concurrent duplicates cannot

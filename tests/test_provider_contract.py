@@ -234,6 +234,7 @@ def test_provider_usage_and_pricing_require_exact_contract_types():
         {"input_per_million": Decimal("-1")},
         {"cached_input_per_million": 0},
         {"output_per_million": Decimal("NaN")},
+        {"output_per_million": Decimal("1e999999")},
     ],
 )
 def test_invalid_pricing_configuration_fails_closed(changes):

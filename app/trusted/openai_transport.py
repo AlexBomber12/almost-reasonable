@@ -103,6 +103,12 @@ class OpenAIResponsesTransport:
             raise TrustedTransportConfigurationError(
                 "OpenAI transport credential is unavailable"
             )
+        project = _optional_provider_token(environment.get("OPENAI_PROJECT_ID"))
+        organization = _optional_provider_token(environment.get("OPENAI_ORG_ID"))
+        if project is None or organization is None:
+            raise TrustedTransportConfigurationError(
+                "OpenAI billing scope is unavailable"
+            )
         try:
             from openai import OpenAI
         except ImportError:
@@ -114,6 +120,8 @@ class OpenAIResponsesTransport:
                 api_key=credential,
                 base_url=OPENAI_API_BASE_URL,
                 max_retries=0,
+                organization=organization,
+                project=project,
             )
         )
 

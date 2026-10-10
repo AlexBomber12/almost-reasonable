@@ -219,10 +219,22 @@ def test_transport_factory_is_explicit_and_credential_holding(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "openai", SimpleNamespace(OpenAI=SyntheticOpenAI))
 
-    with pytest.raises(TrustedTransportConfigurationError):
-        OpenAIResponsesTransport.from_environment({})
+    for incomplete_environment in (
+        {},
+        {"OPENAI_API_KEY": "TEST-ONLY-OPENAI-CANARY"},
+        {
+            "OPENAI_API_KEY": "TEST-ONLY-OPENAI-CANARY",
+            "OPENAI_PROJECT_ID": "proj_synthetic",
+        },
+    ):
+        with pytest.raises(TrustedTransportConfigurationError):
+            OpenAIResponsesTransport.from_environment(incomplete_environment)
     transport = OpenAIResponsesTransport.from_environment(
-        {"OPENAI_API_KEY": "TEST-ONLY-OPENAI-CANARY"}
+        {
+            "OPENAI_API_KEY": "TEST-ONLY-OPENAI-CANARY",
+            "OPENAI_PROJECT_ID": "proj_synthetic",
+            "OPENAI_ORG_ID": "org-synthetic",
+        }
     )
 
     assert isinstance(transport, OpenAIResponsesTransport)
@@ -231,6 +243,8 @@ def test_transport_factory_is_explicit_and_credential_holding(monkeypatch):
             "api_key": "TEST-ONLY-OPENAI-CANARY",
             "base_url": "https://api.openai.com/v1",
             "max_retries": 0,
+            "organization": "org-synthetic",
+            "project": "proj_synthetic",
         }
     ]
     assert "TEST-ONLY-OPENAI-CANARY" not in repr(transport)
@@ -258,7 +272,11 @@ def test_missing_sdk_is_a_sanitized_configuration_failure(monkeypatch):
 
     with pytest.raises(TrustedTransportConfigurationError, match="SDK is unavailable"):
         OpenAIResponsesTransport.from_environment(
-            {"OPENAI_API_KEY": "TEST-ONLY-OPENAI-CANARY"}
+            {
+                "OPENAI_API_KEY": "TEST-ONLY-OPENAI-CANARY",
+                "OPENAI_PROJECT_ID": "proj_synthetic",
+                "OPENAI_ORG_ID": "org-synthetic",
+            }
         )
 
 

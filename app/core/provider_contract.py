@@ -19,6 +19,7 @@ APPROVED_OPENAI_MODELS = frozenset(("gpt-6-luna", "gpt-6.1-sol"))
 MAX_PROVIDER_INPUT_UTF8_BYTES = 384 * 1024
 MAX_PROVIDER_OUTPUT_TOKENS = 4096
 MAX_PROVIDER_TOKEN_COUNT = 2**63 - 1
+MAX_PRICE_PER_MILLION = Decimal("1000000")
 MAX_ATTEMPTS = 3
 MAX_TIMEOUT_SECONDS = 120.0
 MAX_OVERALL_TIMEOUT_SECONDS = 300.0
@@ -350,5 +351,9 @@ def _validate_pricing(pricing: PricingConfig) -> None:
         pricing.cached_input_per_million,
         pricing.output_per_million,
     ):
-        if type(value) is not Decimal or not value.is_finite() or value < 0:
+        if (
+            type(value) is not Decimal
+            or not value.is_finite()
+            or not 0 <= value <= MAX_PRICE_PER_MILLION
+        ):
             raise ValueError("pricing rate is invalid")

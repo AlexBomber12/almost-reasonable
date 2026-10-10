@@ -148,11 +148,34 @@ class TrustedOpenAIGateway:
             remaining = deadline - started_monotonic
             if remaining <= 0:
                 return self._result(GatewayOutcome.TIMEOUT, attempts=completed_attempts)
-            timeout = min(self._config.timeout_seconds, remaining)
             started_at = self._utcnow()
             preflight = self._preflight(attempt_id, correlation_id, started_at)
             if preflight is not None:
                 return self._result(preflight, attempts=completed_attempts)
+            ready_monotonic = self._checked_monotonic()
+            remaining = deadline - ready_monotonic
+            if remaining <= 0:
+                persisted = self._record(
+                    request=request,
+                    correlation_id=correlation_id,
+                    attempt_id=attempt_id,
+                    attempt_number=attempt_number,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    ended_monotonic=ready_monotonic,
+                    outcome=GatewayOutcome.TIMEOUT,
+                    response_id=None,
+                    usage=None,
+                    error_code=None,
+                    suspend=None,
+                )
+                if not persisted:
+                    return self._result(
+                        GatewayOutcome.PERSISTENCE_FAILURE,
+                        attempts=completed_attempts,
+                    )
+                return self._result(GatewayOutcome.TIMEOUT, attempts=completed_attempts)
+            timeout = min(self._config.timeout_seconds, remaining)
             try:
                 response = self._transport.call(
                     provider_request, timeout_seconds=timeout

@@ -564,6 +564,14 @@ def test_gateway_requires_provider_state_store(tmp_path):
             "pricing-v1",
             "gpt-6-luna",
             "USD",
+            Decimal("1e999999"),
+            Decimal("0.01"),
+            Decimal("0.5"),
+        ),
+        PricingConfig(
+            "pricing-v1",
+            "gpt-6-luna",
+            "USD",
             Decimal("-0.1"),
             Decimal("0.01"),
             Decimal("0.5"),
@@ -663,7 +671,9 @@ def test_overall_deadline_blocks_transport_before_attempt(tmp_path):
 
 
 def test_response_at_overall_deadline_is_recorded_as_timeout(tmp_path):
-    instance, transport, store = gateway(tmp_path, [response()], times=[0.0, 0.0, 20.0])
+    instance, transport, store = gateway(
+        tmp_path, [response()], times=[0.0, 0.0, 0.0, 20.0]
+    )
 
     result = instance.submit(
         request(), correlation_id="correlation-a", operation_id="operation-a"
@@ -678,11 +688,39 @@ def test_response_at_overall_deadline_is_recorded_as_timeout(tmp_path):
     assert record.total_tokens == 120
 
 
+def test_reservation_that_consumes_deadline_blocks_provider_call(tmp_path):
+    instance, transport, store = gateway(tmp_path, [response()], times=[0.0, 0.0, 20.0])
+
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+
+    assert result.outcome is GatewayOutcome.TIMEOUT
+    assert result.attempts == 0
+    assert transport.calls == []
+    assert store.usage_attempt("operation-a:1").outcome == "timeout"
+
+
+def test_pre_call_deadline_persistence_failure_fails_closed(tmp_path, monkeypatch):
+    instance, transport, store = gateway(tmp_path, [response()], times=[0.0, 0.0, 20.0])
+
+    def fail(*_args, **_kwargs):
+        raise ProviderPersistenceError("private detail")
+
+    monkeypatch.setattr(store, "record_attempt", fail)
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+
+    assert result.outcome is GatewayOutcome.PERSISTENCE_FAILURE
+    assert transport.calls == []
+
+
 def test_retry_stops_when_backoff_would_exceed_overall_deadline(tmp_path):
     instance, transport, store = gateway(
         tmp_path,
         [OpenAITransportError(status_code=500), response()],
-        times=[0.0, 0.0, 19.5],
+        times=[0.0, 0.0, 0.0, 19.5],
     )
 
     result = instance.submit(
@@ -740,7 +778,7 @@ def test_invalid_injected_clock_jitter_and_duration_fail_closed(tmp_path):
             request(), correlation_id="correlation-a", operation_id="operation-a"
         )
 
-    backwards, _, _ = gateway(backwards_path, [response()], times=[0.0, 2.0, 1.0])
+    backwards, _, _ = gateway(backwards_path, [response()], times=[0.0, 2.0, 2.0, 1.0])
     result = backwards.submit(
         request(), correlation_id="correlation-a", operation_id="operation-a"
     )
