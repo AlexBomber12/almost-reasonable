@@ -166,7 +166,25 @@ class ThreadsService:
         try:
             container_id = item.provider_container_id
             if container_id is None:
-                self._recheck_immediately_before_effect(item, approval, self.utc_now())
+                try:
+                    self._recheck_immediately_before_effect(
+                        item, approval, self.utc_now()
+                    )
+                except (PolicyDeniedError, ValueError):
+                    state = (
+                        OutboxState.READY
+                        if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                        else OutboxState.FAILED_TERMINAL
+                    )
+                    self.store.transition(
+                        operation_id,
+                        state,
+                        reason="pre_container_policy_denial",
+                        now=now,
+                        dispatch_evidence="container_not_transmitted",
+                        reconciliation_status="not_required",
+                    )
+                    raise
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
                 )
@@ -180,9 +198,14 @@ class ThreadsService:
             try:
                 self._recheck_immediately_before_effect(item, approval, self.utc_now())
             except (PolicyDeniedError, ValueError):
+                state = (
+                    OutboxState.READY
+                    if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                    else OutboxState.FAILED_TERMINAL
+                )
                 self.store.transition(
                     operation_id,
-                    OutboxState.READY,
+                    state,
                     reason="pre_publish_policy_denial",
                     now=now,
                     provider_container_id=container_id,

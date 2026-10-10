@@ -504,6 +504,57 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
     assert simulator.trace == [("create_container", "operation-1")]
 
 
+def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
+    runtime_policy = make_policy()
+    simulator = ThreadsSimulator(account_ref="account-1")
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        runtime_policy,
+        utc_now=lambda: NOW + timedelta(minutes=2),
+    )
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    expiring = approve(expires_at=NOW + timedelta(minutes=1))
+    service.authorize("operation-1", expiring, now=NOW)
+    with pytest.raises(ValueError, match="expired"):
+        service.dispatch("operation-1", expiring, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.dispatch_evidence == "container_not_transmitted"
+    assert simulator.trace == []
+
+
+def test_repeated_pre_publish_denials_obey_attempt_cap(tmp_path):
+    calls = 0
+
+    def stop_at_publish_boundary():
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            service.policy.emergency_stop = True
+        return NOW
+
+    runtime_policy = make_policy()
+    simulator = ThreadsSimulator(account_ref="account-1")
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        runtime_policy,
+        utc_now=stop_at_publish_boundary,
+    )
+    _, approval = ready(service)
+    with pytest.raises(PolicyDeniedError, match="stop"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.READY
+    service.policy.emergency_stop = False
+    with pytest.raises(PolicyDeniedError, match="stop"):
+        service.dispatch("operation-1", approval, now=NOW)
+    terminal = service.store.get("operation-1")
+    assert terminal.state is OutboxState.FAILED_TERMINAL
+    assert terminal.attempt_count == 2
+
+
 @pytest.mark.parametrize(
     "result, expected",
     [
