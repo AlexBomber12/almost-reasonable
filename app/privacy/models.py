@@ -238,6 +238,57 @@ class AuditRecord:
     result_code: str
     redaction_status: str
 
+    def __post_init__(self) -> None:
+        require_token(self.correlation_id, "audit correlation id")
+        require_token(self.actor_reference, "audit actor reference")
+        if self.action_type not in {
+            "consent_grant",
+            "consent_revocation",
+            "consent_use",
+            "consent_use_attempt",
+            "deletion",
+            "deletion_rejected",
+            "notice_acknowledgement",
+        }:
+            raise ValueError("invalid audit action type")
+        if self.record_category not in {
+            "consent",
+            "privacy_notice",
+            *(category.value for category in ContentCategory),
+        }:
+            raise ValueError("invalid audit record category")
+        require_utc(self.occurred_at, "audit timestamp")
+        if self.result_code not in {
+            "acknowledged",
+            "already_acknowledged",
+            "already_dispatched",
+            "already_granted",
+            "already_revoked",
+            "authorized",
+            "dispatch_pending",
+            "dispatch_uncertain",
+            "expired",
+            "granted",
+            "invalid_authentication",
+            "invalid_authorization",
+            "no_matching_consent",
+            "not_yet_valid",
+            "pre_dispatch_failure",
+            "revoked",
+            "unsupported_notice_version",
+            "pending:awaiting_erasure",
+            "applied:erasure_applied",
+            "incomplete_blocked:adapter_failure",
+            "incomplete_blocked:erasure_incomplete",
+            "incomplete_blocked:invalid_erasure_report",
+            "invalid_authorization:invalid_authentication",
+            "invalid_authorization:wrong_principal",
+            "not_eligible:public_action_not_erasable",
+        }:
+            raise ValueError("invalid audit result code")
+        if self.redaction_status not in {"payload_free", "content_free_tombstone"}:
+            raise ValueError("invalid audit redaction status")
+
 
 @dataclass(frozen=True, slots=True)
 class AbstractionCandidate:

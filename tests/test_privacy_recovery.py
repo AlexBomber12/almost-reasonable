@@ -283,6 +283,40 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
     assert not Path(f"{interrupted}.metadata.json").exists()
 
 
+def test_backup_interrupt_cleans_owned_files_and_descriptors(tmp_path, monkeypatch):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "interrupted.sqlite3"
+    opened = []
+    real_open_owned_file = recovery_module._open_owned_file
+
+    def track_open(path, access, owned):
+        descriptor = real_open_owned_file(path, access, owned)
+        opened.append(owned[-1])
+        return descriptor
+
+    monkeypatch.setattr(recovery_module, "_open_owned_file", track_open)
+    with pytest.raises(SimulatedInterrupt):
+        create_sqlite_backup(
+            source,
+            destination,
+            3,
+            NOW,
+            after_copy=lambda _: (_ for _ in ()).throw(SimulatedInterrupt()),
+        )
+
+    assert not destination.exists()
+    assert not Path(f"{destination}.metadata.json").exists()
+    for owned_file in opened:
+        with pytest.raises(OSError):
+            os.fstat(owned_file.descriptor)
+        with pytest.raises(OSError):
+            os.fstat(owned_file.parent_descriptor)
+
+
 @pytest.mark.parametrize("race_target", ["destination", "metadata"])
 def test_backup_race_never_deletes_a_concurrently_created_file(
     tmp_path, monkeypatch, race_target
@@ -1241,6 +1275,9 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
     assert ledger.audit_records()[-1].result_code == "invalid_authentication"
     with pytest.raises(ValueError, match="notice version"):
         service.acknowledge(context(), "unknown", NOW, "notice-bad-version")
+    unsupported = ledger.audit_records()[-1]
+    assert unsupported.result_code == "unsupported_notice_version"
+    assert unsupported.occurred_at == rejection_time
 
 
 def test_restore_rejects_existing_or_symlink_quarantine(tmp_path):

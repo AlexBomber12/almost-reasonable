@@ -364,6 +364,9 @@ def create_sqlite_backup(
         except Exception as error:
             _cleanup_created(owned)
             raise BackupError("SQLite backup failed") from error
+        except BaseException:
+            _cleanup_created(owned)
+            raise
         _close_owned(owned)
     finally:
         os.close(pinned_source.descriptor)

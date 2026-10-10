@@ -12,6 +12,7 @@ from app.privacy import ledger as ledger_module
 from app.privacy import (
     AbstractionCandidate,
     AbstractionKind,
+    AuditRecord,
     ConsentGrant,
     ConsentPurpose,
     ConsentService,
@@ -508,6 +509,34 @@ def test_consent_rejects_duplicate_scope_revision_and_uses_newer_revision(tmp_pa
 
     assert renewed.created is True
     assert (result.allowed, result.consent_id) == (True, "consent-003")
+
+
+@pytest.mark.parametrize(
+    ("changes", "message"),
+    [
+        ({"correlation_id": "private audit text"}, "correlation id"),
+        ({"actor_reference": "private actor text"}, "actor reference"),
+        ({"action_type": "arbitrary_action"}, "action type"),
+        ({"record_category": "arbitrary_category"}, "record category"),
+        ({"occurred_at": datetime(2026, 10, 10)}, "audit timestamp"),
+        ({"result_code": "synthetic-private-canary"}, "result code"),
+        ({"redaction_status": "contains_payload"}, "redaction status"),
+    ],
+)
+def test_audit_records_reject_unconstrained_or_non_utc_values(changes, message):
+    values = {
+        "correlation_id": "audit-correlation",
+        "actor_reference": "actor-a",
+        "action_type": "consent_use",
+        "record_category": "consent",
+        "occurred_at": NOW,
+        "result_code": "authorized",
+        "redaction_status": "payload_free",
+    }
+    values.update(changes)
+
+    with pytest.raises(ValueError, match=message):
+        AuditRecord(**values)
 
 
 def test_abstraction_boundary_is_closed_and_preserves_hidden_provenance():

@@ -82,6 +82,19 @@ class NoticeService:
             return OperationResult(False, "invalid_authentication")
         require_utc(acknowledged_at, "acknowledgement timestamp")
         if notice_version != NOTICE_VERSION:
+            occurred_at = self._clock()
+            require_utc(occurred_at, "notice rejection timestamp")
+            self.ledger.record_audit(
+                AuditRecord(
+                    correlation_id,
+                    context.actor_reference,
+                    "notice_acknowledgement",
+                    "privacy_notice",
+                    occurred_at,
+                    "unsupported_notice_version",
+                    "payload_free",
+                )
+            )
             raise ValueError("unsupported notice version")
         created = self.ledger.acknowledge_notice(
             context.principal_id,
