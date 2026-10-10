@@ -8,6 +8,7 @@ from app.threads.domain import (
     AccountPolicy,
     Approval,
     ApprovalPurpose,
+    InboundKind,
     OutboxState,
     PublicationAuthorizationSnapshot,
     PublicationType,
@@ -154,7 +155,7 @@ def test_initial_schema_and_version_row_are_one_transaction(tmp_path, monkeypatc
 
 def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_path):
     path = tmp_path / "threads.sqlite3"
-    ThreadsStore(path)
+    store = ThreadsStore(path)
     with sqlite3.connect(path) as connection:
         connection.execute(
             "INSERT INTO threads_inbound_events VALUES "
@@ -190,6 +191,10 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
             "WHERE event_id='event-legacy'"
         ).fetchone() == ("legacy-event-legacy",)
         assert connection.execute(
+            "SELECT processed_at FROM threads_inbound_events "
+            "WHERE event_id='event-legacy'"
+        ).fetchone() == (NOW.isoformat(),)
+        assert connection.execute(
             "SELECT correlation_id FROM threads_conversation_outcomes "
             "WHERE outcome_id='outcome-legacy'"
         ).fetchone() == ("legacy-event-legacy",)
@@ -216,6 +221,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert "threads_account_effect_locks" in tables
     assert "threads_operator_decisions" in tables
     assert "threads_poll_policy_denials" in tables
+    assert store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
 
 
 def test_existing_database_requires_version_metadata_row(tmp_path):

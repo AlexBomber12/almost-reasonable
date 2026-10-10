@@ -1419,4 +1419,18 @@ CREATE TABLE threads_poll_policy_denials (
 
 _MIGRATION_4_TO_5 = """
 ALTER TABLE threads_inbound_events ADD COLUMN processed_at TEXT;
+UPDATE threads_inbound_events
+SET processed_at=(
+    SELECT MIN(outcome.occurred_at)
+    FROM threads_conversation_outcomes AS outcome
+    WHERE outcome.inbound_account_ref=threads_inbound_events.account_ref
+      AND outcome.inbound_kind=threads_inbound_events.kind
+      AND outcome.inbound_event_id=threads_inbound_events.event_id
+)
+WHERE EXISTS (
+    SELECT 1 FROM threads_conversation_outcomes AS outcome
+    WHERE outcome.inbound_account_ref=threads_inbound_events.account_ref
+      AND outcome.inbound_kind=threads_inbound_events.kind
+      AND outcome.inbound_event_id=threads_inbound_events.event_id
+);
 """
