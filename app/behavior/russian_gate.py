@@ -64,6 +64,11 @@ _FENCE_OPEN = re.compile(
 _INLINE_CODE = re.compile(
     r"(?<!`)(?P<fence>`+)(?!`)(?P<content>[\s\S]*?)(?<!`)(?P=fence)(?!`)"
 )
+_INDENTED_CODE = re.compile(
+    r"(?:\A|(?<=\n\n)|(?<=\r\n\r\n))"
+    r"(?P<content>(?:(?: {4}|\t)[^\r\n]*(?:\r?\n|$))+)",
+)
+_INDENTED_CODE_PREFIX = re.compile(r"^(?: {4}|\t)", re.MULTILINE)
 _SUPPORTED_FENCED_CODE_LANGUAGES = frozenset(
     (
         "json",
@@ -360,6 +365,7 @@ def corpus_cases() -> tuple[RussianCorpusCase, ...]:
 
 def _strip_non_prose_regions(text: str) -> str:
     without_code = _strip_fenced_code_regions(text)
+    without_code = _INDENTED_CODE.sub(_replace_indented_code_span, without_code)
     without_code = _INLINE_CODE.sub(_replace_code_span, without_code)
     return _URL.sub(" ", without_code)
 
@@ -397,6 +403,11 @@ def _replace_fenced_code_content(content: str, language: str | None) -> str:
     ):
         content = f"{language}\n{content}"
     return " " if _has_complete_code_signal(content, language) else content
+
+
+def _replace_indented_code_span(match: re.Match[str]) -> str:
+    content = _INDENTED_CODE_PREFIX.sub("", match.group("content"))
+    return " " if _has_complete_code_signal(content) else match.group(0)
 
 
 def _replace_code_span(match: re.Match[str]) -> str:
