@@ -472,6 +472,18 @@ def test_short_encoded_private_values_are_rejected(private_value, screening):
     assert result.reason == "encoded_leakage"
 
 
+@pytest.mark.parametrize("question", ["ＱＷ５ｕ", "QW\u200b5u"])
+def test_disguised_encoded_private_values_are_rejected(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
 def test_benign_short_base64_shaped_text_is_allowed():
     result = build_safe_research_brief(
         records(ResearchQuestion("YWJj")),

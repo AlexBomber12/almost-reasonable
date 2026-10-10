@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone, tzinfo
 
 import pytest
 
@@ -493,6 +493,34 @@ def test_naive_timestamps_invalid_calendar_dates_and_long_urls_are_rejected():
             publication_date=None,
             evidence=evidence,
         )
+
+
+def test_independent_verification_requires_a_representable_utc_offset():
+    class MissingOffset(tzinfo):
+        def utcoffset(self, _value):
+            return None
+
+    class FailingOffset(tzinfo):
+        def utcoffset(self, _value):
+            raise ValueError("synthetic offset failure")
+
+    timestamps = (
+        datetime(2026, 1, 1, tzinfo=MissingOffset()),
+        datetime(2026, 1, 1, tzinfo=FailingOffset()),
+        datetime.min.replace(tzinfo=timezone(timedelta(hours=1))),
+    )
+    for timestamp in timestamps:
+        evidence = VerificationEvidence("manual_check", "audit:x", timestamp)
+        with pytest.raises(ValueError, match="timezone-aware"):
+            register_independently_verified_source(
+                reference="source-1",
+                url="https://example.org",
+                title="Title",
+                publisher=None,
+                source_language=None,
+                publication_date=None,
+                evidence=evidence,
+            )
 
 
 def test_independently_verified_prior_source_requires_concrete_evidence():

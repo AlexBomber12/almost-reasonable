@@ -1,7 +1,7 @@
 """Fail-closed hosted-search source annotation validation."""
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 import hmac
 import json
@@ -589,4 +589,12 @@ def _bounded_metadata(value: object, field: str, *, required: bool) -> str | Non
 def _require_timestamp(value: object) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("timestamp must be timezone-aware")
+    try:
+        if value.utcoffset() is None:
+            raise ValueError("timestamp must be timezone-aware")
+        value.astimezone(UTC)
+    except (OverflowError, TypeError, ValueError) as error:
+        raise ValueError(
+            "timestamp must be timezone-aware and representable"
+        ) from error
     return value

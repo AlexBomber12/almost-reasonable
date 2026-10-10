@@ -385,18 +385,18 @@ def _screen(
     reason = _privacy_reason(values, screening, identifier_values)
     if reason is not None:
         return reason
-    combined = "\n".join(values)
+    encoded_candidates = _base64_candidates(values)
     if _encoded_depth >= _MAX_ENCODED_SCREEN_DEPTH:
         return (
             "encoded_leakage"
             if any(
-                _decode_base64(match.group(0)) is not None
-                for match in _BASE64.finditer(combined)
+                _decode_base64(candidate) is not None
+                for candidate in encoded_candidates
             )
             else None
         )
-    for match in _BASE64.finditer(combined):
-        decoded = _decode_base64(match.group(0))
+    for candidate in encoded_candidates:
+        decoded = _decode_base64(candidate)
         if decoded is None:
             continue
         if any(unicodedata.category(character) == "Cc" for character in decoded):
@@ -462,6 +462,21 @@ def _decode_base64(value: str) -> str | None:
     except (binascii.Error, UnicodeDecodeError):
         return None
     return decoded
+
+
+def _base64_candidates(values: list[str]) -> tuple[str, ...]:
+    raw = "\n".join(values)
+    normalized = "\n".join(_normalized_for_encoding(value) for value in values)
+    views = (raw,) if normalized == raw else (raw, normalized)
+    return tuple(match.group(0) for view in views for match in _BASE64.finditer(view))
+
+
+def _normalized_for_encoding(value: str) -> str:
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKC", value)
+        if unicodedata.category(character) not in {"Cf", "Mn"}
+    )
 
 
 def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> bool:
