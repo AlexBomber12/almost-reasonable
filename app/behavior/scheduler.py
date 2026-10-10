@@ -192,6 +192,14 @@ class TestScheduler:
         selected = max(unprocessed_due, key=lambda item: item.scheduled_at)
         coalesced = len(unprocessed_due) - 1
 
+        if state.last_deliberation_at is not None and now < state.last_deliberation_at:
+            return SchedulerRun(
+                SchedulerOutcome.EXECUTION_LIMIT,
+                selected.event_id,
+                coalesced,
+                0,
+                None,
+            )
         if emergency_stop:
             return self._skip(
                 state,

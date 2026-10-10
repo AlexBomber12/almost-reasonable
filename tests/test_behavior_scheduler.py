@@ -8,6 +8,7 @@ from app.behavior.scheduler import (
     InMemorySchedulerStore,
     MutableClock,
     SchedulerOutcome,
+    SchedulerState,
     TestScheduler,
     WakeupEvent,
     WakeupPolicy,
@@ -272,6 +273,35 @@ def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
     later = scheduler.run((due, future))
     assert later.selected_event_id == "future"
     assert calls == ["due", "future"]
+
+
+def test_inter_run_clock_rollback_does_not_consume_pending_event() -> None:
+    last_deliberation = NOW + timedelta(hours=1)
+    store = InMemorySchedulerStore(
+        SchedulerState(last_deliberation_at=last_deliberation)
+    )
+    clock = MutableClock(NOW)
+    calls: list[str] = []
+    scheduler = TestScheduler(
+        policy(),
+        store,
+        clock,
+        lambda wakeup, timeout: calls.append(wakeup.event_id)
+        or AgentDecision.NO_ACTION,
+    )
+    pending = event("rollback", NOW)
+
+    rolled_back = scheduler.run((pending,))
+    assert rolled_back.outcome is SchedulerOutcome.EXECUTION_LIMIT
+    assert rolled_back.iterations == 0
+    assert store.load().processed_event_ids == ()
+    assert calls == []
+
+    clock.advance(timedelta(hours=1, minutes=11))
+    recovered = scheduler.run((pending,))
+    assert recovered.outcome is SchedulerOutcome.NO_ACTION
+    assert store.load().processed_event_ids == ("rollback",)
+    assert calls == ["rollback"]
 
 
 def test_rejected_decisions_do_not_refresh_rate_limit_window() -> None:

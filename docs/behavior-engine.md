@@ -120,7 +120,10 @@ adapter/provider failures (`OSError` and malformed-output `ValueError`) produce
 and persist `failed`; programmer contract errors such as `TypeError` continue to
 surface for diagnosis.
 The same execution-limit outcome applies if the injected clock moves backward
-during deliberation; negative elapsed time never admits a proposal.
+during deliberation; negative elapsed time never admits a proposal. A clock
+earlier than the persisted prior-deliberation timestamp also returns
+`execution_limit` before any skip is persisted, leaving due events eligible once
+the clock catches up.
 Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
 rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
