@@ -173,6 +173,8 @@ def test_g_class_can_never_be_assigned_to_model_judge() -> None:
         custom_harness((g_rule,), lambda *_: (0.75, ())).run(
             (evaluation_case("partial-g", "prompt", ("output",), ()),)
         )
+    with pytest.raises(ValueError, match="threshold of one"):
+        custom_harness((replace(g_rule, threshold=0.0),), assessor)
 
 
 def test_harness_validates_scores_cases_and_assessor_failures() -> None:

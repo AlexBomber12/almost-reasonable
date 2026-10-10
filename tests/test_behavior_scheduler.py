@@ -252,12 +252,17 @@ def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
     store = InMemorySchedulerStore()
     clock = MutableClock(NOW)
     calls: list[str] = []
+
+    def record_no_action(wakeup: WakeupEvent, timeout: float) -> AgentDecision:
+        del timeout
+        calls.append(wakeup.event_id)
+        return AgentDecision.NO_ACTION
+
     scheduler = TestScheduler(
         policy(),
         store,
         clock,
-        lambda wakeup, timeout: calls.append(wakeup.event_id)
-        or AgentDecision.NO_ACTION,
+        record_no_action,
     )
 
     future = event("future", NOW + timedelta(hours=1))
@@ -285,12 +290,17 @@ def test_inter_run_clock_rollback_does_not_consume_pending_event() -> None:
     )
     clock = MutableClock(NOW)
     calls: list[str] = []
+
+    def record_no_action(wakeup: WakeupEvent, timeout: float) -> AgentDecision:
+        del timeout
+        calls.append(wakeup.event_id)
+        return AgentDecision.NO_ACTION
+
     scheduler = TestScheduler(
         policy(),
         store,
         clock,
-        lambda wakeup, timeout: calls.append(wakeup.event_id)
-        or AgentDecision.NO_ACTION,
+        record_no_action,
     )
     pending = event("rollback", NOW)
 

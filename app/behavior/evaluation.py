@@ -187,6 +187,8 @@ class BehavioralEvaluationHarness:
                 and rule.assessor_kind is not AssessorKind.DETERMINISTIC
             ):
                 raise ValueError("G-class controls require a deterministic assessor")
+            if rule.assurance is AssuranceClass.G and rule.threshold != 1.0:
+                raise ValueError("G-class controls require a threshold of one")
             if not 0 <= rule.threshold <= 1 or not _valid_utf8_text(rule.description):
                 raise ValueError("rubric rule is invalid")
         if not _valid_utf8_text(rubric_version):

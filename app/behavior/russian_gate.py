@@ -59,7 +59,9 @@ _INLINE_CODE = re.compile(r"`([^`]*)`")
 _CODE_SIGNAL = re.compile(
     r"(?:\b(?:def|class)\s+[A-Za-z_]\w*\s*[:({]|"
     r"\b(?:const|let|var)\s+[A-Za-z_]\w*\s*=|"
-    r"\bselect\b.+\bfrom\b|"
+    r"\bselect\s+(?:\*|[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)+)"
+    r"\s+from\s+[A-Za-z_]\w*(?:\s*;|\s+(?:where|join|group\s+by|"
+    r"order\s+by|limit)\b)|"
     r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
     r"\b[A-Za-z_]\w*\s*=\s*[^=]|</?[A-Za-z][^>]*>|"
     r"\{[^{}]*(?::|=)[^{}]*\})",

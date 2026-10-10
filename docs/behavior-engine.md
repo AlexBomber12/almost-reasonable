@@ -77,7 +77,8 @@ and margin thresholds. This broadens detection beyond exact marker tokens while
 remaining an explicitly imperfect, corpus-calibrated H heuristic. The profile
 runs from three Cyrillic words onward. Backtick spans are excluded only when
 syntax or keywords make them code-like; prose merely wrapped as inline or fenced
-Markdown remains in language accounting, including ordinary parentheticals.
+Markdown remains in language accounting, including ordinary parentheticals and
+conversational uses of words such as `select` and `from` without SQL structure.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
@@ -259,9 +260,10 @@ assessor in either official or custom rubrics. Every report requires at least
 one case and every case requires at least one recorded trial, preventing an
 empty official-looking evaluation artifact.
 
-G, H, and M results remain separate. The harness rejects a model assessor for a
-G-class rule; G rules require a named deterministic assessor, a binary score,
-and full `1.0` to pass. Model agreement can never establish access control. M
+G, H, and M results remain separate. The harness rejects a model assessor or a
+threshold below `1.0` for a G-class rule; G rules require a named deterministic
+assessor, a binary score, and full `1.0` to pass. Model agreement can never
+establish access control. M
 rules do not encode one preferred opinion as the correct result. A passing
 recorded-output distribution or 100% Python coverage does not prove
 probabilistic behavioral quality. Quantitative M thresholds and a representative
