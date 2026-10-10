@@ -7,15 +7,30 @@ import json
 from pathlib import Path
 import re
 from typing import Protocol
+import unicodedata
 
 
 MISSION_SCHEMA_VERSION = "mission-store-v1"
 MAX_MISSION_TEXT_UTF8_BYTES = 4096
-_FORBIDDEN_MISSION_CONTENT = re.compile(
-    r"https?://|ignore\s+previous|system\s+prompt|credential|"
-    r"tool\s+permission|change\s+(?:security|budget|deployment)|"
-    r"(?:выполни|запусти|вызови|управляй)\s+(?:инструмент|команд)",
-    re.IGNORECASE,
+_FORBIDDEN_MISSION_PATTERNS = tuple(
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"(?:https?://|www\.)",
+        r"\bignore\s+(?:all\s+)?(?:the\s+)?previous\b",
+        r"\b(?:system\s+prompt|instructions?|credential|password|secret|"
+        r"api\s*key|private\s*key|budget|permissions?|security\s+settings?|"
+        r"deployment|emergency\s+stop|shell|docker)\b",
+        r"\b(?:call|invoke|execute|run|use)\s+(?:the\s+)?"
+        r"(?:tool|shell|command)\b",
+        r"игнорир\w*.{0,30}предыдущ\w*",
+        r"(?:системн\w*\s+промпт\w*|инструкци\w*|уч[её]тн\w*\s+данн\w*|"
+        r"парол\w*|секрет\w*|ключ(?:и|а|ей|ом|у)?|бюджет\w*|разрешени\w*|"
+        r"прав\w*\s+доступ\w*|настройк\w*\s+безопасност\w*|"
+        r"аварийн\w*\s+останов\w*|разв[её]ртыван\w*|депло\w*|шелл\w*|"
+        r"докер\w*)",
+        r"(?:выполни|запусти|вызови|используй|управляй|раскрой|измени)"
+        r".{0,40}(?:инструмент\w*|команд\w*|настройк\w*|ключ\w*|доступ\w*)",
+    )
 )
 
 
@@ -219,7 +234,7 @@ def _validate_proposal(proposal: MissionProposal) -> None:
         *proposal.supporting_reasons,
         *proposal.counterevidence,
     )
-    if any(_FORBIDDEN_MISSION_CONTENT.search(value) for value in mission_fields):
+    if any(_contains_forbidden_mission_content(value) for value in mission_fields):
         raise ValueError(
             "closed mission text rejects instructions, links, and policy changes"
         )
@@ -295,6 +310,16 @@ def _valid_text(value: object) -> bool:
         return len(value.encode("utf-8")) <= MAX_MISSION_TEXT_UTF8_BYTES
     except UnicodeEncodeError:
         return False
+
+
+def _contains_forbidden_mission_content(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", value).casefold()
+    if any(
+        character not in "\n\r\t" and unicodedata.category(character) in ("Cc", "Cf")
+        for character in normalized
+    ):
+        return True
+    return any(pattern.search(normalized) for pattern in _FORBIDDEN_MISSION_PATTERNS)
 
 
 def _document_to_dict(document: MissionDocument) -> dict[str, object]:

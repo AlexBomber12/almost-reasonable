@@ -83,6 +83,11 @@ def test_default_rubric_is_versioned_and_complete() -> None:
         RubricDimension.MISSION_CONTINUITY,
         RubricDimension.SAFE_PRIVACY_BOUNDARIES,
         RubricDimension.NO_PUBLICATION_FREQUENCY_OPTIMIZATION,
+        RubricDimension.SEMANTIC_CITATION_SUPPORT,
+        RubricDimension.USEFUL_PRIVACY_MINIMIZED_RESEARCH,
+        RubricDimension.SEMANTIC_PLATFORM_POLICY_JUDGMENT,
+        RubricDimension.PRIVACY_PRESERVING_INTELLECTUAL_INFLUENCE,
+        RubricDimension.COHERENT_TWO_PHASE_MISSION_REVISION,
     }.issubset({rule.dimension for rule in rules})
     assert all(rule.description and 0 <= rule.threshold <= 1 for rule in rules)
 

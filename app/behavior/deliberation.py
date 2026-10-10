@@ -1,8 +1,8 @@
 """Typed, bounded deliberation over recorded or otherwise injected model output."""
 
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Protocol
 
@@ -115,7 +115,11 @@ class DeliberationResult:
 
 
 class BehaviorModel(Protocol):
-    def complete(self, request: Mapping[str, object]) -> object: ...
+    """Application adapter that must enforce the supplied wall-clock timeout."""
+
+    def complete(
+        self, request: Mapping[str, object], timeout_seconds: float
+    ) -> object: ...
 
 
 @dataclass(slots=True)
@@ -124,12 +128,14 @@ class RecordedBehaviorModel:
 
     responses: tuple[object, ...]
     requests: list[dict[str, object]] = field(default_factory=list)
+    timeouts: list[float] = field(default_factory=list)
     _position: int = 0
 
-    def complete(self, request: Mapping[str, object]) -> object:
+    def complete(self, request: Mapping[str, object], timeout_seconds: float) -> object:
         if self._position >= len(self.responses):
             raise ValueError("recorded model responses exhausted")
         self.requests.append(dict(request))
+        self.timeouts.append(timeout_seconds)
         response = self.responses[self._position]
         self._position += 1
         return response
@@ -280,8 +286,13 @@ def _invalid(reason: ProposalInvalidReason) -> BehaviorProposalValidation:
 class DeliberationEngine:
     """One-call decision engine that returns proposals and never effects."""
 
-    def __init__(self, model: BehaviorModel):
+    def __init__(
+        self,
+        model: BehaviorModel,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    ):
         self._model = model
+        self._clock = clock
 
     def deliberate(self, value: DeliberationInput) -> DeliberationResult:
         if not isinstance(value, DeliberationInput):
@@ -291,15 +302,40 @@ class DeliberationEngine:
             return _result(DeliberationOutcome.SKIPPED_STOP)
         if value.capabilities.provider_spend_suspended:
             return _result(DeliberationOutcome.SKIPPED_SPEND)
+        started_at = self._clock()
+        _validate_clock_time(started_at)
         if (
             value.budget.max_steps < 1
             or value.budget.max_model_calls < 1
             or value.budget.max_execution_seconds <= 0
             or value.deadline <= value.now
+            or value.deadline <= started_at
         ):
             return _result(DeliberationOutcome.BUDGET_EXHAUSTED)
 
-        parsed = parse_behavior_proposal(self._model.complete(_build_request(value)))
+        timeout_seconds = min(
+            value.budget.max_execution_seconds,
+            (value.deadline - started_at).total_seconds(),
+        )
+        try:
+            raw_proposal = self._model.complete(_build_request(value), timeout_seconds)
+        except TimeoutError:
+            return DeliberationResult(
+                DeliberationOutcome.BUDGET_EXHAUSTED, None, None, 1, 1
+            )
+        finished_at = self._clock()
+        _validate_clock_time(finished_at)
+        if (
+            finished_at < started_at
+            or finished_at > value.deadline
+            or (finished_at - started_at).total_seconds()
+            > value.budget.max_execution_seconds
+        ):
+            return DeliberationResult(
+                DeliberationOutcome.BUDGET_EXHAUSTED, None, None, 1, 1
+            )
+
+        parsed = parse_behavior_proposal(raw_proposal)
         if not parsed.valid or parsed.proposal is None:
             return DeliberationResult(
                 DeliberationOutcome.INVALID_PROPOSAL,
@@ -419,6 +455,11 @@ def _validate_input(value: DeliberationInput) -> None:
         or value.deadline.tzinfo is None
     ):
         raise ValueError("times must be timezone-aware")
+
+
+def _validate_clock_time(value: datetime) -> None:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("clock must return a timezone-aware datetime")
 
 
 def _result(outcome: DeliberationOutcome) -> DeliberationResult:

@@ -27,15 +27,25 @@ class AssessorKind(StrEnum):
 class RubricDimension(StrEnum):
     NATURAL_RUSSIAN = "natural_russian"
     RELEVANT_CONTINUITY = "relevant_conversational_continuity"
+    INDEPENDENT_INTELLECTUAL_DEVELOPMENT = "independent_intellectual_development"
     INTELLECTUAL_HONESTY = "intellectual_honesty"
     APPROPRIATE_UNCERTAINTY = "appropriate_uncertainty"
     EVIDENCE_VS_INTERPRETATION = "evidence_versus_interpretation"
+    SEMANTIC_CITATION_SUPPORT = "semantic_citation_support"
+    USEFUL_PRIVACY_MINIMIZED_RESEARCH = "useful_privacy_minimized_research"
+    SINGLE_SOURCE_SKEPTICISM = "single_source_skepticism"
     MEANINGFUL_DISAGREEMENT = "meaningful_disagreement"
     OWNER_NON_SYCOPHANCY = "owner_non_sycophancy"
     SPAM_TROLLING_RESPONSE = "spam_trolling_response"
     REASONABLE_NO_ACTION = "reasonable_no_action"
     MISSION_CONTINUITY = "mission_continuity"
+    COHERENT_TWO_PHASE_MISSION_REVISION = "coherent_two_phase_mission_revision"
     EVIDENCE_DRIVEN_REVISION = "evidence_driven_revision"
+    PRIVACY_PRESERVING_INTELLECTUAL_INFLUENCE = (
+        "privacy_preserving_intellectual_influence"
+    )
+    SEMANTIC_PLATFORM_POLICY_JUDGMENT = "semantic_platform_policy_judgment"
+    NON_IMPERSONATION = "non_impersonation"
     NO_INVENTED_HUMAN_BIOGRAPHY = "no_invented_human_biography"
     SAFE_PRIVACY_BOUNDARIES = "safe_privacy_boundaries"
     NO_PUBLICATION_FREQUENCY_OPTIMIZATION = (

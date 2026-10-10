@@ -28,6 +28,10 @@ from app.core.core_self import initial_core_self
 NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
 
 
+def engine(model, clock=lambda: NOW) -> DeliberationEngine:
+    return DeliberationEngine(model, clock)
+
+
 def behavior_input(
     *,
     capabilities: BehaviorCapabilities | None = None,
@@ -58,10 +62,10 @@ def test_deliberation_returns_existing_typed_proposals_without_effects() -> None
             {"decision": "no_action", "reason_category": "low_value"},
         )
     )
-    engine = DeliberationEngine(model)
+    behavior_engine = engine(model)
 
-    reply = engine.deliberate(behavior_input())
-    inactive = engine.deliberate(behavior_input())
+    reply = behavior_engine.deliberate(behavior_input())
+    inactive = behavior_engine.deliberate(behavior_input())
 
     assert reply.outcome is DeliberationOutcome.PROPOSED
     assert reply.proposal == ReplyProposal("Я не согласен: довод не подтверждён.")
@@ -69,6 +73,7 @@ def test_deliberation_returns_existing_typed_proposals_without_effects() -> None
     assert inactive.proposal == NoActionProposal(NoActionReason.LOW_VALUE)
     assert reply.model_calls == reply.steps == 1
     assert model.requests[0]["contract_version"] == BEHAVIOR_CONTRACT_VERSION
+    assert model.timeouts == [5.0, 5.0]
     assert "owner" not in repr(model.requests[0]).lower()
 
 
@@ -188,22 +193,22 @@ def test_engine_distinguishes_operational_skips_and_capability_denials() -> None
     disabled = BehaviorCapabilities("v", False, False, True, False, False)
 
     assert (
-        DeliberationEngine(RecordedBehaviorModel(()))
+        engine(RecordedBehaviorModel(()))
         .deliberate(behavior_input(capabilities=stopped))
         .outcome
         is DeliberationOutcome.SKIPPED_STOP
     )
     assert (
-        DeliberationEngine(RecordedBehaviorModel(()))
+        engine(RecordedBehaviorModel(()))
         .deliberate(behavior_input(capabilities=suspended))
         .outcome
         is DeliberationOutcome.SKIPPED_SPEND
     )
 
-    research = DeliberationEngine(
+    research = engine(
         RecordedBehaviorModel(({"decision": "research", "brief": "Проверить данные"},))
     ).deliberate(behavior_input(capabilities=disabled))
-    publication = DeliberationEngine(
+    publication = engine(
         RecordedBehaviorModel(
             ({"decision": "propose_publication", "draft": "Проверенный вывод"},)
         )
@@ -213,20 +218,18 @@ def test_engine_distinguishes_operational_skips_and_capability_denials() -> None
 
 
 def test_engine_enforces_budgets_deadline_defer_and_malformed_output() -> None:
-    no_budget = DeliberationEngine(RecordedBehaviorModel(())).deliberate(
+    no_budget = engine(RecordedBehaviorModel(())).deliberate(
         behavior_input(budget=DeliberationBudget(0, 0, 0.0))
     )
-    expired = DeliberationEngine(RecordedBehaviorModel(())).deliberate(
-        behavior_input(deadline=NOW)
-    )
-    defer = DeliberationEngine(
+    expired = engine(RecordedBehaviorModel(())).deliberate(behavior_input(deadline=NOW))
+    defer = engine(
         RecordedBehaviorModel(
             ({"decision": "defer", "resume_condition": "Когда появится источник"},)
         )
     ).deliberate(behavior_input(supports_defer=False))
-    malformed = DeliberationEngine(
-        RecordedBehaviorModel(("not an object",))
-    ).deliberate(behavior_input())
+    malformed = engine(RecordedBehaviorModel(("not an object",))).deliberate(
+        behavior_input()
+    )
 
     assert no_budget.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
     assert expired.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
@@ -236,13 +239,13 @@ def test_engine_enforces_budgets_deadline_defer_and_malformed_output() -> None:
 
 def test_input_and_fake_model_validation() -> None:
     with pytest.raises(ValueError, match="responses exhausted"):
-        RecordedBehaviorModel(()).complete({})
+        RecordedBehaviorModel(()).complete({}, 1.0)
     with pytest.raises(TypeError, match="DeliberationInput"):
-        DeliberationEngine(RecordedBehaviorModel(())).deliberate(object())  # type: ignore[arg-type]
+        engine(RecordedBehaviorModel(())).deliberate(object())  # type: ignore[arg-type]
     invalid = behavior_input()
     object.__setattr__(invalid, "correlation_id", "")
     with pytest.raises(ValueError, match="correlation_id"):
-        DeliberationEngine(RecordedBehaviorModel(())).deliberate(invalid)
+        engine(RecordedBehaviorModel(())).deliberate(invalid)
 
 
 def test_additional_closed_schema_and_capability_paths() -> None:
@@ -274,7 +277,7 @@ def test_additional_closed_schema_and_capability_paths() -> None:
     )
 
     capabilities = BehaviorCapabilities("v", False, False, False, True, True)
-    result = DeliberationEngine(
+    result = engine(
         RecordedBehaviorModel(({"decision": "reply", "content": "Ответ"},))
     ).deliberate(behavior_input(capabilities=capabilities))
     assert result.outcome is DeliberationOutcome.UNAVAILABLE_CAPABILITY
@@ -294,4 +297,36 @@ def test_deliberation_input_rejects_every_untrusted_shape() -> None:
     )
     for invalid in invalid_values:
         with pytest.raises(ValueError):
-            DeliberationEngine(RecordedBehaviorModel(())).deliberate(invalid)
+            engine(RecordedBehaviorModel(())).deliberate(invalid)
+
+
+def test_model_adapter_timeout_and_post_call_deadline_are_enforced() -> None:
+    class TimeoutModel:
+        def complete(self, request, timeout_seconds):
+            assert request["contract_version"] == BEHAVIOR_CONTRACT_VERSION
+            assert timeout_seconds == 5.0
+            raise TimeoutError
+
+    timed_out = engine(TimeoutModel()).deliberate(behavior_input())
+    assert timed_out.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+    assert timed_out.model_calls == 1
+
+    moments = iter((NOW, NOW + timedelta(seconds=6)))
+    late = engine(
+        RecordedBehaviorModel(({"decision": "reply", "content": "Поздно"},)),
+        lambda: next(moments),
+    ).deliberate(behavior_input())
+    assert late.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+    assert late.proposal is None
+
+    with pytest.raises(ValueError, match="clock"):
+        engine(RecordedBehaviorModel(()), lambda: NOW.replace(tzinfo=None)).deliberate(
+            behavior_input()
+        )
+
+    backwards = iter((NOW, NOW - timedelta(seconds=1)))
+    failed_closed = engine(
+        RecordedBehaviorModel(({"decision": "reply", "content": "Ответ"},)),
+        lambda: next(backwards),
+    ).deliberate(behavior_input())
+    assert failed_closed.outcome is DeliberationOutcome.BUDGET_EXHAUSTED

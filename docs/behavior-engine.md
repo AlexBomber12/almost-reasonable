@@ -31,13 +31,17 @@ typed `BehaviorIntent` values for `remember`, `revise_belief`, `revise_goal`,
 unknown fields, malformed values, oversized values, invalid goal states, and
 attempts to add administrative fields fail closed.
 
-The engine performs at most one injected model call and one parse step. The
-included `RecordedBehaviorModel` is deterministic and has no network/tool path.
-Emergency stop, known provider-spend suspension, exhausted limits, expired
-deadlines, disabled capabilities, and a channel that cannot support deferral
-produce explicit non-effect outcomes. `no_action` is a successful agent choice;
-it is not reused for `skipped_stop`, `skipped_spend`, invalid output, or missing
-capability.
+The engine performs at most one injected model call and one parse step. It
+computes the smaller of the remaining deadline and configured execution budget
+and supplies that hard timeout to the application-owned model adapter. The
+adapter contract requires enforcing it. A `TimeoutError`, late return, deadline
+overrun, or backward wall clock fails closed; a returned proposal is parsed only
+after the post-call time check. The included `RecordedBehaviorModel` is
+deterministic and has no network/tool path. Emergency stop, known provider-spend
+suspension, exhausted limits, expired deadlines, disabled capabilities, and a
+channel that cannot support deferral produce explicit non-effect outcomes.
+`no_action` is a successful agent choice; it is not reused for `skipped_stop`,
+`skipped_spend`, invalid output, or missing capability.
 
 The request deliberately contains no conversational owner-role marker. Owner
 status can control capabilities outside this layer, but never changes the
@@ -83,13 +87,15 @@ supports bounded active hours (including overnight or all-day windows), an
 agent-selected cadence, cooldown, duplicate-retention window, maximum iteration
 and elapsed-time limits, and per-decision technical rate limits.
 
-A run coalesces missed wake-ups to the newest event, records all coalesced event
-IDs, and deliberates at most once. There is no catch-up loop. Duplicate events,
-inactive hours, cooldown, emergency stop, spend suspension, rate limiting,
-invalid decisions, and elapsed-time exhaustion remain distinct outcomes.
-Repeated `no_action` is valid and creates no public operation. An expired
-duplicate record or cooldown does not permanently starve a later worthwhile
-wake-up.
+A run filters out future events, coalesces only currently due unprocessed
+wake-ups to the newest event, records their IDs, and deliberates at most once.
+Future events remain eligible when their time arrives, and a duplicate newest
+event cannot starve an older unprocessed due event. There is no catch-up loop.
+Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
+rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
+outcomes. Repeated `no_action` is valid and creates no public operation. An
+expired duplicate record or cooldown does not permanently starve a later
+worthwhile wake-up.
 
 The in-memory store and mutable clock exist for deterministic tests. Production
 wiring still needs an application-owned durable scheduler repository and actual
@@ -110,12 +116,15 @@ snapshot. Pending proposals never affect the active mission. Rejection retains
 the current mission. Confirmation creates a new mission version with the former
 version as its parent. Resolved proposals cannot be resolved again.
 
-Mission fields reject links, administrative/tool instructions, and requests to
-change operational controls. Revision cannot alter Core Self, operational
+Mission text, reasons, and counterevidence use Unicode-normalized, fail-closed
+screening for hidden controls, links, instruction/prompt language, credentials,
+secrets, budgets, security/deployment controls, shell/Docker, and tool/command
+imperatives in Russian and English. Revision cannot alter Core Self, operational
 policy, credentials, provider budgets, deployment stage, tool permissions, or
 emergency-stop availability. It may, for example, replace a Threads-oriented
 behavioral mission while the separately managed Threads capability remains
-unchanged.
+unchanged. The lexical screen is deliberately conservative; semantic adequacy
+still receives H/M evaluation, while exact capability invariance remains G.
 
 The repository writes a replacement file before atomically replacing the active
 document. Tests reopen it with a new state-machine instance and confirm
@@ -128,11 +137,14 @@ without rendering private provenance into ordinary model context.
 ## Behavioral evaluation artifacts
 
 `app.behavior.evaluation` defines `behavior-rubric-v1`, containing all required
-dimensions: Russian naturalness, continuity, honesty, uncertainty, evidence
-versus interpretation, disagreement, owner non-sycophancy, trolling response,
-reasonable inactivity, mission continuity, evidence-driven revision, no
-invented human biography, privacy boundaries, and no optimization for posting
-frequency.
+dimensions: Russian naturalness; continuity; independent intellectual
+development; honesty; uncertainty; evidence versus interpretation; semantic
+citation support; useful privacy-minimized research; single-source skepticism;
+disagreement; evidence-driven revision; owner non-sycophancy; trolling response;
+reasonable inactivity; privacy-preserving intellectual influence; deterministic
+privacy boundaries; semantic platform-policy judgment; mission continuity and
+coherent two-phase revision; non-impersonation and no invented human biography;
+and no optimization for posting frequency.
 
 An `EvaluationCase` contains frozen synthetic prompts and one or more recorded
 outputs. Each output is a separate trial. An injected assessor returns a score

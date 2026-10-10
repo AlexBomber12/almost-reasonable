@@ -161,23 +161,38 @@ class TestScheduler:
 
         now = self._clock.now()
         state = self._pruned_state(self._store.load(), now)
-        selected = max(pending, key=lambda item: item.scheduled_at)
-        coalesced = len(pending) - 1
+        due = tuple(item for item in pending if item.scheduled_at <= now)
+        if not due:
+            self._store.save(state)
+            return SchedulerRun(SchedulerOutcome.NOTHING_DUE, None, 0, 0, None)
         processed = set(state.processed_event_ids)
-        if selected.event_id in processed:
+        unprocessed_due = tuple(item for item in due if item.event_id not in processed)
+        if not unprocessed_due:
+            selected = max(due, key=lambda item: item.scheduled_at)
             self._store.save(state)
             return SchedulerRun(
-                SchedulerOutcome.DUPLICATE, selected.event_id, coalesced, 0, None
+                SchedulerOutcome.DUPLICATE,
+                selected.event_id,
+                len(due) - 1,
+                0,
+                None,
             )
+        selected = max(unprocessed_due, key=lambda item: item.scheduled_at)
+        coalesced = len(unprocessed_due) - 1
 
         if emergency_stop:
             return self._skip(
-                state, pending, selected, coalesced, now, SchedulerOutcome.SKIPPED_STOP
+                state,
+                unprocessed_due,
+                selected,
+                coalesced,
+                now,
+                SchedulerOutcome.SKIPPED_STOP,
             )
         if spend_suspended:
             return self._skip(
                 state,
-                pending,
+                unprocessed_due,
                 selected,
                 coalesced,
                 now,
@@ -186,7 +201,7 @@ class TestScheduler:
         if not _inside_active_hours(now.timetz().replace(tzinfo=None), self._policy):
             return self._skip(
                 state,
-                pending,
+                unprocessed_due,
                 selected,
                 coalesced,
                 now,
@@ -197,7 +212,12 @@ class TestScheduler:
             and now - state.last_deliberation_at < self._policy.cooldown
         ):
             return self._skip(
-                state, pending, selected, coalesced, now, SchedulerOutcome.COOLDOWN
+                state,
+                unprocessed_due,
+                selected,
+                coalesced,
+                now,
+                SchedulerOutcome.COOLDOWN,
             )
 
         started_at = now
@@ -227,7 +247,7 @@ class TestScheduler:
             history = (*history, (valid_decision, now))
         updated = replace(
             state,
-            processed_events=_append_processed(state, pending, now),
+            processed_events=_append_processed(state, unprocessed_due, now),
             last_deliberation_at=now,
             action_history=history,
         )

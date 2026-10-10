@@ -38,7 +38,7 @@ def request(response: object, context: tuple[str, ...]) -> tuple[object, dict]:
         PriorResultCategory.NONE,
         True,
     )
-    return DeliberationEngine(model).deliberate(value), model.requests[0]
+    return DeliberationEngine(model, lambda: NOW).deliberate(value), model.requests[0]
 
 
 def test_owner_spoof_is_untrusted_content_not_epistemic_authority() -> None:

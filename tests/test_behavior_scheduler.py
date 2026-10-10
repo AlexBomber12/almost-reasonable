@@ -181,3 +181,32 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
     assert scheduler.run((event("all-day"),)).outcome is SchedulerOutcome.NO_ACTION
     with pytest.raises(TypeError, match="pending"):
         scheduler.run([event("bad")])  # type: ignore[arg-type]
+
+
+def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
+    store = InMemorySchedulerStore()
+    clock = MutableClock(NOW)
+    calls: list[str] = []
+    scheduler = TestScheduler(
+        policy(),
+        store,
+        clock,
+        lambda wakeup: calls.append(wakeup.event_id) or AgentDecision.NO_ACTION,
+    )
+
+    future = event("future", NOW + timedelta(hours=1))
+    assert scheduler.run((future,)).outcome is SchedulerOutcome.NOTHING_DUE
+    assert store.load().processed_event_ids == ()
+
+    due = event("due", NOW - timedelta(minutes=1))
+    mixed = scheduler.run((due, future))
+    assert mixed.outcome is SchedulerOutcome.NO_ACTION
+    assert mixed.selected_event_id == "due"
+    assert mixed.coalesced_count == 0
+    assert calls == ["due"]
+    assert store.load().processed_event_ids == ("due",)
+
+    clock.advance(timedelta(hours=1, minutes=1))
+    later = scheduler.run((due, future))
+    assert later.selected_event_id == "future"
+    assert calls == ["due", "future"]
