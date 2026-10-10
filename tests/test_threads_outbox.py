@@ -490,6 +490,38 @@ def test_revocation_or_privacy_change_before_dispatch_blocks_all_effects(tmp_pat
     assert private.simulator.trace == []
 
 
+@pytest.mark.parametrize(
+    "withdrawal, error, message",
+    [
+        ("privacy", PolicyDeniedError, "current draft privacy"),
+        ("approval", ValueError, "revoked"),
+    ],
+)
+def test_authorization_is_refreshed_after_unresolved_publication_lookup(
+    tmp_path, monkeypatch, withdrawal, error, message
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    unresolved_for_account = service.store.unresolved_for_account
+
+    def lookup_then_withdraw(account_ref):
+        result = unresolved_for_account(account_ref)
+        if withdrawal == "privacy":
+            service.authorization_provider.set_privacy(
+                account_ref, "operation-1", False
+            )
+        else:
+            service.authorization_provider.set_approval(approve(revoked=True))
+        return result
+
+    monkeypatch.setattr(service.store, "unresolved_for_account", lookup_then_withdraw)
+    with pytest.raises(error, match=message):
+        service.dispatch("operation-1", approval, now=NOW)
+
+    assert service.store.get("operation-1").state is OutboxState.READY
+    assert service.simulator.trace == []
+
+
 @pytest.mark.parametrize("phase", ["authorize", "dispatch", "unauthenticated"])
 def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
     service = make_service(tmp_path)

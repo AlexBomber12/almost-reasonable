@@ -147,8 +147,9 @@ transition, checks again before entering `sending`, and immediately before both
 container creation and publication. Each effect check occurs after its final durable
 dispatch-marker write, so no intervening store update creates an authorization
 gap before the provider call. After all potentially blocking authorization
-lookups, the accepted approval is validated again against a freshly sampled
-clock before readiness and before each external effect. Revocation, expiry,
+and unresolved-publication store lookups, the service obtains a fresh atomic
+approval/privacy snapshot and validates the accepted approval against a freshly
+sampled clock before readiness and before each external effect. Revocation, expiry,
 consent withdrawal, or control-plane unavailability after proposal or approval
 therefore blocks the next effect. The approval actually accepted for dispatch
 replaces the stored

@@ -693,6 +693,17 @@ class ThreadsService:
             require_duplicate_ack=item.replacement_of is not None,
             purpose=ApprovalPurpose.PUBLICATION,
         )
+        unresolved = self.store.unresolved_for_account(item.account_ref)
+        unresolved_ids = {candidate.operation_id for candidate in unresolved}
+        if item.replacement_of is not None:
+            if item.replacement_of not in unresolved_ids:
+                raise PolicyDeniedError("replacement target is no longer unresolved")
+            if unresolved_ids != {item.replacement_of}:
+                raise PolicyDeniedError(
+                    "account is paused by an additional unresolved publication"
+                )
+        elif unresolved_ids:
+            raise PolicyDeniedError("account is paused by unresolved publication")
         provider = self.authorization_provider
         if provider is None:
             raise PolicyDeniedError("current authorization provider is unavailable")
@@ -724,17 +735,6 @@ class ThreadsService:
             raise PolicyDeniedError(
                 "current draft privacy authorization is unavailable"
             )
-        unresolved = self.store.unresolved_for_account(item.account_ref)
-        unresolved_ids = {candidate.operation_id for candidate in unresolved}
-        if item.replacement_of is not None:
-            if item.replacement_of not in unresolved_ids:
-                raise PolicyDeniedError("replacement target is no longer unresolved")
-            if unresolved_ids != {item.replacement_of}:
-                raise PolicyDeniedError(
-                    "account is paused by an additional unresolved publication"
-                )
-        elif unresolved_ids:
-            raise PolicyDeniedError("account is paused by unresolved publication")
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
