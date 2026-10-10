@@ -224,9 +224,15 @@ class CognitionEngine:
         except SelfStateConflictError:
             return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
         except SelfStateIdentityConflictError:
-            return self._rejected(
-                CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
-            )
+            try:
+                duplicate = self._read.replay_private_operation(context, change)
+            except SelfStateIdentityConflictError:
+                duplicate = None
+            if duplicate is None:
+                return self._rejected(
+                    CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
+                )
+            transition = duplicate
         except SelfStateValidationError:
             return self._rejected(CognitionReason.STORE_REJECTED, proposal.memory_kind)
         return CognitionOutcome(

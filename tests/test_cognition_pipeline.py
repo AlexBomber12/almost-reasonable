@@ -437,15 +437,73 @@ def test_operation_identity_race_is_rejected_without_aborting(
     )
     changed_retry = replace(original, strength=80)
     engine = CognitionEngine(events, state, extractor=FakeExtractor(changed_retry))
+    durable_replay = engine._read.replay_private_operation
+    calls = 0
+
+    def miss_before_concurrent_insert(request_context, change):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return durable_replay(request_context, change)
+
     monkeypatch.setattr(
-        engine._read,
-        "replay_private_operation",
-        lambda _context, _change: None,
+        engine._read, "replay_private_operation", miss_before_concurrent_insert
     )
 
     outcome = engine.process(context, event_id)
 
     assert outcome.reason is CognitionReason.OPERATION_ID_CONFLICT
+    assert calls == 2
+
+
+def test_identical_operation_race_replays_durable_winner(cognition_setup, monkeypatch):
+    events, state, context, event_id = cognition_setup
+    proposal = InterestMemoryProposal(
+        proposal_context(event_id, "identical-race"),
+        "interest-identical-race",
+        "Idempotent races",
+        50,
+        InterestStatus.ACTIVE,
+        "Concurrent identical retries should converge.",
+    )
+    assert (
+        CognitionEngine(
+            events,
+            state,
+            extractor=FakeExtractor(proposal),
+            clock=lambda: NOW,
+        )
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    engine = CognitionEngine(
+        events,
+        state,
+        extractor=FakeExtractor(proposal),
+        clock=lambda: NOW + timedelta(minutes=1),
+    )
+    durable_replay = engine._read.replay_private_operation
+    calls = 0
+
+    def miss_before_concurrent_insert(request_context, change):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        return durable_replay(request_context, change)
+
+    monkeypatch.setattr(
+        engine._read, "replay_private_operation", miss_before_concurrent_insert
+    )
+
+    outcome = engine.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.PERSISTED
+    assert outcome.reason is CognitionReason.AUTHORIZED
+    assert outcome.transition.status is TransitionStatus.DUPLICATE
+    assert calls == 2
 
 
 def test_delayed_retry_remains_duplicate_after_a_later_revision(cognition_setup):
