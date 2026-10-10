@@ -81,6 +81,10 @@ def test_deletion_writes_pending_first_then_applies_idempotently(tmp_path):
         "pending:awaiting_erasure",
         "applied:erasure_applied",
     ]
+    rejected_retry = coordinator.delete(context(origin=OperationOrigin.CHAT), request())
+    assert rejected_retry.disposition is DeletionDisposition.INVALID_AUTHORIZATION
+    assert rejected_retry.reason == "invalid_authentication"
+    assert ledger.audit_records()[-1].action_type == "deletion_rejected"
 
 
 def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):

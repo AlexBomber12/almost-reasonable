@@ -66,9 +66,16 @@ def _validate_new_file(path: Path, label: str) -> None:
         raise BackupError(f"{label} parent is unsafe")
 
 
-def _schema_version(path: Path) -> int:
+def _database_target(path_or_descriptor: Path | int) -> tuple[str | Path, bool]:
+    if type(path_or_descriptor) is int:
+        return f"file:/proc/self/fd/{path_or_descriptor}?mode=ro", True
+    return path_or_descriptor, False
+
+
+def _schema_version(path_or_descriptor: Path | int) -> int:
+    target, uri = _database_target(path_or_descriptor)
     try:
-        with sqlite3.connect(path, timeout=0.1) as connection:
+        with sqlite3.connect(target, timeout=0.1, uri=uri) as connection:
             row = connection.execute(
                 "SELECT version FROM schema_metadata WHERE singleton=1"
             ).fetchone()
@@ -109,6 +116,15 @@ def _cleanup_created(owned: list[_OwnedFile]) -> None:
 def _close_owned(owned: list[_OwnedFile]) -> None:
     for _path, descriptor in owned:
         os.close(descriptor)
+
+
+def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
+    try:
+        current = path.stat(follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    identity = os.fstat(descriptor)
+    return (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino)
 
 
 def _sqlite_copy(source: Path, destination_descriptor: int) -> None:
@@ -153,8 +169,9 @@ def _is_busy(error: sqlite3.OperationalError) -> bool:
     }
 
 
-def _integrity_ok(path: Path) -> bool:
-    with sqlite3.connect(path) as connection:
+def _integrity_ok(path_or_descriptor: Path | int) -> bool:
+    target, uri = _database_target(path_or_descriptor)
+    with sqlite3.connect(target, uri=uri) as connection:
         return connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
@@ -188,9 +205,11 @@ def create_sqlite_backup(
         _sqlite_copy(source, destination_descriptor)
         if after_copy is not None:
             after_copy(destination)
-        if _schema_version(destination) != expected_schema_version:
+        if not _path_matches_descriptor(destination, destination_descriptor):
+            raise BackupError("backup destination identity changed")
+        if _schema_version(destination_descriptor) != expected_schema_version:
             raise BackupError("backup schema verification failed")
-        if not _integrity_ok(destination):
+        if not _integrity_ok(destination_descriptor):
             raise BackupError("backup consistency verification failed")
         payload = json.dumps(
             {
@@ -204,6 +223,11 @@ def create_sqlite_backup(
         descriptor = _open_owned_file(metadata_path, os.O_WRONLY, owned)
         os.write(descriptor, payload)
         os.fsync(descriptor)
+        if not all(
+            _path_matches_descriptor(path, owned_descriptor)
+            for path, owned_descriptor in owned
+        ):
+            raise BackupError("backup output identity changed")
     except sqlite3.OperationalError as error:
         _cleanup_created(owned)
         if _is_busy(error):

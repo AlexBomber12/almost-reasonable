@@ -1,5 +1,6 @@
 from datetime import UTC, datetime, timedelta
 import json
+import os
 from pathlib import Path
 import sqlite3
 import stat
@@ -270,6 +271,54 @@ def test_backup_copy_cannot_follow_a_replaced_destination_path(tmp_path, monkeyp
             "SELECT content FROM synthetic_private WHERE event_id='event-001'"
         ).fetchone() == ("unchanged-victim",)
     assert destination.is_symlink()
+
+
+@pytest.mark.parametrize("mutation", ["replace", "remove"])
+def test_backup_verifies_the_owned_destination_not_a_substitute(tmp_path, mutation):
+    source = tmp_path / "source.sqlite3"
+    make_source(source, "intended-source").close()
+    substitute = tmp_path / "substitute.sqlite3"
+    make_source(substitute, "unchanged-substitute").close()
+    destination = tmp_path / "backup.sqlite3"
+
+    def substitute_after_copy(path):
+        path.unlink()
+        if mutation == "replace":
+            path.symlink_to(substitute)
+
+    with pytest.raises(BackupError, match="identity"):
+        create_sqlite_backup(
+            source, destination, 3, NOW, after_copy=substitute_after_copy
+        )
+
+    with sqlite3.connect(substitute) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("unchanged-substitute",)
+    if mutation == "replace":
+        assert destination.is_symlink()
+    else:
+        assert not destination.exists()
+
+
+def test_backup_verifies_owned_metadata_before_success(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    metadata = Path(f"{destination}.metadata.json")
+    real_fsync = os.fsync
+
+    def replace_metadata(descriptor):
+        real_fsync(descriptor)
+        metadata.unlink()
+        metadata.write_text("concurrent-metadata")
+
+    monkeypatch.setattr(recovery_module.os, "fsync", replace_metadata)
+    with pytest.raises(BackupError, match="identity"):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert metadata.read_text() == "concurrent-metadata"
+    assert not destination.exists()
 
 
 def test_backup_rejects_malformed_database_and_verification_faults(

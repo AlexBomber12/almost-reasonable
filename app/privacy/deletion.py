@@ -43,6 +43,14 @@ class DeletionCoordinator:
         *,
         after_pending: Callable[[DeletionRequest], None] | None = None,
     ) -> DeletionOutcome:
+        if context.origin is not OperationOrigin.CONTROL or (
+            context.actor_reference != request.actor_reference
+            or context.authentication_event_id != request.authentication_event_id
+        ):
+            return self._reject(context, request, "invalid_authentication")
+        if context.principal_id != request.principal_id:
+            return self._reject(context, request, "wrong_principal")
+
         existing = None
         try:
             existing = self.ledger.deletion(request.operation_id)
@@ -59,13 +67,6 @@ class DeletionCoordinator:
                     request.operation_id, existing.disposition, existing.reason
                 )
 
-        if context.origin is not OperationOrigin.CONTROL or (
-            context.actor_reference != request.actor_reference
-            or context.authentication_event_id != request.authentication_event_id
-        ):
-            return self._reject(context, request, "invalid_authentication")
-        if context.principal_id != request.principal_id:
-            return self._reject(context, request, "wrong_principal")
         if request.content_category is ContentCategory.PUBLIC_ACTION:
             return self._terminal(
                 request, DeletionDisposition.NOT_ELIGIBLE, "public_action_not_erasable"
