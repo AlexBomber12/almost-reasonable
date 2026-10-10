@@ -123,8 +123,9 @@ class AbstractToSharedValidator:
                 AbstractDecisionStatus.REJECTED,
                 AbstractReason.CAPABILITY_DISABLED,
             )
-        if not isinstance(proposal, AbstractToSharedProposal) or not isinstance(
-            proposal.candidate, AbstractCandidate
+        if (
+            type(proposal) is not AbstractToSharedProposal
+            or type(proposal.candidate) is not AbstractCandidate
         ):
             return self._result(
                 AbstractDecisionStatus.REJECTED,

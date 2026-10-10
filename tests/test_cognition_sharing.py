@@ -247,6 +247,38 @@ def test_capability_verification_kind_and_shape_validation(sharing_setup):
     )
 
 
+def test_subclassed_abstraction_contracts_cannot_expose_extra_metadata(sharing_setup):
+    events, _, context, event_id = sharing_setup
+
+    class LeakyCandidate(AbstractCandidate):
+        pass
+
+    class LeakyProposal(AbstractToSharedProposal):
+        pass
+
+    candidate = LeakyCandidate(
+        MemoryKind.DURABLE_INTEREST,
+        "A general interest in uncertainty.",
+        0.55,
+        VerificationStatus.UNVERIFIED,
+    )
+    object.__setattr__(candidate, "participant_id", context.principal_id.value)
+    candidate_subclass = replace(proposal(event_id), candidate=candidate)
+    proposal_subclass = LeakyProposal(
+        "operation-leaky-proposal",
+        proposal(event_id).candidate,
+        (event_id,),
+        NOW,
+    )
+
+    for unsafe in (candidate_subclass, proposal_subclass):
+        result = AbstractToSharedValidator(events).validate(context, unsafe)
+        assert result.status is AbstractDecisionStatus.REJECTED
+        assert result.reason is AbstractReason.INVALID_PROPOSAL
+        assert result.quarantined_candidate is None
+        assert context.principal_id.value not in repr(result)
+
+
 def test_uncertain_h_screen_quarantines_and_allowing_malicious_text_grants_no_authority(
     sharing_setup,
 ):
