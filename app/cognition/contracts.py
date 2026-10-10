@@ -327,6 +327,11 @@ class MemoryRecord:
     priority: int | None
     stance: BeliefStance | None
     counterevidence_count: int
+    reason_for_interest: str | None
+    alternatives: tuple[str, ...]
+    rationale: str | None
+    constraints: tuple[str, ...]
+    review_condition: str | None
     verification: VerificationStatus
     provenance: ProvenanceType
     recency: datetime

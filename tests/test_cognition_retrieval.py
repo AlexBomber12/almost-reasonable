@@ -152,6 +152,9 @@ def test_privacy_filter_precedes_ranking_and_records_are_untrusted(retrieval_set
     )
     assert all(record.can_instruct is False for record in selection.records)
     assert all("participant-b" not in repr(record) for record in selection.records)
+    assert selection.records[0].reason_for_interest == (
+        "It is relevant to current reasoning."
+    )
     assert selection.purpose is RetrievalPurpose.CONVERSATION
     assert selection.used_utf8_bytes <= selection.total_utf8_bytes
 
@@ -402,7 +405,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         BeliefStance.OPPOSES,
         0.7,
         BeliefStatus.ACTIVE,
-        (),
+        ("Network effects may dominate the observed feedback.",),
         VerificationStatus.UNVERIFIED,
     )
     goal = GoalMemoryProposal(
@@ -421,8 +424,8 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         "Comparison clarifies causal structure.",
         65,
         GoalStatus.ACTIVE,
-        (),
-        "Review after comparison.",
+        ("Keep the comparison within a strict budget ceiling.",),
+        "Review after the first controlled comparison.",
     )
     for item in (belief, goal):
         assert (
@@ -444,6 +447,13 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert belief_record.provenance is ProvenanceType.MODEL_INFERENCE
     assert belief_record.counterevidence_count == 1
     assert belief_record.review_at == NOW + timedelta(days=7)
+    assert belief_record.alternatives == (
+        "Network effects may dominate the observed feedback.",
+    )
+    assert belief_record.reason_for_interest is None
+    assert belief_record.rationale is None
+    assert belief_record.constraints == ()
+    assert belief_record.review_condition is None
     serialized_values = (
         belief_record.item_id,
         belief_record.memory_kind.value,
@@ -454,6 +464,11 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         "",
         belief_record.stance.value,
         str(belief_record.counterevidence_count),
+        "",
+        *belief_record.alternatives,
+        "",
+        "",
+        "",
         belief_record.verification.value,
         belief_record.provenance.value,
         belief_record.recency.isoformat(),
@@ -469,6 +484,30 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert by_id["goal-retrieval"].stance is None
     assert by_id["goal-retrieval"].counterevidence_count == 0
     assert by_id["goal-retrieval"].review_at == NOW + timedelta(days=7)
+    assert by_id["goal-retrieval"].rationale == (
+        "Comparison clarifies causal structure."
+    )
+    assert by_id["goal-retrieval"].constraints == (
+        "Keep the comparison within a strict budget ceiling.",
+    )
+    assert by_id["goal-retrieval"].review_condition == (
+        "Review after the first controlled comparison."
+    )
+    assert by_id["goal-retrieval"].alternatives == ()
+
+    goal_match = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.DELIBERATION, "budget ceiling", 4096, 1),
+    )
+    assert [record.item_id for record in goal_match.records] == ["goal-retrieval"]
+
+    alternative_match = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.REVISION, "network effects", 4096, 1),
+    )
+    assert [record.item_id for record in alternative_match.records] == [
+        "belief-retrieval"
+    ]
 
 
 def test_ranking_considers_authorized_candidates_beyond_core_result_cap(

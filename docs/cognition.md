@@ -125,7 +125,9 @@ priority, recency, and item ID. The selector emits only whole records; a record
 that does not fit is omitted rather than truncated into an ambiguous fragment.
 Belief records retain their explicit `supports`, `opposes`, or `uncertain`
 stance and counterevidence count, so disputed claims remain distinguishable;
-both fields are included in byte-budget accounting.
+alternatives remain available for revision. Goal records retain rationale,
+constraints, and review conditions, and interest records retain their reason.
+All of these fields participate in relevance ranking and byte-budget accounting.
 Every record carries its kind, private scope, status, confidence or priority,
 verification state, origin-derived provenance class, decision recency, review
 deadline, and the fixed `untrusted_memory_data` trust label. Model-authored

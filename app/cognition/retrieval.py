@@ -66,7 +66,18 @@ class MemoryContextSelector:
                 candidate_read.decided_at,
                 candidate_read.decision_origin,
             )
-            relevance = len(query_words & set(self._words(record.text)))
+            searchable_values = (
+                record.text,
+                record.reason_for_interest or "",
+                *record.alternatives,
+                record.rationale or "",
+                *record.constraints,
+                record.review_condition or "",
+            )
+            searchable_words = {
+                word for value in searchable_values for word in self._words(value)
+            }
+            relevance = len(query_words & searchable_words)
             strength = (
                 record.confidence
                 if record.confidence is not None
@@ -114,6 +125,11 @@ class MemoryContextSelector:
             priority = candidate.strength
             stance = None
             counterevidence_count = 0
+            reason_for_interest = candidate.reason_for_interest
+            alternatives = ()
+            rationale = None
+            constraints = ()
+            review_condition = None
             verification = VerificationStatus.UNVERIFIED
         elif isinstance(candidate, BeliefCandidate):
             kind = MemoryKind.BELIEF_OR_HYPOTHESIS
@@ -122,6 +138,11 @@ class MemoryContextSelector:
             priority = None
             stance = candidate.stance
             counterevidence_count = candidate.conflicting_evidence_count
+            reason_for_interest = None
+            alternatives = candidate.alternatives
+            rationale = None
+            constraints = ()
+            review_condition = None
             verification = candidate.verification
         else:
             kind = MemoryKind.GOAL_OR_INTENTION
@@ -130,6 +151,11 @@ class MemoryContextSelector:
             priority = candidate.priority
             stance = None
             counterevidence_count = 0
+            reason_for_interest = None
+            alternatives = ()
+            rationale = candidate.rationale
+            constraints = candidate.constraints
+            review_condition = candidate.review_condition
             verification = VerificationStatus.UNVERIFIED
         provenance = {
             DecisionOrigin.MODEL: ProvenanceType.MODEL_INFERENCE,
@@ -145,6 +171,11 @@ class MemoryContextSelector:
             "" if priority is None else str(priority),
             "" if stance is None else stance.value,
             str(counterevidence_count),
+            "" if reason_for_interest is None else reason_for_interest,
+            *alternatives,
+            "" if rationale is None else rationale,
+            *constraints,
+            "" if review_condition is None else review_condition,
             verification.value,
             provenance.value,
             recency.isoformat(),
@@ -163,6 +194,11 @@ class MemoryContextSelector:
             priority=priority,
             stance=stance,
             counterevidence_count=counterevidence_count,
+            reason_for_interest=reason_for_interest,
+            alternatives=alternatives,
+            rationale=rationale,
+            constraints=constraints,
+            review_condition=review_condition,
             verification=verification,
             provenance=provenance,
             recency=recency,
