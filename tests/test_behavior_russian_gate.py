@@ -103,6 +103,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. `Please select a book from this entirely English passage`",
         "Да. `The result = a complete English explanation about history and art`",
         "Да. ```This is entirely English prose```",
+        "Да. ```python\nThis is entirely English conversational prose\n```",
     )
     for bypass in bypasses:
         assessment = RussianOutputGate().assess(bypass)

@@ -182,10 +182,18 @@ class BehavioralEvaluationHarness:
         if (
             type(rubric) is not tuple
             or not rubric
-            or len({rule.dimension for rule in rubric}) != len(rubric)
+            or any(not isinstance(rule, RubricRule) for rule in rubric)
         ):
             raise ValueError("rubric dimensions must be non-empty and unique")
+        if len({rule.dimension for rule in rubric}) != len(rubric):
+            raise ValueError("rubric dimensions must be non-empty and unique")
         for rule in rubric:
+            if (
+                type(rule.dimension) is not RubricDimension
+                or type(rule.assurance) is not AssuranceClass
+                or type(rule.assessor_kind) is not AssessorKind
+            ):
+                raise ValueError("rubric rule enum types are invalid")
             if (
                 rule.assurance is AssuranceClass.G
                 and rule.assessor_kind is not AssessorKind.DETERMINISTIC
@@ -310,6 +318,9 @@ class BehavioralEvaluationHarness:
                                 "rubric_description": rule.description,
                                 "assessor_kind": assessor.kind.value,
                                 "assessor_identifier": assessor.identifier,
+                                "score": float(score),
+                                "passed": passed,
+                                "failures": [item.value for item in failures],
                             }
                         ),
                         model_identifier=case.model_identifier,

@@ -95,6 +95,11 @@ _CODE_SIGNAL = re.compile(
     r"\{[^{}]*(?::|=)[^{}]*\})",
     re.IGNORECASE,
 )
+_TAGGED_FENCED_CODE_SIGNAL = re.compile(
+    r"^\s*(?:(?:for\s+\w+\s+in|while|if|elif|except|with)\b.*:|"
+    r"(?:else|try|finally)\s*:|(?:yield|return|import|from)\b)",
+    re.IGNORECASE | re.MULTILINE,
+)
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
 _RUSSIAN_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
 _LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
@@ -359,7 +364,11 @@ def _strip_non_prose_regions(text: str) -> str:
 def _replace_fenced_code_span(match: re.Match[str]) -> str:
     language = match.group(1)
     content = match.group(2)
-    if language is not None and language.casefold() in _FENCED_CODE_LANGUAGES:
+    if (
+        language is not None
+        and language.casefold() in _FENCED_CODE_LANGUAGES
+        and (_CODE_SIGNAL.search(content) or _TAGGED_FENCED_CODE_SIGNAL.search(content))
+    ):
         return " "
     return " " if _CODE_SIGNAL.search(content) else content
 

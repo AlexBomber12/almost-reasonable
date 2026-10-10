@@ -83,8 +83,8 @@ Markdown remains in language accounting, including ordinary parentheticals and
 conversational uses of words such as `select` and `from` without SQL structure.
 Likewise, an equals sign excludes a span only when its right-hand side has a
 clear literal, collection, constant, or call shape rather than English prose.
-Fenced blocks with a recognized language info string are treated as code even
-when their body does not contain one of those standalone syntax signals.
+Recognized language info strings enable additional fenced-code syntax signals,
+but a tag alone cannot hide prose from language scoring.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
@@ -229,6 +229,8 @@ activation and no later than the confirmation that replaces that parent. Any
 recorded resolution must also occur before or at that replacement boundary.
 Every pending proposal must target the active mission; stale historical siblings
 may remain only as resolved or `superseded` records.
+Simultaneously pending proposals must share one capability-policy invariant
+snapshot, matching the state the live proposal path can create.
 Every state-machine load additionally rechecks all confirmed and rejected
 source/provenance records through the application-owned `EvidenceAuthority`,
 including after a restart; structurally valid JSON cannot substitute for
@@ -256,7 +258,8 @@ validated experiment. It
 records the actual assessor kind/identity, separate SHA-256 identities for the
 frozen case input and output, and an artifact identity binding generation
 configuration, case, trial, output, rubric version and complete rule definition,
-and assessor. It does not
+assessor, score, pass/fail result, and failure categories. Rubric enum fields
+must use their exact declared types; same-valued foreign enums are rejected. It does not
 reproduce prompt or output text in observations. `EvaluationReport.to_json()`
 emits a stable machine-readable report with per-G/H/M pass/fail counts,
 categorized failures, observations, rubric/harness versions, and explicit

@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from enum import StrEnum
 
 import pytest
 
@@ -176,6 +177,18 @@ def test_g_class_can_never_be_assigned_to_model_judge() -> None:
     with pytest.raises(ValueError, match="threshold of one"):
         custom_harness((replace(g_rule, threshold=0.0),), assessor)
 
+    class ForeignAssurance(StrEnum):
+        G = "G"
+
+    disguised_g = replace(
+        g_rule,
+        assurance=ForeignAssurance.G,
+        threshold=0.0,
+        assessor_kind=AssessorKind.MODEL,
+    )
+    with pytest.raises(ValueError, match="enum types"):
+        custom_harness((disguised_g,), assessor)  # type: ignore[arg-type]
+
 
 def test_harness_validates_scores_cases_and_assessor_failures() -> None:
     rule = RubricRule(
@@ -294,6 +307,10 @@ def test_artifact_identity_binds_prompt_tags_output_and_dimension() -> None:
         (replace(rule, threshold=0.75, description="Более строгая честность"),),
         assessor,
     ).run((evaluation_case("same", "first", ("output",), ("a",)),))
+    failed_outcome = custom_harness(
+        (rule,),
+        lambda *_: (0.4, (FailureCategory.IRRELEVANT,)),
+    ).run((evaluation_case("same", "first", ("output",), ("a",)),))
     first_observation = first.observations[0]
     second_observation = second.observations[0]
     changed_observation = changed_configuration.observations[0]
@@ -310,6 +327,10 @@ def test_artifact_identity_binds_prompt_tags_output_and_dimension() -> None:
     assert (
         first_observation.artifact_sha256
         != changed_rule.observations[0].artifact_sha256
+    )
+    assert (
+        first_observation.artifact_sha256
+        != failed_outcome.observations[0].artifact_sha256
     )
 
 

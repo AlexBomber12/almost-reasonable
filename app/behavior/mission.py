@@ -713,6 +713,17 @@ def _validate_active_mission(
     confirmed = tuple(
         record for record in records if record.status is MissionStatus.CONFIRMED
     )
+    if (
+        len(
+            {
+                record.proposal.invariants
+                for record in records
+                if record.status is MissionStatus.PENDING
+            }
+        )
+        > 1
+    ):
+        raise ValueError("pending proposals have conflicting invariant snapshots")
     confirmed_parents = {
         record.proposal.current_mission_version for record in confirmed
     }

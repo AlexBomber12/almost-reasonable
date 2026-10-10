@@ -780,6 +780,18 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     with pytest.raises(ValueError, match="duplicate identifiers"):
         repository.load()
 
+    conflicting_pending = json.loads(json.dumps(pending))
+    conflicting_record = json.loads(json.dumps(pending["proposals"][0]))
+    conflicting_record["proposal"]["proposal_id"] = "mp-conflicting"
+    conflicting_record["proposal"]["version_identity"] = "proposal-conflicting"
+    conflicting_record["proposal"]["initiating_event_id"] = "event-conflicting"
+    conflicting_record["proposal"]["correlation_id"] = "corr-conflicting"
+    conflicting_record["proposal"]["invariants"]["deployment_stage"] = "production"
+    conflicting_pending["proposals"].append(conflicting_record)
+    path.write_text(json.dumps(conflicting_pending), encoding="utf-8")
+    with pytest.raises(ValueError, match="conflicting invariant"):
+        repository.load()
+
     invalid_current = json.loads(json.dumps(pending))
     invalid_current["current"]["version"] = ""
     path.write_text(json.dumps(invalid_current), encoding="utf-8")
