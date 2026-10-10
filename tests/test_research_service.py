@@ -1,8 +1,13 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
+from app.research.authorization import (
+    ResearchAuthorization,
+    SyntheticPublicResearchFixture,
+    authorize_synthetic_public_research,
+)
 from app.research.brief import (
     BriefDisposition,
     ResearchQuestion,
@@ -26,6 +31,16 @@ from app.research.service import (
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
 
+class MissingOffsetDateTime(datetime):
+    def utcoffset(self):
+        return None
+
+
+class BrokenOffsetDateTime(datetime):
+    def utcoffset(self):
+        raise ValueError("broken offset")
+
+
 def brief(*, result_budget=3):
     result = build_safe_research_brief(
         ResearchRecordSet((ResearchQuestion("How do auroral substorms form?"),)),
@@ -35,6 +50,30 @@ def brief(*, result_budget=3):
     )
     assert result.disposition is BriefDisposition.READY
     return result.brief
+
+
+def authorization(subject, *, issued_at=NOW):
+    fixture = (
+        SyntheticPublicResearchFixture.AURORAL_SUBSTORMS_SINGLE_RESULT
+        if subject.result_budget == 1
+        else SyntheticPublicResearchFixture.AURORAL_SUBSTORMS
+    )
+    return authorize_synthetic_public_research(
+        fixture,
+        subject,
+        provider_config_version="hosted-search-v1",
+        issued_at=issued_at,
+    )
+
+
+def run(instance, subject=None, authorization_override=None):
+    subject = subject or brief()
+    evidence = (
+        authorization(subject)
+        if authorization_override is None
+        else authorization_override
+    )
+    return instance.run(subject, evidence)
 
 
 def config(**changes):
@@ -117,7 +156,7 @@ def service(outcomes, **changes):
 def test_success_returns_untrusted_evidence_with_validated_provenance():
     instance, transport, _sleeps, _marks = service([success_response()])
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.COMPLETED
     assert result.attempts == 1
@@ -140,7 +179,7 @@ def test_brief_result_budget_is_enforced_on_provider_annotations():
     )
     limited = brief(result_budget=1)
     instance, _transport, _sleeps, _marks = service([over_budget])
-    result = instance.run(limited)
+    result = run(instance, limited)
     assert result.outcome is ResearchOutcome.INVALID_RESPONSE
 
 
@@ -162,13 +201,71 @@ def test_capability_and_stop_states_prevent_provider_contact(
         spend_suspended=spend_suspended,
     )
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is outcome
     assert result.attempts == 0
     assert result.evidence is None
     assert result.safe_russian_message
     assert transport.calls == []
+
+
+def test_missing_invalid_and_forged_authorization_prevent_provider_contact():
+    subject = brief()
+    instance, transport, _sleeps, _marks = service([success_response()])
+    forged = ResearchAuthorization(
+        "model:self-declared-public",
+        "0" * 64,
+        "research-config-v1",
+        "hosted-search-v1",
+        NOW,
+        NOW.replace(hour=13),
+        object(),
+    )
+
+    for evidence in (None, object(), forged):
+        result = instance.run(subject, evidence)
+        assert result.outcome is ResearchOutcome.AUTHORIZATION_DENIED
+        assert result.attempts == 0
+    assert transport.calls == []
+
+
+def test_successful_heuristic_screen_does_not_grant_execution_authority():
+    result = build_safe_research_brief(
+        ResearchRecordSet(
+            (
+                ResearchQuestion(
+                    "A participant or model labels this ordinary text public"
+                ),
+            )
+        ),
+        result_budget=3,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+    instance, transport, _sleeps, _marks = service([success_response()])
+
+    denied = instance.run(result.brief)
+
+    assert denied.outcome is ResearchOutcome.AUTHORIZATION_DENIED
+    assert transport.calls == []
+
+
+def test_stale_authorization_is_rechecked_before_every_provider_attempt():
+    subject = brief()
+    issued_at = NOW - timedelta(minutes=9)
+    wall_times = iter((NOW, NOW, NOW.replace(hour=12, minute=2)))
+    instance, transport, _sleeps, _marks = service(
+        [HostedSearchTransportError("server_error"), success_response()],
+        utcnow=lambda: next(wall_times),
+    )
+
+    result = instance.run(subject, authorization(subject, issued_at=issued_at))
+
+    assert result.outcome is ResearchOutcome.AUTHORIZATION_DENIED
+    assert result.attempts == 1
+    assert len(transport.calls) == 1
 
 
 @pytest.mark.parametrize(
@@ -183,7 +280,7 @@ def test_capability_and_stop_states_prevent_provider_contact(
 )
 def test_nonretryable_provider_errors_are_classified(code, outcome):
     instance, transport, _sleeps, _marks = service([HostedSearchTransportError(code)])
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is outcome
     assert result.attempts == 1
@@ -195,7 +292,7 @@ def test_confirmed_spend_limit_calls_hook_and_stops_without_retry():
         [HostedSearchTransportError("spend_limit_confirmed")]
     )
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.SPEND_LIMIT_CONFIRMED
     assert result.attempts == 1
@@ -211,7 +308,7 @@ def test_retryable_errors_use_bounded_attempts_and_backoff(code):
         [HostedSearchTransportError(code)] * 3
     )
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome in {
         ResearchOutcome.RATE_LIMIT,
@@ -224,17 +321,33 @@ def test_retryable_errors_use_bounded_attempts_and_backoff(code):
     assert sleeps == [1.0, 2.0]
 
 
-def test_retry_after_is_bounded_by_trusted_backoff_limit():
-    instance, _transport, sleeps, _marks = service(
+def test_retry_after_beyond_trusted_backoff_limit_prevents_early_retry():
+    instance, transport, sleeps, _marks = service(
         [
             HostedSearchTransportError("rate_limit", retry_after_seconds=999),
             success_response(),
         ]
     )
-    result = instance.run(brief())
+    result = run(instance)
+
+    assert result.outcome is ResearchOutcome.RATE_LIMIT
+    assert result.attempts == 1
+    assert len(transport.calls) == 1
+    assert sleeps == []
+
+
+def test_retry_after_within_trusted_bounds_is_honored():
+    instance, _transport, sleeps, _marks = service(
+        [
+            HostedSearchTransportError("rate_limit", retry_after_seconds=2.5),
+            success_response(),
+        ]
+    )
+
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.COMPLETED
-    assert sleeps == [4.0]
+    assert sleeps == [2.5]
 
 
 @pytest.mark.parametrize(("jitter", "delay"), [(0.0, 0.5), (1.0, 1.5)])
@@ -244,7 +357,7 @@ def test_exponential_retry_delay_uses_bounded_jitter(jitter, delay):
         jitter=lambda: jitter,
     )
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.COMPLETED
     assert sleeps == [delay]
@@ -258,7 +371,7 @@ def test_invalid_jitter_source_is_rejected(jitter):
     )
 
     with pytest.raises(RuntimeError, match="jitter"):
-        instance.run(brief())
+        run(instance)
 
 
 @pytest.mark.parametrize("retry_after", ["later", float("nan"), float("inf"), True])
@@ -270,7 +383,7 @@ def test_malformed_retry_after_is_ignored(retry_after):
         ]
     )
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.COMPLETED
     assert sleeps == [1.0]
@@ -282,7 +395,7 @@ def test_stop_and_spend_are_rechecked_before_each_retry():
         [HostedSearchTransportError("server_error"), success_response()],
         emergency_stop=lambda: next(stop_states),
     )
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.EMERGENCY_STOP
     assert result.attempts == 1
@@ -296,7 +409,7 @@ def test_spend_state_is_rechecked_before_retry():
         [HostedSearchTransportError("server_error"), success_response()],
         spend_suspended=lambda: next(spend_states),
     )
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.SPEND_SUSPENDED
     assert result.attempts == 1
@@ -310,7 +423,7 @@ def test_overall_deadline_bounds_research_loop():
         provider_config=config(overall_timeout_seconds=5.0),
         times=[0.0, 0.0, 5.0],
     )
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.TIMEOUT
     assert result.attempts == 1
@@ -321,7 +434,7 @@ def test_deadline_before_first_attempt_and_after_success_are_bounded():
     before, transport, _sleeps, _marks = service(
         [success_response()], times=[0.0, 20.0]
     )
-    result = before.run(brief())
+    result = run(before)
     assert result.outcome is ResearchOutcome.TIMEOUT
     assert result.attempts == 0
     assert transport.calls == []
@@ -329,7 +442,7 @@ def test_deadline_before_first_attempt_and_after_success_are_bounded():
     after, transport, _sleeps, _marks = service(
         [success_response()], times=[0.0, 0.0, 20.0]
     )
-    result = after.run(brief())
+    result = run(after)
     assert result.outcome is ResearchOutcome.TIMEOUT
     assert result.attempts == 1
     assert len(transport.calls) == 1
@@ -340,7 +453,7 @@ def test_retry_is_refused_when_backoff_would_reach_deadline():
         [HostedSearchTransportError("server_error"), success_response()],
         times=[0.0, 0.0, 19.5],
     )
-    result = instance.run(brief())
+    result = run(instance)
     assert result.outcome is ResearchOutcome.SERVER_ERROR
     assert result.attempts == 1
     assert len(transport.calls) == 1
@@ -360,7 +473,7 @@ def test_malicious_page_text_remains_untrusted_data_and_cannot_add_tools():
     )
     instance, transport, _sleeps, _marks = service([malicious])
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.COMPLETED
     assert "run shell" in result.evidence.text
@@ -383,7 +496,7 @@ def test_malicious_page_text_remains_untrusted_data_and_cannot_add_tools():
 )
 def test_invalid_provider_responses_are_classified_without_retry(response):
     instance, transport, _sleeps, _marks = service([response])
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.INVALID_RESPONSE
     assert result.attempts == 1
@@ -401,7 +514,7 @@ def test_unpaired_surrogate_provider_output_is_classified_as_invalid():
     )
     instance, transport, _sleeps, _marks = service([malformed])
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.INVALID_RESPONSE
     assert result.attempts == 1
@@ -415,7 +528,7 @@ def test_deeply_nested_provider_output_is_classified_as_invalid():
     malformed = HostedSearchResponse("resp_deep", "completed", (nested,))
     instance, transport, _sleeps, _marks = service([malformed])
 
-    result = instance.run(brief())
+    result = run(instance)
 
     assert result.outcome is ResearchOutcome.INVALID_RESPONSE
     assert result.attempts == 1
@@ -431,10 +544,28 @@ def test_service_requires_exact_types_and_finite_monotonic_clock():
         [success_response()], times=[float("nan")]
     )
     with pytest.raises(RuntimeError, match="monotonic"):
-        broken.run(brief())
+        run(broken)
+
+
+@pytest.mark.parametrize(
+    "invalid_now",
+    [
+        object(),
+        datetime(2026, 10, 10),
+        MissingOffsetDateTime(2026, 10, 10, tzinfo=UTC),
+        BrokenOffsetDateTime(2026, 10, 10, tzinfo=UTC),
+    ],
+)
+def test_service_rejects_invalid_wall_clock_values(invalid_now):
+    instance, _transport, _sleeps, _marks = service(
+        [success_response()], utcnow=lambda: invalid_now
+    )
+
+    with pytest.raises(RuntimeError, match="UTC clock"):
+        run(instance)
 
 
 def test_nonstr_provider_error_code_is_safely_classified():
     instance, _transport, _sleeps, _marks = service([HostedSearchTransportError(None)])
-    result = instance.run(brief())
+    result = run(instance)
     assert result.outcome is ResearchOutcome.PROVIDER_ERROR

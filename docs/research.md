@@ -32,10 +32,39 @@ The request is intentionally represented as typed, secretless data for a future
 credential-holding worker adapter. Model/tool availability must be rechecked in
 that worker's real deployment smoke test. This PR performs no such call.
 
-## Privacy-minimized brief
+## Four separate boundaries
 
-`build_safe_research_brief` is the only construction path from candidate records
-to a provider brief. Its closed record vocabulary contains:
+This design deliberately separates four concepts that must not be collapsed:
+
+1. **Syntactic validation** admits only the closed typed brief vocabulary and
+   applies type, size, and count bounds.
+2. **Heuristic privacy screening** detects common identifiers, known private
+   material, injection phrases, and some encodings. Passing this screen is not
+   evidence that arbitrary text is public or safe to transmit.
+3. **Trusted research authorization** is a separate, opaque, integrity-bound,
+   short-lived decision for one exact brief and configuration. It must originate
+   from application-controlled evidence.
+4. **Provider execution capability** belongs to a future credential-holding
+   worker. This package contains only a deterministic fake transport and cannot
+   perform network I/O.
+
+An arbitrary conversation, participant assertion, extracted memory,
+model-generated question, request field, or self-declared `public` label can at
+most become candidate input to steps 1 and 2. It cannot issue step 3 or obtain
+step 4. Missing, invalid, stale, copied, serialized, field-replaced, or
+brief/config-mismatched authorization fails closed before provider contact.
+
+There is no authenticated production authorization provider in Stage 0.
+Consequently, ordinary runtime briefs cannot be submitted. The only issuer in
+this package recognizes a closed set of exact, application-owned public fixtures
+for deterministic offline tests. It cannot authorize arbitrary text, and it
+does not enable a real transport.
+
+## Privacy-minimized screened brief
+
+`build_safe_research_brief` is the construction path from candidate records to a
+screened brief. The historical function name does not imply authorization for
+external transmission. Its closed record vocabulary contains:
 
 - a public/general research question;
 - a broad topic and research purpose;
@@ -54,7 +83,8 @@ provider headers, arbitrary request parameters, paths, commands, or tools.
 Trusted result limits and provider settings are supplied separately and never
 accepted from model output. An integrity seal binds every approved field to the
 screening decision, so copying a valid brief while replacing any field revokes
-its construction authority.
+its construction integrity. This seal proves only that the local builder ran;
+it is not public-research authorization.
 
 The H screen compares only the already-abstracted brief against trusted local
 screening material. It checks direct email/phone identifiers, participant
@@ -65,14 +95,36 @@ payloads. Screening material is never serialized. A failed screen produces a
 classified local decline, with no provider request.
 
 This is bounded defense in depth, not proof of anonymization. It cannot detect
-every paraphrase, rare-fact linkage, cultural identifier, novel encoding, or
-semantic inference. Such H/M risks require evaluation with the versioned privacy
-corpus. Ordinary English, Italian, Russian, and mixed-language academic,
-scientific, and philosophical questions remain permitted when safely abstracted.
+every email or telephone syntax, form/query transformation such as `+` for a
+space, paraphrase, rare-fact linkage, cultural identifier, novel encoding, or
+semantic inference. Those are documented heuristic limitations outside the
+trusted execution boundary, not claims to be solved by an indefinitely
+expanding regular expression set. Genuine bypasses of the separate authorization
+boundary remain security defects. H/M privacy risks still require evaluation
+with the versioned privacy corpus. Ordinary English, Italian, Russian, and
+mixed-language academic, scientific, and philosophical questions can pass
+screening without thereby gaining execution authority.
+
+## Trusted public-research authorization
+
+`ResearchAuthorization` is frozen, slot-backed, non-representational evidence
+sealed with a process-local integrity key. Its seal covers the issuer, digest of
+the exact canonical brief, brief configuration version, provider configuration
+version, issuance time, and expiry. Authorization is revalidated when a request
+is built and before every provider attempt. Direct construction, dataclass
+replacement, serialization round-trips, stale timestamps, or reuse with another
+brief/configuration do not confer authority.
+
+`authorize_synthetic_public_research` is intentionally not a classifier. It can
+issue evidence only when the screened brief exactly matches one named public
+fixture owned by the application. This preserves deterministic synthetic
+research while leaving production authorization unavailable and fail-closed.
 
 ## Hosted-search isolation and bounds
 
-`HostedSearchRequest.to_sdk_kwargs()` revalidates an integrity-bound set of
+`build_hosted_search_request` first requires current authorization bound to the
+exact screened brief and provider configuration. It then creates a sealed
+`HostedSearchRequest`; `to_sdk_kwargs()` revalidates that integrity-bound set of
 immutable typed fields and produces a fresh fixed Responses request:
 
 - `store=false`, `background=false`, `stream=false`, and no continuation ID;
@@ -144,19 +196,23 @@ not a command or a direct belief/goal update.
 
 After the Stage 1 worker branch lands, a separate authorized change must:
 
-1. add a narrow credential-holding adapter that accepts only
-   `HostedSearchRequest`, calls `responses.create`, and returns only the modeled
-   response fields or sanitized transport errors;
-2. add the research operation to the worker's authenticated closed protocol
+1. add an authenticated application-controlled authorization provider based on
+   trusted public-source evidence, with expiry, replay policy, audit records,
+   and revocation; it must never accept model or request self-classification;
+2. add a narrow credential-holding adapter that accepts only a currently
+   authorized `HostedSearchRequest`, rechecks authorization at the worker
+   boundary, calls `responses.create`, and returns only the modeled response
+   fields or sanitized transport errors;
+3. add the research operation to the worker's authenticated closed protocol
    without broadening conversation requests or exposing generic provider
    parameters;
-3. persist sanitized attempt/usage/spend evidence and connect the confirmed
+4. persist sanitized attempt/usage/spend evidence and connect the confirmed
    spend-suspension state;
-4. recheck capability, emergency stop, budget, retry, and deadline state at the
+5. recheck capability, emergency stop, budget, retry, and deadline state at the
    worker boundary;
-5. verify actual approved-model support and SDK serialization with an explicitly
+6. verify actual approved-model support and SDK serialization with an explicitly
    authorized credentialed smoke test; and
-6. keep production enablement off until privacy H/M evaluation, the shared
+7. keep production enablement off until privacy H/M evaluation, the shared
    Russian output gate, and operator configuration are ready.
 
 No private-participant research, deployment change, credential access, or live

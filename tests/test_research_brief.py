@@ -562,12 +562,15 @@ def test_replacing_a_screened_brief_revokes_its_construction_authority():
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
     )
-    assert result.brief.built_by_safe_pipeline is True
+    assert result.brief.built_by_screened_pipeline is True
 
     replaced = replace(result.brief, question="raw private history")
 
-    assert replaced.built_by_safe_pipeline is False
-    assert replace(result.brief, result_budget=object()).built_by_safe_pipeline is False
+    assert replaced.built_by_screened_pipeline is False
+    assert (
+        replace(result.brief, result_budget=object()).built_by_screened_pipeline
+        is False
+    )
 
 
 def test_builder_rejects_forged_containers_wrong_types_and_missing_question():

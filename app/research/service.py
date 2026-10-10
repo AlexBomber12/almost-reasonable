@@ -9,6 +9,7 @@ import random
 import time
 from typing import Protocol
 
+from .authorization import ResearchAuthorization
 from .brief import ResearchBrief
 from .provenance import ResearchEvidence, parse_hosted_search_response
 from .provider import (
@@ -35,6 +36,7 @@ class ResearchTransport(Protocol):
 
 class ResearchOutcome(StrEnum):
     COMPLETED = "completed"
+    AUTHORIZATION_DENIED = "authorization_denied"
     DISABLED = "disabled"
     EMERGENCY_STOP = "emergency_stop"
     SPEND_SUSPENDED = "spend_suspended"
@@ -93,10 +95,28 @@ class ResearchService:
         self._sleeper = sleeper
         self._jitter = jitter
 
-    def run(self, brief: ResearchBrief) -> ResearchResult:
+    def run(
+        self,
+        brief: ResearchBrief,
+        authorization: ResearchAuthorization | None = None,
+    ) -> ResearchResult:
         if type(brief) is not ResearchBrief:
             raise TypeError("brief must be a ResearchBrief")
-        request = build_hosted_search_request(brief, self._config)
+        authorized_at = self._checked_utcnow()
+        if type(
+            authorization
+        ) is not ResearchAuthorization or not authorization.permits(
+            brief,
+            provider_config_version=self._config.version,
+            now=authorized_at,
+        ):
+            return self._result(ResearchOutcome.AUTHORIZATION_DENIED, 0)
+        request = build_hosted_search_request(
+            brief,
+            self._config,
+            authorization,
+            authorized_at=authorized_at,
+        )
         if not self._config.enabled:
             return self._result(ResearchOutcome.DISABLED, 0)
         if self._emergency_stop():
@@ -108,6 +128,12 @@ class ResearchService:
         deadline = started + self._config.overall_timeout_seconds
         attempts = 0
         while True:
+            if not authorization.permits(
+                brief,
+                provider_config_version=self._config.version,
+                now=self._checked_utcnow(),
+            ):
+                return self._result(ResearchOutcome.AUTHORIZATION_DENIED, attempts)
             if attempts:
                 if self._emergency_stop():
                     return self._result(ResearchOutcome.EMERGENCY_STOP, attempts)
@@ -144,10 +170,9 @@ class ResearchService:
                     and isinstance(retry_after, (int, float))
                     and math.isfinite(retry_after)
                 ):
-                    delay = min(
-                        max(0.0, retry_after),
-                        self._config.maximum_backoff_seconds,
-                    )
+                    delay = max(0.0, retry_after)
+                    if delay > self._config.maximum_backoff_seconds:
+                        return self._result(outcome, attempts)
                 if ended + delay >= deadline:
                     return self._result(outcome, attempts)
                 self._sleeper(delay)
@@ -157,7 +182,7 @@ class ResearchService:
             try:
                 evidence = parse_hosted_search_response(
                     response,
-                    retrieved_at=self._utcnow(),
+                    retrieved_at=self._checked_utcnow(),
                     max_search_calls=self._config.max_search_calls,
                     max_sources=brief.result_budget,
                 )
@@ -190,6 +215,17 @@ class ResearchService:
         ):
             raise RuntimeError("jitter source returned an invalid value")
         return float(value)
+
+    def _checked_utcnow(self) -> datetime:
+        value = self._utcnow()
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            raise RuntimeError("UTC clock returned an invalid value")
+        try:
+            if value.utcoffset() is None:
+                raise RuntimeError("UTC clock returned an invalid value")
+        except (OverflowError, ValueError) as error:
+            raise RuntimeError("UTC clock returned an invalid value") from error
+        return value
 
     @staticmethod
     def _result(outcome: ResearchOutcome, attempts: int) -> ResearchResult:

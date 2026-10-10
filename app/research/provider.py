@@ -2,6 +2,7 @@
 
 from collections.abc import Sequence
 from dataclasses import dataclass, field
+from datetime import datetime
 from enum import StrEnum
 import hmac
 import json
@@ -9,6 +10,7 @@ import math
 import re
 import secrets
 
+from .authorization import ResearchAuthorization
 from .brief import ResearchBrief
 
 
@@ -186,15 +188,25 @@ def default_hosted_search_config() -> HostedSearchConfig:
 
 
 def build_hosted_search_request(
-    brief: ResearchBrief, config: HostedSearchConfig
+    brief: ResearchBrief,
+    config: HostedSearchConfig,
+    authorization: ResearchAuthorization | None,
+    *,
+    authorized_at: datetime,
 ) -> HostedSearchRequest:
     if type(brief) is not ResearchBrief:
         raise TypeError("brief must be a ResearchBrief")
     if type(config) is not HostedSearchConfig:
         raise TypeError("config must be a HostedSearchConfig")
-    if not brief.built_by_safe_pipeline:
-        raise ValueError("brief did not pass the safe construction pipeline")
+    if not brief.built_by_screened_pipeline:
+        raise ValueError("brief did not pass the screened construction pipeline")
     _validate_config(config)
+    if type(authorization) is not ResearchAuthorization or not authorization.permits(
+        brief,
+        provider_config_version=config.version,
+        now=authorized_at,
+    ):
+        raise ValueError("trusted public-research authorization is required")
     request = HostedSearchRequest(
         model=config.model,
         input_json=brief.to_json(),

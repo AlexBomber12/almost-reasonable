@@ -232,7 +232,8 @@ class ResearchBrief:
     _integrity: bytes = field(default=b"", repr=False, compare=False)
 
     @property
-    def built_by_safe_pipeline(self) -> bool:
+    def built_by_screened_pipeline(self) -> bool:
+        """Confirm construction integrity, not external-transmission authority."""
         if self._authority is not _BRIEF_AUTHORITY or not isinstance(
             self._integrity, bytes
         ):

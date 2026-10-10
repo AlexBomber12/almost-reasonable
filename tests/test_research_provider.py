@@ -1,8 +1,13 @@
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 import json
 
 import pytest
 
+from app.research.authorization import (
+    SyntheticPublicResearchFixture,
+    authorize_synthetic_public_research,
+)
 from app.research.brief import (
     BriefDisposition,
     ResearchBrief,
@@ -22,6 +27,9 @@ from app.research.provider import (
     build_hosted_search_request,
     default_hosted_search_config,
 )
+
+
+NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
 
 def brief():
@@ -53,6 +61,26 @@ def config(**changes):
     return replace(value, **changes)
 
 
+def authorization(subject, provider_config):
+    return authorize_synthetic_public_research(
+        SyntheticPublicResearchFixture.AURORAL_SUBSTORMS,
+        subject,
+        provider_config_version=provider_config.version,
+        issued_at=NOW,
+    )
+
+
+def authorized_request(subject=None, provider_config=None):
+    subject = subject or brief()
+    provider_config = provider_config or config()
+    return build_hosted_search_request(
+        subject,
+        provider_config,
+        authorization(subject, provider_config),
+        authorized_at=NOW,
+    )
+
+
 def test_default_config_keeps_live_research_disabled():
     value = default_hosted_search_config()
 
@@ -63,7 +91,7 @@ def test_default_config_keeps_live_research_disabled():
 
 
 def test_request_is_an_isolated_bounded_responses_web_search_call():
-    request = build_hosted_search_request(brief(), config())
+    request = authorized_request()
     payload = request.to_sdk_kwargs()
 
     assert tuple(payload) == (
@@ -102,7 +130,7 @@ def test_request_is_an_isolated_bounded_responses_web_search_call():
 
 
 def test_request_contains_only_the_safe_brief_not_screening_or_private_state():
-    payload = build_hosted_search_request(brief(), config()).to_sdk_kwargs()
+    payload = authorized_request().to_sdk_kwargs()
     parsed = json.loads(payload["input"])
 
     assert set(parsed) == {
@@ -142,15 +170,22 @@ def test_request_contains_only_the_safe_brief_not_screening_or_private_state():
     ],
 )
 def test_untrusted_or_unbounded_provider_configuration_is_rejected(changes):
+    subject = brief()
+    provider_config = config(**changes)
     with pytest.raises(ValueError):
-        build_hosted_search_request(brief(), config(**changes))
+        build_hosted_search_request(
+            subject,
+            provider_config,
+            authorization(subject, provider_config),
+            authorized_at=NOW,
+        )
 
 
 def test_request_builder_requires_exact_types_and_authority():
     with pytest.raises(TypeError):
-        build_hosted_search_request(object(), config())
+        build_hosted_search_request(object(), config(), None, authorized_at=NOW)
     with pytest.raises(TypeError):
-        build_hosted_search_request(brief(), object())
+        build_hosted_search_request(brief(), object(), None, authorized_at=NOW)
 
     forged_brief = ResearchBrief(
         "raw private history",
@@ -163,8 +198,29 @@ def test_request_builder_requires_exact_types_and_authority():
         "research-config-v1",
         object(),
     )
-    with pytest.raises(ValueError, match="safe construction pipeline"):
-        build_hosted_search_request(forged_brief, config())
+    with pytest.raises(ValueError, match="screened construction pipeline"):
+        build_hosted_search_request(
+            forged_brief, config(), authorization(brief(), config()), authorized_at=NOW
+        )
+
+    with pytest.raises(ValueError, match="authorization"):
+        build_hosted_search_request(brief(), config(), None, authorized_at=NOW)
+
+    subject = brief()
+    provider_config = config()
+    stale = authorize_synthetic_public_research(
+        SyntheticPublicResearchFixture.AURORAL_SUBSTORMS,
+        subject,
+        provider_config_version=provider_config.version,
+        issued_at=NOW - timedelta(minutes=10),
+    )
+    with pytest.raises(ValueError, match="authorization"):
+        build_hosted_search_request(
+            subject,
+            provider_config,
+            stale,
+            authorized_at=NOW,
+        )
 
     forged = HostedSearchRequest(
         model="gpt-6.1-sol",
@@ -180,7 +236,7 @@ def test_request_builder_requires_exact_types_and_authority():
 
 
 def test_sdk_payload_and_trusted_request_cannot_be_mutated_after_validation():
-    built = build_hosted_search_request(brief(), config())
+    built = authorized_request()
     first = built.to_sdk_kwargs()
     first["tools"][0]["type"] = "function"
     first["tools"][0]["arbitrary"] = "value"
@@ -208,14 +264,14 @@ def test_request_serialized_size_is_bounded(monkeypatch):
 
     monkeypatch.setattr(provider_module, "MAX_REQUEST_UTF8_BYTES", 1)
     with pytest.raises(ValueError, match="byte bound"):
-        build_hosted_search_request(brief(), config())
+        authorized_request()
 
 
 def test_fake_transport_is_deterministic_and_never_performs_live_io():
     response = HostedSearchResponse("resp_test", "completed", ())
     error = HostedSearchTransportError("rate_limit", retry_after_seconds=2.0)
     transport = FakeHostedSearchTransport((response, error))
-    request = build_hosted_search_request(brief(), config())
+    request = authorized_request()
 
     assert transport.call(request, timeout_seconds=5.0) == response
     with pytest.raises(HostedSearchTransportError) as caught:
@@ -230,7 +286,7 @@ def test_fake_transport_rejects_malformed_schedule_and_request():
     transport = FakeHostedSearchTransport((object(),))
     with pytest.raises(TypeError):
         transport.call(object(), timeout_seconds=1.0)
-    request = build_hosted_search_request(brief(), config())
+    request = authorized_request()
     with pytest.raises(HostedSearchTransportError, match="malformed_fake_response"):
         transport.call(request, timeout_seconds=1.0)
 
@@ -238,6 +294,6 @@ def test_fake_transport_rejects_malformed_schedule_and_request():
 @pytest.mark.parametrize("timeout", [0, True, float("nan"), "1"])
 def test_fake_transport_rejects_invalid_timeouts(timeout):
     transport = FakeHostedSearchTransport(())
-    request = build_hosted_search_request(brief(), config())
+    request = authorized_request()
     with pytest.raises(ValueError, match="invalid timeout"):
         transport.call(request, timeout_seconds=timeout)
