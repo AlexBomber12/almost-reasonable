@@ -131,6 +131,7 @@ class _OwnedFile:
     path: Path
     descriptor: int
     parent_descriptor: int
+    cleanup_alias: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,21 +162,25 @@ def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
 
 def _cleanup_created(owned: list[_OwnedFile]) -> None:
     for output in owned:
-        try:
-            current = os.stat(
-                output.path.name,
-                dir_fd=output.parent_descriptor,
-                follow_symlinks=False,
-            )
-        except FileNotFoundError:
-            pass
-        else:
-            identity = os.fstat(output.descriptor)
-            if (current.st_dev, current.st_ino) == (
-                identity.st_dev,
-                identity.st_ino,
-            ):
-                os.unlink(output.path.name, dir_fd=output.parent_descriptor)
+        paths = (output.path, output.cleanup_alias)
+        for path in paths:
+            if path is None:
+                continue
+            try:
+                current = os.stat(
+                    path.name,
+                    dir_fd=output.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                pass
+            else:
+                identity = os.fstat(output.descriptor)
+                if (current.st_dev, current.st_ino) == (
+                    identity.st_dev,
+                    identity.st_ino,
+                ):
+                    os.unlink(path.name, dir_fd=output.parent_descriptor)
         os.close(output.descriptor)
         os.close(output.parent_descriptor)
 
@@ -206,8 +211,10 @@ def _publish_owned_file(source: Path, destination: Path, output: _OwnedFile) -> 
         raise BackupError("quarantine publication failed") from error
     if not _path_matches_descriptor(destination, output.descriptor):
         raise BackupError("quarantine publication identity changed")
-    os.unlink(source.name, dir_fd=output.parent_descriptor)
+    output.cleanup_alias = source
     output.path = destination
+    os.unlink(source.name, dir_fd=output.parent_descriptor)
+    output.cleanup_alias = None
     os.fsync(output.parent_descriptor)
 
 

@@ -639,6 +639,44 @@ def test_quarantine_publication_rejects_a_substituted_destination(
     destination.unlink()
 
 
+def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupted(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    real_unlink = recovery_module.os.unlink
+    interrupted = False
+
+    def interrupt_sealed_staging_unlink(path, *args, **kwargs):
+        nonlocal interrupted
+        if not interrupted and str(path).startswith(".privacy-sealed-"):
+            interrupted = True
+            raise SimulatedInterrupt()
+        return real_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(recovery_module.os, "unlink", interrupt_sealed_staging_unlink)
+
+    with pytest.raises(SimulatedInterrupt):
+        manager.restore(backup, quarantine, NOW)
+
+    assert interrupted is True
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
+    assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
+
+    result = manager.restore(backup, quarantine, NOW)
+    assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
+
+
 def test_backup_copy_cannot_follow_a_replaced_destination_path(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source, "intended-source").close()
