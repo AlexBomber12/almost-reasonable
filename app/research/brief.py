@@ -22,7 +22,7 @@ _PUBLIC_REFERENCE = re.compile(
 _EMAIL = re.compile(
     r"(?i)(?<![\w.!#$%&'*+/=?^_`{|}~\"-])"
     r"(?:\"(?:[^\"\\\r\n]|\\.)+\"|[\w.!#$%&'*+/=?^_`{|}~-]+)@"
-    r"(?:(?:[\w-]+\.)+[\w-]+|\[[^\]\s]+\])"
+    r"(?:(?:[\w-]+\.)*[\w-]+|\[[^\]\s]+\])"
 )
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s()./–—-]{5,}\d)(?!\w)")
 _YEAR_RANGE = re.compile(
@@ -105,7 +105,7 @@ class BriefDisposition(StrEnum):
 def _require_text(value: object, field: str) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"invalid {field}")
-    if any(unicodedata.category(character) == "Cc" for character in value):
+    if any(unicodedata.category(character) in {"Cc", "Cs"} for character in value):
         raise ValueError(f"invalid {field}")
     return value.strip()
 

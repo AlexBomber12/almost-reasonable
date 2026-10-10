@@ -201,6 +201,16 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "direct_identifier",
         ),
         (
+            "Find alice@company",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Find admin@localhost",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
             "Find ａｌｉｃｅ＠ｅｘａｍｐｌｅ．ｃｏｍ",
             ResearchScreeningContext(),
             "direct_identifier",
@@ -395,6 +405,8 @@ def test_record_and_screening_containers_require_exact_immutable_inputs():
         ResearchQuestion("")
     with pytest.raises(ValueError):
         ResearchQuestion("control\ncharacter")
+    with pytest.raises(ValueError):
+        ResearchQuestion("unpaired \ud800 surrogate")
     with pytest.raises(TypeError):
         LanguagePreferences(())
     with pytest.raises(ValueError):

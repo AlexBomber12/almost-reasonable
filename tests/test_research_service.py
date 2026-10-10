@@ -350,6 +350,24 @@ def test_invalid_provider_responses_are_classified_without_retry(response):
     assert len(transport.calls) == 1
 
 
+def test_unpaired_surrogate_provider_output_is_classified_as_invalid():
+    malformed = success_response()
+    message = dict(malformed.output[1])
+    content = dict(message["content"][0])
+    content["text"] = "malformed \ud800 output"
+    message["content"] = [content]
+    malformed = HostedSearchResponse(
+        malformed.response_id, malformed.status, (malformed.output[0], message)
+    )
+    instance, transport, _sleeps, _marks = service([malformed])
+
+    result = instance.run(brief())
+
+    assert result.outcome is ResearchOutcome.INVALID_RESPONSE
+    assert result.attempts == 1
+    assert len(transport.calls) == 1
+
+
 def test_service_requires_exact_types_and_finite_monotonic_clock():
     instance, _transport, _sleeps, _marks = service([success_response()])
     with pytest.raises(TypeError):

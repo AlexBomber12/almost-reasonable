@@ -17,6 +17,7 @@ from .provider import HostedSearchResponse, MAX_SEARCH_CALLS
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 MAX_RESPONSE_TEXT_UTF8_BYTES = 64 * 1024
 MAX_PROVIDER_RESPONSE_UTF8_BYTES = 512 * 1024
@@ -200,9 +201,10 @@ def parse_hosted_search_response(
             separators=(",", ":"),
             sort_keys=True,
         )
-    except (TypeError, ValueError) as error:
+        serialized_output_bytes = serialized_output.encode("utf-8")
+    except (TypeError, UnicodeEncodeError, ValueError) as error:
         raise ValueError("provider output is not serializable") from error
-    if len(serialized_output.encode("utf-8")) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
+    if len(serialized_output_bytes) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
         raise ValueError("provider response exceeds response byte bound")
     if len(response.output) > MAX_PROVIDER_OUTPUT_ITEMS:
         raise ValueError("provider response exceeded output item bound")
@@ -554,6 +556,7 @@ def _valid_https_url(value: object) -> bool:
         and parsed.username is None
         and parsed.password is None
         and (port is None or port >= 1)
+        and _INVALID_PERCENT_ESCAPE.search(value) is None
         and not any(character.isspace() for character in value)
         and not _has_control_characters(value)
     )
