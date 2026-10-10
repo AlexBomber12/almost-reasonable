@@ -3,7 +3,9 @@
 import argparse
 from collections.abc import Callable, Sequence
 from getpass import getpass
+from ipaddress import ip_address
 from typing import Any
+from urllib.parse import urlsplit
 from wsgiref.simple_server import make_server
 
 from app.core.context import ContextLimits, PrivateContextAssembler
@@ -38,6 +40,25 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _loopback_ip(value: str) -> bool:
+    try:
+        return ip_address(value).is_loopback
+    except ValueError:
+        return False
+
+
+def _loopback_http_origin(value: str) -> bool:
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return False
+    return (
+        parsed.scheme == "http"
+        and parsed.hostname is not None
+        and _loopback_ip(parsed.hostname)
+    )
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -55,6 +76,13 @@ def main(
         )
         print(f"Provisioned local account: {args.username}")
         return 0
+
+    if args.insecure_http and not (
+        _loopback_ip(args.listen_host) and _loopback_http_origin(args.allowed_origin)
+    ):
+        raise SystemExit(
+            "--insecure-http requires a numeric loopback HTTP bind and origin"
+        )
 
     auth = AuthStore(args.auth_db)
     event_store = EventStore(args.event_db)

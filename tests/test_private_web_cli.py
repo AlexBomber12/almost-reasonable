@@ -98,6 +98,80 @@ def test_serve_builds_disabled_local_application(tmp_path):
     assert Path(event_path).exists()
 
 
+@pytest.mark.parametrize(
+    ("listen_host", "allowed_origin"),
+    [
+        ("0.0.0.0", "http://127.0.0.1:8765"),
+        ("127.0.0.1", "http://server.example:8765"),
+        ("127.0.0.1", "https://127.0.0.1:8765"),
+        ("127.0.0.1", "not-an-origin"),
+        ("127.0.0.1", "http://[invalid"),
+    ],
+)
+def test_insecure_http_rejects_non_loopback_bind_or_browser_origin(
+    tmp_path, listen_host, allowed_origin
+):
+    database = tmp_path / "must-not-be-created.sqlite3"
+
+    def server_factory(*_args):
+        raise AssertionError("invalid insecure configuration reached the server")
+
+    with pytest.raises(SystemExit, match="numeric loopback HTTP"):
+        main(
+            [
+                "serve",
+                "--auth-db",
+                str(database),
+                "--event-db",
+                str(tmp_path / "events.sqlite3"),
+                "--listen-host",
+                listen_host,
+                "--port",
+                "8765",
+                "--allowed-host",
+                "127.0.0.1:8765",
+                "--allowed-origin",
+                allowed_origin,
+                "--insecure-http",
+            ],
+            server_factory=server_factory,
+        )
+    assert not database.exists()
+
+
+def test_secure_mode_may_bind_non_loopback(tmp_path):
+    observed = {}
+
+    class Server:
+        def serve_forever(self):
+            observed["served"] = True
+
+    def server_factory(host, _port, _application):
+        observed["host"] = host
+        return Server()
+
+    assert (
+        main(
+            [
+                "serve",
+                "--auth-db",
+                str(tmp_path / "auth.sqlite3"),
+                "--event-db",
+                str(tmp_path / "events.sqlite3"),
+                "--listen-host",
+                "0.0.0.0",
+                "--allowed-host",
+                "chat.example",
+                "--allowed-origin",
+                "https://chat.example",
+            ],
+            server_factory=server_factory,
+        )
+        == 0
+    )
+    assert observed == {"host": "0.0.0.0", "served": True}
+
+
 def test_module_entrypoint_invokes_main(tmp_path, monkeypatch):
     database = tmp_path / "entrypoint.sqlite3"
     answers = iter(["synthetic password one", "synthetic password one"])

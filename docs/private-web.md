@@ -41,9 +41,11 @@ python -m app.private_web.cli serve \
 ```
 
 Open `http://127.0.0.1:8000/login`. The `--insecure-http` switch is explicitly
-for loopback development. Omit it behind an HTTPS endpoint so every session and
-CSRF cookie has the `Secure` attribute. This PR does not configure, deploy, or
-trust a reverse proxy; `X-Forwarded-*` headers are ignored.
+for loopback development; the CLI rejects it unless both the bind address and
+the HTTP browser origin use a numeric loopback IP. Omit it behind an HTTPS
+endpoint so every session and CSRF cookie has the `Secure` attribute. This PR
+does not configure, deploy, or trust a reverse proxy; `X-Forwarded-*` headers
+are ignored.
 
 Run the focused tests with:
 
