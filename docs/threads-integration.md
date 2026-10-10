@@ -147,7 +147,8 @@ creation and publication. Each effect check occurs after its final durable
 dispatch-marker write, so no intervening store update creates an authorization
 gap before the provider call. After all potentially blocking authorization
 lookups, the accepted approval is validated again against a freshly sampled
-clock. Revocation, expiry, consent withdrawal, or
+clock before readiness and before each external effect. Revocation, expiry,
+consent withdrawal, or
 control-plane unavailability after proposal or approval therefore blocks the
 next effect. The approval actually accepted for dispatch replaces the stored
 approval reference atomically with the durable sending transition. A stop

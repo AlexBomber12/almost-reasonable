@@ -136,6 +136,14 @@ class ThreadsService:
     ) -> OutboxItem:
         item = self.store.get(operation_id)
         current_approval = self._check_ready_policy(item, approval, now=now)
+        validate_approval(
+            current_approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=self.utc_now(),
+            require_duplicate_ack=item.replacement_of is not None,
+            purpose=ApprovalPurpose.PUBLICATION,
+        )
         return self.store.transition(
             operation_id,
             OutboxState.READY,

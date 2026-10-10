@@ -684,8 +684,8 @@ def test_policy_stop_after_container_persists_and_reuses_proven_safe_container(
     assert calls == 1
 
 
-def test_approval_time_is_refreshed_after_container_creation(tmp_path):
-    times = iter((NOW, NOW, NOW, NOW, NOW + timedelta(minutes=2)))
+def test_approval_time_is_refreshed_after_container_creation(tmp_path, monkeypatch):
+    current_time = [NOW]
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
     authorization_provider = SimulationAuthorizationProvider()
@@ -693,7 +693,7 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
         ThreadsStore(tmp_path / "threads.sqlite3"),
         simulator,
         runtime_policy,
-        utc_now=lambda: next(times),
+        utc_now=lambda: current_time[0],
         authorization_provider=authorization_provider,
     )
     propose(service)
@@ -701,6 +701,14 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
     expiring = approve(expires_at=NOW + timedelta(minutes=1))
     trust_approval(service, expiring)
     service.authorize("operation-1", expiring, now=NOW)
+    create_container = simulator.create_container
+
+    def create_then_advance_time(item):
+        container_id = create_container(item)
+        current_time[0] = NOW + timedelta(minutes=2)
+        return container_id
+
+    monkeypatch.setattr(simulator, "create_container", create_then_advance_time)
     with pytest.raises(ValueError, match="expired"):
         service.dispatch("operation-1", expiring, now=NOW)
     blocked = service.store.get("operation-1")
@@ -709,6 +717,31 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
         "container", "operation-1"
     )
     assert simulator.trace == [("create_container", "operation-1")]
+
+
+def test_approval_expiry_is_rechecked_before_ready_transition(tmp_path, monkeypatch):
+    current_time = [NOW]
+    service = make_service(tmp_path)
+    service.utc_now = lambda: current_time[0]
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    expiring = trust_approval(service, approve(expires_at=NOW + timedelta(minutes=1)))
+    current_privacy = service.authorization_provider.current_privacy_authorized
+
+    def authorize_privacy_then_expire(**kwargs):
+        result = current_privacy(**kwargs)
+        current_time[0] = NOW + timedelta(minutes=2)
+        return result
+
+    monkeypatch.setattr(
+        service.authorization_provider,
+        "current_privacy_authorized",
+        authorize_privacy_then_expire,
+    )
+    with pytest.raises(ValueError, match="expired"):
+        service.authorize("operation-1", expiring, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.AWAITING_APPROVAL
+    assert service.simulator.trace == []
 
 
 def test_current_draft_privacy_is_rechecked_before_publication(tmp_path, monkeypatch):
@@ -897,6 +930,7 @@ def test_dispatch_persists_the_current_approval_reference(tmp_path):
 
 
 def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
+    current_time = [NOW]
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
     authorization_provider = SimulationAuthorizationProvider()
@@ -904,7 +938,7 @@ def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
         ThreadsStore(tmp_path / "threads.sqlite3"),
         simulator,
         runtime_policy,
-        utc_now=lambda: NOW + timedelta(minutes=2),
+        utc_now=lambda: current_time[0],
         authorization_provider=authorization_provider,
     )
     propose(service)
@@ -912,6 +946,7 @@ def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
     expiring = approve(expires_at=NOW + timedelta(minutes=1))
     trust_approval(service, expiring)
     service.authorize("operation-1", expiring, now=NOW)
+    current_time[0] = NOW + timedelta(minutes=2)
     with pytest.raises(ValueError, match="expired"):
         service.dispatch("operation-1", expiring, now=NOW)
     blocked = service.store.get("operation-1")
