@@ -216,6 +216,16 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "direct_identifier",
         ),
         (
+            "Contact alice(comment)@example.com",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Contact alice@(comment)example.com",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
             "Find ａｌｉｃｅ＠ｅｘａｍｐｌｅ．ｃｏｍ",
             ResearchScreeningContext(),
             "direct_identifier",
@@ -703,11 +713,13 @@ def test_encoded_private_value_after_query_delimiter_is_rejected():
     assert result.reason == "encoded_leakage"
 
 
-@pytest.mark.parametrize("split_at", [2, 4])
-def test_whitespace_folded_encoded_private_value_is_rejected(split_at):
+@pytest.mark.parametrize(
+    ("split_at", "whitespace"), [(2, " "), (4, " "), (2, "\u2028")]
+)
+def test_whitespace_folded_encoded_private_value_is_rejected(split_at, whitespace):
     private_value = "alice@example.com"
     encoded_value = encoded(private_value)
-    spaced_value = f"{encoded_value[:split_at]} {encoded_value[split_at:]}"
+    spaced_value = f"{encoded_value[:split_at]}{whitespace}{encoded_value[split_at:]}"
     result = build_safe_research_brief(
         records(ResearchQuestion(spaced_value)),
         result_budget=2,

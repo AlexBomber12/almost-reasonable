@@ -24,6 +24,7 @@ _EMAIL = re.compile(
     r"(?:\"(?:[^\"\\\r\n]|\\.)*\"|[\w.!#$%&'*+/=?^_`{|}~-]+)@"
     r"(?:(?:[\w-]+\.)*[\w-]+|\[[^\]\s]+\])"
 )
+_EMAIL_COMMENT = re.compile(r"\([^()\r\n]*\)")
 _PHONE = re.compile(r"(?<![^\W_])(?:\+?\d[\d\s()./–—-]{5,}\d)(?![^\W_])")
 _YEAR_RANGE = re.compile(
     r"(?<!\d)(?:1[5-9]\d{2}|20\d{2}|21\d{2})\s*[-/–—]\s*"
@@ -467,10 +468,11 @@ def _privacy_reason(
         values if identifier_values is None else identifier_values
     )
     normalized_identifiers = _normalized(identifier_text)
+    email_view = _EMAIL_COMMENT.sub("", normalized_identifiers)
     without_year_ranges = _YEAR_RANGE.sub(" ", normalized_identifiers)
     without_dates = _CALENDAR_DATE.sub(" ", without_year_ranges)
     without_quantities = _PUBLIC_GROUPED_QUANTITY.sub(" ", without_dates)
-    if _EMAIL.search(normalized_identifiers) or _has_phone_number(without_quantities):
+    if _EMAIL.search(email_view) or _has_phone_number(without_quantities):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):
         return "recognizable_private_overlap"
@@ -534,7 +536,7 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
 
 def _normalized_for_encoding(value: str) -> str:
     return "".join(
-        character
+        " " if character.isspace() else character
         for character in unicodedata.normalize("NFKC", value)
         if unicodedata.category(character) not in {"Cf", "Mn"}
     )
