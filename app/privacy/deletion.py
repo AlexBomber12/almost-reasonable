@@ -98,6 +98,12 @@ class DeletionCoordinator:
             return self._finish(
                 request, DeletionDisposition.INCOMPLETE_BLOCKED, "adapter_failure"
             )
+        if not isinstance(report, ErasureReport):
+            return self._finish(
+                request,
+                DeletionDisposition.INCOMPLETE_BLOCKED,
+                "invalid_erasure_report",
+            )
         required = frozenset(ContentCategory.required_erasure_categories())
         complete = (
             report.payload_removed

@@ -44,6 +44,7 @@ def context():
 def make_source(path, message="synthetic deleted private message CANARY-RESTORE"):
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute("PRAGMA user_version=3")
     connection.execute(
         "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
     )
@@ -266,14 +267,33 @@ def test_backup_rejects_malformed_database_and_verification_faults(
             malformed_schema, tmp_path / "malformed-out.sqlite3", 3, NOW
         )
 
+    empty_schema = tmp_path / "empty-schema.sqlite3"
+    with sqlite3.connect(empty_schema) as connection:
+        connection.execute(
+            "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
+        )
+        connection.execute("PRAGMA user_version=3")
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(empty_schema, tmp_path / "empty-out.sqlite3", 3, NOW)
+
+    mismatched_schema = tmp_path / "mismatched-schema.sqlite3"
+    make_source(mismatched_schema).close()
+    with sqlite3.connect(mismatched_schema) as connection:
+        connection.execute("PRAGMA user_version=4")
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(
+            mismatched_schema, tmp_path / "mismatched-out.sqlite3", 3, NOW
+        )
+
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
 
     def alter_schema(destination):
         with sqlite3.connect(destination) as connection:
             connection.execute("UPDATE schema_metadata SET version=4")
+            connection.execute("PRAGMA user_version=4")
 
-    with pytest.raises(BackupError, match="schema verification"):
+    with pytest.raises(BackupError, match="schema"):
         create_sqlite_backup(
             source, tmp_path / "changed.sqlite3", 3, NOW, after_copy=alter_schema
         )
@@ -531,7 +551,7 @@ def test_restore_rechecks_integrity_after_reconciliation(
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
-@pytest.mark.parametrize("schema_mutation", ["change", "drop"])
+@pytest.mark.parametrize("schema_mutation", ["change", "drop", "pragma"])
 def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -544,8 +564,11 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
             with sqlite3.connect(self.path) as connection:
                 if schema_mutation == "change":
                     connection.execute("UPDATE schema_metadata SET version=4")
-                else:
+                    connection.execute("PRAGMA user_version=4")
+                elif schema_mutation == "drop":
                     connection.execute("DROP TABLE schema_metadata")
+                else:
+                    connection.execute("PRAGMA user_version=4")
             return True
 
     quarantine = tmp_path / f"quarantine-{schema_mutation}.sqlite3"
@@ -580,11 +603,13 @@ def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     metadata.path.write_text(json.dumps(raw))
     with sqlite3.connect(backup) as connection:
         connection.execute("UPDATE schema_metadata SET version=4")
-    with pytest.raises(BackupError, match="unsupported backup schema"):
+        connection.execute("PRAGMA user_version=4")
+    with pytest.raises(BackupError, match="schema"):
         manager.restore(backup, tmp_path / "wrong-schema.sqlite3", NOW)
 
     with sqlite3.connect(backup) as connection:
         connection.execute("UPDATE schema_metadata SET version=3")
+        connection.execute("PRAGMA user_version=3")
 
     def copy_failure(_source, destination):
         destination.touch()

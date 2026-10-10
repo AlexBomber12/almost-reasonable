@@ -72,9 +72,10 @@ def _schema_version(path: Path) -> int:
             row = connection.execute(
                 "SELECT version FROM schema_metadata WHERE singleton=1"
             ).fetchone()
+            user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     except sqlite3.Error as error:
         raise BackupError("unable to validate database schema") from error
-    if row is None or not isinstance(row[0], int):
+    if row is None or type(row[0]) is not int or user_version != row[0]:
         raise BackupError("unable to validate database schema")
     return row[0]
 

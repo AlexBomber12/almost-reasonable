@@ -22,6 +22,20 @@ def _valid_source_references(value: object) -> bool:
     return True
 
 
+def _valid_private_audience(value: object) -> bool:
+    if not isinstance(value, str):
+        return False
+    namespace, separator, principal_id = value.partition(":")
+    if namespace != "private" or separator != ":" or not principal_id:
+        return False
+    try:
+        require_token(value, "source audience")
+        require_token(principal_id, "source audience principal")
+    except ValueError:
+        return False
+    return True
+
+
 def validate_ordinary_derivation(
     source_audiences: tuple[str, ...], target_audience: str
 ) -> BoundaryDecision:
@@ -53,8 +67,7 @@ def validate_abstract_to_shared(candidate: AbstractionCandidate) -> BoundaryDeci
             "empty_abstraction",
         ),
         (
-            not isinstance(candidate.source_audience, str)
-            or not candidate.source_audience.startswith("private:"),
+            not _valid_private_audience(candidate.source_audience),
             "invalid_source_audience",
         ),
         (

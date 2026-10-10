@@ -32,8 +32,9 @@ submitted grant fields. Rejected notice acknowledgements are likewise recorded
 as payload-free audit decisions.
 
 Ordinary derivatives must retain every source audience. The only proposed
-cross-scope transition is `abstract_to_shared`. Its validator rejects explicit
-identifier, private-canary, personal-information, quotation, recognizable
+cross-scope transition is `abstract_to_shared`. Its validator requires a valid
+`private:<principal>` source audience and rejects explicit identifier,
+private-canary, personal-information, quotation, recognizable
 paraphrase, relationship, attribution, excessive-overlap, missing-provenance,
 and failed/uncertain semantic-screen flags. An accepted result is only eligible
 for later integrated policy evaluation: `activation_allowed` is always false in
@@ -121,9 +122,10 @@ schema migration is performed here.
 `create_sqlite_backup` uses the SQLite online backup API against a read-only
 source connection. It never copies only the main file, so committed WAL content
 is included in a consistent SQLite snapshot. Before returning, it verifies the
-expected `schema_metadata` version and `PRAGMA integrity_check`. A separate
-owner-only metadata file records only format version, database schema version,
-UTC creation time, and backup filename; it contains no participant content.
+matching expected `schema_metadata` and `PRAGMA user_version` values plus
+`PRAGMA integrity_check`. A separate owner-only metadata file records only format
+version, database schema version, UTC creation time, and backup filename; it
+contains no participant content.
 
 Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic-link destinations, unsafe parents, existing outputs,

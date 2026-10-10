@@ -144,6 +144,12 @@ def test_partial_or_failed_erasure_is_never_completed(tmp_path):
     assert failed.reason == "adapter_failure"
     assert "synthetic private canary" not in repr(ledger.audit_records())
 
+    malformed = DeletionCoordinator(ledger, FakeErasureAdapter(report=object())).delete(
+        context(), request(operation_id="delete-operation-003")
+    )
+    assert malformed.disposition is DeletionDisposition.INCOMPLETE_BLOCKED
+    assert malformed.reason == "invalid_erasure_report"
+
 
 class SyntheticCrash(BaseException):
     pass
