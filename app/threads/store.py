@@ -1788,6 +1788,12 @@ CREATE TABLE threads_unknown_effect_locks (
     ),
     created_at TEXT NOT NULL
 );
+INSERT INTO threads_unknown_effect_locks(
+    target_operation_id, holder_operation_id, lock_kind, created_at
+)
+SELECT replacement_of, operation_id, 'replacement_publication', updated_at
+FROM threads_outbox
+WHERE state='sending' AND replacement_of IS NOT NULL;
 """
 
 
@@ -1838,6 +1844,25 @@ CREATE TABLE threads_account_effect_locks (
     holder_operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
     created_at TEXT NOT NULL
 );
+INSERT INTO threads_account_effect_locks(
+    account_ref, holder_operation_id, created_at
+)
+SELECT account_ref, operation_id, updated_at
+FROM threads_outbox
+WHERE state='sending';
+INSERT INTO threads_unknown_effect_locks(
+    target_operation_id, holder_operation_id, lock_kind, created_at
+)
+SELECT sending.replacement_of, sending.operation_id,
+       'replacement_publication', sending.updated_at
+FROM threads_outbox AS sending
+WHERE sending.state='sending' AND sending.replacement_of IS NOT NULL
+  AND NOT EXISTS (
+      SELECT 1 FROM threads_unknown_effect_locks AS existing
+      WHERE existing.target_operation_id=sending.replacement_of
+        AND existing.holder_operation_id=sending.operation_id
+        AND existing.lock_kind='replacement_publication'
+  );
 """
 
 

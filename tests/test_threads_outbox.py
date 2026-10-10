@@ -122,6 +122,22 @@ def ready(service, operation_id="operation-1", **changes):
     return service.authorize(operation_id, approval, now=NOW), approval
 
 
+def downgrade_threads_store_to_version_two(connection):
+    connection.execute("DROP TABLE threads_account_effect_locks")
+    connection.execute("DROP TABLE threads_poll_policy_denials")
+    connection.execute("DROP TABLE threads_poll_actions")
+    connection.execute("DROP TABLE threads_poll_attempts")
+    connection.execute("DROP TABLE threads_reconciliation_attempts")
+    connection.execute("ALTER TABLE threads_inbound_events DROP COLUMN processed_at")
+    connection.execute(
+        "ALTER TABLE threads_outbox_transitions DROP COLUMN approval_reference"
+    )
+    connection.execute(
+        "ALTER TABLE threads_outbox_transitions DROP COLUMN actor_reference"
+    )
+    connection.execute("UPDATE threads_schema_metadata SET version=2")
+
+
 def test_database_is_versioned_wal_and_reopens_durably(tmp_path):
     path = tmp_path / "nested" / "threads.sqlite3"
     store = ThreadsStore(path)
@@ -253,6 +269,68 @@ def test_version_eight_transition_history_marks_legacy_attribution(tmp_path):
             "SELECT approval_reference, actor_reference "
             "FROM threads_outbox_transitions WHERE operation_id='operation-1'"
         ).fetchone() == (None, "legacy-unattributed")
+
+
+def test_version_two_migration_backfills_sending_effect_reservations(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    assert service.dispatch("operation-1", first_approval, now=NOW).state is (
+        OutboxState.UNKNOWN
+    )
+    replacement_approval = trust_approval(
+        service, approve("operation-2", duplicate_risk_acknowledged=True)
+    )
+    propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=replacement_approval,
+    )
+    service.submit_for_approval("operation-2", now=NOW)
+    service.authorize("operation-2", replacement_approval, now=NOW)
+    service.store.transition(
+        "operation-2",
+        OutboxState.SENDING,
+        reason="legacy_durable_dispatch_intent",
+        now=NOW,
+        increment_attempt=True,
+    )
+    with sqlite3.connect(service.store.database) as connection:
+        downgrade_threads_store_to_version_two(connection)
+
+    ThreadsStore(service.store.database)
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT holder_operation_id FROM threads_account_effect_locks "
+            "WHERE account_ref='account-1'"
+        ).fetchone() == ("operation-2",)
+        assert connection.execute(
+            "SELECT holder_operation_id, lock_kind "
+            "FROM threads_unknown_effect_locks "
+            "WHERE target_operation_id='operation-1'"
+        ).fetchone() == ("operation-2", "replacement_publication")
+
+
+def test_version_two_migration_rejects_multiple_sending_effects_per_account(
+    tmp_path,
+):
+    service = make_service(tmp_path)
+    ready(service)
+    ready(service, "operation-2")
+    with sqlite3.connect(service.store.database) as connection:
+        connection.execute(
+            "UPDATE threads_outbox SET state='sending' "
+            "WHERE operation_id IN ('operation-1', 'operation-2')"
+        )
+        downgrade_threads_store_to_version_two(connection)
+
+    with pytest.raises(sqlite3.IntegrityError, match="UNIQUE constraint failed"):
+        ThreadsStore(service.store.database)
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT version FROM threads_schema_metadata"
+        ).fetchone() == (2,)
 
 
 def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
