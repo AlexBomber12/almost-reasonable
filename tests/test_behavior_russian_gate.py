@@ -144,6 +144,18 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     assert assertion_fence.accepted
     assert assertion_fence.foreign_prose_word_count == 0
 
+    long_fence = RussianOutputGate().assess(
+        "Пример:\n````python\nfor item in items:\n    yield item\n````"
+    )
+    assert long_fence.accepted
+    assert long_fence.foreign_prose_word_count == 0
+
+    sql_fence = RussianOutputGate().assess(
+        "Запрос:\n```sql\nSELECT username FROM users WHERE active = 1;\n```"
+    )
+    assert sql_fence.accepted
+    assert sql_fence.foreign_prose_word_count == 0
+
     json_fence = RussianOutputGate().assess(
         'Краткий пример:\n```json\n["apple", "banana", "cherry"]\n```'
     )

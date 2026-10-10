@@ -56,27 +56,27 @@ _URL = re.compile(
     r"(?:/[^\s<>()]*)?)",
     re.IGNORECASE,
 )
-_FENCED_CODE = re.compile(r"```(?:([A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?(.*?)```", re.DOTALL)
+_FENCED_CODE = re.compile(
+    r"(?P<fence>`{3,})(?:(?P<language>[A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?"
+    r"(?P<content>.*?)(?P=fence)(?!`)",
+    re.DOTALL,
+)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
 _SUPPORTED_FENCED_CODE_LANGUAGES = frozenset(
     (
-        "html",
         "json",
         "python",
         "sql",
-        "xml",
     )
 )
-_CODE_SIGNAL = re.compile(
-    r"(?:\b(?:def|class)\s+[A-Za-z_]\w*\s*[:({]|"
-    r"\b(?:const|let|var)\s+[A-Za-z_]\w*\s*=|"
-    r"\bselect\s+(?:\*|[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)+)"
-    r"\s+from\s+[A-Za-z_]\w*(?:\s*;|\s+(?:where|join|group\s+by|"
-    r"order\s+by|limit)\b)|"
-    r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
-    r"</?[A-Za-z][^>]*>)",
+_SQL_CODE_SIGNAL = re.compile(
+    r"^\s*select\s+(?:\*|[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*)"
+    r"\s+from\s+[A-Za-z_]\w*"
+    r"(?:\s+(?:(?:where|join|limit)\s+|(?:group|order)\s+by\s+)[^;\r\n]+)*"
+    r"\s*;?\s*$",
     re.IGNORECASE,
 )
+_HTML_CODE_SIGNAL = re.compile(r"^\s*</?[A-Za-z][^>]*>\s*$")
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
 _RUSSIAN_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
 _LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
@@ -339,14 +339,14 @@ def _strip_non_prose_regions(text: str) -> str:
 
 
 def _replace_fenced_code_span(match: re.Match[str]) -> str:
-    language = match.group(1)
-    content = match.group(2)
+    language = match.group("language")
+    content = match.group("content")
     if (
         language is not None
         and language.casefold() not in _SUPPORTED_FENCED_CODE_LANGUAGES
     ):
         content = f"{language}\n{content}"
-    return " " if _has_complete_code_signal(content) else content
+    return " " if _has_complete_code_signal(content, language) else content
 
 
 def _replace_code_span(match: re.Match[str]) -> str:
@@ -354,8 +354,17 @@ def _replace_code_span(match: re.Match[str]) -> str:
     return " " if _has_complete_code_signal(content) else content
 
 
-def _has_complete_code_signal(content: str) -> bool:
-    if _CODE_SIGNAL.fullmatch(content) or _is_json_data(content):
+def _has_complete_code_signal(content: str, language: str | None = None) -> bool:
+    normalized_language = language.casefold() if language is not None else None
+    if normalized_language == "json":
+        return _is_json_data(content)
+    if normalized_language == "sql":
+        return _SQL_CODE_SIGNAL.fullmatch(content) is not None
+    if normalized_language is None and (
+        _is_json_data(content)
+        or _SQL_CODE_SIGNAL.fullmatch(content)
+        or _HTML_CODE_SIGNAL.fullmatch(content)
+    ):
         return True
     try:
         parsed = ast.parse(content, mode="exec")
