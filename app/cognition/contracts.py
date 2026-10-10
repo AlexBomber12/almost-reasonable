@@ -176,6 +176,7 @@ class ExtractionRequest:
     experience: Experience
     current_candidates: tuple[PrivateCandidate, ...]
     core_self_version: str
+    additional_evidence: tuple[Experience, ...] = ()
     participant_id: None = None
 
 

@@ -125,7 +125,7 @@ def proposal_context(
     return ProposalContext(
         operation_id=f"operation-{operation}",
         source_event_id=event_id,
-        supporting_event_ids=supporting or (event_id,),
+        supporting_event_ids=(event_id,) if supporting is None else supporting,
         counterevidence_event_ids=counter,
         expected_revision=expected_revision,
         reason="A bounded synthetic rationale.",
@@ -267,8 +267,9 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
     )
     engine = CognitionEngine(events, state, extractor=FakeExtractor(created))
     assert engine.process(context, event_id).status is CognitionOutcomeStatus.PERSISTED
-    outcome = CognitionEngine(events, state, extractor=FakeExtractor(revised)).process(
-        context, event_id
+    extractor = FakeExtractor(revised)
+    outcome = CognitionEngine(events, state, extractor=extractor).process(
+        context, event_id, evidence_event_ids=(counter_id,)
     )
 
     assert outcome.status is CognitionOutcomeStatus.PERSISTED
@@ -278,11 +279,14 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
         context, StateType.BELIEF, "belief-ocean", 2
     )
     assert {item.event_id for item in evidence} == {event_id, counter_id}
+    [request] = extractor.requests
+    assert tuple(item.event_id for item in request.additional_evidence) == (counter_id,)
+    assert request.additional_evidence[0].content == "A conflicting assertion."
 
     falsely_verified = replace(revised, verification=VerificationStatus.VERIFIED)
     rejected = CognitionEngine(
         events, state, extractor=FakeExtractor(falsely_verified)
-    ).process(context, event_id)
+    ).process(context, event_id, evidence_event_ids=(counter_id,))
     assert rejected.status is CognitionOutcomeStatus.REJECTED
     assert rejected.reason is CognitionReason.VERIFICATION_MISMATCH
 
@@ -440,6 +444,27 @@ def test_scope_fake_evidence_stale_revision_and_duplicate_operation_are_determin
     ).process(context_a, event_a)
     assert rejected.reason is CognitionReason.EVIDENCE_NOT_FOUND
 
+    same_scope_evidence = append_event(
+        events, context_a, "unexposed", "A valid but unexposed event."
+    )
+    for unexposed_context in (
+        proposal_context(
+            event_a,
+            "unexposed-supporting",
+            supporting=(event_a, same_scope_evidence),
+        ),
+        proposal_context(
+            event_a,
+            "unexposed-counter",
+            counter=(same_scope_evidence,),
+        ),
+    ):
+        unexposed = replace(base, context=unexposed_context)
+        rejected = CognitionEngine(
+            events, state, extractor=FakeExtractor(unexposed)
+        ).process(context_a, event_a)
+        assert rejected.reason is CognitionReason.EVIDENCE_NOT_FOUND
+
     engine = CognitionEngine(events, state, extractor=FakeExtractor(base))
     first = engine.process(context_a, event_a)
     duplicate = engine.process(context_a, event_a)
@@ -455,6 +480,38 @@ def test_scope_fake_evidence_stale_revision_and_duplicate_operation_are_determin
         context_a, event_a
     )
     assert rejected.reason is CognitionReason.STALE_REVISION
+
+
+def test_evidence_inputs_are_bounded_and_authorized_before_extraction(
+    cognition_setup,
+):
+    events, state, context, event_id = cognition_setup
+    proposal = NoChangeProposal(event_id, "No change.", (event_id,))
+    malformed_inputs = (
+        ["event-other"],
+        tuple(f"event-extra-{index}" for index in range(50)),
+        (event_id,),
+        ("bad id",),
+        ([],),
+        ("event-other", "event-other"),
+    )
+    for evidence_ids in malformed_inputs:
+        extractor = FakeExtractor(proposal)
+        outcome = CognitionEngine(events, state, extractor=extractor).process(
+            context, event_id, evidence_event_ids=evidence_ids
+        )
+        assert outcome.reason is CognitionReason.EVIDENCE_NOT_FOUND
+        assert extractor.requests == []
+
+    context_b = principal("evidence-b")
+    foreign = append_event(events, context_b, "evidence-b")
+    for inaccessible in (("event-invented",), (foreign,)):
+        extractor = FakeExtractor(proposal)
+        outcome = CognitionEngine(events, state, extractor=extractor).process(
+            context, event_id, evidence_event_ids=inaccessible
+        )
+        assert outcome.reason is CognitionReason.EVIDENCE_NOT_FOUND
+        assert extractor.requests == []
 
 
 def test_operation_identity_collision_is_rejected_without_aborting(cognition_setup):
@@ -986,7 +1043,7 @@ def test_source_mismatch_conflicting_roles_and_invalid_create_status_are_rejecte
     )
     assert (
         CognitionEngine(events, state, extractor=FakeExtractor(unsupported_counter))
-        .process(context, event_id)
+        .process(context, event_id, evidence_event_ids=(other,))
         .reason
         is CognitionReason.INVALID_PROPOSAL
     )
@@ -1121,6 +1178,26 @@ def test_no_change_evidence_identifiers_and_duplicates_are_rejected(cognition_se
             .reason
             is CognitionReason.INVALID_PROPOSAL
         )
+
+
+def test_no_change_rejects_valid_but_unexposed_evidence(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    other = append_event(events, context, "unexposed-no-change")
+    proposal = NoChangeProposal(
+        event_id,
+        "No revision is justified by the supplied evidence.",
+        (event_id, other),
+    )
+
+    rejected = CognitionEngine(
+        events, state, extractor=FakeExtractor(proposal)
+    ).process(context, event_id)
+    accepted = CognitionEngine(
+        events, state, extractor=FakeExtractor(proposal)
+    ).process(context, event_id, evidence_event_ids=(other,))
+
+    assert rejected.reason is CognitionReason.EVIDENCE_NOT_FOUND
+    assert accepted.status is CognitionOutcomeStatus.NO_CHANGE
 
 
 @pytest.mark.parametrize(

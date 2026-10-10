@@ -466,9 +466,14 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         "Review after the first controlled comparison.",
     )
     for item in (belief, goal):
+        additional_evidence = (counter_event_id,) if item is belief else ()
         assert (
             CognitionEngine(events, state, extractor=FakeExtractor(item))
-            .process(context, event_id)
+            .process(
+                context,
+                event_id,
+                evidence_event_ids=additional_evidence,
+            )
             .status
             is CognitionOutcomeStatus.PERSISTED
         )
@@ -602,9 +607,14 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
         alternatives=("The observed warming may be a short-lived anomaly.",),
     )
     for item, event_id in ((created, supporting_event), (revised, counter_event)):
+        additional_evidence = (supporting_event,) if item is revised else ()
         assert (
             CognitionEngine(events, state, extractor=FakeExtractor(item))
-            .process(context, event_id)
+            .process(
+                context,
+                event_id,
+                evidence_event_ids=additional_evidence,
+            )
             .status
             is CognitionOutcomeStatus.PERSISTED
         )

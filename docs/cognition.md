@@ -10,11 +10,12 @@ state.
 ## Concrete pipeline
 
 An application explicitly calls `CognitionEngine.process` with a trusted
-principal context and one source event ID. The engine retrieves that participant's
-authorized event view before invoking the optional extractor. The extractor sees
-the experience, current participant-private candidates, and Core Self version,
-but no participant ID. Its configured model and prompt identity come from the
-adapter boundary, not its generated output.
+principal context, one source event ID, and an optional bounded tuple of evidence
+event IDs. The engine resolves that participant's authorized event view before
+invoking the optional extractor. The extractor sees the initiating experience,
+the resolved additional evidence, current participant-private candidates, and
+Core Self version, but no participant ID. Its configured model and prompt
+identity come from the adapter boundary, not its generated output.
 
 The persisted decision timestamp comes from an application-owned clock injected
 into `CognitionEngine`; model-supplied `proposed_at` is only validated proposal
@@ -34,13 +35,13 @@ authenticated private event
   -> private candidate or explicit non-persisted outcome
 ```
 
-The engine verifies that the source and every evidence ID are visible in the
-same authenticated participant scope. It rejects invented or cross-participant
-IDs, overlapping supporting/counterevidence roles, stale revisions, invalid
-status transitions, false verification, inconsistent belief confidence, and
-disabled capabilities. `SelfStateStore` remains the final transactional boundary
-for optimistic concurrency, operation idempotency, evidence integrity, text
-screening, and SQLite persistence.
+The engine verifies that the source and every evidence ID are in the exact
+participant-scoped material supplied to the extractor. It rejects invented,
+unexposed, or cross-participant IDs, overlapping supporting/counterevidence
+roles, stale revisions, invalid status transitions, false verification,
+inconsistent belief confidence, and disabled capabilities. `SelfStateStore`
+remains the final transactional boundary for optimistic concurrency, operation
+idempotency, evidence integrity, text screening, and SQLite persistence.
 
 The core conversation/state retrieval methods deliberately cap model-facing
 results at 100 records. A cognition-owned read-only adapter performs exact

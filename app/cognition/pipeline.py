@@ -81,7 +81,11 @@ class CognitionEngine:
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def process(
-        self, context: TrustedPrincipalContext, source_event_id: str
+        self,
+        context: TrustedPrincipalContext,
+        source_event_id: str,
+        *,
+        evidence_event_ids: tuple[str, ...] = (),
     ) -> CognitionOutcome:
         """Explicitly extract from one authorized experience and validate the result."""
 
@@ -94,6 +98,20 @@ class CognitionEngine:
         source = self._read.retrieve_exact_private_event(context, source_event_id)
         if source is None:
             return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
+        if (
+            type(evidence_event_ids) is not tuple
+            or len(evidence_event_ids) >= MAX_EVIDENCE_PER_REVISION
+            or source_event_id in evidence_event_ids
+            or any(not self._valid_token(item) for item in evidence_event_ids)
+            or len(set(evidence_event_ids)) != len(evidence_event_ids)
+        ):
+            return self._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
+        resolved_evidence = tuple(
+            self._read.retrieve_exact_private_event(context, item)
+            for item in evidence_event_ids
+        )
+        if any(item is None for item in resolved_evidence):
+            return self._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
         try:
             identity = self._extractor.identity
         except Exception:
@@ -102,14 +120,12 @@ class CognitionEngine:
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
         current = self._state.retrieve_private_candidates(context)
         request = ExtractionRequest(
-            experience=Experience(
-                event_id=source.event_id,
-                occurred_at=source.occurred_at,
-                content=source.content,
-                provenance=source.provenance,
-            ),
+            experience=self._experience(source),
             current_candidates=current,
             core_self_version=CORE_SELF_VERSION,
+            additional_evidence=tuple(
+                self._experience(item) for item in resolved_evidence
+            ),
         )
         try:
             proposal = self._extractor.extract(request)
@@ -124,6 +140,7 @@ class CognitionEngine:
             proposal,
             identity,
             decided_at,
+            frozenset((source_event_id, *evidence_event_ids)),
         )
 
     def plan_source_invalidation(
@@ -151,9 +168,12 @@ class CognitionEngine:
         proposal: object,
         identity: ExtractorIdentity,
         decided_at: datetime,
+        available_evidence_ids: frozenset[str],
     ) -> CognitionOutcome:
         if type(proposal) is NoChangeProposal:
-            return self._authorize_no_change(context, proposal, source_event_id)
+            return self._authorize_no_change(
+                proposal, source_event_id, available_evidence_ids
+            )
         if type(proposal) not in {
             InterestMemoryProposal,
             BeliefMemoryProposal,
@@ -174,7 +194,9 @@ class CognitionEngine:
                 or proposal.memory_kind not in _GENERIC_KINDS
             ):
                 return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
-        reason = self._validate_common(context, proposal.context, source_event_id)
+        reason = self._validate_common(
+            proposal.context, source_event_id, available_evidence_ids
+        )
         if reason is not None:
             return self._rejected(reason, self._safe_kind(proposal))
         proposed_at = self._canonical_time(proposal.context.proposed_at)
@@ -275,9 +297,9 @@ class CognitionEngine:
 
     def _authorize_no_change(
         self,
-        context: TrustedPrincipalContext,
         proposal: NoChangeProposal,
         source_event_id: str,
+        available_evidence_ids: frozenset[str],
     ) -> CognitionOutcome:
         if proposal.source_event_id != source_event_id:
             return self._rejected(CognitionReason.SOURCE_MISMATCH)
@@ -295,10 +317,7 @@ class CognitionEngine:
             proposal.considered_evidence_ids
         ):
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
-        if any(
-            self._read.retrieve_exact_private_event(context, item) is None
-            for item in proposal.considered_evidence_ids
-        ):
+        if not set(proposal.considered_evidence_ids) <= available_evidence_ids:
             return self._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
         return CognitionOutcome(
             CognitionOutcomeStatus.NO_CHANGE,
@@ -306,11 +325,11 @@ class CognitionEngine:
             no_change=proposal,
         )
 
+    @staticmethod
     def _validate_common(
-        self,
-        context: TrustedPrincipalContext,
         proposal: ProposalContext,
         source_event_id: str,
+        available_evidence_ids: frozenset[str],
     ) -> CognitionReason | None:
         if type(proposal) is not ProposalContext:
             return CognitionReason.INVALID_PROPOSAL
@@ -336,12 +355,18 @@ class CognitionEngine:
             return CognitionReason.INVALID_PROPOSAL
         if len(set(all_ids)) != len(all_ids):
             return CognitionReason.EVIDENCE_ROLE_CONFLICT
-        if any(
-            self._read.retrieve_exact_private_event(context, item) is None
-            for item in all_ids
-        ):
+        if not set(all_ids) <= available_evidence_ids:
             return CognitionReason.EVIDENCE_NOT_FOUND
         return None
+
+    @staticmethod
+    def _experience(event) -> Experience:
+        return Experience(
+            event_id=event.event_id,
+            occurred_at=event.occurred_at,
+            content=event.content,
+            provenance=event.provenance,
+        )
 
     @staticmethod
     def _authorize_generic(proposal: GenericMemoryProposal) -> CognitionOutcome:
