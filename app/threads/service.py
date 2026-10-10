@@ -229,6 +229,34 @@ class ThreadsService:
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
                 )
+                try:
+                    self._recheck_immediately_before_effect(
+                        item, approval, self.utc_now()
+                    )
+                except (PolicyDeniedError, ValueError):
+                    state = (
+                        OutboxState.READY
+                        if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                        else OutboxState.FAILED_TERMINAL
+                    )
+                    self.store.transition(
+                        operation_id,
+                        state,
+                        reason="pre_container_policy_denial",
+                        now=now,
+                        dispatch_evidence="container_not_transmitted",
+                        reconciliation_status="not_required",
+                        release_lock_target_operation_id=item.replacement_of,
+                        release_lock_kind=(
+                            "replacement_publication"
+                            if item.replacement_of is not None
+                            else None
+                        ),
+                        release_lock_required=item.replacement_of is not None,
+                        release_account_effect_lock=True,
+                        account_effect_lock_required=True,
+                    )
+                    raise
                 container_id = self.simulator.create_container(item)
                 self.store.update_sending_evidence(
                     operation_id,
@@ -236,6 +264,12 @@ class ThreadsService:
                     now=now,
                     provider_container_id=container_id,
                 )
+            self.store.update_sending_evidence(
+                operation_id,
+                "publish_dispatch_started",
+                now=now,
+                provider_container_id=container_id,
+            )
             try:
                 self._recheck_immediately_before_effect(item, approval, self.utc_now())
             except (PolicyDeniedError, ValueError):
@@ -263,12 +297,6 @@ class ThreadsService:
                     account_effect_lock_required=True,
                 )
                 raise
-            self.store.update_sending_evidence(
-                operation_id,
-                "publish_dispatch_started",
-                now=now,
-                provider_container_id=container_id,
-            )
             evidence = self.simulator.publish(item, container_id)
         except SimulatedCrash as error:
             marker = (

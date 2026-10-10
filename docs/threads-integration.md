@@ -143,9 +143,11 @@ The closed lifecycle is:
 
 The service resolves current approval and privacy state when an item becomes
 ready, again before entering `sending`, and immediately before both container
-creation and publication. Revocation, expiry, consent withdrawal, or control
-plane unavailability after proposal or approval therefore blocks the next
-effect. The approval actually accepted for dispatch replaces the stored
+creation and publication. Each effect check occurs after its final durable
+dispatch-marker write, so no intervening store update creates an authorization
+gap before the provider call. Revocation, expiry, consent withdrawal, or
+control-plane unavailability after proposal or approval therefore blocks the
+next effect. The approval actually accepted for dispatch replaces the stored
 approval reference atomically with the durable sending transition. A stop
 activated before either call blocks it. A stop activated after a request is in
 flight cannot retract an already accepted effect; the resulting success or
@@ -195,6 +197,8 @@ transitions delete both reservations in the same SQLite transaction. A process
 death during reconciliation leaves its read claim fail-closed; clearing that
 claim requires a fresh, current `recover_reconciliation` operator approval
 through the explicit restart-recovery path before reconciliation can resume.
+Every recovery occurrence receives its own durable audit identity, including
+when the same still-current approval authorizes more than one recovery.
 
 ## Inbound replies, mentions, and conversation outcomes
 

@@ -685,7 +685,7 @@ def test_policy_stop_after_container_persists_and_reuses_proven_safe_container(
 
 
 def test_approval_time_is_refreshed_after_container_creation(tmp_path):
-    times = iter((NOW, NOW + timedelta(minutes=2)))
+    times = iter((NOW, NOW, NOW + timedelta(minutes=2)))
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
     authorization_provider = SimulationAuthorizationProvider()
@@ -759,6 +759,44 @@ def test_current_approval_status_is_rechecked_before_publication(tmp_path, monke
     assert service.simulator.trace == [("create_container", "operation-1")]
 
 
+def test_privacy_is_rechecked_after_final_container_marker(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    update_evidence = service.store.update_sending_evidence
+
+    def update_then_revoke(operation_id, evidence, **kwargs):
+        update_evidence(operation_id, evidence, **kwargs)
+        if evidence == "container_dispatch_started":
+            service.authorization_provider.set_privacy(operation_id, False)
+
+    monkeypatch.setattr(service.store, "update_sending_evidence", update_then_revoke)
+    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+        service.dispatch("operation-1", approval, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.dispatch_evidence == "container_not_transmitted"
+    assert service.simulator.trace == []
+
+
+def test_privacy_is_rechecked_after_final_publish_marker(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    update_evidence = service.store.update_sending_evidence
+
+    def update_then_revoke(operation_id, evidence, **kwargs):
+        update_evidence(operation_id, evidence, **kwargs)
+        if evidence == "publish_dispatch_started":
+            service.authorization_provider.set_privacy(operation_id, False)
+
+    monkeypatch.setattr(service.store, "update_sending_evidence", update_then_revoke)
+    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+        service.dispatch("operation-1", approval, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.dispatch_evidence == "publish_not_transmitted"
+    assert service.simulator.trace == [("create_container", "operation-1")]
+
+
 def test_dispatch_persists_the_current_approval_reference(tmp_path):
     service = make_service(tmp_path)
     _, original = ready(service)
@@ -800,7 +838,7 @@ def test_repeated_pre_publish_denials_obey_attempt_cap(tmp_path):
     def stop_at_publish_boundary():
         nonlocal calls
         calls += 1
-        if calls >= 2:
+        if calls >= 3:
             service.policy.emergency_stop = True
         return NOW
 
@@ -941,12 +979,24 @@ def test_reconciliation_claim_requires_authenticated_restart_recovery(
         authorization_provider=service.authorization_provider,
     )
     restarted.recover_reconciliation_claim("operation-1", recovery_approval, now=NOW)
-    decision = (
+    decision_prefix = (
         "recover_reconciliation-"
         f"{content_fingerprint(recovery_approval.reference)[:16]}"
     )
     assert (
-        restarted.store.operator_decision_reference("operation-1", decision)
+        restarted.store.operator_decision_reference(
+            "operation-1", f"{decision_prefix}-1"
+        )
+        == recovery_approval.reference
+    )
+    restarted.store.claim_reconciliation(
+        operation_id="operation-1", account_ref="account-1", now=NOW
+    )
+    restarted.recover_reconciliation_claim("operation-1", recovery_approval, now=NOW)
+    assert (
+        restarted.store.operator_decision_reference(
+            "operation-1", f"{decision_prefix}-2"
+        )
         == recovery_approval.reference
     )
     monkeypatch.setattr(service.simulator, "reconcile", reconcile)

@@ -595,7 +595,7 @@ class ThreadsStore:
         require_reference("account reference", account_ref)
         require_reference("approval reference", approval_reference)
         require_aware_time("reconciliation recovery time", now)
-        decision = (
+        decision_prefix = (
             f"recover_reconciliation-{content_fingerprint(approval_reference)[:16]}"
         )
         with self._open() as connection:
@@ -616,6 +616,12 @@ class ThreadsStore:
             ).rowcount
             if changed != 1:
                 raise ThreadsStoreError("recoverable reconciliation claim is missing")
+            recovery_count = connection.execute(
+                "SELECT COUNT(*) FROM threads_operator_decisions "
+                "WHERE operation_id=? AND decision GLOB 'recover_reconciliation-*'",
+                (operation_id,),
+            ).fetchone()[0]
+            decision = f"{decision_prefix}-{recovery_count + 1}"
             connection.execute(
                 "INSERT INTO threads_operator_decisions "
                 "(operation_id, decision, approval_reference, occurred_at) "
