@@ -110,6 +110,18 @@ _SCHEMA = (
     )""",
 )
 
+_EXPECTED_SCHEMA = tuple(
+    sorted(
+        (
+            "table",
+            statement.split("(", 1)[0].split()[-1],
+            statement.split("(", 1)[0].split()[-1],
+            " ".join(statement.split()),
+        )
+        for statement in _SCHEMA
+    )
+)
+
 
 def _stamp(value: datetime) -> str:
     return value.isoformat(timespec="microseconds")
@@ -166,18 +178,28 @@ class PrivacyLedger:
     @staticmethod
     def _has_valid_schema(connection: sqlite3.Connection) -> bool:
         try:
-            metadata = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name='privacy_schema_metadata'"
-            ).fetchone()
-            if metadata is None:
-                unrelated = connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name NOT LIKE 'sqlite_%' LIMIT 1"
-                ).fetchone()
-                if unrelated is not None:
+            schema = tuple(
+                (
+                    object_type,
+                    name,
+                    table_name,
+                    " ".join(sql.split()),
+                )
+                for object_type, name, table_name, sql in connection.execute(
+                    "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                    "WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+                )
+            )
+            has_metadata = any(
+                object_type == "table" and name == "privacy_schema_metadata"
+                for object_type, name, _table_name, _sql in schema
+            )
+            if not has_metadata:
+                if schema:
                     raise RuntimeError("privacy ledger path contains unrelated tables")
                 return False
+            if schema != _EXPECTED_SCHEMA:
+                raise RuntimeError("invalid privacy ledger schema")
             version = connection.execute(
                 "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
             ).fetchone()

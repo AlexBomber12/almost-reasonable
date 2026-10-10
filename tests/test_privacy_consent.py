@@ -707,6 +707,49 @@ def test_privacy_ledger_rejects_an_unrelated_existing_database(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "schema",
+    [
+        ledger_module._SCHEMA[:-1],
+        tuple(
+            statement.replace(
+                "generation INTEGER NOT NULL CHECK(generation >= 0)",
+                "generation INTEGER",
+            )
+            for statement in ledger_module._SCHEMA
+        ),
+    ],
+)
+def test_privacy_ledger_rejects_tampered_schema_without_mutation(tmp_path, schema):
+    path = tmp_path / "spoofed-privacy.sqlite3"
+    with sqlite3.connect(path) as connection:
+        for statement in schema:
+            connection.execute(statement)
+        connection.execute(
+            "INSERT INTO privacy_schema_metadata VALUES(1, ?)",
+            (ledger_module.PRIVACY_LEDGER_SCHEMA_VERSION,),
+        )
+        original_schema = connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
+        ).fetchall()
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    path.chmod(0o640)
+
+    with pytest.raises(RuntimeError, match="invalid privacy ledger schema"):
+        PrivacyLedger(path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+        assert (
+            connection.execute(
+                "SELECT type, name, tbl_name, sql FROM sqlite_master "
+                "ORDER BY type, name"
+            ).fetchall()
+            == original_schema
+        )
+
+
+@pytest.mark.parametrize(
     "factory",
     [
         lambda: TrustedPrivacyContext(
