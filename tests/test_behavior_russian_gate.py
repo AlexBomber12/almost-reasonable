@@ -155,6 +155,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     assert long_fence.accepted
     assert long_fence.foreign_prose_word_count == 0
 
+    longer_closing_fence = RussianOutputGate().assess(
+        "Да:\n```python\nfor item in items:\n    print(item)\n````"
+    )
+    assert longer_closing_fence.accepted
+    assert longer_closing_fence.foreign_prose_word_count == 0
+
     tilde_fence = RussianOutputGate().assess(
         "Да:\n~~~python\nfor item in items:\n    print(item)\n~~~"
     )

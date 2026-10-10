@@ -56,10 +56,8 @@ _URL = re.compile(
     r"(?:/[^\s<>()]*)?)",
     re.IGNORECASE,
 )
-_FENCED_CODE = re.compile(
+_FENCE_OPEN = re.compile(
     r"(?P<fence>`{3,}|~{3,})(?:(?P<language>[A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?"
-    r"(?P<content>.*?)(?P=fence)(?![`~])",
-    re.DOTALL,
 )
 _INLINE_CODE = re.compile(
     r"(?<!`)(?P<fence>`+)(?!`)(?P<content>[\s\S]*?)(?<!`)(?P=fence)(?!`)"
@@ -346,14 +344,37 @@ def corpus_cases() -> tuple[RussianCorpusCase, ...]:
 
 
 def _strip_non_prose_regions(text: str) -> str:
-    without_code = _FENCED_CODE.sub(_replace_fenced_code_span, text)
+    without_code = _strip_fenced_code_regions(text)
     without_code = _INLINE_CODE.sub(_replace_code_span, without_code)
     return _URL.sub(" ", without_code)
 
 
-def _replace_fenced_code_span(match: re.Match[str]) -> str:
-    language = match.group("language")
-    content = match.group("content")
+def _strip_fenced_code_regions(text: str) -> str:
+    pieces: list[str] = []
+    retained_from = 0
+    search_from = 0
+    while opening := _FENCE_OPEN.search(text, search_from):
+        fence = opening.group("fence")
+        marker = re.escape(fence[0])
+        closing = re.compile(rf"{marker}{{{len(fence)},}}(?!{marker})").search(
+            text, opening.end()
+        )
+        if closing is None:
+            search_from = opening.end()
+            continue
+        pieces.append(text[retained_from : opening.start()])
+        pieces.append(
+            _replace_fenced_code_content(
+                text[opening.end() : closing.start()], opening.group("language")
+            )
+        )
+        retained_from = closing.end()
+        search_from = retained_from
+    pieces.append(text[retained_from:])
+    return "".join(pieces)
+
+
+def _replace_fenced_code_content(content: str, language: str | None) -> str:
     if (
         language is not None
         and language.casefold() not in _SUPPORTED_FENCED_CODE_LANGUAGES
