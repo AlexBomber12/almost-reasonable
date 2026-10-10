@@ -231,9 +231,11 @@ immediately before their durable administrative change.
 Polling is split into `reply` and `mention` streams and requires the configured
 account and stream-specific scopes. Each verified event records provider event
 identity, source reference, account, kind, conversation ID, optional parent,
-provider event time, and bounded public content. An event page and its cursor
-commit in one SQLite transaction. Each inbound event and conversation outcome
-also persists a bounded application correlation ID so ingestion, deliberation,
+provider event time normalized to UTC, and bounded public content. Equivalent
+aware timestamps replayed with another UTC offset retain the same identity. An
+event page and its cursor commit in one SQLite transaction. Each inbound event
+and conversation outcome also persists a bounded application correlation ID so
+ingestion, deliberation,
 and a later reply operation can share an internal trace without treating a
 provider ID as authority. A crash before commit safely replays; a replay after
 commit is suppressed by the `(account, stream, event ID)` identity. The same
@@ -245,10 +247,11 @@ identity in their foreign key.
 The loop has hard page, event, and elapsed-time limits. Before an atomic page
 commit it passes only the remaining time budget to SQLite's lock wait, then
 checks the deadline and live polling policy after acquiring the write
-transaction and checks the deadline again before the cursor write; an expired
-or newly unauthorized transaction rolls back every event and the cursor. The
-same commit records a bounded account actor, action, and caller correlation even
-for empty or duplicate-only successful polls. It rejects
+transaction and checks both again after staging events, immediately before the
+cursor and audit writes; an expired or newly unauthorized transaction rolls
+back every event and the cursor. The same commit records a bounded account
+actor, action, and caller correlation even for empty or duplicate-only
+successful polls. It rejects
 account/source mismatches, invalid source evidence, stale cursor commits,
 repeated cursors, and oversized pages. Public text is inert data even when it
 claims to be Meta, the owner, or an administrator. No inbound event calls a

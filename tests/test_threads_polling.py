@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta, timezone
 import sqlite3
 
 import pytest
@@ -166,7 +166,7 @@ def test_successful_empty_poll_persists_idempotent_correlated_action_audit(tmp_p
         )
 
 
-def test_poll_commit_rechecks_policy_inside_write_transaction(tmp_path, monkeypatch):
+def test_poll_commit_rechecks_policy_after_staging_events(tmp_path, monkeypatch):
     threads = service(tmp_path)
     threads.simulator.add_poll_page(
         stream=InboundKind.REPLY,
@@ -175,12 +175,16 @@ def test_poll_commit_rechecks_policy_inside_write_transaction(tmp_path, monkeypa
         events=(event("policy-revoked-at-commit"),),
     )
     commit_poll_page = threads.store.commit_poll_page
+    checks = 0
 
     def enable_stop_after_writer_lock(**kwargs):
         policy_fence = kwargs["precommit_check"]
 
         def stopped_policy_fence():
-            threads.policy.emergency_stop = True
+            nonlocal checks
+            checks += 1
+            if checks == 2:
+                threads.policy.emergency_stop = True
             policy_fence()
 
         return commit_poll_page(**(kwargs | {"precommit_check": stopped_policy_fence}))
@@ -195,6 +199,7 @@ def test_poll_commit_rechecks_policy_inside_write_transaction(tmp_path, monkeypa
             correlation_id="poll-policy-revoked-at-commit",
         )
 
+    assert checks == 2
     assert threads.store.cursor("account-1", InboundKind.REPLY) is None
     with sqlite3.connect(threads.store.database) as connection:
         assert connection.execute(
@@ -594,6 +599,46 @@ def test_conflicting_inbound_identity_rolls_back_event_and_cursor(tmp_path):
             "AND kind=? AND event_id=?",
             ("account-1", "reply", "event-shared"),
         ).fetchone() == (original.content,)
+
+
+def test_replayed_event_timestamp_is_compared_as_an_instant(tmp_path):
+    store = ThreadsStore(tmp_path / "threads.sqlite3")
+    original = event("same-instant")
+    equivalent = replace(
+        original,
+        occurred_at=original.occurred_at.astimezone(timezone(timedelta(hours=1))),
+    )
+    store.commit_poll_page(
+        correlation_id="poll-original-instant",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(original,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    inserted, duplicates = store.commit_poll_page(
+        correlation_id="poll-equivalent-instant",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor="cursor-equivalent-instant",
+        events=(equivalent,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+
+    assert inserted == ()
+    assert duplicates == 1
+    assert store.cursor("account-1", InboundKind.REPLY) == "cursor-equivalent-instant"
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT occurred_at FROM threads_inbound_events WHERE event_id=?",
+            (original.event_id,),
+        ).fetchone() == (NOW.isoformat(),)
 
 
 def test_poll_action_correlation_conflict_rolls_back_page(tmp_path):

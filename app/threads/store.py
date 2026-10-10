@@ -2,7 +2,7 @@
 
 from collections.abc import Callable, Iterable
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import UTC, datetime
 import fcntl
 from pathlib import Path
 import sqlite3
@@ -987,7 +987,7 @@ class ThreadsStore:
                         event.kind.value,
                         event.conversation_id,
                         event.parent_message_id,
-                        event.occurred_at.isoformat(),
+                        event.occurred_at.astimezone(UTC).isoformat(),
                         event.content,
                         now.isoformat(),
                     ),
@@ -1007,14 +1007,27 @@ class ThreadsStore:
                         event.source_ref,
                         event.conversation_id,
                         event.parent_message_id,
-                        event.occurred_at.isoformat(),
+                        event.occurred_at,
                         event.content,
                     )
-                    if existing is None or tuple(existing) != expected_event:
+                    stored_event = (
+                        None
+                        if existing is None
+                        else (
+                            existing["correlation_id"],
+                            existing["source_ref"],
+                            existing["conversation_id"],
+                            existing["parent_message_id"],
+                            datetime.fromisoformat(existing["occurred_at"]),
+                            existing["content"],
+                        )
+                    )
+                    if stored_event != expected_event:
                         raise ThreadsStoreError("inbound event identity conflict")
                     duplicates += 1
             if deadline_check is not None and not deadline_check():
                 raise PollCommitDeadlineError("poll page commit deadline reached")
+            precommit_check()
             connection.execute(
                 """INSERT INTO threads_poll_cursors(account_ref, stream, cursor, updated_at)
                    VALUES (?, ?, ?, ?)
