@@ -4,12 +4,14 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import datetime, time, timedelta
 from enum import StrEnum
+import math
 from typing import Protocol
 
 from app.core.agent_proposals import AgentDecision
 
 
 SCHEDULER_VERSION = "behavior-scheduler-v1"
+MAX_PENDING_WAKEUPS = 1024
 
 
 class SchedulerOutcome(StrEnum):
@@ -42,6 +44,7 @@ class WakeupPolicy:
             raise ValueError("max_iterations must be positive")
         if (
             type(self.max_execution_seconds) not in (int, float)
+            or not math.isfinite(float(self.max_execution_seconds))
             or self.max_execution_seconds <= 0
         ):
             raise ValueError("max_execution_seconds must be positive")
@@ -156,6 +159,8 @@ class TestScheduler:
             not isinstance(item, WakeupEvent) for item in pending
         ):
             raise TypeError("pending must contain WakeupEvent values")
+        if len(pending) > MAX_PENDING_WAKEUPS:
+            raise ValueError("pending wake-ups exceed the coalescing bound")
         if not pending:
             return SchedulerRun(SchedulerOutcome.NOTHING_DUE, None, 0, 0, None)
 

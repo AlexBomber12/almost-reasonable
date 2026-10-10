@@ -68,6 +68,21 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
     assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
 
 
+@pytest.mark.parametrize(
+    "url",
+    (
+        "www.example.com/docs",
+        "ftp://example.com/file",
+        "example.org/source",
+        "example.photography/source",
+    ),
+)
+def test_bare_and_ftp_urls_are_exempt_from_language_counts(url: str) -> None:
+    assessment = RussianOutputGate().assess(f"Подробнее: {url}")
+    assert assessment.accepted
+    assert assessment.foreign_prose_word_count == 0
+
+
 def test_policy_regenerates_with_strict_limit_then_falls_back() -> None:
     drafts = iter(("Still English only.", "Теперь ответ полностью по-русски."))
     calls: list[str] = []

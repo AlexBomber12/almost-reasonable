@@ -4,6 +4,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
+import math
 from typing import Protocol
 
 from app.core.agent_proposals import (
@@ -460,6 +461,7 @@ def _validate_input(value: DeliberationInput) -> None:
         type(value.budget.max_steps) is not int
         or type(value.budget.max_model_calls) is not int
         or type(value.budget.max_execution_seconds) not in (int, float)
+        or not math.isfinite(float(value.budget.max_execution_seconds))
         or value.budget.max_steps < 0
         or value.budget.max_model_calls < 0
         or value.budget.max_execution_seconds < 0

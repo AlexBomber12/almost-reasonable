@@ -62,10 +62,10 @@ for future behavior intents.
 `russian-h-corpus-v1`. The gate normalizes text, rejects hidden control/format
 characters, removes URLs and code from conversational-language accounting,
 tolerates bounded Latin technical terminology and proper names, and excludes
-only URLs and code regions before comparing Cyrillic and Latin prose. Foreign
-quotations remain in the language accounting, so their Russian framing and
-explanation must be proportionate to their size. A small marker set rejects
-clear Ukrainian and Belarusian proximity cases.
+HTTP(S), FTP, `www`, bare-domain URLs, and code regions before comparing
+Cyrillic and Latin prose. Foreign quotations remain in the language accounting,
+so their Russian framing and explanation must be proportionate to their size. A
+small marker set rejects clear Ukrainian and Belarusian proximity cases.
 
 The corpus contains ten labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, English-only,
@@ -96,7 +96,8 @@ and elapsed-time limits, and per-decision technical rate limits.
 A run filters out future events, coalesces only currently due unprocessed
 wake-ups to the newest event, records their IDs, and deliberates at most once.
 Future events remain eligible when their time arrives, and a duplicate newest
-event cannot starve an older unprocessed due event. There is no catch-up loop.
+event cannot starve an older unprocessed due event. The input batch itself is
+bounded to 1,024 wake-ups, and there is no catch-up loop.
 Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
 rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
@@ -128,13 +129,17 @@ Mission text, reasons, and counterevidence use Unicode-normalized, fail-closed
 screening for hidden controls, links, instruction/prompt language, credentials,
 secrets, budgets, security/deployment controls, shell/Docker, and tool/command
 imperatives in Russian and English. The same screen covers the later
-confirmation's reasons and counterevidence before durable storage. Revision
-cannot alter Core Self, operational policy, credentials, provider budgets,
-deployment stage, tool permissions, or emergency-stop availability. It may, for
-example, replace a Threads-oriented behavioral mission while the separately
-managed Threads capability remains unchanged. The lexical screen is
-deliberately conservative; semantic adequacy still receives H/M evaluation,
-while exact capability invariance remains G.
+confirmation's reasons and counterevidence before durable storage. Every
+mission tuple has an item count and aggregate byte bound, and each proposal or
+confirmation has a smaller total-record text bound. IDs and version references
+use a short ASCII control-identifier grammar, preventing instructions from being
+smuggled through evidence or correlation fields. Revision cannot alter Core
+Self, operational policy, credentials, provider budgets, deployment stage, tool
+permissions, or emergency-stop availability. It may, for example, replace a
+Threads-oriented behavioral mission while the separately managed Threads
+capability remains unchanged. The lexical screen is deliberately conservative;
+semantic adequacy still receives H/M evaluation, while exact capability
+invariance remains G.
 
 The repository writes a replacement file before atomically replacing the active
 document. Tests reopen it with a new state-machine instance and confirm
@@ -164,6 +169,12 @@ stable machine-readable report with per-G/H/M pass/fail counts, categorized
 failures, observations, rubric/harness versions, and explicit limitations.
 Optional human calibration receives every observation and records reviewer,
 calibration version, optional override recommendation, and note.
+
+Only the complete v1 dimension-to-assurance mapping may emit
+`behavior-rubric-v1`. Partial or differently classified experimental rubrics
+must carry a distinct caller-supplied version, so their reports cannot be
+mistaken for complete release evidence. A G dimension can never use a model
+assessor in either official or custom rubrics.
 
 G, H, and M results remain separate. The harness rejects a model assessor for a
 G-class rule; model agreement can never establish access control. M rules do not

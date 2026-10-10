@@ -45,7 +45,12 @@ class DeliveryResult:
     assessments: tuple[GateAssessment, ...]
 
 
-_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_URL = re.compile(
+    r"(?<![\w@])(?:(?:(?:https?|ftp)://|www\.)[^\s<>()]+|"
+    r"(?:[a-z0-9-]+\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})"
+    r"(?:/[^\s<>()]*)?)",
+    re.IGNORECASE,
+)
 _FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`]*`")
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")

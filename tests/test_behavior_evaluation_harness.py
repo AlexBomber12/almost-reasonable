@@ -1,4 +1,5 @@
 import json
+from dataclasses import replace
 
 import pytest
 
@@ -27,6 +28,15 @@ def assessor(case, output, rule):
             () if "не согласен" in output else (FailureCategory.SYCOPHANCY,),
         )
     return (0.75, ())
+
+
+def custom_harness(rubric, selected_assessor, human_calibration=None):
+    return BehavioralEvaluationHarness(
+        rubric,
+        selected_assessor,
+        human_calibration,
+        rubric_version="test-rubric-v1",
+    )
 
 
 def test_recorded_multi_trial_harness_emits_machine_summary_and_human_hook() -> None:
@@ -60,11 +70,11 @@ def test_recorded_multi_trial_harness_emits_machine_summary_and_human_hook() -> 
         seen.append(observation.observation_id)
         return HumanAdjudication("reviewer-1", "calibration-v1", None, "Проверено")
 
-    report = BehavioralEvaluationHarness(rubric, assessor, calibrate).run(cases)
+    report = custom_harness(rubric, assessor, calibrate).run(cases)
     payload = json.loads(report.to_json())
 
     assert EVALUATION_HARNESS_VERSION == "behavior-evaluation-v1"
-    assert report.rubric_version == RUBRIC_VERSION
+    assert report.rubric_version == "test-rubric-v1"
     assert len(report.observations) == 4
     assert len(seen) == 4
     assert payload["assurance_summary"]["H"]["passed"] == 2
@@ -90,6 +100,10 @@ def test_default_rubric_is_versioned_and_complete() -> None:
         RubricDimension.COHERENT_TWO_PHASE_MISSION_REVISION,
     }.issubset({rule.dimension for rule in rules})
     assert all(rule.description and 0 <= rule.threshold <= 1 for rule in rules)
+    official = BehavioralEvaluationHarness(rules, assessor).run(
+        (EvaluationCase("official", "prompt", ("рус",), ()),)
+    )
+    assert official.rubric_version == RUBRIC_VERSION
 
 
 def test_g_class_can_never_be_assigned_to_model_judge() -> None:
@@ -103,7 +117,7 @@ def test_g_class_can_never_be_assigned_to_model_judge() -> None:
         ),
     )
     with pytest.raises(ValueError, match="G-class"):
-        BehavioralEvaluationHarness(bad, assessor)
+        custom_harness(bad, assessor)
 
 
 def test_harness_validates_scores_cases_and_assessor_failures() -> None:
@@ -115,15 +129,15 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         "Честность",
     )
     with pytest.raises(ValueError, match="recorded output"):
-        BehavioralEvaluationHarness((rule,), assessor).run(
+        custom_harness((rule,), assessor).run(
             (EvaluationCase("empty", "prompt", (), ()),)
         )
     with pytest.raises(ValueError, match="score"):
-        BehavioralEvaluationHarness((rule,), lambda *_: (2.0, ())).run(
+        custom_harness((rule,), lambda *_: (2.0, ())).run(
             (EvaluationCase("case", "prompt", ("output",), ()),)
         )
     with pytest.raises(ValueError, match="unique"):
-        BehavioralEvaluationHarness((rule, rule), assessor)
+        custom_harness((rule, rule), assessor)
 
     bad_rule = RubricRule(
         RubricDimension.INTELLECTUAL_HONESTY,
@@ -133,8 +147,8 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         "bad",
     )
     with pytest.raises(ValueError, match="rubric rule"):
-        BehavioralEvaluationHarness((bad_rule,), assessor)
-    harness = BehavioralEvaluationHarness((rule,), assessor)
+        custom_harness((bad_rule,), assessor)
+    harness = custom_harness((rule,), assessor)
     with pytest.raises(ValueError, match="case IDs"):
         harness.run(
             (
@@ -143,8 +157,43 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
             )
         )
     with pytest.raises(ValueError, match="failure category"):
-        BehavioralEvaluationHarness((rule,), lambda *_: (1.0, ("bad",))).run(  # type: ignore[arg-type]
+        custom_harness((rule,), lambda *_: (1.0, ("bad",))).run(  # type: ignore[arg-type]
             (EvaluationCase("case", "prompt", ("output",), ()),)
         )
     successful = harness.run((EvaluationCase("ok", "p", ("рус",), ()),))
     assert successful.observations[0].adjudication is None
+
+
+def test_official_rubric_rejects_partial_or_reclassified_rules() -> None:
+    with pytest.raises(ValueError, match="official rubric"):
+        BehavioralEvaluationHarness((default_rubric()[0],), assessor)
+
+    reclassified = tuple(
+        replace(
+            rule,
+            assurance=AssuranceClass.M,
+            assessor_kind=AssessorKind.MODEL,
+        )
+        if rule.dimension is RubricDimension.SAFE_PRIVACY_BOUNDARIES
+        else rule
+        for rule in default_rubric()
+    )
+    with pytest.raises(ValueError, match="official rubric"):
+        BehavioralEvaluationHarness(reclassified, assessor)
+    changed_threshold = list(default_rubric())
+    changed_threshold[0] = replace(changed_threshold[0], threshold=0.0)
+    with pytest.raises(ValueError, match="official rubric"):
+        BehavioralEvaluationHarness(tuple(changed_threshold), assessor)
+    with pytest.raises(ValueError, match="rubric_version"):
+        BehavioralEvaluationHarness((default_rubric()[0],), assessor, rubric_version="")
+    privacy_as_model = (
+        RubricRule(
+            RubricDimension.SAFE_PRIVACY_BOUNDARIES,
+            AssuranceClass.M,
+            1.0,
+            AssessorKind.MODEL,
+            "not a valid reclassification",
+        ),
+    )
+    with pytest.raises(ValueError, match="remain G-class"):
+        custom_harness(privacy_as_model, assessor)

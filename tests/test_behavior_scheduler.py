@@ -161,6 +161,7 @@ def test_overnight_active_hours_expired_duplicate_and_validation() -> None:
 def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
     invalid_policy_changes = (
         {"max_execution_seconds": 0},
+        {"max_execution_seconds": float("nan")},
         {"cadence": timedelta(0)},
         {"duplicate_window": timedelta(0)},
         {"per_action_limits": (("research", 1),)},
@@ -181,6 +182,8 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
     assert scheduler.run((event("all-day"),)).outcome is SchedulerOutcome.NO_ACTION
     with pytest.raises(TypeError, match="pending"):
         scheduler.run([event("bad")])  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="coalescing bound"):
+        scheduler.run(tuple(event(f"event-{index}") for index in range(1025)))
 
 
 def test_scheduler_never_runs_or_discards_future_wakeups() -> None:

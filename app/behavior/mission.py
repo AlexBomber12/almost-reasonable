@@ -12,10 +12,14 @@ import unicodedata
 
 MISSION_SCHEMA_VERSION = "mission-store-v1"
 MAX_MISSION_TEXT_UTF8_BYTES = 4096
+MAX_MISSION_COLLECTION_ITEMS = 32
+MAX_MISSION_COLLECTION_UTF8_BYTES = 16 * 1024
+MAX_MISSION_IDENTIFIER_COLLECTION_UTF8_BYTES = 2 * 1024
+MAX_MISSION_RECORD_TEXT_UTF8_BYTES = 32 * 1024
 _FORBIDDEN_MISSION_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
-        r"(?:https?://|www\.)",
+        r"(?:https?://|ftp://|www\.|\b(?:[a-z0-9-]+\.)+[a-z]{2,63}\b)",
         r"\bignore\s+(?:all\s+)?(?:the\s+)?previous\b",
         r"\b(?:system\s+prompt|instructions?|credential|password|secret|"
         r"api\s*key|private\s*key|budget|permissions?|security\s+settings?|"
@@ -32,6 +36,7 @@ _FORBIDDEN_MISSION_PATTERNS = tuple(
         r".{0,40}(?:инструмент\w*|команд\w*|настройк\w*|ключ\w*|доступ\w*)",
     )
 )
+_MISSION_IDENTIFIER = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 
 
 class MissionStatus(StrEnum):
@@ -219,7 +224,6 @@ def _validate_proposal(proposal: MissionProposal) -> None:
         raise TypeError("proposal must be a MissionProposal")
     for name in (
         "proposal_id",
-        "proposed_mission",
         "current_mission_version",
         "initiating_event_id",
         "version_identity",
@@ -227,8 +231,10 @@ def _validate_proposal(proposal: MissionProposal) -> None:
         "model_identifier",
         "prompt_version",
     ):
-        if not _valid_text(getattr(proposal, name)):
+        if not _valid_identifier(getattr(proposal, name)):
             raise ValueError(f"{name} is invalid")
+    if not _valid_text(proposal.proposed_mission):
+        raise ValueError("proposed_mission is invalid")
     mission_fields = (
         proposal.proposed_mission,
         *proposal.supporting_reasons,
@@ -240,6 +246,13 @@ def _validate_proposal(proposal: MissionProposal) -> None:
         )
     _validate_text_tuple(proposal.supporting_reasons, "supporting_reasons")
     _validate_text_tuple(proposal.counterevidence, "counterevidence")
+    _validate_aggregate_text(
+        (
+            proposal.proposed_mission,
+            *proposal.supporting_reasons,
+            *proposal.counterevidence,
+        )
+    )
     _validate_time(proposal.decided_at)
     _validate_invariants(proposal.invariants)
 
@@ -259,7 +272,7 @@ def _validate_confirmation(
     if not isinstance(confirmation.outcome, ConfirmationOutcome):
         raise ValueError("confirmation outcome is invalid")
     for name in ("proposal_id", "event_id", "correlation_id"):
-        if not _valid_text(getattr(confirmation, name)):
+        if not _valid_identifier(getattr(confirmation, name)):
             raise ValueError(f"{name} is invalid")
     _validate_text_tuple(confirmation.reasons, "reasons")
     _validate_text_tuple(confirmation.counterevidence, "counterevidence")
@@ -270,7 +283,14 @@ def _validate_confirmation(
         raise ValueError(
             "closed confirmation text rejects instructions, links, and policy changes"
         )
-    _validate_text_tuple(confirmation.evidence_ids, "evidence_ids")
+    _validate_identifier_tuple(confirmation.evidence_ids, "evidence_ids")
+    _validate_aggregate_text(
+        (
+            *confirmation.reasons,
+            *confirmation.counterevidence,
+            *confirmation.evidence_ids,
+        )
+    )
     if proposal.initiating_event_id in confirmation.evidence_ids:
         raise ValueError("confirmation requires independent evidence")
     _validate_invariants(confirmation.invariants)
@@ -300,9 +320,38 @@ def _validate_text_tuple(value: tuple[str, ...], name: str) -> None:
     if (
         type(value) is not tuple
         or not value
+        or len(value) > MAX_MISSION_COLLECTION_ITEMS
         or any(not _valid_text(item) for item in value)
     ):
         raise ValueError(f"{name} must contain bounded text")
+    if (
+        sum(len(item.encode("utf-8")) for item in value)
+        > MAX_MISSION_COLLECTION_UTF8_BYTES
+    ):
+        raise ValueError(f"{name} exceeds its aggregate byte bound")
+
+
+def _validate_aggregate_text(values: tuple[str, ...]) -> None:
+    if (
+        sum(len(value.encode("utf-8")) for value in values)
+        > MAX_MISSION_RECORD_TEXT_UTF8_BYTES
+    ):
+        raise ValueError("mission record exceeds its aggregate byte bound")
+
+
+def _validate_identifier_tuple(value: tuple[str, ...], name: str) -> None:
+    if (
+        type(value) is not tuple
+        or not value
+        or len(value) > MAX_MISSION_COLLECTION_ITEMS
+        or any(not _valid_identifier(item) for item in value)
+    ):
+        raise ValueError(f"{name} must contain bounded identifiers")
+    if (
+        sum(len(item.encode("utf-8")) for item in value)
+        > MAX_MISSION_IDENTIFIER_COLLECTION_UTF8_BYTES
+    ):
+        raise ValueError(f"{name} exceeds its aggregate byte bound")
 
 
 def _validate_time(value: datetime) -> None:
@@ -317,6 +366,10 @@ def _valid_text(value: object) -> bool:
         return len(value.encode("utf-8")) <= MAX_MISSION_TEXT_UTF8_BYTES
     except UnicodeEncodeError:
         return False
+
+
+def _valid_identifier(value: object) -> bool:
+    return isinstance(value, str) and _MISSION_IDENTIFIER.fullmatch(value) is not None
 
 
 def _contains_forbidden_mission_content(value: str) -> bool:
