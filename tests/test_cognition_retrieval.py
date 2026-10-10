@@ -672,6 +672,27 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
     assert "belief-history" not in {record.item_id for record in head_too_large.records}
     assert head_too_large.records_omitted is True
 
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE state_revision_payloads
+            SET retention_status = 'deleted'
+            WHERE revision_key = (
+                SELECT revision.revision_key
+                FROM state_items AS item
+                JOIN state_revisions AS revision
+                  ON revision.item_key = item.item_key
+                 AND revision.revision_number = item.current_revision
+                WHERE item.item_id = 'belief-history'
+            )
+            """
+        )
+    deleted_head = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.REVISION, "ocean warming", 8192, 10),
+    )
+    assert "belief-history" not in {record.item_id for record in deleted_head.records}
+
 
 def test_terminal_belief_history_requires_explicit_inclusion(retrieval_setup):
     events, state, context, _, event_id, _ = retrieval_setup

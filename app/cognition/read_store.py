@@ -241,6 +241,15 @@ class CognitionReadStore:
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
+                      AND EXISTS (
+                          SELECT 1
+                          FROM state_revisions AS head_revision
+                          JOIN state_revision_payloads AS head_payload
+                            ON head_payload.revision_key = head_revision.revision_key
+                          WHERE head_revision.item_key = item.item_key
+                            AND head_revision.revision_number = item.current_revision
+                            AND head_payload.retention_status = 'active'
+                      )
                       {revision_filter}
                     UNION ALL
                     SELECT
@@ -254,6 +263,15 @@ class CognitionReadStore:
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
+                      AND EXISTS (
+                          SELECT 1
+                          FROM state_revisions AS head_revision
+                          JOIN state_revision_payloads AS head_payload
+                            ON head_payload.revision_key = head_revision.revision_key
+                          WHERE head_revision.item_key = item.item_key
+                            AND head_revision.revision_number = item.current_revision
+                            AND head_payload.retention_status = 'active'
+                      )
                       {revision_filter}
                     ORDER BY 2, 1, 3
                     """,
@@ -485,6 +503,15 @@ class CognitionReadStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND payload.retention_status = 'active'
+                      AND EXISTS (
+                          SELECT 1
+                          FROM state_revisions AS head_revision
+                          JOIN state_revision_payloads AS head_payload
+                            ON head_payload.revision_key = head_revision.revision_key
+                          WHERE head_revision.item_key = item.item_key
+                            AND head_revision.revision_number = item.current_revision
+                            AND head_payload.retention_status = 'active'
+                      )
                       {revision_filter}
                       {item_filter}
                     ORDER BY revision.revision_key, item.item_id

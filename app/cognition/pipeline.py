@@ -236,6 +236,19 @@ class CognitionEngine:
         )
         reason = self._validate_revision_target(proposal, existing)
         if reason is not None:
+            try:
+                duplicate = self._read.replay_private_operation(context, change)
+            except SelfStateIdentityConflictError:
+                return self._rejected(
+                    CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
+                )
+            if duplicate is not None:
+                return CognitionOutcome(
+                    CognitionOutcomeStatus.PERSISTED,
+                    CognitionReason.AUTHORIZED,
+                    proposal.memory_kind,
+                    transition=duplicate,
+                )
             return self._rejected(reason, proposal.memory_kind)
         try:
             transition = self._persist(context, proposal, identity, decided_at)

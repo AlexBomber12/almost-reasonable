@@ -573,6 +573,108 @@ def test_identical_operation_race_replays_durable_winner(cognition_setup, monkey
     assert calls == 2
 
 
+def test_identical_revision_race_replays_before_stale_rejection(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    created = InterestMemoryProposal(
+        proposal_context(event_id, "revision-race-create"),
+        "interest-revision-race",
+        "Revision races",
+        40,
+        InterestStatus.ACTIVE,
+        "Concurrent revisions must preserve idempotency.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(created))
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    revision = replace(
+        created,
+        context=proposal_context(event_id, "revision-race-winner", expected_revision=1),
+        strength=70,
+    )
+    loser = CognitionEngine(events, state, extractor=FakeExtractor(revision))
+    durable_replay = loser._read.replay_private_operation
+    calls = 0
+
+    def miss_while_winner_commits(request_context, change):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            winner = CognitionEngine(
+                events, state, extractor=FakeExtractor(revision)
+            ).process(context, event_id)
+            assert winner.status is CognitionOutcomeStatus.PERSISTED
+            return None
+        return durable_replay(request_context, change)
+
+    monkeypatch.setattr(
+        loser._read, "replay_private_operation", miss_while_winner_commits
+    )
+
+    outcome = loser.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.PERSISTED
+    assert outcome.transition.status is TransitionStatus.DUPLICATE
+    assert outcome.transition.state.revision == 2
+    assert calls == 2
+
+
+def test_changed_revision_race_rejects_operation_identity_conflict(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    created = InterestMemoryProposal(
+        proposal_context(event_id, "changed-revision-race-create"),
+        "interest-changed-revision-race",
+        "Changed revision races",
+        40,
+        InterestStatus.ACTIVE,
+        "Conflicting concurrent revisions must fail closed.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(created))
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    winner_revision = replace(
+        created,
+        context=proposal_context(
+            event_id, "changed-revision-race", expected_revision=1
+        ),
+        strength=70,
+    )
+    losing_revision = replace(winner_revision, strength=80)
+    loser = CognitionEngine(events, state, extractor=FakeExtractor(losing_revision))
+    durable_replay = loser._read.replay_private_operation
+    calls = 0
+
+    def miss_while_different_winner_commits(request_context, change):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            winner = CognitionEngine(
+                events, state, extractor=FakeExtractor(winner_revision)
+            ).process(context, event_id)
+            assert winner.status is CognitionOutcomeStatus.PERSISTED
+            return None
+        return durable_replay(request_context, change)
+
+    monkeypatch.setattr(
+        loser._read, "replay_private_operation", miss_while_different_winner_commits
+    )
+
+    outcome = loser.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.OPERATION_ID_CONFLICT
+    assert calls == 2
+
+
 def test_delayed_retry_remains_duplicate_after_a_later_revision(cognition_setup):
     events, state, context, event_id = cognition_setup
     created = InterestMemoryProposal(
