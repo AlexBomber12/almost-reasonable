@@ -363,3 +363,6 @@ def test_json_encoder_and_decoder_resource_failures_are_sanitized():
     nested = b"[" * 2000 + b"]" * 2000
     with pytest.raises(WorkerProtocolError, match="invalid JSON"):
         decode_request(nested)
+    oversized_integer = b'{"value":' + b"1" * 5000 + b"}"
+    with pytest.raises(WorkerProtocolError, match="invalid JSON"):
+        decode_request(oversized_integer)

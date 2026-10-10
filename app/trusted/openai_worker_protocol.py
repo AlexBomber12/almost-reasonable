@@ -365,7 +365,7 @@ def _decode_json(payload: bytes) -> object:
     try:
         text = payload.decode("utf-8")
         value = json.loads(text, object_pairs_hook=_unique_object)
-    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+    except (UnicodeDecodeError, RecursionError, ValueError):
         raise WorkerProtocolError("invalid JSON payload") from None
     _validate_json_depth(value)
     return value

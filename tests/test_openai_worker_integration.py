@@ -231,6 +231,41 @@ def test_client_does_not_retry_lost_response_under_a_new_operation_id(tmp_path):
     assert result.operation_id == "operation-a"
 
 
+def test_client_sanitizes_oversized_json_integer_in_worker_response(tmp_path):
+    directory = secure_directory(tmp_path)
+    socket_path = directory / "worker.sock"
+
+    def malformed_response():
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        listener.bind(str(socket_path))
+        listener.listen(1)
+        connection, _ = listener.accept()
+        while connection.recv(4096):
+            pass
+        payload = (
+            b'{"agent_proposal":null,"attempts":'
+            + b"1" * 5000
+            + b',"outcome":"disabled","protocol_version":"openai-worker-v1",'
+            b'"safe_russian_message":null}'
+        )
+        connection.sendall(len(payload).to_bytes(4, "big") + payload)
+        connection.shutdown(socket.SHUT_WR)
+        connection.close()
+        listener.close()
+
+    worker = Thread(target=malformed_response)
+    worker.start()
+    wait_for_socket(socket_path)
+    result = OpenAIWorkerClient(socket_path).infer(
+        request(directory), operation_id="operation-a", correlation_id="correlation-a"
+    )
+    worker.join(timeout=2)
+    socket_path.unlink()
+
+    assert result.outcome == CLIENT_OUTCOME_UNCERTAIN
+    assert result.operation_id == "operation-a"
+
+
 def test_worker_emergency_stop_blocks_fake_provider_invocation(tmp_path):
     directory = secure_directory(tmp_path)
     instance, transport = gateway(
