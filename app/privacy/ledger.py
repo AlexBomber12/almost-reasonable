@@ -43,7 +43,8 @@ _SCHEMA = (
         actor_reference TEXT NOT NULL,
         revision INTEGER NOT NULL,
         correlation_id TEXT NOT NULL,
-        authentication_event_id TEXT NOT NULL
+        authentication_event_id TEXT NOT NULL,
+        UNIQUE(principal_id, content_reference, audience, purpose, revision)
     )""",
     """CREATE TABLE privacy_control_generation(
         singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
@@ -295,6 +296,20 @@ class PrivacyLedger:
                 if existing != values:
                     raise ValueError("consent operation identity conflict")
             else:
+                revision_conflict = connection.execute(
+                    "SELECT consent_id FROM consent_grants WHERE principal_id=? "
+                    "AND content_reference=? AND audience=? AND purpose=? "
+                    "AND revision=?",
+                    (
+                        grant.principal_id,
+                        grant.content_reference,
+                        grant.audience,
+                        grant.purpose.value,
+                        grant.revision,
+                    ),
+                ).fetchone()
+                if revision_conflict is not None:
+                    raise ValueError("consent revision conflict")
                 connection.execute(
                     "INSERT INTO consent_grants VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values
                 )
@@ -345,11 +360,33 @@ class PrivacyLedger:
                 if existing[:6] != identity:
                     raise ValueError("consent use operation identity conflict")
                 if existing[6] == "completed":
-                    return ConsentUseResult(False, "already_dispatched", existing[7])
-                if existing[6] in {"dispatch_pending", "dispatch_uncertain"}:
-                    return ConsentUseResult(False, "dispatch_uncertain", existing[7])
-                if existing[6] != "pre_dispatch_failure":
-                    return ConsentUseResult(False, existing[6], existing[7])
+                    repeated = ConsentUseResult(
+                        False, "already_dispatched", existing[7]
+                    )
+                elif existing[6] in {"dispatch_pending", "dispatch_uncertain"}:
+                    repeated = ConsentUseResult(
+                        False, "dispatch_uncertain", existing[7]
+                    )
+                elif existing[6] != "pre_dispatch_failure":
+                    repeated = ConsentUseResult(False, existing[6], existing[7])
+                else:
+                    repeated = None
+                if repeated is not None:
+                    repeated_at = clock()
+                    require_utc(repeated_at, "consent use timestamp")
+                    self._insert_audit(
+                        connection,
+                        AuditRecord(
+                            correlation_id,
+                            actor_reference,
+                            "consent_use",
+                            "consent",
+                            repeated_at,
+                            repeated.reason,
+                            "payload_free",
+                        ),
+                    )
+                    return repeated
             attempted_at = clock()
             require_utc(attempted_at, "consent use attempt timestamp")
             if existing is None:

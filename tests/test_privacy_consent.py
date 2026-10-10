@@ -89,6 +89,7 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
     )
     assert (repeated.allowed, repeated.reason) == (False, "already_dispatched")
     assert dispatched == ["sent"]
+    assert ledger.audit_records()[-1].result_code == "already_dispatched"
 
     first = consent.revoke(
         context(),
@@ -197,6 +198,7 @@ def test_consent_dispatch_failure_is_durable_and_cannot_be_retried(tmp_path):
             NOW + timedelta(minutes=1),
             NOW + timedelta(minutes=2),
             NOW + timedelta(minutes=3),
+            NOW + timedelta(minutes=4),
         )
     )
     consent = ConsentService(ledger, clock=lambda: next(times))
@@ -224,8 +226,8 @@ def test_consent_dispatch_failure_is_durable_and_cannot_be_retried(tmp_path):
     assert effects == ["sent"]
     audits = ledger.audit_records()
     assert [(row.result_code, row.occurred_at) for row in audits[-2:]] == [
-        ("dispatch_pending", NOW + timedelta(minutes=1)),
         ("dispatch_uncertain", NOW + timedelta(minutes=3)),
+        ("dispatch_uncertain", NOW + timedelta(minutes=4)),
     ]
     with pytest.raises(ValueError, match="consent use operation identity conflict"):
         consent.authorize(
@@ -466,6 +468,46 @@ def test_consent_rejects_privilege_purpose_and_conflicting_operation(service):
             revoked_at=NOW,
             correlation_id="revoke-conflict",
         )
+
+
+def test_consent_rejects_duplicate_scope_revision_and_uses_newer_revision(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    consent = ConsentService(ledger, clock=lambda: NOW + timedelta(minutes=3))
+    consent.grant(context(), grant(expires_at=NOW + timedelta(minutes=1)))
+    duplicate_revision = grant(
+        consent_id="consent-002",
+        operation_id="grant-operation-002",
+        granted_at=NOW + timedelta(minutes=2),
+        expires_at=NOW + timedelta(hours=1),
+        correlation_id="correlation-002",
+    )
+
+    with pytest.raises(ValueError, match="consent revision conflict"):
+        consent.grant(context(), duplicate_revision)
+
+    renewed = consent.grant(
+        context(),
+        grant(
+            consent_id="consent-003",
+            operation_id="grant-operation-003",
+            granted_at=NOW + timedelta(minutes=2),
+            expires_at=NOW + timedelta(hours=1),
+            revision=2,
+            correlation_id="correlation-003",
+        ),
+    )
+    result = consent.authorize(
+        context(),
+        principal_id="participant-a",
+        content_reference="event-001",
+        audience="public-threads",
+        purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        correlation_id="renewed-use",
+        dispatch=lambda: None,
+    )
+
+    assert renewed.created is True
+    assert (result.allowed, result.consent_id) == (True, "consent-003")
 
 
 def test_abstraction_boundary_is_closed_and_preserves_hidden_provenance():
