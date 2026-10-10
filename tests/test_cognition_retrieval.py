@@ -443,6 +443,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert belief_record.stance is BeliefStance.OPPOSES
     assert belief_record.provenance is ProvenanceType.MODEL_INFERENCE
     assert belief_record.counterevidence_count == 1
+    assert belief_record.review_at == NOW + timedelta(days=7)
     serialized_values = (
         belief_record.item_id,
         belief_record.memory_kind.value,
@@ -456,6 +457,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         belief_record.verification.value,
         belief_record.provenance.value,
         belief_record.recency.isoformat(),
+        belief_record.review_at.isoformat(),
         belief_record.trust.value,
         "false",
     )
@@ -466,6 +468,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert by_id["goal-retrieval"].priority == 65
     assert by_id["goal-retrieval"].stance is None
     assert by_id["goal-retrieval"].counterevidence_count == 0
+    assert by_id["goal-retrieval"].review_at == NOW + timedelta(days=7)
 
 
 def test_ranking_considers_authorized_candidates_beyond_core_result_cap(

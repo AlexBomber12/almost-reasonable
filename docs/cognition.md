@@ -127,10 +127,11 @@ Belief records retain their explicit `supports`, `opposes`, or `uncertain`
 stance and counterevidence count, so disputed claims remain distinguishable;
 both fields are included in byte-budget accounting.
 Every record carries its kind, private scope, status, confidence or priority,
-verification state, origin-derived provenance class, recency, and the fixed
-`untrusted_memory_data` trust label. Model-authored revisions are exposed as
-`model_inference`, never as participant assertions. `can_instruct` is always
-false. No protected evidence IDs or participant IDs are rendered into model context.
+verification state, origin-derived provenance class, decision recency, review
+deadline, and the fixed `untrusted_memory_data` trust label. Model-authored
+revisions are exposed as `model_inference`, never as participant assertions.
+`can_instruct` is always false. No protected evidence IDs or participant IDs
+are rendered into model context.
 Terminal records are excluded by default and may be requested only for an
 explicit revision purpose; `include_terminal` is rejected for conversation or
 general deliberation.

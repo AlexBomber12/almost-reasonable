@@ -330,6 +330,7 @@ class MemoryRecord:
     verification: VerificationStatus
     provenance: ProvenanceType
     recency: datetime
+    review_at: datetime
     trust: MemoryTrust
     can_instruct: bool
     utf8_bytes: int

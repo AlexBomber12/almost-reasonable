@@ -148,6 +148,7 @@ class MemoryContextSelector:
             verification.value,
             provenance.value,
             recency.isoformat(),
+            candidate.review_at.isoformat(),
             MemoryTrust.UNTRUSTED_MEMORY_DATA.value,
             "false",
         )
@@ -165,6 +166,7 @@ class MemoryContextSelector:
             verification=verification,
             provenance=provenance,
             recency=recency,
+            review_at=candidate.review_at,
             trust=MemoryTrust.UNTRUSTED_MEMORY_DATA,
             can_instruct=False,
             utf8_bytes=size,
