@@ -628,12 +628,6 @@ class QuarantinedRestore:
         quarantine_sha256 = _descriptor_sha256(quarantine_descriptor)
         _publish_owned_file(staging, quarantine, owned_quarantine)
         self._require_quarantine_identity(quarantine, quarantine_descriptor)
-        self.ledger.record_restore(
-            restore_id,
-            restored_at,
-            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
-            "reconciliation_complete",
-        )
         marker = json.dumps(
             {
                 "restore_id": restore_id,
@@ -681,6 +675,16 @@ class QuarantinedRestore:
         except Exception as error:
             _cleanup_created(marker_files)
             raise BackupError("readiness marker write failed") from error
+        except BaseException:
+            _cleanup_created(marker_files)
+            raise
+        try:
+            self.ledger.record_restore(
+                restore_id,
+                restored_at,
+                RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+                "reconciliation_complete",
+            )
         except BaseException:
             _cleanup_created(marker_files)
             raise

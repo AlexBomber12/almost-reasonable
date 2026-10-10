@@ -797,6 +797,13 @@ def test_readiness_revalidates_every_bound_input(tmp_path, monkeypatch, mutation
 
     assert mutated is True
     assert not marker.exists()
+    with sqlite3.connect(ledger.path) as connection:
+        assert (
+            connection.execute(
+                "SELECT disposition, reason FROM restore_outcomes"
+            ).fetchall()
+            == []
+        )
     if mutation == "sidecar":
         assert sidecar.read_text() == "concurrent-sidecar"
 
