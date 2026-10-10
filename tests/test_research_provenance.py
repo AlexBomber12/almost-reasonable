@@ -81,6 +81,14 @@ def test_valid_provider_annotation_records_provenance_without_semantic_claim():
     assert source.retrieved_at == NOW
 
 
+def test_trailing_dot_dns_hostname_is_accepted():
+    parsed = parse_hosted_search_response(
+        response(url="https://example.org./paper"), retrieved_at=NOW
+    )
+
+    assert parsed.sources[0].status is SourceStatus.RECORDED
+
+
 @pytest.mark.parametrize(
     ("provider_response", "status"),
     [
@@ -93,6 +101,9 @@ def test_valid_provider_annotation_records_provenance_without_semantic_claim():
             response(url="https://example.org:notaport/paper"),
             SourceStatus.UNSUPPORTED_URL,
         ),
+        (response(url="https://."), SourceStatus.UNSUPPORTED_URL),
+        (response(url="https://-"), SourceStatus.UNSUPPORTED_URL),
+        (response(url="https://bad\x00host/paper"), SourceStatus.UNSUPPORTED_URL),
         (response(title=""), SourceStatus.MALFORMED_ANNOTATION),
         (response(title="bad\nmetadata"), SourceStatus.MALFORMED_ANNOTATION),
         (response(start_index=9, end_index=2), SourceStatus.MALFORMED_ANNOTATION),
@@ -502,6 +513,26 @@ def test_naive_timestamps_invalid_calendar_dates_and_long_urls_are_rejected():
         register_independently_verified_source(
             reference="source-1",
             url="https://example.org:99999/paper",
+            title="Title",
+            publisher=None,
+            source_language=None,
+            publication_date=None,
+            evidence=evidence,
+        )
+    with pytest.raises(ValueError, match="URL"):
+        register_independently_verified_source(
+            reference="source-1",
+            url="https://-",
+            title="Title",
+            publisher=None,
+            source_language=None,
+            publication_date=None,
+            evidence=evidence,
+        )
+    with pytest.raises(ValueError, match="URL"):
+        register_independently_verified_source(
+            reference="source-1",
+            url="https://\ud800/paper",
             title="Title",
             publisher=None,
             source_language=None,

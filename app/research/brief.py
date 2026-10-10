@@ -310,8 +310,10 @@ def build_safe_research_brief(
         question_record.text,
         *(record.text for record in (topic, purpose, time_requirement) if record),
     ]
+    language_values = list(languages.languages) if languages else []
     values = [
         *free_text_values,
+        *language_values,
         *references,
     ]
     if any(len(value.encode("utf-8")) > MAX_FIELD_UTF8_BYTES for value in values):

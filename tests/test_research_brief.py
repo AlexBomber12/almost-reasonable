@@ -82,6 +82,20 @@ def test_valid_isbn_and_pmid_references_are_not_misclassified_as_phone_numbers()
     )
 
 
+def test_language_preferences_receive_participant_identifier_screening():
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion("What sources are available?"),
+            LanguagePreferences(("en-Alice",)),
+        ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice",)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "participant_identifier"
+
+
 def test_year_range_is_allowed_as_a_public_recency_requirement():
     result = build_safe_research_brief(
         records(

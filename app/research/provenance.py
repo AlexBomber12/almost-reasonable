@@ -15,6 +15,7 @@ from .provider import HostedSearchResponse, MAX_SEARCH_CALLS
 
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
+_HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 MAX_RESPONSE_TEXT_UTF8_BYTES = 64 * 1024
 MAX_PROVIDER_RESPONSE_UTF8_BYTES = 512 * 1024
@@ -547,11 +548,31 @@ def _valid_https_url(value: object) -> bool:
     except ValueError:
         return False
     return (
-        parsed.scheme == "https"
-        and hostname is not None
+        _valid_hostname(hostname)
+        and parsed.scheme == "https"
         and parsed.username is None
         and parsed.password is None
         and not any(character.isspace() for character in value)
+        and not _has_control_characters(value)
+    )
+
+
+def _valid_hostname(value: str | None) -> bool:
+    if value is None:
+        return False
+    try:
+        ascii_hostname = value.encode("idna").decode("ascii")
+    except UnicodeError:
+        return False
+    if ascii_hostname.endswith("."):
+        ascii_hostname = ascii_hostname[:-1]
+    return (
+        bool(ascii_hostname)
+        and len(ascii_hostname) <= 253
+        and all(
+            _HOST_LABEL.fullmatch(label) is not None
+            for label in ascii_hostname.split(".")
+        )
     )
 
 
