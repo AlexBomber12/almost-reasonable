@@ -1196,7 +1196,7 @@ def test_deferred_event_does_not_block_new_pending_event(tmp_path):
     ) == (deferred_event,)
 
 
-def test_latest_deferral_is_selected_by_instant_across_utc_offsets(tmp_path):
+def test_latest_deferral_preserves_microseconds_across_utc_offsets(tmp_path):
     store = service(tmp_path).store
     inbound = event("deferred-offset")
     store.commit_poll_page(
@@ -1210,8 +1210,15 @@ def test_latest_deferral_is_selected_by_instant_across_utc_offsets(tmp_path):
         now=NOW,
         precommit_check=lambda: None,
     )
-    earlier = datetime(2026, 10, 10, 16, tzinfo=UTC)
-    later = datetime(2026, 10, 10, 12, tzinfo=timezone(-timedelta(hours=5)))
+    earlier = datetime(2026, 10, 10, 12, microsecond=100, tzinfo=UTC)
+    later = datetime(
+        2026,
+        10,
+        10,
+        7,
+        microsecond=200,
+        tzinfo=timezone(-timedelta(hours=5)),
+    )
     for outcome_id, reason, occurred_at in (
         ("outcome-deferred-earlier", "earlier", earlier),
         ("outcome-deferred-later", "later", later),

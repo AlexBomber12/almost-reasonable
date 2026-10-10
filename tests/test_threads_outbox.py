@@ -263,6 +263,27 @@ def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
             "SELECT cursor_identity FROM threads_poll_actions "
             "WHERE correlation_id='poll-legacy-v6'"
         ).fetchone() == ("legacy-v6:poll-legacy-v6",)
+        assert connection.execute(
+            "SELECT account_ref, stream, actor_reference, status, started_at, "
+            "completed_at FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-legacy-v6'"
+        ).fetchone() == (
+            "account-1",
+            "reply",
+            "account-actor-1",
+            "committed",
+            NOW.isoformat(),
+            NOW.isoformat(),
+        )
+
+    with pytest.raises(ThreadsStoreError, match="poll correlation is already used"):
+        migrated.start_poll_attempt(
+            correlation_id="poll-legacy-v6",
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            actor_reference="account-actor-1",
+            now=NOW,
+        )
 
     with pytest.raises(ThreadsStoreError, match="legacy poll correlation"):
         migrated.commit_poll_page(

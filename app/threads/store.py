@@ -89,6 +89,9 @@ class ThreadsStore:
     def _open(self, *, busy_timeout_ms: int = 5000) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database, isolation_level=None)
         connection.row_factory = sqlite3.Row
+        connection.create_function(
+            "threads_utc_timestamp", 1, _utc_timestamp, deterministic=True
+        )
         connection.execute("PRAGMA foreign_keys = ON")
         connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
         return connection
@@ -1398,10 +1401,13 @@ class ThreadsStore:
                 "WHERE later.inbound_account_ref=outcome.inbound_account_ref "
                 "AND later.inbound_kind=outcome.inbound_kind "
                 "AND later.inbound_event_id=outcome.inbound_event_id "
-                "AND (julianday(later.occurred_at)>julianday(outcome.occurred_at) OR "
-                "(julianday(later.occurred_at)=julianday(outcome.occurred_at) "
+                "AND (threads_utc_timestamp(later.occurred_at)>"
+                "threads_utc_timestamp(outcome.occurred_at) OR "
+                "(threads_utc_timestamp(later.occurred_at)="
+                "threads_utc_timestamp(outcome.occurred_at) "
                 "AND later.outcome_id>outcome.outcome_id))) "
-                "ORDER BY julianday(outcome.occurred_at), outcome.outcome_id LIMIT ?",
+                "ORDER BY threads_utc_timestamp(outcome.occurred_at), "
+                "outcome.outcome_id LIMIT ?",
                 (account_ref, stream.value, limit),
             ).fetchall()
         return tuple(
@@ -1468,6 +1474,12 @@ def _immutable_values(row: sqlite3.Row) -> tuple[object, ...]:
             "replacement_of",
             "duplicate_risk_approval_ref",
         )
+    )
+
+
+def _utc_timestamp(value: str) -> str:
+    return (
+        datetime.fromisoformat(value).astimezone(UTC).isoformat(timespec="microseconds")
     )
 
 
@@ -1849,4 +1861,11 @@ CREATE TABLE threads_poll_attempts (
     started_at TEXT NOT NULL,
     completed_at TEXT
 );
+INSERT INTO threads_poll_attempts(
+    correlation_id, account_ref, stream, actor_reference, status,
+    started_at, completed_at
+)
+SELECT correlation_id, account_ref, stream, actor_reference, 'committed',
+       occurred_at, occurred_at
+FROM threads_poll_actions;
 """

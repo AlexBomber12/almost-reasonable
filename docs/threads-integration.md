@@ -293,9 +293,9 @@ outcomes. `defer` leaves the inbound event unprocessed, and the durable
 defer timestamp after restart. Deferred work is excluded from the ordinary
 bounded pending window so unresolved deferrals cannot starve newer events.
 Deferral timestamps are stored in UTC and latest-outcome selection compares
-instants, including migrated values with other valid UTC offsets. Recording a
-later non-deferred outcome is the explicit acknowledgement that removes it from
-deferred work.
+exact microsecond instants, including migrated values with other valid UTC
+offsets. Recording a later non-deferred outcome is the explicit acknowledgement
+that removes it from deferred work.
 Migration backfills `processed_at` only from non-deferred outcomes, and a stale
 worker cannot append a defer outcome after another worker has acknowledged the
 event.
