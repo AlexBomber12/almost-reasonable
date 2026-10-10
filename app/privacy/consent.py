@@ -40,7 +40,12 @@ class ConsentService:
     ) -> OperationResult:
         reason = self._authenticated(context, grant)
         if reason is not None:
-            self._audit(grant, "consent_grant", reason)
+            self._audit(
+                grant,
+                "consent_grant",
+                reason,
+                actor_reference=context.actor_reference,
+            )
             return OperationResult(False, reason)
         created = self.ledger.insert_consent(grant)
         reason = "granted" if created else "already_granted"
@@ -135,11 +140,20 @@ class ConsentService:
         )
         return OperationResult(False, reason)
 
-    def _audit(self, grant: ConsentGrant, action: str, result: str) -> None:
+    def _audit(
+        self,
+        grant: ConsentGrant,
+        action: str,
+        result: str,
+        *,
+        actor_reference: str | None = None,
+    ) -> None:
         self.ledger.record_audit(
             AuditRecord(
                 grant.correlation_id,
-                grant.actor_reference,
+                actor_reference
+                if actor_reference is not None
+                else grant.actor_reference,
                 action,
                 "consent",
                 grant.granted_at,

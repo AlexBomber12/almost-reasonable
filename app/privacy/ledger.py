@@ -12,6 +12,7 @@ from .models import (
     DeletionDisposition,
     DeletionRecord,
     DeletionRequest,
+    PrivacyReconciliationSnapshot,
     RestoreDisposition,
 )
 
@@ -37,6 +38,10 @@ _SCHEMA = (
         revision INTEGER NOT NULL,
         correlation_id TEXT NOT NULL,
         authentication_event_id TEXT NOT NULL
+    )""",
+    """CREATE TABLE privacy_control_generation(
+        singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+        generation INTEGER NOT NULL CHECK(generation >= 0)
     )""",
     """CREATE TABLE consent_revocations(
         consent_id TEXT PRIMARY KEY REFERENCES consent_grants(consent_id),
@@ -125,6 +130,9 @@ class PrivacyLedger:
                 connection.execute(
                     "INSERT INTO privacy_schema_metadata VALUES(1, ?)",
                     (PRIVACY_LEDGER_SCHEMA_VERSION,),
+                )
+                connection.execute(
+                    "INSERT INTO privacy_control_generation VALUES(1, 0)"
                 )
             version = connection.execute(
                 "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
@@ -240,6 +248,10 @@ class PrivacyLedger:
             connection.execute(
                 "INSERT INTO consent_revocations VALUES(?,?,?,?,?,?,?)", values
             )
+            connection.execute(
+                "UPDATE privacy_control_generation SET generation=generation+1 "
+                "WHERE singleton=1"
+            )
         return True
 
     def revocations(self) -> tuple[tuple[str, datetime], ...]:
@@ -280,6 +292,10 @@ class PrivacyLedger:
             connection.execute(
                 "INSERT INTO deletion_records VALUES(?,?,?,?,?,?,?,?,?,?,?)", values
             )
+            connection.execute(
+                "UPDATE privacy_control_generation SET generation=generation+1 "
+                "WHERE singleton=1"
+            )
         return True
 
     def update_deletion(
@@ -318,6 +334,39 @@ class PrivacyLedger:
                 "ORDER BY requested_at, operation_id"
             ).fetchall()
         return tuple(self._deletion_record(row) for row in rows)
+
+    def control_generation(self) -> int:
+        with self._open() as connection:
+            row = connection.execute(
+                "SELECT generation FROM privacy_control_generation WHERE singleton=1"
+            ).fetchone()
+        if row is None:
+            raise RuntimeError("privacy control generation is unavailable")
+        return row[0]
+
+    def reconciliation_snapshot(self) -> PrivacyReconciliationSnapshot:
+        with self._open() as connection:
+            connection.execute("BEGIN")
+            generation = connection.execute(
+                "SELECT generation FROM privacy_control_generation WHERE singleton=1"
+            ).fetchone()
+            deletion_rows = connection.execute(
+                "SELECT operation_id, principal_id, content_reference, content_category, "
+                "requested_at, actor_reference, correlation_id, authentication_event_id, "
+                "disposition, reason, updated_at FROM deletion_records "
+                "WHERE disposition IN ('pending','applied','incomplete_blocked') "
+                "ORDER BY requested_at, operation_id"
+            ).fetchall()
+            revocation_rows = connection.execute(
+                "SELECT consent_id, revoked_at FROM consent_revocations ORDER BY revoked_at"
+            ).fetchall()
+        if generation is None:
+            raise RuntimeError("privacy control generation is unavailable")
+        return PrivacyReconciliationSnapshot(
+            generation[0],
+            tuple(self._deletion_record(row) for row in deletion_rows),
+            tuple((row[0], _time(row[1])) for row in revocation_rows),
+        )
 
     @staticmethod
     def _deletion_record(row: tuple[object, ...]) -> DeletionRecord:

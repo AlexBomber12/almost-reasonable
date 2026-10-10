@@ -17,6 +17,7 @@ from app.privacy import (
     ConsentService,
     ContentCategory,
     DeletionCoordinator,
+    DeletionDisposition,
     DeletionRequest,
     ErasureReport,
     NOTICE_RU,
@@ -325,6 +326,8 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     )
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
     assert result.activation_eligible is True
+    assert result.ledger_generation == ledger.control_generation()
+    assert QuarantinedRestore(ledger, 3, adapter_factory).is_activation_current(result)
     with sqlite3.connect(quarantine) as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
@@ -334,6 +337,62 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     assert ledger.deletion("delete-operation-001").disposition.value == "pending"
     marker = json.loads(Path(f"{quarantine}.ready.json").read_text())
     assert marker["restore_id"] == result.restore_id
+    assert marker["ledger_generation"] == result.ledger_generation
+
+    ledger.insert_deletion(
+        DeletionRequest(
+            "delete-operation-after-readiness",
+            "participant-a",
+            "event-after-readiness",
+            ContentCategory.PRIVATE_PAYLOAD,
+            NOW + timedelta(minutes=21),
+            "actor-a",
+            "delete-after-readiness",
+            "auth-a",
+        ),
+        DeletionDisposition.PENDING,
+        "awaiting_erasure",
+    )
+    assert not QuarantinedRestore(ledger, 3, adapter_factory).is_activation_current(
+        result
+    )
+
+
+def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    class RacingAdapter(RestoreAdapter):
+        def rebuild_dependencies(self):
+            ledger.insert_deletion(
+                DeletionRequest(
+                    "delete-operation-race",
+                    "participant-a",
+                    "event-race",
+                    ContentCategory.PRIVATE_PAYLOAD,
+                    NOW + timedelta(minutes=1),
+                    "actor-a",
+                    "delete-race-correlation",
+                    "auth-a",
+                ),
+                DeletionDisposition.PENDING,
+                "awaiting_erasure",
+            )
+            return True
+
+    quarantine = tmp_path / "quarantine-race.sqlite3"
+    result = QuarantinedRestore(ledger, 3, RacingAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "privacy_ledger_changed_during_restore",
+    )
+    assert not Path(f"{quarantine}.ready.json").exists()
 
 
 def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):

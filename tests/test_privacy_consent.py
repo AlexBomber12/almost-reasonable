@@ -105,7 +105,7 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
 
 
 def test_future_revocation_does_not_take_effect_early(service):
-    consent, _ = service
+    consent, ledger = service
     consent.grant(context(), grant())
     consent.revoke(
         context(),
@@ -126,6 +126,7 @@ def test_future_revocation_does_not_take_effect_early(service):
         consent.authorize(used_at=NOW + timedelta(minutes=30), **request).reason
         == "revoked"
     )
+    assert ledger.revocations() == (("consent-001", NOW + timedelta(minutes=30)),)
 
 
 @pytest.mark.parametrize(
@@ -155,7 +156,7 @@ def test_consent_fails_closed_for_scope_or_expiry(service, overrides, reason):
 
 
 def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
-    consent, _ = service
+    consent, ledger = service
     for origin in (OperationOrigin.CHAT, OperationOrigin.MODEL):
         result = consent.grant(context(origin=origin), grant())
         assert (result.created, result.reason) == (False, "invalid_authentication")
@@ -187,6 +188,16 @@ def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
         ).reason
         == "invalid_authentication"
     )
+    spoofed = consent.grant(
+        context(),
+        grant(
+            consent_id="consent-spoofed-actor",
+            operation_id="grant-spoofed-actor",
+            actor_reference="administrator",
+        ),
+    )
+    assert spoofed.reason == "invalid_authentication"
+    assert ledger.audit_records()[-1].actor_reference == "actor-a"
     assert (
         consent.revoke(
             context(origin=OperationOrigin.CHAT),
@@ -462,3 +473,13 @@ def test_interrupted_first_initialization_rolls_back_complete_schema(
 
     monkeypatch.setattr(ledger_module, "_SCHEMA", schema)
     assert PrivacyLedger(path).path == path
+
+
+def test_missing_control_generation_fails_closed(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    with sqlite3.connect(ledger.path) as connection:
+        connection.execute("DELETE FROM privacy_control_generation")
+    with pytest.raises(RuntimeError, match="generation"):
+        ledger.control_generation()
+    with pytest.raises(RuntimeError, match="generation"):
+        ledger.reconciliation_snapshot()

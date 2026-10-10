@@ -222,6 +222,13 @@ class DeletionRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class PrivacyReconciliationSnapshot:
+    generation: int
+    deletions: tuple[DeletionRecord, ...]
+    revocations: tuple[tuple[str, datetime], ...]
+
+
+@dataclass(frozen=True, slots=True)
 class AuditRecord:
     correlation_id: str
     actor_reference: str
@@ -271,3 +278,4 @@ class RestoreResult:
     disposition: RestoreDisposition
     activation_eligible: bool
     reason: str
+    ledger_generation: int | None = None

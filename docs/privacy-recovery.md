@@ -57,6 +57,14 @@ leaves a durable pending entry. Startup/restore integration must reconcile every
 missing provenance, an incomplete invalidation set, or an unwritten tombstone is
 `incomplete_blocked`, never `applied`.
 
+Every committed deletion or revocation advances a monotonic privacy-control
+generation. Restore reconciles one transactionally consistent snapshot, blocks
+if that generation changes during its work, and writes the reconciled generation
+into both its typed result and readiness marker. Immediately before an eventual
+database switch, activation integration must call `is_activation_current` (or
+atomically enforce the same comparison) and abort/reconcile again if the current
+generation differs. The readiness file alone is not activation authority.
+
 Deletion has five operator-visible dispositions: `pending`, `applied`,
 `incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use
 references, categories, and reason codes only; they do not display deleted

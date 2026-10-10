@@ -17,6 +17,7 @@ from .models import (
     ContentCategory,
     DeletionRecord,
     ErasureReport,
+    PrivacyReconciliationSnapshot,
     RestoreDisposition,
     RestoreResult,
     require_utc,
@@ -258,6 +259,7 @@ class QuarantinedRestore:
                 restore_id, restored_at, result.disposition, result.reason
             )
             return result
+        snapshot = self.ledger.reconciliation_snapshot()
         try:
             adapter = self.adapter_factory(quarantine)
         except Exception:
@@ -271,7 +273,7 @@ class QuarantinedRestore:
                 restore_id, restored_at, result.disposition, result.reason
             )
             return result
-        reason = self._reconcile(adapter)
+        reason = self._reconcile(adapter, snapshot)
         if reason is not None:
             result = RestoreResult(
                 restore_id, RestoreDisposition.BLOCKED, False, reason
@@ -306,6 +308,17 @@ class QuarantinedRestore:
                 restore_id, restored_at, result.disposition, result.reason
             )
             return result
+        if self.ledger.control_generation() != snapshot.generation:
+            result = RestoreResult(
+                restore_id,
+                RestoreDisposition.BLOCKED,
+                False,
+                "privacy_ledger_changed_during_restore",
+            )
+            self.ledger.record_restore(
+                restore_id, restored_at, result.disposition, result.reason
+            )
+            return result
         self.ledger.record_restore(
             restore_id,
             restored_at,
@@ -313,7 +326,11 @@ class QuarantinedRestore:
             "reconciliation_complete",
         )
         marker = json.dumps(
-            {"restore_id": restore_id, "disposition": "eligible_for_activation"},
+            {
+                "restore_id": restore_id,
+                "disposition": "eligible_for_activation",
+                "ledger_generation": snapshot.generation,
+            },
             sort_keys=True,
         ).encode("utf-8")
         descriptor = os.open(
@@ -329,11 +346,21 @@ class QuarantinedRestore:
             RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
             True,
             "reconciliation_complete",
+            snapshot.generation,
         )
 
-    def _reconcile(self, adapter: RestoreAdapter) -> str | None:
+    def is_activation_current(self, result: RestoreResult) -> bool:
+        return (
+            result.activation_eligible is True
+            and isinstance(result.ledger_generation, int)
+            and self.ledger.control_generation() == result.ledger_generation
+        )
+
+    def _reconcile(
+        self, adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
+    ) -> str | None:
         required = frozenset(ContentCategory.required_erasure_categories())
-        for record in self.ledger.deletions_for_reconciliation():
+        for record in snapshot.deletions:
             try:
                 report = adapter.apply_deletion(record)
             except Exception:
@@ -345,7 +372,7 @@ class QuarantinedRestore:
                 or not required <= report.invalidated_categories
             ):
                 return "deletion_reconciliation_incomplete"
-        for consent_id, revoked_at in self.ledger.revocations():
+        for consent_id, revoked_at in snapshot.revocations:
             try:
                 if adapter.apply_revocation(consent_id, revoked_at) is not True:
                     return "revocation_reconciliation_incomplete"
