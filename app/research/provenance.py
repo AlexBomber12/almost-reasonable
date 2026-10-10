@@ -202,7 +202,7 @@ def parse_hosted_search_response(
             sort_keys=True,
         )
         serialized_output_bytes = serialized_output.encode("utf-8")
-    except (TypeError, UnicodeEncodeError, ValueError) as error:
+    except (RecursionError, TypeError, UnicodeEncodeError, ValueError) as error:
         raise ValueError("provider output is not serializable") from error
     if len(serialized_output_bytes) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
         raise ValueError("provider response exceeds response byte bound")

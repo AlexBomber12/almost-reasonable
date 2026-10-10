@@ -383,6 +383,20 @@ def test_unpaired_surrogate_provider_output_is_classified_as_invalid():
     assert len(transport.calls) == 1
 
 
+def test_deeply_nested_provider_output_is_classified_as_invalid():
+    nested = {}
+    for _index in range(1100):
+        nested = {"nested": nested}
+    malformed = HostedSearchResponse("resp_deep", "completed", (nested,))
+    instance, transport, _sleeps, _marks = service([malformed])
+
+    result = instance.run(brief())
+
+    assert result.outcome is ResearchOutcome.INVALID_RESPONSE
+    assert result.attempts == 1
+    assert len(transport.calls) == 1
+
+
 def test_service_requires_exact_types_and_finite_monotonic_clock():
     instance, _transport, _sleeps, _marks = service([success_response()])
     with pytest.raises(TypeError):

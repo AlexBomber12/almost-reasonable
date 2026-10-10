@@ -453,13 +453,28 @@ def test_record_and_screening_containers_require_exact_immutable_inputs():
 def test_serialized_size_is_independently_bounded(monkeypatch):
     import app.research.brief as brief_module
 
-    monkeypatch.setattr(brief_module, "MAX_BRIEF_UTF8_BYTES", 1)
+    monkeypatch.setattr(brief_module, "MAX_BRIEF_UTF8_BYTES", 20)
     result = build_safe_research_brief(
         records(ResearchQuestion("A public question")),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
     )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "brief_too_large"
+
+
+def test_aggregate_reference_bytes_are_bounded_before_screening():
+    references = tuple(
+        PublicReference(f"doi:10.1000/{index}/" + "x" * 180) for index in range(50)
+    )
+    result = build_safe_research_brief(
+        records(ResearchQuestion("Compare the public references"), *references),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+
     assert result.disposition is BriefDisposition.DECLINED
     assert result.reason == "brief_too_large"
 

@@ -327,6 +327,8 @@ def build_safe_research_brief(
     ]
     if any(len(value.encode("utf-8")) > MAX_FIELD_UTF8_BYTES for value in values):
         return _decline("field_too_large")
+    if sum(len(value.encode("utf-8")) for value in values) > MAX_BRIEF_UTF8_BYTES:
+        return _decline("brief_too_large")
 
     reason = _screen(values, screening, identifier_values=free_text_values)
     if reason is not None:
