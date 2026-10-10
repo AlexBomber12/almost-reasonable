@@ -24,7 +24,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 MAX_PENDING_INBOUND_EVENTS = 100
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
@@ -184,6 +184,29 @@ class ThreadsStore:
                             connection.execute(statement)
                     connection.execute(
                         "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (8,),
+                    )
+                    version = 8
+                if version == 8:
+                    transition_columns = {
+                        row[1]
+                        for row in connection.execute(
+                            "PRAGMA table_info(threads_outbox_transitions)"
+                        )
+                    }
+                    if "approval_reference" not in transition_columns:
+                        connection.execute(
+                            "ALTER TABLE threads_outbox_transitions "
+                            "ADD COLUMN approval_reference TEXT"
+                        )
+                    if "actor_reference" not in transition_columns:
+                        connection.execute(
+                            "ALTER TABLE threads_outbox_transitions "
+                            "ADD COLUMN actor_reference TEXT NOT NULL "
+                            "DEFAULT 'legacy-unattributed'"
+                        )
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
                         (SCHEMA_VERSION,),
                     )
                     version = SCHEMA_VERSION
@@ -340,6 +363,8 @@ class ThreadsStore:
                 0,
                 "proposal_created",
                 timestamp,
+                approval_reference=None,
+                actor_reference="threads-service",
             )
             row = connection.execute(
                 "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
@@ -363,12 +388,17 @@ class ThreadsStore:
         *,
         expected_state: OutboxState,
         reason: str,
+        approval_reference: str | None,
+        actor_reference: str,
         now: datetime,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         if type(expected_state) is not OutboxState:
             raise ValueError("invalid expected outbox state")
         require_reference("policy denial reason", reason)
+        if approval_reference is not None:
+            require_reference("approval reference", approval_reference)
+        require_reference("actor reference", actor_reference)
         require_aware_time("policy denial time", now)
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -391,6 +421,8 @@ class ThreadsStore:
                 revision,
                 reason,
                 now.isoformat(),
+                approval_reference=approval_reference,
+                actor_reference=actor_reference,
             )
             result = connection.execute(
                 "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
@@ -591,6 +623,18 @@ class ThreadsStore:
                 revision,
                 reason,
                 now.isoformat(),
+                approval_reference=(
+                    operator_approval_reference
+                    if operator_approval_reference is not None
+                    else values["approval_reference"]
+                ),
+                actor_reference=(
+                    _approval_actor_reference(operator_approval_reference)
+                    if operator_approval_reference is not None
+                    else _approval_actor_reference(approval_reference)
+                    if approval_reference is not None
+                    else "threads-service"
+                ),
             )
             if reserve_publication_effect:
                 self._reserve_publication_effect(
@@ -1457,11 +1501,14 @@ class ThreadsStore:
         revision: int,
         reason: str,
         timestamp: str,
+        *,
+        approval_reference: str | None,
+        actor_reference: str,
     ) -> None:
         connection.execute(
             "INSERT INTO threads_outbox_transitions "
-            "(operation_id, revision, old_state, new_state, reason, occurred_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
+            "(operation_id, revision, old_state, new_state, reason, occurred_at, "
+            "approval_reference, actor_reference) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 operation_id,
                 revision,
@@ -1469,8 +1516,14 @@ class ThreadsStore:
                 new_state.value,
                 reason,
                 timestamp,
+                approval_reference,
+                actor_reference,
             ),
         )
+
+
+def _approval_actor_reference(approval_reference: str) -> str:
+    return f"approval-{content_fingerprint(approval_reference)[:16]}"
 
 
 def _immutable_values(row: sqlite3.Row) -> tuple[object, ...]:
@@ -1609,6 +1662,8 @@ CREATE TABLE threads_outbox_transitions (
     new_state TEXT NOT NULL,
     reason TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
+    approval_reference TEXT,
+    actor_reference TEXT NOT NULL,
     PRIMARY KEY(operation_id, revision)
 );
 CREATE TABLE threads_inbound_events (

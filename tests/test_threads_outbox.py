@@ -190,7 +190,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (8,)
+        ).fetchone() == (9,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -230,6 +230,29 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert "threads_poll_attempts" in tables
     assert "threads_reconciliation_attempts" in tables
     assert store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+
+
+def test_version_eight_transition_history_marks_legacy_attribution(tmp_path):
+    service = make_service(tmp_path)
+    propose(service)
+    with sqlite3.connect(service.store.database) as connection:
+        connection.execute(
+            "ALTER TABLE threads_outbox_transitions DROP COLUMN approval_reference"
+        )
+        connection.execute(
+            "ALTER TABLE threads_outbox_transitions DROP COLUMN actor_reference"
+        )
+        connection.execute("UPDATE threads_schema_metadata SET version=8")
+
+    ThreadsStore(service.store.database)
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT version FROM threads_schema_metadata"
+        ).fetchone() == (9,)
+        assert connection.execute(
+            "SELECT approval_reference, actor_reference "
+            "FROM threads_outbox_transitions WHERE operation_id='operation-1'"
+        ).fetchone() == (None, "legacy-unattributed")
 
 
 def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
@@ -837,6 +860,7 @@ def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
         approval = trust_approval(service, approve())
         service.policy.emergency_stop = True
         expected_actor = f"approval-{content_fingerprint(approval.reference)[:16]}"
+        expected_approval = approval.reference
         with pytest.raises(PolicyDeniedError, match="stop"):
             service.authorize("operation-1", approval, now=NOW)
         expected_state = OutboxState.AWAITING_APPROVAL
@@ -845,6 +869,7 @@ def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
         _, approval = ready(service)
         service.authorization_provider.set_approval(approve(revoked=True))
         expected_actor = f"approval-{content_fingerprint(approval.reference)[:16]}"
+        expected_approval = approval.reference
         with pytest.raises(ValueError, match="revoked"):
             service.dispatch("operation-1", approval, now=NOW)
         expected_state = OutboxState.READY
@@ -853,6 +878,7 @@ def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
         propose(service)
         service.submit_for_approval("operation-1", now=NOW)
         expected_actor = "unauthenticated"
+        expected_approval = None
         with pytest.raises(ValueError, match="authenticated"):
             service.authorize("operation-1", object(), now=NOW)
         expected_state = OutboxState.AWAITING_APPROVAL
@@ -862,7 +888,8 @@ def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
     assert item.state is expected_state
     with sqlite3.connect(service.store.database) as connection:
         assert connection.execute(
-            "SELECT transition.reason, outbox.correlation_id "
+            "SELECT transition.reason, outbox.correlation_id, "
+            "transition.approval_reference, transition.actor_reference "
             "FROM threads_outbox_transitions AS transition "
             "JOIN threads_outbox AS outbox USING(operation_id) "
             "WHERE transition.operation_id=? ORDER BY transition.revision DESC LIMIT 1",
@@ -870,6 +897,8 @@ def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
         ).fetchone() == (
             f"{expected_phase}_policy_denied_{expected_actor}",
             "correlation-operation-1",
+            expected_approval,
+            expected_actor,
         )
 
 
@@ -1509,6 +1538,24 @@ def test_dispatch_persists_the_current_approval_reference(tmp_path):
     assert original.reference == "approval-operation-1"
     assert confirmed.approval_reference == "approval-replacement"
     assert confirmed.approval_status == "approved"
+    with sqlite3.connect(service.store.database) as connection:
+        transitions = connection.execute(
+            "SELECT new_state, approval_reference, actor_reference "
+            "FROM threads_outbox_transitions WHERE operation_id='operation-1' "
+            "AND new_state IN ('ready', 'sending') ORDER BY revision"
+        ).fetchall()
+    assert transitions == [
+        (
+            "ready",
+            original.reference,
+            f"approval-{content_fingerprint(original.reference)[:16]}",
+        ),
+        (
+            "sending",
+            replacement.reference,
+            f"approval-{content_fingerprint(replacement.reference)[:16]}",
+        ),
+    ]
 
 
 def test_expiry_at_initial_dispatch_check_preserves_ready_state(tmp_path):
@@ -3001,6 +3048,8 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
             "operation-1",
             expected_state="proposed",
             reason="authorize_policy_denied_unauthenticated",
+            approval_reference=None,
+            actor_reference="threads-service",
             now=NOW,
         )
     with pytest.raises(ThreadsStoreError, match="state changed"):
@@ -3008,6 +3057,8 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
             "missing",
             expected_state=OutboxState.PROPOSED,
             reason="authorize_policy_denied_unauthenticated",
+            approval_reference=None,
+            actor_reference="threads-service",
             now=NOW,
         )
     with pytest.raises(ThreadsStoreError, match="state changed"):
@@ -3015,6 +3066,8 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
             "operation-1",
             expected_state=OutboxState.READY,
             reason="authorize_policy_denied_unauthenticated",
+            approval_reference=None,
+            actor_reference="threads-service",
             now=NOW,
         )
 

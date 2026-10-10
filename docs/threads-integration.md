@@ -77,8 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-8 SQLite database in WAL mode, including atomic migrations
-through version 8 from every earlier schema version; it does not alter the main
+separate version-9 SQLite database in WAL mode, including atomic migrations
+through version 9 from every earlier schema version; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -159,8 +159,12 @@ policy/transport account binding is rechecked after every potentially blocking
 snapshot lookup as well as inside durable transitions. Revocation, expiry,
 consent withdrawal, or control-plane unavailability after proposal or approval
 therefore blocks the next effect. The approval actually accepted for dispatch
-replaces the stored
-approval reference atomically with the durable sending transition. A stop
+replaces the stored approval reference atomically with the durable sending
+transition. Each append-only transition separately retains the approval
+reference accepted for that revision and a bounded authenticated actor
+reference, so later approval renewal cannot rewrite earlier attribution. Legacy
+version-8 transition rows are explicitly marked `legacy-unattributed` rather
+than being falsely attributed from the mutable outbox snapshot. A stop
 activated before either call blocks it. A stop activated after a request is in
 flight cannot retract an already accepted effect; the resulting success or
 uncertainty is recorded honestly.
@@ -177,8 +181,11 @@ the authentic operation-bound approval reference or `unauthenticated`. It does
 not overwrite the approval attribution of an accepted publication.
 
 After the last pre-effect authorization check and before the first provider
-request, dispatch atomically verifies account uncertainty and acquires one
-durable account-wide effect reservation. It holds that reservation across the
+request, the durable `ready`-to-`sending` transition atomically increments the
+attempt count, verifies account uncertainty, and acquires one durable
+account-wide effect reservation. Reservation contention rolls back that whole
+transition, so it cannot spend another operation's attempt budget. Dispatch
+holds the reservation across the
 container and publication sequence. A second operation for the same account
 therefore cannot pass its own atomic uncertainty check while the first can
 still become `unknown`. Final classification and ordinary crash recovery remove

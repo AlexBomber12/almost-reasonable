@@ -751,6 +751,8 @@ class ThreadsService:
             item.operation_id,
             expected_state=expected_state,
             reason=f"{phase}_policy_denied_{actor}",
+            approval_reference=approval_reference,
+            actor_reference=actor,
             now=self.utc_now(),
         )
 
