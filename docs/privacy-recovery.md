@@ -14,7 +14,8 @@ text, model output, an asserted participant ID, and an owner claim cannot do so.
 Consent is an immutable, typed grant for one principal, exact content reference,
 audience, purpose (`identifiable_quotation` or `identifiable_disclosure`), grant
 time, expiry, trusted actor, authentication event, revision, operation ID, and
-correlation ID. Use is checked against the current ledger at the time of use.
+correlation ID. Use is checked against the current ledger with a service-owned
+UTC clock immediately before the outbound effect; callers cannot backdate it.
 Missing, expired, revoked, wrong-principal, wrong-content, wrong-audience, and
 wrong-purpose grants fail closed. Revocation is a separate authenticated,
 idempotent operation and takes effect at its recorded UTC timestamp. Neither
@@ -66,18 +67,18 @@ leaves a durable pending entry. Startup/restore integration must reconcile every
 `pending` or `incomplete_blocked` entry before participant reads. Adapter failure,
 missing provenance, an incomplete invalidation set, or an unwritten tombstone is
 `incomplete_blocked`, never `applied`. A reconciled transition records its actual
-completion time, not the original request time.
+completion time, not the original request time. Once `applied`, an operation is
+monotonic: a concurrent late failure cannot regress its ledger disposition.
 
 Every committed deletion or revocation advances a monotonic privacy-control
 generation. Restore reconciles one transactionally consistent snapshot, blocks
 if that generation changes during its work, and writes the reconciled generation
 into both its typed result and readiness marker. Immediately before an eventual
-database switch, activation integration must pass the switch callback to
-`activate_if_current`; it runs only while a privacy-ledger `BEGIN IMMEDIATE`
-transaction holds the generation stable and excludes deletion/revocation writers.
-The callback must complete the switch without re-entering the privacy ledger. A
-generation mismatch aborts activation and requires reconciliation again. The
-readiness file alone is not activation authority.
+database switch, an integration must atomically fence the ledger generation and
+bind the verified quarantine path/inode, readiness marker, and sanitized outcome
+to that exact switch. This package deliberately provides no activation operation
+until that deployment-specific boundary exists. The readiness file and typed
+eligibility result are not activation authority.
 
 Deletion has five operator-visible dispositions: `pending`, `applied`,
 `incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use

@@ -257,6 +257,67 @@ def test_concurrent_deletion_ledger_insertion_is_idempotent(tmp_path):
     assert sorted(results) == [False, True]
 
 
+def test_concurrent_retry_cannot_regress_an_applied_deletion(tmp_path, monkeypatch):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    applied = threading.Event()
+
+    class RacingAdapter:
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.calls = 0
+
+        def erase(self, _deletion):
+            with self.lock:
+                call = self.calls
+                self.calls += 1
+            if call == 0:
+                assert applied.wait(timeout=2)
+                return ErasureReport(False, False, frozenset(), ("delayed_failure",))
+            return ErasureReport(True, True, REQUIRED, ())
+
+    real_update = ledger.update_deletion
+
+    def track_update(deletion, disposition, reason, updated_at):
+        updated = real_update(deletion, disposition, reason, updated_at)
+        if disposition is DeletionDisposition.APPLIED:
+            applied.set()
+        return updated
+
+    monkeypatch.setattr(ledger, "update_deletion", track_update)
+    coordinator = DeletionCoordinator(ledger, RacingAdapter())
+    barrier = threading.Barrier(3)
+    outcomes = []
+    errors = []
+
+    def delete():
+        barrier.wait()
+        try:
+            outcomes.append(coordinator.delete(context(), request()))
+        except Exception as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=delete) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert [outcome.disposition for outcome in outcomes] == [
+        DeletionDisposition.APPLIED,
+        DeletionDisposition.APPLIED,
+    ]
+    assert (
+        ledger.deletion(request().operation_id).disposition
+        is DeletionDisposition.APPLIED
+    )
+    assert all(
+        "incomplete_blocked" not in entry.result_code
+        for entry in ledger.audit_records()
+    )
+
+
 def test_deletion_outcome_rolls_back_if_atomic_audit_write_fails(tmp_path, monkeypatch):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     deletion = request()

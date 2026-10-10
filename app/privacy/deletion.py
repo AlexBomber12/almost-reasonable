@@ -154,5 +154,12 @@ class DeletionCoordinator:
     ) -> DeletionOutcome:
         completed_at = self.clock()
         require_utc(completed_at, "deletion transition timestamp")
-        self.ledger.update_deletion(request, disposition, reason, completed_at)
+        updated = self.ledger.update_deletion(
+            request, disposition, reason, completed_at
+        )
+        if not updated:
+            record = self.ledger.deletion(request.operation_id)
+            return DeletionOutcome(
+                request.operation_id, record.disposition, record.reason
+            )
         return DeletionOutcome(request.operation_id, disposition, reason)

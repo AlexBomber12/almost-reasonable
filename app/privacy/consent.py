@@ -1,6 +1,7 @@
 """Structured consent and revocation service."""
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from .ledger import PrivacyLedger
 from .models import (
@@ -17,8 +18,14 @@ from .models import (
 
 
 class ConsentService:
-    def __init__(self, ledger: PrivacyLedger):
+    def __init__(
+        self,
+        ledger: PrivacyLedger,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.ledger = ledger
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     @staticmethod
     def _authenticated(
@@ -59,13 +66,13 @@ class ConsentService:
         content_reference: str,
         audience: str,
         purpose: ConsentPurpose,
-        used_at: datetime,
         correlation_id: str,
     ) -> ConsentUseResult:
         require_token(principal_id, "principal id")
         require_token(content_reference, "content reference")
         require_token(audience, "audience")
         require_token(correlation_id, "correlation id")
+        used_at = self._clock()
         require_utc(used_at, "use timestamp")
         if not isinstance(purpose, ConsentPurpose):
             raise ValueError("invalid consent purpose")

@@ -27,7 +27,6 @@ from app.privacy import (
     PrivacyLedger,
     QuarantinedRestore,
     RestoreDisposition,
-    RestoreResult,
     TrustedPrivacyContext,
     create_sqlite_backup,
 )
@@ -418,12 +417,6 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
     assert result.activation_eligible is True
     assert result.ledger_generation == ledger.control_generation()
-    manager = QuarantinedRestore(ledger, 3, adapter_factory)
-    activated = []
-    assert manager.activate_if_current(
-        result, lambda: activated.append(result.restore_id)
-    )
-    assert activated == [result.restore_id]
     with sqlite3.connect(quarantine) as connection:
         assert (
             connection.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
@@ -449,8 +442,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
         DeletionDisposition.PENDING,
         "awaiting_erasure",
     )
-    assert not manager.activate_if_current(result, lambda: activated.append("stale"))
-    assert activated == [result.restore_id]
+    assert result.ledger_generation != ledger.control_generation()
 
 
 def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_path):
@@ -488,67 +480,6 @@ def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_pa
         "privacy_ledger_changed_during_restore",
     )
     assert not Path(f"{quarantine}.ready.json").exists()
-
-
-def test_activation_switch_holds_the_generation_fence(tmp_path):
-    source = tmp_path / "source.sqlite3"
-    make_source(source).close()
-    backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
-    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
-    result = manager.restore(backup, tmp_path / "quarantine.sqlite3", NOW)
-    switched = []
-
-    ineligible = RestoreResult(
-        "restore-ineligible", RestoreDisposition.BLOCKED, False, "blocked"
-    )
-    missing_generation = RestoreResult(
-        "restore-missing-generation",
-        RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
-        True,
-        "malformed",
-    )
-    assert not manager.activate_if_current(ineligible, lambda: switched.append(False))
-    assert not manager.activate_if_current(
-        missing_generation, lambda: switched.append(False)
-    )
-
-    writer_started = threading.Event()
-    writer_finished = threading.Event()
-
-    def write_privacy_control():
-        writer_started.set()
-        ledger.insert_deletion(
-            DeletionRequest(
-                "delete-during-activation",
-                "participant-a",
-                "event-during-activation",
-                ContentCategory.PRIVATE_PAYLOAD,
-                NOW + timedelta(minutes=1),
-                "actor-a",
-                "delete-during-activation-correlation",
-                "auth-a",
-            ),
-            DeletionDisposition.PENDING,
-            "awaiting_erasure",
-        )
-        writer_finished.set()
-
-    thread = threading.Thread(target=write_privacy_control)
-
-    def activate():
-        thread.start()
-        assert writer_started.wait(timeout=1)
-        assert not writer_finished.wait(timeout=0.1)
-        switched.append(True)
-
-    assert manager.activate_if_current(result, activate)
-    thread.join(timeout=2)
-    assert writer_finished.is_set()
-    assert switched == [True]
-    assert not manager.activate_if_current(result, lambda: switched.append("stale"))
-    assert switched == [True]
 
 
 def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):

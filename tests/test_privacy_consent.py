@@ -56,7 +56,7 @@ def grant(**overrides):
 @pytest.fixture
 def service(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    return ConsentService(ledger), ledger
+    return ConsentService(ledger, clock=lambda: NOW + timedelta(minutes=1)), ledger
 
 
 def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
@@ -70,7 +70,6 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
             content_reference="event-001",
             audience="public-threads",
             purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
-            used_at=NOW + timedelta(minutes=1),
             correlation_id="use-correlation-001",
         ).allowed
         is True
@@ -91,13 +90,13 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
         correlation_id="revoke-correlation-001",
     )
     assert (first.created, second.created) == (True, False)
+    consent._clock = lambda: NOW + timedelta(minutes=3)
     denied = consent.authorize(
         context(),
         principal_id="participant-a",
         content_reference="event-001",
         audience="public-threads",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
-        used_at=NOW + timedelta(minutes=3),
         correlation_id="use-correlation-002",
     )
     assert (denied.allowed, denied.reason) == (False, "revoked")
@@ -123,37 +122,46 @@ def test_future_revocation_does_not_take_effect_early(service):
         "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
         "correlation_id": "future-revocation-use",
     }
-    assert consent.authorize(
-        context(), used_at=NOW + timedelta(minutes=29), **request
-    ).allowed
-    assert (
-        consent.authorize(
-            context(), used_at=NOW + timedelta(minutes=30), **request
-        ).reason
-        == "revoked"
-    )
+    consent._clock = lambda: NOW + timedelta(minutes=29)
+    assert consent.authorize(context(), **request).allowed
+    consent._clock = lambda: NOW + timedelta(minutes=30)
+    assert consent.authorize(context(), **request).reason == "revoked"
     assert ledger.revocations() == (("consent-001", NOW + timedelta(minutes=30)),)
 
 
 @pytest.mark.parametrize(
-    ("overrides", "reason"),
+    ("overrides", "authorized_at", "reason"),
     [
-        ({"principal_id": "participant-b"}, "invalid_authorization"),
-        ({"audience": "participant-b"}, "no_matching_consent"),
-        ({"purpose": ConsentPurpose.IDENTIFIABLE_DISCLOSURE}, "no_matching_consent"),
-        ({"used_at": NOW - timedelta(microseconds=1)}, "not_yet_valid"),
-        ({"used_at": NOW + timedelta(hours=1)}, "expired"),
+        (
+            {"principal_id": "participant-b"},
+            NOW + timedelta(minutes=1),
+            "invalid_authorization",
+        ),
+        (
+            {"audience": "participant-b"},
+            NOW + timedelta(minutes=1),
+            "no_matching_consent",
+        ),
+        (
+            {"purpose": ConsentPurpose.IDENTIFIABLE_DISCLOSURE},
+            NOW + timedelta(minutes=1),
+            "no_matching_consent",
+        ),
+        ({}, NOW - timedelta(microseconds=1), "not_yet_valid"),
+        ({}, NOW + timedelta(hours=1), "expired"),
     ],
 )
-def test_consent_fails_closed_for_scope_or_expiry(service, overrides, reason):
+def test_consent_fails_closed_for_scope_or_expiry(
+    service, overrides, authorized_at, reason
+):
     consent, _ = service
+    consent._clock = lambda: authorized_at
     consent.grant(context(), grant())
     request = {
         "principal_id": "participant-a",
         "content_reference": "event-001",
         "audience": "public-threads",
         "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
-        "used_at": NOW + timedelta(minutes=1),
         "correlation_id": "use-correlation-003",
     }
     request.update(overrides)
@@ -228,10 +236,24 @@ def test_consent_use_cannot_borrow_another_principals_grant(service):
         content_reference="event-001",
         audience="public-threads",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
-        used_at=NOW,
         correlation_id="cross-principal-use",
     )
     assert (result.allowed, result.reason) == (False, "invalid_authorization")
+
+
+def test_consent_use_time_cannot_be_supplied_by_the_caller(service):
+    consent, _ = service
+    consent.grant(context(), grant())
+    with pytest.raises(TypeError, match="used_at"):
+        consent.authorize(
+            context(),
+            principal_id="participant-a",
+            content_reference="event-001",
+            audience="public-threads",
+            purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+            correlation_id="backdated-use",
+            used_at=NOW,
+        )
 
 
 def test_consent_rejects_privilege_purpose_and_conflicting_operation(service):
@@ -250,7 +272,6 @@ def test_consent_rejects_privilege_purpose_and_conflicting_operation(service):
             content_reference="event-001",
             audience="public-threads",
             purpose="administrative_tools",
-            used_at=NOW,
             correlation_id="bad-purpose",
         )
     consent.revoke(
@@ -366,14 +387,13 @@ def test_privacy_ledger_survives_restart_and_rejects_bad_schema(tmp_path):
     path = tmp_path / "privacy.sqlite3"
     ConsentService(PrivacyLedger(path)).grant(context(), grant())
     assert (
-        ConsentService(PrivacyLedger(path))
+        ConsentService(PrivacyLedger(path), clock=lambda: NOW)
         .authorize(
             context(),
             principal_id="participant-a",
             content_reference="event-001",
             audience="public-threads",
             purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
-            used_at=NOW,
             correlation_id="restart-use",
         )
         .allowed
@@ -493,7 +513,6 @@ def test_consent_use_requires_control_origin_and_audits_decision(service):
         content_reference="event-001",
         audience="public-threads",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
-        used_at=NOW,
         correlation_id="chat-consent-use",
     )
     assert (result.allowed, result.reason) == (False, "invalid_authentication")

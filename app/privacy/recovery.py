@@ -375,21 +375,6 @@ class QuarantinedRestore:
             snapshot.generation,
         )
 
-    def activate_if_current(
-        self, result: RestoreResult, activation_switch: Callable[[], None]
-    ) -> bool:
-        """Run the database switch while holding the privacy generation fence."""
-
-        if (
-            result.disposition is not RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
-            or result.activation_eligible is not True
-            or type(result.ledger_generation) is not int
-        ):
-            return False
-        return self.ledger.run_with_generation_fence(
-            result.ledger_generation, activation_switch
-        )
-
     def _reconcile(
         self, adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
     ) -> str | None:
