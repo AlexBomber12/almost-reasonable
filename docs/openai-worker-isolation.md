@@ -52,17 +52,22 @@ construction from type names are not used. The implementation enforces:
 - a 1,146,880-byte maximum frame (the existing model-request bound plus 64 KiB of
   protocol/JSON overhead), checked before body allocation;
 - a maximum JSON nesting depth of 16;
-- a maximum 30-second connection lifetime and 10-second individual I/O timeout;
+- a 320-second default connection lifetime, bounded from 320 to 340 seconds from
+  the existing 300-second provider overall-timeout ceiling plus IPC overhead, and
+  a maximum 10-second individual socket-I/O timeout;
 - exact object fields and strict string, integer, boolean, enum, and identifier
   types;
 - duplicate-field, malformed JSON, malformed UTF-8, empty, truncated, oversized,
   trailing-data, and unknown-version rejection; and
 - the existing context, request, proposal, provider-output, and attempt limits.
 
-The default client uses a 15-second lifetime and five-second I/O timeout. It makes
-one exchange and never retries. Failure before connection is
-`communication_failure`. Any failure after transmission begins is conservatively
-`outcome_uncertain`, with the original operation and correlation IDs preserved.
+The default client uses a 320-second lifetime and five-second I/O timeout. Request
+transfer remains subject to the I/O timeout, while the first response byte may
+wait within the total lifetime so the existing bounded provider retry/deadline
+sequence can finish. It makes one exchange and never retries. Failure before
+connection is `communication_failure`. Any failure after transmission begins is
+conservatively `outcome_uncertain`, with the original operation and correlation
+IDs preserved.
 The caller must reconcile that identity; it must not invent a new operation ID.
 The durable gateway reservation prevents the same operation identity from being
 executed twice, but no SQLite transaction can prove whether a provider call

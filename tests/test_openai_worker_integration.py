@@ -285,6 +285,56 @@ def test_provider_transport_failure_returns_only_sanitized_result(tmp_path):
     assert len(transport.calls) == 2
 
 
+def test_response_wait_covers_slow_gateway_call_beyond_io_timeout(tmp_path):
+    directory = secure_directory(tmp_path)
+
+    class SlowTransport:
+        def __init__(self):
+            self.calls = 0
+
+        def call(self, _request, *, timeout_seconds):
+            self.calls += 1
+            assert timeout_seconds > 0.05
+            time.sleep(0.05)
+            return response()
+
+    transport = SlowTransport()
+    config = replace(
+        default_openai_provider_config(),
+        deployment_stage=DeploymentStage.STAGE_1,
+        paid_calls_enabled=True,
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(
+            directory / "worker.sock",
+            frozenset((os.getuid(),)),
+            io_timeout_seconds=0.01,
+        ),
+        TrustedOpenAIGateway(
+            store=ProviderStateStore(EventStore(directory / "provider.sqlite3")),
+            transport=transport,
+            config=config,
+        ),
+    )
+    server.start()
+    worker = Thread(target=server.serve_once)
+    worker.start()
+    try:
+        result = OpenAIWorkerClient(
+            directory / "worker.sock", io_timeout_seconds=0.01
+        ).infer(
+            request(directory),
+            operation_id="operation-a",
+            correlation_id="correlation-a",
+        )
+    finally:
+        worker.join(timeout=2)
+        server.close()
+
+    assert result.outcome == "completed"
+    assert transport.calls == 1
+
+
 @pytest.mark.parametrize("suspension", [False, True])
 def test_worker_restart_preserves_duplicate_or_spend_suspension(tmp_path, suspension):
     directory = secure_directory(tmp_path)

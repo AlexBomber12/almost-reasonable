@@ -36,7 +36,7 @@ _INVALID_REQUEST_RU = "Локальный запрос к модели откл�
 class WorkerServerConfig:
     socket_path: Path
     permitted_peer_uids: frozenset[int]
-    connection_lifetime_seconds: float = 15.0
+    connection_lifetime_seconds: float = 320.0
     io_timeout_seconds: float = 5.0
     accept_timeout_seconds: float = 1.0
 
@@ -223,11 +223,16 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _gateway_response(result: GatewayResult) -> WorkerResponse:
+    validation = (
+        result.validation
+        if result.validation is not None and result.validation.valid
+        else None
+    )
     return WorkerResponse(
         result.outcome.value,
         result.attempts,
         result.safe_russian_message,
-        result.validation,
+        validation,
     )
 
 

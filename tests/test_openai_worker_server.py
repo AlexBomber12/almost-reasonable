@@ -165,6 +165,38 @@ def test_server_returns_validated_untrusted_proposal_without_executing_it(tmp_pa
     assert len(transport.calls) == 1
 
 
+def test_invalid_provider_proposal_returns_sanitized_outcome_without_validation(
+    tmp_path,
+):
+    directory = secure_directory(tmp_path)
+    instance, transport = gateway(
+        directory,
+        [
+            response(
+                '{"decision":"reply","reason_category":null,'
+                '"content":7,"brief":null,"draft":null}'
+            )
+        ],
+        stage=DeploymentStage.STAGE_1,
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        instance,
+    )
+    server.start()
+    try:
+        payload = encode_request(
+            InferenceRequest("operation-a", "correlation-a", request(directory))
+        )
+        result = raw_exchange(server, struct.pack("!I", len(payload)) + payload)
+    finally:
+        server.close()
+
+    assert result.outcome == "invalid_proposal"
+    assert result.validation is None
+    assert len(transport.calls) == 1
+
+
 @pytest.mark.parametrize(
     "mutate",
     [

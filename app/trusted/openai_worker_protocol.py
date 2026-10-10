@@ -23,7 +23,11 @@ from app.core.model_contract import (
     ModelTask,
     serialize_model_request,
 )
-from app.core.provider_contract import MAX_ATTEMPTS, require_identifier
+from app.core.provider_contract import (
+    MAX_ATTEMPTS,
+    MAX_OVERALL_TIMEOUT_SECONDS,
+    require_identifier,
+)
 
 
 PROTOCOL_VERSION = "openai-worker-v1"
@@ -33,8 +37,13 @@ MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
 MAX_SAFE_MESSAGE_UTF8_BYTES = 512
 MAX_WORKER_OPERATION_ID_LENGTH = 126
 MAX_JSON_NESTING_DEPTH = 16
-MAX_CONNECTION_LIFETIME_SECONDS = 30.0
 MAX_IO_TIMEOUT_SECONDS = 10.0
+MIN_CONNECTION_LIFETIME_SECONDS = (
+    MAX_OVERALL_TIMEOUT_SECONDS + 2 * MAX_IO_TIMEOUT_SECONDS
+)
+MAX_CONNECTION_LIFETIME_SECONDS = (
+    MAX_OVERALL_TIMEOUT_SECONDS + 4 * MAX_IO_TIMEOUT_SECONDS
+)
 
 IPC_REJECTED = "invalid_ipc_request"
 _GATEWAY_OUTCOMES = frozenset(
@@ -212,9 +221,14 @@ def receive_frame(
     *,
     deadline: float,
     io_timeout: float,
+    wait_for_first_byte: bool = False,
 ) -> bytes:
     header = _receive_exact(
-        connection, FRAME_PREFIX_BYTES, deadline=deadline, io_timeout=io_timeout
+        connection,
+        FRAME_PREFIX_BYTES,
+        deadline=deadline,
+        io_timeout=io_timeout,
+        wait_for_first_byte=wait_for_first_byte,
     )
     size = struct.unpack("!I", header)[0]
     if size == 0:
@@ -233,12 +247,15 @@ def receive_frame(
 
 
 def validate_timing(connection_lifetime: object, io_timeout: object) -> None:
-    _bounded_seconds(
-        "connection lifetime", connection_lifetime, MAX_CONNECTION_LIFETIME_SECONDS
-    )
+    if (
+        type(connection_lifetime) not in {int, float}
+        or not math.isfinite(connection_lifetime)
+        or not MIN_CONNECTION_LIFETIME_SECONDS
+        <= connection_lifetime
+        <= MAX_CONNECTION_LIFETIME_SECONDS
+    ):
+        raise ValueError("connection lifetime is invalid")
     _bounded_seconds("I/O timeout", io_timeout, MAX_IO_TIMEOUT_SECONDS)
-    if io_timeout > connection_lifetime:
-        raise ValueError("I/O timeout exceeds connection lifetime")
 
 
 def _parse_model_request(value: object) -> ModelRequest:
@@ -386,10 +403,12 @@ def _receive_exact(
     *,
     deadline: float,
     io_timeout: float,
+    wait_for_first_byte: bool = False,
 ) -> bytes:
     chunks = bytearray()
     while len(chunks) < size:
-        _set_bounded_timeout(connection, deadline, io_timeout)
+        timeout = None if wait_for_first_byte and not chunks else io_timeout
+        _set_bounded_timeout(connection, deadline, timeout)
         try:
             chunk = connection.recv(size - len(chunks))
         except (OSError, TimeoutError):
@@ -401,12 +420,14 @@ def _receive_exact(
 
 
 def _set_bounded_timeout(
-    connection: socket.socket, deadline: float, io_timeout: float
+    connection: socket.socket, deadline: float, io_timeout: float | None
 ) -> None:
     remaining = deadline - time.monotonic()
     if not math.isfinite(remaining) or remaining <= 0:
         raise WorkerProtocolError("connection lifetime exceeded")
-    connection.settimeout(min(remaining, io_timeout))
+    connection.settimeout(
+        remaining if io_timeout is None else min(remaining, io_timeout)
+    )
 
 
 def _bounded_seconds(name: str, value: object, maximum: float) -> None:

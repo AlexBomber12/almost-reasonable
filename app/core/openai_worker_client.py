@@ -41,7 +41,7 @@ class OpenAIWorkerClient:
         self,
         socket_path: str | Path,
         *,
-        connection_lifetime_seconds: float = 15.0,
+        connection_lifetime_seconds: float = 320.0,
         io_timeout_seconds: float = 5.0,
     ):
         self._socket_path = _validate_socket_path(socket_path)
@@ -80,6 +80,7 @@ class OpenAIWorkerClient:
                     connection,
                     deadline=deadline,
                     io_timeout=self._io_timeout,
+                    wait_for_first_byte=True,
                 )
             )
         except (OSError, WorkerProtocolError):

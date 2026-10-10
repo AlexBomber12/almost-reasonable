@@ -330,7 +330,15 @@ class SequenceSocket:
 
 @pytest.mark.parametrize(
     ("lifetime", "timeout"),
-    [(0, 1), (31, 1), (float("nan"), 1), (1, 0), (1, 11), (1, 2), (True, 1)],
+    [
+        (0, 1),
+        (319, 1),
+        (341, 1),
+        (float("nan"), 1),
+        (320, 0),
+        (320, 11),
+        (True, 1),
+    ],
 )
 def test_timing_configuration_is_strictly_bounded(lifetime, timeout):
     with pytest.raises(ValueError):
