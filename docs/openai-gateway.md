@@ -88,8 +88,10 @@ Only ordinary documented rate limits, transport timeouts/connections, and 5xx
 server failures retry. Confirmed spend limits, other billing/quota conditions,
 authentication, invalid requests, permissions, malformed/refused/incomplete
 responses, and ambiguous 429 errors do not. A bare 429 is never called confirmed
-spend exhaustion. Operational failures carry fixed Russian user-safe text and do
-not trigger another model call.
+spend exhaustion. An in-bound `Retry-After` is a minimum delay; if it exceeds the
+trusted backoff cap or remaining overall allowance, the gateway skips the retry
+instead of shortening the provider delay. Operational failures carry fixed Russian
+user-safe text and do not trigger another model call.
 
 ## Schema v3, suspension, and telemetry
 

@@ -222,7 +222,7 @@ class TrustedOpenAIGateway:
                 if attempt_number == self._config.max_attempts:
                     return self._result(outcome, attempts=completed_attempts)
                 delay = self._retry_delay(attempt_number, error)
-                if ended + delay >= deadline:
+                if delay is None or ended + delay >= deadline:
                     return self._result(outcome, attempts=completed_attempts)
                 self._sleeper(delay)
                 attempt_number += 1
@@ -375,15 +375,17 @@ class TrustedOpenAIGateway:
             )
         return self._result(outcome, attempts=completed_attempts)
 
-    def _retry_delay(self, attempt_number: int, error: OpenAITransportError) -> float:
+    def _retry_delay(
+        self, attempt_number: int, error: OpenAITransportError
+    ) -> float | None:
         backoff = min(
             self._config.maximum_backoff_seconds,
             self._config.initial_backoff_seconds * (2 ** (attempt_number - 1)),
         )
         if error.retry_after_seconds is not None:
-            backoff = min(
-                error.retry_after_seconds, self._config.maximum_backoff_seconds
-            )
+            if error.retry_after_seconds > self._config.maximum_backoff_seconds:
+                return None
+            backoff = max(backoff, error.retry_after_seconds)
         jitter = self._jitter(attempt_number, self._config.maximum_jitter_seconds)
         if (
             type(jitter) not in {int, float}

@@ -778,9 +778,9 @@ def test_retry_stops_when_backoff_would_exceed_overall_deadline(tmp_path):
     assert store.usage_attempt_count() == 1
 
 
-def test_retry_after_hint_is_bounded_by_trusted_backoff(tmp_path):
+def test_retry_after_above_trusted_backoff_skips_retry(tmp_path):
     sleeps = []
-    instance, _transport, _store = gateway(
+    instance, transport, _store = gateway(
         tmp_path,
         [
             OpenAITransportError(
@@ -797,8 +797,33 @@ def test_retry_after_hint_is_bounded_by_trusted_backoff(tmp_path):
         request(), correlation_id="correlation-a", operation_id="operation-a"
     )
 
+    assert result.outcome is GatewayOutcome.RATE_LIMIT
+    assert len(transport.calls) == 1
+    assert sleeps == []
+
+
+def test_retry_after_within_bound_is_a_minimum_delay(tmp_path):
+    sleeps = []
+    instance, transport, _store = gateway(
+        tmp_path,
+        [
+            OpenAITransportError(
+                status_code=429,
+                error_type="rate_limit_error",
+                retry_after_seconds=2.0,
+            ),
+            response(),
+        ],
+        sleeper=sleeps.append,
+    )
+
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+
     assert result.outcome is GatewayOutcome.COMPLETED
-    assert sleeps == [4.0]
+    assert len(transport.calls) == 2
+    assert sleeps == [2.0]
 
 
 def test_invalid_injected_clock_jitter_and_duration_fail_closed(tmp_path):
