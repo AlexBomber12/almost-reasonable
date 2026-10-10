@@ -137,6 +137,58 @@ def test_server_accepts_authenticated_peer_and_returns_stage_zero_result(tmp_pat
     assert not socket_path.exists()
 
 
+def test_server_request_guard_can_fail_closed_without_gateway_call(tmp_path):
+    directory = secure_directory(tmp_path)
+    instance, transport = gateway(directory, stage=DeploymentStage.STAGE_1)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        instance,
+        request_guard=lambda _request: server_module.WorkerResponse(
+            "authorization_rejected", 0, "Отклонено.", None
+        ),
+    )
+    server.start()
+    try:
+        payload = encode_request(
+            InferenceRequest("operation-a", "correlation-a", request(directory))
+        )
+        result = raw_exchange(server, struct.pack("!I", len(payload)) + payload)
+    finally:
+        server.close()
+
+    assert result.outcome == "authorization_rejected"
+    assert transport.calls == []
+
+
+def test_server_rejects_invalid_guard_configuration_and_return(tmp_path):
+    directory = secure_directory(tmp_path)
+    instance, transport = gateway(directory, stage=DeploymentStage.STAGE_1)
+    config = WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),)))
+    with pytest.raises(TypeError, match="request_guard"):
+        OpenAIWorkerServer(config, instance, request_guard=object())
+
+    server = OpenAIWorkerServer(
+        config, instance, request_guard=lambda _request: object()
+    )
+    server.start()
+    try:
+        payload = encode_request(
+            InferenceRequest("operation-a", "correlation-a", request(directory))
+        )
+        thread = run_once(server)
+        client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        client.connect(str(config.socket_path))
+        client.sendall(struct.pack("!I", len(payload)) + payload)
+        client.shutdown(socket.SHUT_WR)
+        assert client.recv(1) == b""
+        client.close()
+        thread.join(timeout=2)
+    finally:
+        server.close()
+
+    assert transport.calls == []
+
+
 def test_restricted_group_mode_sets_and_verifies_socket_permissions(tmp_path):
     directory = secure_directory(tmp_path)
     directory.chmod(0o710)

@@ -72,6 +72,7 @@ _GATEWAY_OUTCOMES = frozenset(
         "connection_error",
         "unknown_error",
         "persistence_failure",
+        "authorization_rejected",
     )
 )
 REMOTE_OUTCOMES = _GATEWAY_OUTCOMES | frozenset((IPC_REJECTED,))
