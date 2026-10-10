@@ -43,6 +43,7 @@ class MissionStatus(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
+    SUPERSEDED = "superseded"
 
 
 class ConfirmationOutcome(StrEnum):
@@ -270,6 +271,15 @@ class MissionStateMachine:
         proposals[index] = resolved
         current = document.current
         if status is MissionStatus.CONFIRMED:
+            proposals = [
+                MissionRecord(item.proposal, MissionStatus.SUPERSEDED, None)
+                if sibling_index != index
+                and item.status is MissionStatus.PENDING
+                and item.proposal.current_mission_version
+                == existing.proposal.current_mission_version
+                else item
+                for sibling_index, item in enumerate(proposals)
+            ]
             current = Mission(
                 existing.proposal.version_identity,
                 existing.proposal.proposed_mission,

@@ -82,6 +82,11 @@ def test_recorded_multi_trial_harness_emits_machine_summary_and_human_hook() -> 
     assert payload["assurance_summary"]["M"]["failed"] == 1
     assert payload["failure_counts"] == {"sycophancy": 1}
     assert "recorded_outputs" not in payload
+    assert all(
+        set(("case_input_sha256", "output_sha256", "artifact_sha256"))
+        <= observation.keys()
+        for observation in payload["observations"]
+    )
 
 
 def test_default_rubric_is_versioned_and_complete() -> None:
@@ -136,6 +141,12 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         custom_harness((rule,), assessor).run(
             (EvaluationCase("empty", "prompt", (), ()),)
         )
+    for invalid in (
+        EvaluationCase("empty-prompt", "", ("output",), ()),
+        EvaluationCase("invalid-tags", "prompt", ("output",), ("",)),
+    ):
+        with pytest.raises(ValueError, match="prompt and valid tags"):
+            custom_harness((rule,), assessor).run((invalid,))
     with pytest.raises(ValueError, match="score"):
         custom_harness((rule,), lambda *_: (2.0, ())).run(
             (EvaluationCase("case", "prompt", ("output",), ()),)
@@ -166,6 +177,25 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         )
     successful = harness.run((EvaluationCase("ok", "p", ("рус",), ()),))
     assert successful.observations[0].adjudication is None
+
+
+def test_artifact_identity_binds_prompt_tags_output_and_dimension() -> None:
+    rule = RubricRule(
+        RubricDimension.INTELLECTUAL_HONESTY,
+        AssuranceClass.M,
+        0.5,
+        AssessorKind.MODEL,
+        "Честность",
+    )
+    harness = custom_harness((rule,), assessor)
+    first = harness.run((EvaluationCase("same", "first", ("output",), ("a",)),))
+    second = harness.run((EvaluationCase("same", "second", ("output",), ("a",)),))
+    first_observation = first.observations[0]
+    second_observation = second.observations[0]
+
+    assert first_observation.output_sha256 == second_observation.output_sha256
+    assert first_observation.case_input_sha256 != second_observation.case_input_sha256
+    assert first_observation.artifact_sha256 != second_observation.artifact_sha256
 
 
 def test_official_rubric_rejects_partial_or_reclassified_rules() -> None:

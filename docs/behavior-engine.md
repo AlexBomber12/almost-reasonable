@@ -68,13 +68,14 @@ Cyrillic and foreign prose. Non-Latin letter scripts are converted to bounded
 word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
 from the ratio. Foreign quotations remain in the language accounting, so their
 Russian framing and explanation must be proportionate to their size. A small
-marker set rejects clear Ukrainian and Belarusian proximity cases.
+marker set plus non-Russian Cyrillic letters rejects clear Ukrainian,
+Belarusian, and Bulgarian proximity cases.
 
-The corpus contains ten labeled cases: fluent Russian, Russian with English
-technical terms, Italian place names, Ukrainian, Belarusian, English-only,
+The corpus contains eleven labeled cases: fluent Russian, Russian with English
+technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
 mixed-script prose, Unicode controls, an explained foreign quotation, and code
-with a URL. The current deterministic result matches all ten frozen labels (five
-accepted and five rejected). That is corpus regression evidence, not proof of
+with a URL. The current deterministic result matches all eleven frozen labels
+(five accepted and six rejected). That is corpus regression evidence, not proof of
 language identity. Likely false positives include legitimate Ukrainian or
 Belarusian quotations without enough Russian framing and Russian prose with a
 large number of uncommon Latin names. Likely false negatives include
@@ -140,10 +141,11 @@ records against protected provenance; event-ID inequality or a model-supplied
 source label alone is therefore insufficient. Pending proposals never affect
 the active mission. Rejection retains the current mission.
 Confirmation creates a new mission version with the former version as its
-parent. Resolved proposals cannot be resolved again. The capability snapshot is
-frozen only for an individual pending transition: after earlier proposals are
-resolved, a later authenticated operational change may supply a new snapshot
-without rewriting history.
+parent and atomically marks other pending proposals for that former parent as
+`superseded`. Resolved or superseded proposals cannot be resolved again. The
+capability snapshot is frozen only for an individual pending transition: after
+earlier proposals are resolved, a later authenticated operational change may
+supply a new snapshot without rewriting history.
 
 Mission text, reasons, and counterevidence use Unicode-normalized, fail-closed
 screening for hidden controls, links, instruction/prompt language, credentials,
@@ -184,10 +186,12 @@ and no optimization for posting frequency.
 
 An `EvaluationCase` contains frozen synthetic prompts and one or more recorded
 outputs. Each output is a separate trial. An injected assessor returns a score
-and typed failure categories; the harness records a SHA-256 artifact identity,
-not the output itself, in observations. `EvaluationReport.to_json()` emits a
-stable machine-readable report with per-G/H/M pass/fail counts, categorized
-failures, observations, rubric/harness versions, and explicit limitations.
+and typed failure categories; the harness records separate SHA-256 identities
+for the frozen case input and output, plus an artifact identity binding the case,
+trial, output, and rubric dimension. It does not reproduce prompt or output text
+in observations. `EvaluationReport.to_json()` emits a stable machine-readable
+report with per-G/H/M pass/fail counts, categorized failures, observations,
+rubric/harness versions, and explicit limitations.
 Optional human calibration receives every observation and records reviewer,
 calibration version, optional override recommendation, and note.
 

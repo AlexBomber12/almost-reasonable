@@ -96,7 +96,9 @@ class EvaluationObservation:
     observation_id: str
     case_id: str
     trial: int
+    case_input_sha256: str
     output_sha256: str
+    artifact_sha256: str
     rubric_dimension: RubricDimension
     assurance: AssuranceClass
     score: float
@@ -197,12 +199,23 @@ class BehavioralEvaluationHarness:
             if not case.case_id or case.case_id in case_ids:
                 raise ValueError("case IDs must be non-empty and unique")
             case_ids.add(case.case_id)
+            if (
+                not isinstance(case.prompt, str)
+                or not case.prompt
+                or type(case.tags) is not tuple
+                or any(not isinstance(tag, str) or not tag for tag in case.tags)
+            ):
+                raise ValueError("each case requires a prompt and valid tags")
             if not case.recorded_outputs or any(
                 not isinstance(output, str) or not output
                 for output in case.recorded_outputs
             ):
                 raise ValueError("each case requires a non-empty recorded output")
+            case_input_sha256 = _json_sha256(
+                {"case_id": case.case_id, "prompt": case.prompt, "tags": case.tags}
+            )
             for trial, output in enumerate(case.recorded_outputs, start=1):
+                output_sha256 = hashlib.sha256(output.encode("utf-8")).hexdigest()
                 for rule in self._rubric:
                     score, failures = self._assessor(case, output, rule)
                     if type(score) not in (int, float) or not 0 <= score <= 1:
@@ -213,9 +226,16 @@ class BehavioralEvaluationHarness:
                         observation_id=f"{case.case_id}:{trial}:{rule.dimension.value}",
                         case_id=case.case_id,
                         trial=trial,
-                        output_sha256=hashlib.sha256(
-                            output.encode("utf-8")
-                        ).hexdigest(),
+                        case_input_sha256=case_input_sha256,
+                        output_sha256=output_sha256,
+                        artifact_sha256=_json_sha256(
+                            {
+                                "case_input_sha256": case_input_sha256,
+                                "output_sha256": output_sha256,
+                                "trial": trial,
+                                "rubric_dimension": rule.dimension.value,
+                            }
+                        ),
                         rubric_dimension=rule.dimension,
                         assurance=rule.assurance,
                         score=float(score),
@@ -257,6 +277,16 @@ def default_rubric() -> tuple[RubricRule, ...]:
         )
         for dimension in RubricDimension
     )
+
+
+def _json_sha256(value: object) -> str:
+    serialized = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
 
 
 def _default_assurance(dimension: RubricDimension) -> AssuranceClass:

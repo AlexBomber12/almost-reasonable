@@ -544,7 +544,10 @@ def test_mission_rejects_duplicate_versions_and_stale_parallel_parent(tmp_path) 
             independent_sources(evidence_id="evidence-independent"),
         )
     )
-    with pytest.raises(ValueError, match="parent"):
+    records = JsonMissionRepository(tmp_path / "m.json", initial).load().proposals
+    assert records[1].status is MissionStatus.SUPERSEDED
+    assert records[1].confirmation is None
+    with pytest.raises(ValueError, match="already resolved"):
         machine.confirm(
             MissionConfirmation(
                 "mp-2",
@@ -559,6 +562,41 @@ def test_mission_rejects_duplicate_versions_and_stale_parallel_parent(tmp_path) 
                 independent_sources(),
             )
         )
+
+    path = tmp_path / "m.json"
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    raw["proposals"][1]["status"] = MissionStatus.PENDING.value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+    with pytest.raises(ValueError, match="parent"):
+        machine.confirm(
+            MissionConfirmation(
+                "mp-2",
+                "confirm-stale",
+                "confirm-corr-stale",
+                NOW + timedelta(minutes=3),
+                ConfirmationOutcome.REJECTED,
+                ("Причина",),
+                ("Контраргумент",),
+                ("evidence-2",),
+                invariants(),
+                independent_sources(),
+            )
+        )
+    raw["proposals"][1]["status"] = MissionStatus.SUPERSEDED.value
+    path.write_text(json.dumps(raw), encoding="utf-8")
+
+    post_confirmation = MissionProposal(
+        **{
+            **{field: getattr(first, field) for field in first.__dataclass_fields__},
+            "proposal_id": "mp-after-confirmation",
+            "version_identity": "proposal-after-confirmation",
+            "current_mission_version": "proposal-v1",
+            "initiating_event_id": "event-after-confirmation",
+            "correlation_id": "corr-after-confirmation",
+            "invariants": invariants(deployment_stage="production"),
+        }
+    )
+    assert machine.propose(post_confirmation).status is MissionStatus.PENDING
 
 
 def test_mission_rejects_instruction_text_in_identifier_fields(tmp_path) -> None:

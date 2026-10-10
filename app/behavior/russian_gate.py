@@ -55,12 +55,30 @@ _URL = re.compile(
 _FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`]*`")
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
+_RUSSIAN_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
 _LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
 _UKRAINIAN_WORDS = frozenset(
-    ("це", "який", "яка", "яке", "містить", "інші", "український", "та")
+    (
+        "це",
+        "який",
+        "яка",
+        "яке",
+        "містить",
+        "інші",
+        "український",
+        "та",
+        "привіт",
+        "сьогодні",
+        "чудова",
+        "читати",
+        "книжки",
+    )
 )
 _BELARUSIAN_WORDS = frozenset(
     ("гэта", "які", "якая", "мае", "іншыя", "беларускі", "тэкст")
+)
+_BULGARIAN_WORDS = frozenset(
+    ("това", "изцяло", "български", "който", "написан", "защото", "също")
 )
 _COMMON_LATIN_TERMS = frozenset(
     (
@@ -93,14 +111,18 @@ class RussianOutputGate:
         prose = _strip_non_prose_regions(normalized)
         cyrillic = [word.casefold() for word in _CYRILLIC_WORD.findall(prose)]
         latin = [word.casefold() for word in _LATIN_WORD.findall(prose)]
-        nearby_score = sum(word in _UKRAINIAN_WORDS for word in cyrillic)
         nearby_score = max(
-            nearby_score, sum(word in _BELARUSIAN_WORDS for word in cyrillic)
+            sum(word in markers for word in cyrillic)
+            for markers in (
+                _UKRAINIAN_WORDS,
+                _BELARUSIAN_WORDS,
+                _BULGARIAN_WORDS,
+            )
         )
         nearby_letters = sum(character in "іїєґўІЇЄҐЎ" for character in prose)
         foreign = sum(word not in _COMMON_LATIN_TERMS for word in latin)
         foreign += _foreign_script_units(prose)
-        if nearby_letters and nearby_score >= 2:
+        if nearby_letters >= 2 or nearby_score >= 2:
             return _assessment(
                 False, GateReason.NEARBY_LANGUAGE, len(cyrillic), foreign
             )
@@ -189,6 +211,13 @@ def corpus_cases() -> tuple[RussianCorpusCase, ...]:
             "Эвристика использует ограниченный список маркеров.",
         ),
         RussianCorpusCase(
+            "bg-near",
+            "bulgarian_proximity",
+            "Това е изцяло български текст, който не е написан на руски.",
+            False,
+            "Общие кириллические буквы требуют лексических маркеров.",
+        ),
+        RussianCorpusCase(
             "en-only",
             "english_only",
             "This answer contains only English conversational prose.",
@@ -236,7 +265,7 @@ def _foreign_script_units(text: str) -> int:
     letters = sum(
         unicodedata.category(character).startswith("L")
         and not ("A" <= character <= "Z" or "a" <= character <= "z")
-        and _CYRILLIC_WORD.fullmatch(character) is None
+        and _RUSSIAN_CYRILLIC_LETTER.fullmatch(character) is None
         for character in text
     )
     return math.ceil(letters / 4)

@@ -24,6 +24,7 @@ def test_versioned_corpus_records_expected_tradeoffs() -> None:
         "italian_names",
         "ukrainian_proximity",
         "belarusian_proximity",
+        "bulgarian_proximity",
         "english_only",
         "mixed_script",
         "unicode_controls",
@@ -40,6 +41,14 @@ def test_versioned_corpus_records_expected_tradeoffs() -> None:
         ("Привет.\u200b Скрытый контроль.", GateReason.DISALLOWED_CONTROL),
         ("Це український текст, який містить інші слова.", GateReason.NEARBY_LANGUAGE),
         ("Гэта беларускі тэкст, які мае іншыя словы.", GateReason.NEARBY_LANGUAGE),
+        (
+            "Привіт, сьогодні чудова погода, люблю читати книжки.",
+            GateReason.NEARBY_LANGUAGE,
+        ),
+        (
+            "Това е изцяло български текст, който не е написан на руски.",
+            GateReason.NEARBY_LANGUAGE,
+        ),
     ],
 )
 def test_gate_rejection_reasons(text: str, reason: GateReason) -> None:
