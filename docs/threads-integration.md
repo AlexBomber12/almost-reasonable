@@ -161,6 +161,13 @@ therefore cannot pass its own atomic uncertainty check while the first can
 still become `unknown`. Final classification and ordinary crash recovery remove
 the reservation in the same transaction; an unclassified process death leaves
 it in place and fails closed until `sending` recovery classifies the operation.
+The live dispatcher also holds an account-scoped OS file lock for the complete
+dispatch call. `sending` recovery must acquire the same lock without waiting;
+it therefore cannot classify or release a reservation owned by a still-running
+worker. The OS releases the lock on process death, after which durable evidence
+drives recovery. This contract assumes the documented single-host SQLite
+deployment and must be replaced by an equally strong coordinator before any
+multi-host transport is considered.
 
 ## Failure and reconciliation rules
 

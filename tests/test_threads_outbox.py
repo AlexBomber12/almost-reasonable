@@ -797,6 +797,52 @@ def test_privacy_is_rechecked_after_final_publish_marker(tmp_path, monkeypatch):
     assert service.simulator.trace == [("create_container", "operation-1")]
 
 
+def test_recovery_cannot_overlap_a_live_dispatcher(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    update_evidence = service.store.update_sending_evidence
+
+    def update_then_attempt_recovery(operation_id, evidence, **kwargs):
+        update_evidence(operation_id, evidence, **kwargs)
+        if evidence == "publish_dispatch_started":
+            with pytest.raises(ThreadsStoreError, match="dispatcher is still active"):
+                service.recover_sending(operation_id, now=NOW)
+
+    monkeypatch.setattr(
+        service.store, "update_sending_evidence", update_then_attempt_recovery
+    )
+    confirmed = service.dispatch("operation-1", approval, now=NOW)
+    assert confirmed.state is OutboxState.CONFIRMED
+    assert service.simulator.trace == [
+        ("create_container", "operation-1"),
+        (
+            "publish_container",
+            simulated_provider_id("container", "operation-1"),
+        ),
+    ]
+
+
+def test_mutable_policy_is_rechecked_after_authorization_lookup(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    current_privacy = service.authorization_provider.current_privacy_authorized
+
+    def authorize_privacy_then_stop(**kwargs):
+        result = current_privacy(**kwargs)
+        service.policy.emergency_stop = True
+        return result
+
+    monkeypatch.setattr(
+        service.authorization_provider,
+        "current_privacy_authorized",
+        authorize_privacy_then_stop,
+    )
+    with pytest.raises(PolicyDeniedError, match="stop"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.READY
+    assert service.simulator.trace == []
+
+
 def test_dispatch_persists_the_current_approval_reference(tmp_path):
     service = make_service(tmp_path)
     _, original = ready(service)
@@ -1449,6 +1495,9 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
             release_account_effect_lock=True,
             account_effect_lock_required=True,
         )
+    with pytest.raises(ValueError, match="account reference"):
+        with service.store.account_dispatch_guard("bad value"):
+            pass
 
 
 def test_stage_three_readiness_explicitly_reports_missing_live_transport(tmp_path):

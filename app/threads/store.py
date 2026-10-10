@@ -1,9 +1,12 @@
 """Dedicated versioned SQLite outbox and inbound cursor store."""
 
 from collections.abc import Iterable
+from contextlib import contextmanager
 from datetime import datetime
+import fcntl
 from pathlib import Path
 import sqlite3
+from typing import Iterator
 
 from .domain import (
     ConversationOutcome,
@@ -65,6 +68,10 @@ class UnknownPublicationRiskError(ThreadsStoreError):
 
 class CursorConflictError(ThreadsStoreError):
     """A polling page was based on a stale durable cursor."""
+
+
+class ActiveDispatcherError(ThreadsStoreError):
+    """Recovery or another dispatch overlapped a live account dispatcher."""
 
 
 class ThreadsStore:
@@ -270,6 +277,26 @@ class ThreadsStore:
         if row is None:
             raise ThreadsStoreError("unknown operation")
         return _outbox_item(row)
+
+    @contextmanager
+    def account_dispatch_guard(self, account_ref: str) -> Iterator[None]:
+        require_reference("account reference", account_ref)
+        lock_name = (
+            f".{self.database.name}."
+            f"{content_fingerprint(account_ref)[:16]}.dispatch.lock"
+        )
+        lock_path = self.database.with_name(lock_name)
+        with lock_path.open("a+b") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError as error:
+                raise ActiveDispatcherError(
+                    "an account dispatcher is still active"
+                ) from error
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
     def transition(
         self,

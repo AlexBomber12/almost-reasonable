@@ -30,7 +30,7 @@ from .simulator import (
     ThreadsSimulator,
     simulated_provider_id,
 )
-from .store import ThreadsStore, ThreadsStoreError
+from .store import ActiveDispatcherError, ThreadsStore, ThreadsStoreError
 
 
 MAX_DISPATCH_ATTEMPTS = 2
@@ -155,6 +155,18 @@ class ThreadsService:
         )
 
     def dispatch(
+        self, operation_id: str, approval: Approval, *, now: datetime
+    ) -> OutboxItem:
+        item = self._require_owned_item(operation_id)
+        try:
+            with self.store.account_dispatch_guard(item.account_ref):
+                return self._dispatch_exclusively(operation_id, approval, now=now)
+        except ActiveDispatcherError as error:
+            raise PolicyDeniedError(
+                "publication effect is being dispatched for this account"
+            ) from error
+
+    def _dispatch_exclusively(
         self, operation_id: str, approval: Approval, *, now: datetime
     ) -> OutboxItem:
         item = self.store.get(operation_id)
@@ -332,49 +344,51 @@ class ThreadsService:
 
     def recover_sending(self, operation_id: str, *, now: datetime) -> OutboxItem:
         item = self._require_owned_item(operation_id)
-        if item.state is not OutboxState.SENDING:
-            raise ThreadsStoreError("recovery requires sending state")
-        if item.dispatch_evidence in {
-            "pre_dispatch_intent",
-            "no_transmission",
-            "container_created_publish_not_started",
-        }:
-            state = (
-                OutboxState.READY
-                if item.attempt_count < MAX_DISPATCH_ATTEMPTS
-                else OutboxState.FAILED_TERMINAL
-            )
-            result = self.store.transition(
-                operation_id,
-                state,
-                reason="recovered_proven_pre_dispatch",
-                now=now,
-                dispatch_evidence="recovery_no_effect",
-                release_lock_target_operation_id=item.replacement_of,
-                release_lock_kind=(
-                    "replacement_publication"
-                    if item.replacement_of is not None
-                    else None
-                ),
-                release_account_effect_lock=True,
-            )
-        else:
-            result = self.store.transition(
-                operation_id,
-                OutboxState.UNKNOWN,
-                reason="recovered_uncertain_dispatch",
-                now=now,
-                dispatch_evidence="recovery_effect_unknown",
-                reconciliation_status="required",
-                release_lock_target_operation_id=item.replacement_of,
-                release_lock_kind=(
-                    "replacement_publication"
-                    if item.replacement_of is not None
-                    else None
-                ),
-                release_account_effect_lock=True,
-            )
-        return result
+        with self.store.account_dispatch_guard(item.account_ref):
+            item = self._require_owned_item(operation_id)
+            if item.state is not OutboxState.SENDING:
+                raise ThreadsStoreError("recovery requires sending state")
+            if item.dispatch_evidence in {
+                "pre_dispatch_intent",
+                "no_transmission",
+                "container_created_publish_not_started",
+            }:
+                state = (
+                    OutboxState.READY
+                    if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                    else OutboxState.FAILED_TERMINAL
+                )
+                result = self.store.transition(
+                    operation_id,
+                    state,
+                    reason="recovered_proven_pre_dispatch",
+                    now=now,
+                    dispatch_evidence="recovery_no_effect",
+                    release_lock_target_operation_id=item.replacement_of,
+                    release_lock_kind=(
+                        "replacement_publication"
+                        if item.replacement_of is not None
+                        else None
+                    ),
+                    release_account_effect_lock=True,
+                )
+            else:
+                result = self.store.transition(
+                    operation_id,
+                    OutboxState.UNKNOWN,
+                    reason="recovered_uncertain_dispatch",
+                    now=now,
+                    dispatch_evidence="recovery_effect_unknown",
+                    reconciliation_status="required",
+                    release_lock_target_operation_id=item.replacement_of,
+                    release_lock_kind=(
+                        "replacement_publication"
+                        if item.replacement_of is not None
+                        else None
+                    ),
+                    release_account_effect_lock=True,
+                )
+            return result
 
     def reconcile(self, operation_id: str, *, now: datetime) -> OutboxItem:
         item = self._require_owned_item(operation_id)
@@ -579,6 +593,9 @@ class ThreadsService:
                 )
         elif unresolved_ids:
             raise PolicyDeniedError("account is paused by unresolved publication")
+        blockers = self.policy.publication_blockers(item.publication_type)
+        if blockers:
+            raise PolicyDeniedError("; ".join(blockers))
         return current_approval
 
     def _resolve_current_approval(
