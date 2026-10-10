@@ -684,7 +684,9 @@ class QuarantinedRestore:
                     _publish_owned_file(owned[0].path, quarantine, owned[0])
                 return result
             except BaseException:
-                if _path_matches_descriptor(owned[0].path, owned[0].descriptor):
+                if owned and _path_matches_descriptor(
+                    owned[0].path, owned[0].descriptor
+                ):
                     _cleanup_created(owned)
                     owned.clear()
                 raise
@@ -822,6 +824,7 @@ class QuarantinedRestore:
         except BaseException:
             _cleanup_created(marker_files)
             raise
+        published_files = owned.copy()
         try:
             recorded = self.ledger.record_restore(
                 restore_id,
@@ -840,7 +843,11 @@ class QuarantinedRestore:
                 restored_at,
                 "privacy_ledger_changed_during_restore",
             )
-        _close_owned(marker_files)
+        owned.clear()
+        try:
+            _close_owned(marker_files)
+        finally:
+            _close_owned(published_files)
         return RestoreResult(
             restore_id,
             RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,

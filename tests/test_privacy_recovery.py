@@ -1092,6 +1092,41 @@ def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
         assert owned_file.parent_descriptor in closed
 
 
+def test_readiness_close_interrupt_preserves_committed_artifacts(tmp_path, monkeypatch):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    marker = Path(f"{quarantine}.ready.json")
+    real_close_owned = recovery_module._close_owned
+    interrupted = False
+
+    def interrupt_after_marker_close(owned):
+        nonlocal interrupted
+        real_close_owned(owned)
+        if owned and owned[0].path == marker:
+            interrupted = True
+            raise SimulatedInterrupt()
+
+    monkeypatch.setattr(recovery_module, "_close_owned", interrupt_after_marker_close)
+
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert interrupted is True
+    assert quarantine.exists()
+    assert marker.exists()
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute(
+            "SELECT disposition, reason FROM restore_outcomes"
+        ).fetchall() == [("eligible_for_activation", "reconciliation_complete")]
+
+
 def test_backup_rejects_malformed_database_and_verification_faults(
     tmp_path, monkeypatch
 ):
