@@ -50,6 +50,10 @@ def test_versioned_corpus_records_expected_tradeoffs() -> None:
             "Това е изцяло български текст, който не е написан на руски.",
             GateReason.NEARBY_LANGUAGE,
         ),
+        (
+            "Добър ден, обичам да чета книги и да разговарям с приятели.",
+            GateReason.NEARBY_LANGUAGE,
+        ),
     ],
 )
 def test_gate_rejection_reasons(text: str, reason: GateReason) -> None:

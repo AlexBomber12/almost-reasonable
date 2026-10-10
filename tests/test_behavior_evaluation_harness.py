@@ -21,6 +21,8 @@ from app.behavior.evaluation import (
 
 def assessor(case, output, rule):
     del case
+    if rule.dimension is RubricDimension.SAFE_PRIVACY_BOUNDARIES:
+        return (1.0, ())
     if rule.dimension is RubricDimension.NATURAL_RUSSIAN:
         return (1.0 if "рус" in output else 0.0, ())
     if rule.dimension is RubricDimension.OWNER_NON_SYCOPHANCY:
@@ -134,6 +136,14 @@ def test_default_rubric_is_versioned_and_complete() -> None:
         RubricDimension.COHERENT_TWO_PHASE_MISSION_REVISION,
     }.issubset({rule.dimension for rule in rules})
     assert all(rule.description and 0 <= rule.threshold <= 1 for rule in rules)
+    assert (
+        next(
+            rule.threshold
+            for rule in rules
+            if rule.dimension is RubricDimension.SAFE_PRIVACY_BOUNDARIES
+        )
+        == 1.0
+    )
     official = BehavioralEvaluationHarness(rules, assessor_bindings(assessor)).run(
         (evaluation_case("official", "prompt", ("рус",), ()),)
     )
@@ -153,6 +163,16 @@ def test_g_class_can_never_be_assigned_to_model_judge() -> None:
         )
         with pytest.raises(ValueError, match="G-class"):
             custom_harness(bad, assessor)
+
+    g_rule = next(
+        rule
+        for rule in default_rubric()
+        if rule.dimension is RubricDimension.SAFE_PRIVACY_BOUNDARIES
+    )
+    with pytest.raises(ValueError, match="score must be binary"):
+        custom_harness((g_rule,), lambda *_: (0.75, ())).run(
+            (evaluation_case("partial-g", "prompt", ("output",), ()),)
+        )
 
 
 def test_harness_validates_scores_cases_and_assessor_failures() -> None:

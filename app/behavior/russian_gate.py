@@ -1,5 +1,6 @@
 """Versioned deterministic H-class gate for conversational Russian output."""
 
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
@@ -80,6 +81,32 @@ _BELARUSIAN_WORDS = frozenset(
 _BULGARIAN_WORDS = frozenset(
     ("това", "изцяло", "български", "който", "написан", "защото", "също")
 )
+_LANGUAGE_REFERENCE_TEXT = {
+    "ru": (
+        "сегодня хорошая погода я люблю читать книги и разговаривать с друзьями "
+        "этот ответ написан по русски и подробно объясняет основную мысль "
+        "проверяемые доказательства помогают сделать осторожный вывод "
+        "содержательный диалог требует ясных аргументов"
+    ),
+    "uk": (
+        "сьогодні гарна погода я люблю читати книжки та розмовляти з друзями "
+        "ця відповідь написана українською і докладно пояснює головну думку "
+        "перевірені докази допомагають зробити обережний висновок "
+        "змістовний діалог потребує ясних аргументів"
+    ),
+    "be": (
+        "сёння добрае надвор е я люблю чытаць кнігі і размаўляць з сябрамі "
+        "гэты адказ напісаны па беларуску і падрабязна тлумачыць асноўную думку "
+        "правераныя доказы дапамагаюць зрабіць асцярожную выснову "
+        "змястоўны дыялог патрабуе ясных аргументаў"
+    ),
+    "bg": (
+        "днес времето е хубаво обичам да чета книги и да разговарям с приятели "
+        "този отговор е написан на български и подробно обяснява основната мисъл "
+        "проверените доказателства помагат да направим предпазлив извод "
+        "съдържателният диалог изисква ясни аргументи"
+    ),
+}
 _COMMON_LATIN_TERMS = frozenset(
     (
         "api",
@@ -122,7 +149,11 @@ class RussianOutputGate:
         nearby_letters = sum(character in "іїєґўІЇЄҐЎ" for character in prose)
         foreign = sum(word not in _COMMON_LATIN_TERMS for word in latin)
         foreign += _foreign_script_units(prose)
-        if nearby_letters >= 2 or nearby_score >= 2:
+        if (
+            nearby_letters >= 2
+            or nearby_score >= 2
+            or _matches_nearby_cyrillic_profile(cyrillic)
+        ):
             return _assessment(
                 False, GateReason.NEARBY_LANGUAGE, len(cyrillic), foreign
             )
@@ -272,6 +303,35 @@ def _foreign_script_units(text: str) -> int:
         for character in text
     )
     return math.ceil(letters / 4)
+
+
+def _matches_nearby_cyrillic_profile(words: list[str]) -> bool:
+    if len(words) < 7:
+        return False
+    observed = _trigram_profile(" ".join(words))
+    scores = {
+        language: _cosine_similarity(observed, _trigram_profile(reference))
+        for language, reference in _LANGUAGE_REFERENCE_TEXT.items()
+    }
+    winner = max(scores, key=scores.__getitem__)
+    return (
+        winner != "ru"
+        and scores[winner] >= 0.18
+        and scores[winner] - scores["ru"] >= 0.08
+    )
+
+
+def _trigram_profile(text: str) -> Counter[str]:
+    normalized = " ".join(_CYRILLIC_WORD.findall(text.casefold()))
+    padded = f" {normalized} "
+    return Counter(padded[index : index + 3] for index in range(len(padded) - 2))
+
+
+def _cosine_similarity(left: Counter[str], right: Counter[str]) -> float:
+    numerator = sum(count * right[trigram] for trigram, count in left.items())
+    left_norm = math.sqrt(sum(count * count for count in left.values()))
+    right_norm = math.sqrt(sum(count * count for count in right.values()))
+    return numerator / (left_norm * right_norm)
 
 
 def _is_disallowed_control(character: str) -> bool:

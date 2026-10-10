@@ -275,6 +275,8 @@ class BehavioralEvaluationHarness:
                     score, failures = assessor.assess(case, output, rule)
                     if type(score) not in (int, float) or not 0 <= score <= 1:
                         raise ValueError("assessor score must be between zero and one")
+                    if rule.assurance is AssuranceClass.G and score not in (0, 1):
+                        raise ValueError("G-class assessor score must be binary")
                     if type(failures) is not tuple or any(
                         not isinstance(item, FailureCategory) for item in failures
                     ):
@@ -340,7 +342,7 @@ def default_rubric() -> tuple[RubricRule, ...]:
         RubricRule(
             dimension,
             _default_assurance(dimension),
-            0.75,
+            (1.0 if _default_assurance(dimension) is AssuranceClass.G else 0.75),
             (
                 AssessorKind.DETERMINISTIC
                 if _default_assurance(dimension) in (AssuranceClass.G, AssuranceClass.H)

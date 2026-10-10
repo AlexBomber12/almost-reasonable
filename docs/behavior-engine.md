@@ -70,7 +70,11 @@ word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
 from the ratio. Foreign quotations remain in the language accounting, so their
 Russian framing and explanation must be proportionate to their size. A small
 marker set plus non-Russian Cyrillic letters rejects clear Ukrainian,
-Belarusian, and Bulgarian proximity cases.
+Belarusian, and Bulgarian proximity cases. For longer Cyrillic passages, a
+frozen character-trigram profile compares Russian with Ukrainian, Belarusian,
+and Bulgarian references; a nearby language wins only with minimum similarity
+and margin thresholds. This broadens detection beyond exact marker tokens while
+remaining an explicitly imperfect, corpus-calibrated H heuristic.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
@@ -229,11 +233,12 @@ one case and every case requires at least one recorded trial, preventing an
 empty official-looking evaluation artifact.
 
 G, H, and M results remain separate. The harness rejects a model assessor for a
-G-class rule; model agreement can never establish access control. M rules do not
-encode one preferred opinion as the correct result. A passing recorded-output
-distribution or 100% Python coverage does not prove probabilistic behavioral
-quality. Quantitative M thresholds and a representative human-calibration set
-remain pre-production decisions.
+G-class rule; G rules require a named deterministic assessor, a binary score,
+and full `1.0` to pass. Model agreement can never establish access control. M
+rules do not encode one preferred opinion as the correct result. A passing
+recorded-output distribution or 100% Python coverage does not prove
+probabilistic behavioral quality. Quantitative M thresholds and a representative
+human-calibration set remain pre-production decisions.
 
 ## Test and safety map
 
