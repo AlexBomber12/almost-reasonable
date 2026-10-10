@@ -19,6 +19,7 @@ from app.threads.simulator import (
     ReconciliationResult,
     SimulatedCrash,
     ThreadsSimulator,
+    simulated_provider_id,
 )
 from app.threads.store import (
     DuplicateOperationError,
@@ -57,7 +58,12 @@ def make_policy(**changes):
 def make_service(tmp_path, **policy_changes):
     policy = make_policy(**policy_changes)
     simulator = ThreadsSimulator(account_ref=policy.account_ref)
-    return ThreadsService(ThreadsStore(tmp_path / "threads.sqlite3"), simulator, policy)
+    return ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        policy,
+        utc_now=lambda: NOW,
+    )
 
 
 def approve(operation_id="operation-1", **changes):
@@ -246,16 +252,62 @@ def test_happy_path_preserves_multistep_provider_evidence(tmp_path):
     assert item.state is OutboxState.READY
     confirmed = service.dispatch("operation-1", approval, now=NOW)
     assert confirmed.state is OutboxState.CONFIRMED
-    assert confirmed.provider_container_id == "container-operation-1"
-    assert confirmed.provider_publication_id == "thread-operation-1"
+    container_id = simulated_provider_id("container", "operation-1")
+    assert confirmed.provider_container_id == container_id
+    assert confirmed.provider_publication_id == simulated_provider_id(
+        "thread", "operation-1"
+    )
     assert confirmed.attempt_count == 1
     assert service.simulator.trace == [
         ("create_container", "operation-1"),
-        ("publish_container", "container-operation-1"),
+        ("publish_container", container_id),
     ]
     assert service.simulator.network_calls == 0
     with pytest.raises(ThreadsStoreError):
         service.dispatch("operation-1", approval, now=NOW)
+
+
+def test_simulated_provider_ids_stay_bounded_for_maximum_operation_ids(tmp_path):
+    service = make_service(tmp_path)
+    long_success = "a" * 128
+    propose(
+        service,
+        long_success,
+        draft_id="draft-long-success",
+        correlation_id="correlation-long-success",
+    )
+    service.submit_for_approval(long_success, now=NOW)
+    success_approval = issue_approval(
+        reference="approval-long-success",
+        account_ref="account-1",
+        operation_id=long_success,
+        expires_at=NOW + timedelta(hours=1),
+    )
+    service.authorize(long_success, success_approval, now=NOW)
+    confirmed = service.dispatch(long_success, success_approval, now=NOW)
+    assert len(confirmed.provider_container_id) <= 128
+    assert len(confirmed.provider_publication_id) <= 128
+
+    long_reconciled = "b" * 128
+    propose(
+        service,
+        long_reconciled,
+        draft_id="draft-long-reconciled",
+        correlation_id="correlation-long-reconciled",
+    )
+    service.submit_for_approval(long_reconciled, now=NOW)
+    reconcile_approval = issue_approval(
+        reference="approval-long-reconciled",
+        account_ref="account-1",
+        operation_id=long_reconciled,
+        expires_at=NOW + timedelta(hours=1),
+    )
+    service.authorize(long_reconciled, reconcile_approval, now=NOW)
+    service.simulator.set_fault(long_reconciled, "publish", Fault.DURING_PUBLISH)
+    service.dispatch(long_reconciled, reconcile_approval, now=NOW)
+    service.simulator.reconciliation[long_reconciled] = ReconciliationResult.CONFIRMED
+    reconciled = service.reconcile(long_reconciled, now=NOW)
+    assert len(reconciled.provider_publication_id) <= 128
 
 
 @pytest.mark.parametrize(
@@ -306,7 +358,9 @@ def test_proven_pre_dispatch_retry_is_bounded_and_reuses_container(tmp_path):
     service.simulator.set_fault("operation-1", "publish", Fault.BEFORE_PUBLISH)
     first = service.dispatch("operation-1", approval, now=NOW)
     assert first.state is OutboxState.READY
-    assert first.provider_container_id == "container-operation-1"
+    assert first.provider_container_id == simulated_provider_id(
+        "container", "operation-1"
+    )
     second = service.dispatch("operation-1", approval, now=NOW)
     assert second.state is OutboxState.FAILED_TERMINAL
     assert service.simulator.trace.count(("create_container", "operation-1")) == 1
@@ -365,7 +419,9 @@ def test_abrupt_process_death_after_durable_boundary_marker_is_unknown(
         persisted = service.store.get("operation-1")
         assert persisted.dispatch_evidence == f"{stage}_dispatch_started"
         if stage == "publish":
-            assert persisted.provider_container_id == "container-operation-1"
+            assert persisted.provider_container_id == simulated_provider_id(
+                "container", "operation-1"
+            )
         raise SystemExit("abrupt process death")
 
     method = "create_container" if stage == "container" else "publish"
@@ -407,19 +463,45 @@ def test_policy_stop_after_container_persists_and_reuses_proven_safe_container(
         nonlocal calls
         calls += 1
         service.policy.emergency_stop = True
-        return f"container-{item.operation_id}"
+        return simulated_provider_id("container", item.operation_id)
 
     monkeypatch.setattr(service.simulator, "create_container", create_then_stop)
     with pytest.raises(PolicyDeniedError, match="stop"):
         service.dispatch("operation-1", approval, now=NOW)
     blocked = service.store.get("operation-1")
     assert blocked.state is OutboxState.READY
-    assert blocked.provider_container_id == "container-operation-1"
+    assert blocked.provider_container_id == simulated_provider_id(
+        "container", "operation-1"
+    )
     assert blocked.dispatch_evidence == "publish_not_transmitted"
     service.policy.emergency_stop = False
     confirmed = service.dispatch("operation-1", approval, now=NOW)
     assert confirmed.state is OutboxState.CONFIRMED
     assert calls == 1
+
+
+def test_approval_time_is_refreshed_after_container_creation(tmp_path):
+    times = iter((NOW, NOW + timedelta(minutes=2)))
+    runtime_policy = make_policy()
+    simulator = ThreadsSimulator(account_ref="account-1")
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        runtime_policy,
+        utc_now=lambda: next(times),
+    )
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    expiring = approve(expires_at=NOW + timedelta(minutes=1))
+    service.authorize("operation-1", expiring, now=NOW)
+    with pytest.raises(ValueError, match="expired"):
+        service.dispatch("operation-1", expiring, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.provider_container_id == simulated_provider_id(
+        "container", "operation-1"
+    )
+    assert simulator.trace == [("create_container", "operation-1")]
 
 
 @pytest.mark.parametrize(

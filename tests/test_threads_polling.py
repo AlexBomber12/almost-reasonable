@@ -51,7 +51,11 @@ def service(tmp_path, *, runtime_policy=None, clock=None):
     simulator = ThreadsSimulator(account_ref=selected.account_ref)
     kwargs = {} if clock is None else {"clock": clock}
     return ThreadsService(
-        ThreadsStore(tmp_path / "threads.sqlite3"), simulator, selected, **kwargs
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        simulator,
+        selected,
+        utc_now=lambda: NOW,
+        **kwargs,
     )
 
 
@@ -216,6 +220,34 @@ def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
     with pytest.raises(PollingError, match="event limit"):
         threads.poll(InboundKind.REPLY, now=NOW, max_events=3)
     assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-2"
+
+
+def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
+    threads = service(tmp_path)
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor="cursor-1",
+        events=(event("first"),),
+    )
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor="cursor-1",
+        next_cursor="cursor-2",
+        events=(event("second"),),
+    )
+    original_poll = threads.simulator.poll
+
+    def stop_after_first_page(stream, cursor):
+        page = original_poll(stream, cursor)
+        threads.policy.emergency_stop = True
+        return page
+
+    monkeypatch.setattr(threads.simulator, "poll", stop_after_first_page)
+    with pytest.raises(PolicyDeniedError):
+        threads.poll(InboundKind.REPLY, now=NOW)
+    assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
+    assert threads.simulator.trace == [("poll_reply", "start")]
 
 
 @pytest.mark.parametrize(

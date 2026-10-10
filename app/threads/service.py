@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 import time
 
 from .domain import (
@@ -26,6 +26,7 @@ from .simulator import (
     ReconciliationResult,
     SimulatedCrash,
     ThreadsSimulator,
+    simulated_provider_id,
 )
 from .store import ThreadsStore, ThreadsStoreError
 
@@ -52,6 +53,7 @@ class ThreadsService:
         policy: AccountPolicy,
         *,
         clock: Callable[[], float] = time.monotonic,
+        utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         policy.validate()
         if simulator.account_ref != policy.account_ref:
@@ -60,6 +62,7 @@ class ThreadsService:
         self.simulator = simulator
         self.policy = policy
         self.clock = clock
+        self.utc_now = utc_now
 
     def propose(
         self,
@@ -163,7 +166,7 @@ class ThreadsService:
         try:
             container_id = item.provider_container_id
             if container_id is None:
-                self._recheck_immediately_before_effect(item, approval, now)
+                self._recheck_immediately_before_effect(item, approval, self.utc_now())
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
                 )
@@ -175,7 +178,7 @@ class ThreadsService:
                     provider_container_id=container_id,
                 )
             try:
-                self._recheck_immediately_before_effect(item, approval, now)
+                self._recheck_immediately_before_effect(item, approval, self.utc_now())
             except (PolicyDeniedError, ValueError):
                 self.store.transition(
                     operation_id,
@@ -270,7 +273,7 @@ class ThreadsService:
             OutboxState.CONFIRMED,
             reason="reconciliation_verified_success",
             now=now,
-            provider_publication_id=f"reconciled-{operation_id}",
+            provider_publication_id=simulated_provider_id("reconciled", operation_id),
             reconciliation_status="verified_success",
         )
 
@@ -311,6 +314,7 @@ class ThreadsService:
         while pages < max_pages:
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
+            self._check_poll_policy(stream)
             page = self.simulator.poll(stream, cursor)
             if interrupt_after_fetch:
                 raise SimulatedCrash(transmission_possible=False)

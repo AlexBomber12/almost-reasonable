@@ -2,11 +2,19 @@
 
 from dataclasses import dataclass
 from enum import StrEnum
+import hashlib
 
 from .domain import InboundEvent, InboundKind, OutboxItem
 
 
 _VERIFIED_SOURCE_AUTHORITY = object()
+
+
+def simulated_provider_id(namespace: str, operation_id: str) -> str:
+    """Return a deterministic bounded provider-like reference for simulation."""
+
+    digest = hashlib.sha256(operation_id.encode("utf-8")).hexdigest()[:32]
+    return f"{namespace}-{digest}"
 
 
 class EffectClass(StrEnum):
@@ -113,7 +121,7 @@ class ThreadsSimulator:
             )
         if fault is Fault.CONTAINER_REJECTED:
             raise ProviderFailure(EffectClass.CONFIRMED_REJECTION, "container_rejected")
-        container_id = f"container-{item.operation_id}"
+        container_id = simulated_provider_id("container", item.operation_id)
         if fault is Fault.AFTER_CONTAINER:
             raise ProviderFailure(
                 EffectClass.UNCERTAIN_DISPATCH,
@@ -147,7 +155,7 @@ class ThreadsSimulator:
                 "publish_rejected",
                 container_id=container_id,
             )
-        publication_id = f"thread-{item.operation_id}"
+        publication_id = simulated_provider_id("thread", item.operation_id)
         if fault is Fault.STOP_IN_FLIGHT:
             if self.on_in_flight is not None:
                 self.on_in_flight()
