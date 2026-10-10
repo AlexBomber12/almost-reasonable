@@ -278,8 +278,10 @@ Before the first provider page fetch, polling durably records a unique caller
 correlation, bounded account actor, stream, and `started` status. Success is
 completed atomically with events and cursor; policy denial, interruption, and
 ordinary failure record terminal outcomes, while a real process exit leaves the
-`started` evidence for diagnosis. Reusing a completed correlation is rejected
-before another provider read.
+`started` evidence for diagnosis. The attempt identity is reserved before the
+policy decision, so a denied correlation cannot later be reused after policy
+restoration. Reusing any completed correlation is rejected before another
+provider read.
 
 Version-6 poll actions lacked cursor-range evidence. Migration rebuilds their
 table with the version-7 `NOT NULL` invariant and marks those rows explicitly as

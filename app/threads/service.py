@@ -603,7 +603,6 @@ class ThreadsService:
         require_aware_time("poll time", now)
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
-        self._check_poll_policy_with_audit(stream, correlation_id, now)
         if type(max_pages) is not int or not 1 <= max_pages <= MAX_POLL_PAGES:
             raise ValueError("invalid poll page limit")
         if type(max_events) is not int or not 1 <= max_events <= MAX_POLL_EVENTS:
@@ -621,6 +620,7 @@ class ThreadsService:
             now=now,
         )
         try:
+            self._check_poll_policy_with_audit(stream, correlation_id, now)
             return self._poll_started(
                 stream,
                 now=now,

@@ -1868,4 +1868,11 @@ INSERT INTO threads_poll_attempts(
 SELECT correlation_id, account_ref, stream, actor_reference, 'committed',
        occurred_at, occurred_at
 FROM threads_poll_actions;
+INSERT OR IGNORE INTO threads_poll_attempts(
+    correlation_id, account_ref, stream, actor_reference, status,
+    started_at, completed_at
+)
+SELECT correlation_id, account_ref, stream, actor_reference, 'policy_denied',
+       occurred_at, occurred_at
+FROM threads_poll_policy_denials;
 """

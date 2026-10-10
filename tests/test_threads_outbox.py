@@ -244,6 +244,14 @@ def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
             "'poll_committed', 'old-identity', ?)",
             (NOW.isoformat(),),
         )
+        connection.execute(
+            "INSERT INTO threads_poll_policy_denials "
+            "(correlation_id, account_ref, stream, actor_reference, reason, "
+            "occurred_at) VALUES "
+            "('poll-legacy-denied', 'account-1', 'reply', 'account-actor-1', "
+            "'inbound_polling_capability_unavailable', ?)",
+            (NOW.isoformat(),),
+        )
         connection.execute("DROP TABLE threads_reconciliation_attempts")
         connection.execute("DROP TABLE threads_poll_attempts")
         connection.execute(
@@ -275,10 +283,22 @@ def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
             NOW.isoformat(),
             NOW.isoformat(),
         )
+        assert connection.execute(
+            "SELECT status, started_at, completed_at FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-legacy-denied'"
+        ).fetchone() == ("policy_denied", NOW.isoformat(), NOW.isoformat())
 
     with pytest.raises(ThreadsStoreError, match="poll correlation is already used"):
         migrated.start_poll_attempt(
             correlation_id="poll-legacy-v6",
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            actor_reference="account-actor-1",
+            now=NOW,
+        )
+    with pytest.raises(ThreadsStoreError, match="poll correlation is already used"):
+        migrated.start_poll_attempt(
+            correlation_id="poll-legacy-denied",
             account_ref="account-1",
             stream=InboundKind.REPLY,
             actor_reference="account-actor-1",

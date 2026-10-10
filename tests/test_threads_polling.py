@@ -927,6 +927,10 @@ def test_polling_requires_configured_account_capability_and_scopes(
             "inbound_polling_capability_unavailable",
             NOW.isoformat(),
         )
+        assert connection.execute(
+            "SELECT status FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-policy-denied'"
+        ).fetchone() == ("policy_denied",)
 
 
 @pytest.mark.parametrize("mutable_binding", ["policy", "simulator"])
@@ -984,20 +988,31 @@ def test_poll_policy_denial_audit_validation_and_duplicate_protection(
         store.record_poll_policy_denial(**(values | {"reason": "different_reason"}))
 
 
-def test_retried_poll_denial_preserves_policy_result_and_original_audit(tmp_path):
+def test_denied_poll_correlation_cannot_be_reused_after_policy_restoration(tmp_path):
     threads = service(tmp_path, runtime_policy=policy(emergency_stop=True))
-    for poll_time in (NOW, NOW.replace(minute=NOW.minute + 1)):
-        with pytest.raises(PolicyDeniedError):
-            threads.poll(
-                InboundKind.REPLY,
-                now=poll_time,
-                correlation_id="poll-retried-denial",
-            )
+    with pytest.raises(PolicyDeniedError):
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW,
+            correlation_id="poll-retried-denial",
+        )
+    threads.policy.emergency_stop = False
+    with pytest.raises(ThreadsStoreError, match="poll correlation is already used"):
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW.replace(minute=NOW.minute + 1),
+            correlation_id="poll-retried-denial",
+        )
+    assert threads.simulator.trace == []
     with sqlite3.connect(threads.store.database) as connection:
         assert connection.execute(
             "SELECT COUNT(*), occurred_at FROM threads_poll_policy_denials "
             "WHERE correlation_id='poll-retried-denial'"
         ).fetchone() == (1, NOW.isoformat())
+        assert connection.execute(
+            "SELECT status FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-retried-denial'"
+        ).fetchone() == ("policy_denied",)
 
 
 def test_polling_rejects_invalid_stream_time_and_provider_failure(tmp_path):
