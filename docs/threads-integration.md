@@ -206,7 +206,8 @@ never creates a new identity.
 Exact operation IDs and provider IDs are unique across restart. A normalized,
 bounded SHA-256 fingerprint produces a likely-duplicate warning; it does not
 claim semantic equivalence. Exact content matching an unresolved operation
-cannot be recreated under a new ID. Any unresolved `unknown` or
+cannot be recreated under a new ID; normalized matches remain warnings rather
+than hard identity decisions. Any unresolved `unknown` or
 `unknown_abandoned` pauses ordinary readiness for that account. An exceptional
 replacement must link the unresolved operation and carry a separate
 authenticated approval that explicitly acknowledges duplicate-publication risk;
@@ -216,6 +217,10 @@ Replacement proposals also revalidate the authenticated approval and the
 target's account and unresolved state there, so account rebinding or a
 concurrent reconciliation cannot consume an immutable operation ID with stale
 authority.
+
+Submission for approval and cancellation also recheck the pinned account
+binding inside their state-transition transaction, so rebinding cannot mutate
+work owned by the former account.
 
 Before any replacement provider request, the same transaction also reserves
 its unresolved target. Reconciliation takes an exclusive claim on that target.

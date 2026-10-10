@@ -155,6 +155,7 @@ class ThreadsService:
             OutboxState.AWAITING_APPROVAL,
             reason="policy_review_required",
             now=now,
+            precommit_check=self._require_account_binding,
         )
 
     def authorize(
@@ -198,6 +199,7 @@ class ThreadsService:
             OutboxState.CANCELLED,
             reason="cancelled_before_dispatch",
             now=now,
+            precommit_check=self._require_account_binding,
         )
 
     def dispatch(

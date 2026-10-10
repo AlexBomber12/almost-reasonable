@@ -1983,6 +1983,23 @@ def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):
         service.authorize("operation-3", third_approval, now=NOW)
 
 
+def test_normalized_duplicate_is_only_a_warning_for_unresolved_content(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+
+    second, created = propose(
+        service,
+        "operation-2",
+        content="  ПРОВЕРЯЕМ   публикацию operation-1 ",
+    )
+
+    assert created is True
+    assert second.content != service.store.get("operation-1").content
+    assert service.store.likely_duplicates("operation-2") == ("operation-1",)
+
+
 def test_exceptional_replacement_requires_separate_duplicate_risk_ack(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -2374,6 +2391,35 @@ def test_cancel_and_invalid_transitions_are_explicit(tmp_path):
         service.store.transition("operation-1", "ready", reason="bad", now=NOW)
     with pytest.raises(ThreadsStoreError, match="unknown operation"):
         service.store.get("missing")
+
+
+@pytest.mark.parametrize("action", ["submit", "cancel"])
+def test_predispatch_lifecycle_rechecks_account_binding_inside_transition(
+    tmp_path, monkeypatch, action
+):
+    service = make_service(tmp_path)
+    propose(service)
+    transition = service.store.transition
+
+    def transition_with_rebinding_fence(*args, **kwargs):
+        account_fence = kwargs["precommit_check"]
+
+        def rebound_account_fence():
+            service.simulator.account_ref = "account-2"
+            account_fence()
+
+        return transition(
+            *args, **(kwargs | {"precommit_check": rebound_account_fence})
+        )
+
+    monkeypatch.setattr(service.store, "transition", transition_with_rebinding_fence)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        if action == "submit":
+            service.submit_for_approval("operation-1", now=NOW)
+        else:
+            service.cancel("operation-1", now=NOW)
+
+    assert service.store.get("operation-1").state is OutboxState.PROPOSED
 
 
 def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tmp_path):

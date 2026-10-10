@@ -283,10 +283,11 @@ class ThreadsStore:
                     )
             unresolved = connection.execute(
                 "SELECT operation_id FROM threads_outbox WHERE account_ref=? "
-                "AND content_fingerprint=? AND state IN (?, ?)",
+                "AND content_fingerprint=? AND content=? AND state IN (?, ?)",
                 (
                     account_ref,
                     fingerprint,
+                    content,
                     OutboxState.UNKNOWN.value,
                     OutboxState.UNKNOWN_ABANDONED.value,
                 ),
