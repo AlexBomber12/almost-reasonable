@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta, tzinfo
+import sqlite3
 
 import pytest
 
@@ -884,6 +885,51 @@ def test_revision_target_omitted_from_extractor_context_is_rejected(
     assert outcome.reason is CognitionReason.STALE_REVISION
     [stored] = state.retrieve_private_revision_history(
         context, StateType.INTEREST, "interest-old-candidate"
+    )
+    assert stored.revision == 1
+
+
+def test_invalidated_candidate_is_excluded_from_extraction_and_revision(
+    cognition_setup,
+):
+    events, state, context, invalidated_event = cognition_setup
+    new_event = append_event(events, context, "after-invalidation")
+    created = InterestMemoryProposal(
+        proposal_context(invalidated_event, "invalidated-create"),
+        "interest-invalidated",
+        "Private topic derived from deleted evidence",
+        40,
+        InterestStatus.ACTIVE,
+        "Invalidated evidence must not remain model-visible.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(created))
+        .process(context, invalidated_event)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE protected_state_provenance "
+            "SET retention_status = 'invalidated' WHERE event_id = ?",
+            (invalidated_event,),
+        )
+    revision = replace(
+        created,
+        context=proposal_context(new_event, "invalidated-revise", expected_revision=1),
+        strength=70,
+    )
+    extractor = FakeExtractor(revision)
+
+    outcome = CognitionEngine(events, state, extractor=extractor).process(
+        context, new_event
+    )
+
+    assert extractor.requests[0].current_candidates == ()
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STALE_REVISION
+    [stored] = state.retrieve_private_revision_history(
+        context, StateType.INTEREST, "interest-invalidated"
     )
     assert stored.revision == 1
 

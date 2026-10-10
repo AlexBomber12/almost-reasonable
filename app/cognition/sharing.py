@@ -39,6 +39,7 @@ _IDENTIFIER = re.compile(
 )
 _QUOTATION = re.compile(r"[\"'“”‘’«»]")
 _WORD = re.compile(r"\w+", re.UNICODE)
+_IDNA_DOT_TRANSLATION = str.maketrans({"\u3002": ".", "\uff0e": ".", "\uff61": "."})
 _SHAREABLE_KINDS = {
     MemoryKind.DURABLE_INTEREST,
     MemoryKind.BELIEF_OR_HYPOTHESIS,
@@ -71,7 +72,7 @@ _DEFAULT_IGNORABLE_CODEPOINTS = frozenset(
 
 
 def _normalize_privacy_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value)
+    normalized = unicodedata.normalize("NFKC", value).translate(_IDNA_DOT_TRANSLATION)
     return "".join(
         " " if character.isspace() else character
         for character in normalized

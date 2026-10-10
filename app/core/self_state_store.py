@@ -177,6 +177,15 @@ class SelfStateStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND payload.retention_status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM state_revisions AS tainted_revision
+                          JOIN protected_state_provenance AS tainted_source
+                            ON tainted_source.revision_key =
+                               tainted_revision.revision_key
+                          WHERE tainted_revision.item_key = item.item_key
+                            AND tainted_source.retention_status = 'invalidated'
+                      )
                     ORDER BY revision.revision_key DESC, item.item_id DESC
                     LIMIT ?
                     """,
