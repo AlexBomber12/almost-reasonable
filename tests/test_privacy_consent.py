@@ -77,6 +77,17 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
         is True
     )
     assert dispatched == ["sent"]
+    repeated = consent.authorize(
+        context(),
+        principal_id="participant-a",
+        content_reference="event-001",
+        audience="public-threads",
+        purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        correlation_id="use-correlation-001",
+        dispatch=lambda: dispatched.append("duplicate-send"),
+    )
+    assert (repeated.allowed, repeated.reason) == (False, "already_dispatched")
+    assert dispatched == ["sent"]
 
     first = consent.revoke(
         context(),
@@ -131,6 +142,7 @@ def test_future_revocation_does_not_take_effect_early(service):
     consent._clock = lambda: NOW + timedelta(minutes=29)
     assert consent.authorize(context(), **request).allowed
     consent._clock = lambda: NOW + timedelta(minutes=30)
+    request["correlation_id"] = "future-revocation-use-after"
     assert consent.authorize(context(), **request).reason == "revoked"
     assert ledger.revocations() == (("consent-001", NOW + timedelta(minutes=30)),)
 
@@ -177,6 +189,74 @@ def test_consent_dispatch_fences_concurrent_revocation(service):
     assert revocation_finished.is_set()
 
 
+def test_consent_dispatch_failure_is_durable_and_cannot_be_retried(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    times = iter(
+        (
+            NOW + timedelta(minutes=1),
+            NOW + timedelta(minutes=2),
+            NOW + timedelta(minutes=3),
+        )
+    )
+    consent = ConsentService(ledger, clock=lambda: next(times))
+    consent.grant(context(), grant())
+    effects = []
+
+    def dispatch():
+        effects.append("sent")
+        raise RuntimeError("lost dispatch acknowledgement")
+
+    request = {
+        "principal_id": "participant-a",
+        "content_reference": "event-001",
+        "audience": "public-threads",
+        "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        "correlation_id": "uncertain-dispatch",
+    }
+    with pytest.raises(RuntimeError, match="lost dispatch acknowledgement"):
+        consent.authorize(context(), dispatch=dispatch, **request)
+
+    repeated = consent.authorize(
+        context(), dispatch=lambda: effects.append("duplicate-send"), **request
+    )
+    assert (repeated.allowed, repeated.reason) == (False, "dispatch_uncertain")
+    assert effects == ["sent"]
+    audits = ledger.audit_records()
+    assert [(row.result_code, row.occurred_at) for row in audits[-2:]] == [
+        ("dispatch_pending", NOW + timedelta(minutes=1)),
+        ("dispatch_uncertain", NOW + timedelta(minutes=3)),
+    ]
+    with pytest.raises(ValueError, match="consent use operation identity conflict"):
+        consent.authorize(
+            context(),
+            dispatch=lambda: None,
+            **{**request, "content_reference": "event-002"},
+        )
+
+
+def test_interrupted_consent_dispatch_remains_pending_and_cannot_be_retried(service):
+    class SimulatedProcessExit(BaseException):
+        pass
+
+    consent, _ = service
+    consent.grant(context(), grant())
+    request = {
+        "principal_id": "participant-a",
+        "content_reference": "event-001",
+        "audience": "public-threads",
+        "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        "correlation_id": "interrupted-dispatch",
+    }
+    with pytest.raises(SimulatedProcessExit):
+        consent.authorize(
+            context(),
+            dispatch=lambda: (_ for _ in ()).throw(SimulatedProcessExit()),
+            **request,
+        )
+    result = consent.authorize(context(), dispatch=lambda: None, **request)
+    assert (result.allowed, result.reason) == (False, "dispatch_uncertain")
+
+
 @pytest.mark.parametrize(
     ("overrides", "authorized_at", "reason"),
     [
@@ -216,6 +296,8 @@ def test_consent_fails_closed_for_scope_or_expiry(
     request.update(overrides)
     result = consent.authorize(context(), **request)
     assert (result.allowed, result.reason) == (False, reason)
+    repeated = consent.authorize(context(), **request)
+    assert (repeated.allowed, repeated.reason) == (False, reason)
 
 
 def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):

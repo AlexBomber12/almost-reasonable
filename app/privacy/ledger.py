@@ -16,6 +16,7 @@ from .models import (
     DeletionRequest,
     PrivacyReconciliationSnapshot,
     RestoreDisposition,
+    require_utc,
 )
 
 
@@ -53,6 +54,18 @@ _SCHEMA = (
         authentication_event_id TEXT NOT NULL,
         revoked_at TEXT NOT NULL,
         correlation_id TEXT NOT NULL
+    )""",
+    """CREATE TABLE consent_use_attempts(
+        correlation_id TEXT PRIMARY KEY,
+        principal_id TEXT NOT NULL,
+        content_reference TEXT NOT NULL,
+        audience TEXT NOT NULL,
+        purpose TEXT NOT NULL,
+        actor_reference TEXT NOT NULL,
+        authentication_event_id TEXT NOT NULL,
+        attempted_at TEXT NOT NULL,
+        result_code TEXT NOT NULL,
+        consent_id TEXT
     )""",
     """CREATE TABLE deletion_records(
         operation_id TEXT PRIMARY KEY,
@@ -211,51 +224,130 @@ class PrivacyLedger:
         content_reference: str,
         audience: str,
         purpose: ConsentPurpose,
-        used_at: datetime,
         correlation_id: str,
         actor_reference: str,
+        authentication_event_id: str,
+        clock: Callable[[], datetime],
         dispatch: Callable[[], None],
     ) -> ConsentUseResult:
+        identity = (
+            principal_id,
+            content_reference,
+            audience,
+            purpose.value,
+            actor_reference,
+            authentication_event_id,
+        )
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                "SELECT g.consent_id, g.granted_at, g.expires_at, r.revoked_at "
-                "FROM consent_grants g LEFT JOIN consent_revocations r "
-                "ON r.consent_id=g.consent_id WHERE g.principal_id=? "
-                "AND g.content_reference=? AND g.audience=? AND g.purpose=? "
-                "ORDER BY g.revision DESC LIMIT 1",
-                (principal_id, content_reference, audience, purpose.value),
+            existing = connection.execute(
+                "SELECT principal_id, content_reference, audience, purpose, "
+                "actor_reference, authentication_event_id, result_code, consent_id "
+                "FROM consent_use_attempts WHERE correlation_id=?",
+                (correlation_id,),
             ).fetchone()
-            if row is None:
-                result = ConsentUseResult(False, "no_matching_consent")
-            else:
-                consent_id = row[0]
-                granted_at = _time(row[1])
-                expires_at = _time(row[2])
-                revoked_at = None if row[3] is None else _time(row[3])
-                if used_at < granted_at:
-                    result = ConsentUseResult(False, "not_yet_valid", consent_id)
-                elif revoked_at is not None and used_at >= revoked_at:
-                    result = ConsentUseResult(False, "revoked", consent_id)
-                elif used_at >= expires_at:
-                    result = ConsentUseResult(False, "expired", consent_id)
-                else:
-                    result = ConsentUseResult(True, "authorized", consent_id)
+            if existing is not None:
+                if existing[:6] != identity:
+                    raise ValueError("consent use operation identity conflict")
+                if existing[6] == "completed":
+                    return ConsentUseResult(False, "already_dispatched", existing[7])
+                if existing[6] in {"dispatch_pending", "dispatch_uncertain"}:
+                    return ConsentUseResult(False, "dispatch_uncertain", existing[7])
+                return ConsentUseResult(False, existing[6], existing[7])
+            attempted_at = clock()
+            require_utc(attempted_at, "consent use attempt timestamp")
+            connection.execute(
+                "INSERT INTO consent_use_attempts VALUES(?,?,?,?,?,?,?,?,?,NULL)",
+                (correlation_id, *identity, _stamp(attempted_at), "dispatch_pending"),
+            )
             self._insert_audit(
                 connection,
                 AuditRecord(
                     correlation_id,
                     actor_reference,
-                    "consent_use",
+                    "consent_use_attempt",
                     "consent",
-                    used_at,
-                    result.reason,
+                    attempted_at,
+                    "dispatch_pending",
                     "payload_free",
                 ),
             )
-            if result.allowed:
-                dispatch()
-        return result
+
+        try:
+            with self._open() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                used_at = clock()
+                require_utc(used_at, "consent use timestamp")
+                row = connection.execute(
+                    "SELECT g.consent_id, g.granted_at, g.expires_at, r.revoked_at "
+                    "FROM consent_grants g LEFT JOIN consent_revocations r "
+                    "ON r.consent_id=g.consent_id WHERE g.principal_id=? "
+                    "AND g.content_reference=? AND g.audience=? AND g.purpose=? "
+                    "ORDER BY g.revision DESC LIMIT 1",
+                    (principal_id, content_reference, audience, purpose.value),
+                ).fetchone()
+                if row is None:
+                    result = ConsentUseResult(False, "no_matching_consent")
+                else:
+                    consent_id = row[0]
+                    granted_at = _time(row[1])
+                    expires_at = _time(row[2])
+                    revoked_at = None if row[3] is None else _time(row[3])
+                    if used_at < granted_at:
+                        result = ConsentUseResult(False, "not_yet_valid", consent_id)
+                    elif revoked_at is not None and used_at >= revoked_at:
+                        result = ConsentUseResult(False, "revoked", consent_id)
+                    elif used_at >= expires_at:
+                        result = ConsentUseResult(False, "expired", consent_id)
+                    else:
+                        result = ConsentUseResult(True, "authorized", consent_id)
+                if result.allowed:
+                    dispatch()
+                connection.execute(
+                    "UPDATE consent_use_attempts SET result_code=?, consent_id=? "
+                    "WHERE correlation_id=?",
+                    (
+                        "completed" if result.allowed else result.reason,
+                        result.consent_id,
+                        correlation_id,
+                    ),
+                )
+                self._insert_audit(
+                    connection,
+                    AuditRecord(
+                        correlation_id,
+                        actor_reference,
+                        "consent_use",
+                        "consent",
+                        used_at,
+                        result.reason,
+                        "payload_free",
+                    ),
+                )
+            return result
+        except Exception:
+            with self._open() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                failed_at = clock()
+                require_utc(failed_at, "consent use failure timestamp")
+                connection.execute(
+                    "UPDATE consent_use_attempts SET result_code='dispatch_uncertain' "
+                    "WHERE correlation_id=?",
+                    (correlation_id,),
+                )
+                self._insert_audit(
+                    connection,
+                    AuditRecord(
+                        correlation_id,
+                        actor_reference,
+                        "consent_use",
+                        "consent",
+                        failed_at,
+                        "dispatch_uncertain",
+                        "payload_free",
+                    ),
+                )
+            raise
 
     def consent_principal(self, consent_id: str) -> str | None:
         with self._open() as connection:

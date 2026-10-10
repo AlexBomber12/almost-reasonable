@@ -17,7 +17,13 @@ time, expiry, trusted actor, authentication event, revision, operation ID, and
 correlation ID. Use is checked against the current ledger with a service-owned
 UTC clock; callers cannot backdate it. The required dispatch callback runs while
 the privacy ledger holds a write fence, so revocation cannot commit between the
-check and the outbound effect. Dispatch code must not re-enter the privacy ledger.
+check and the outbound effect. Its use time is sampled only after that fence is
+held. Before invoking the callback, the ledger durably commits a payload-free
+`dispatch_pending` attempt keyed by correlation ID. Success changes that attempt
+to `completed`; a callback error changes it to `dispatch_uncertain`, while a
+process interruption leaves `dispatch_pending`. Neither uncertain state can be
+retried automatically, so a send followed by a lost acknowledgement cannot
+cause a duplicate disclosure. Dispatch code must not re-enter the privacy ledger.
 Missing, expired, revoked, wrong-principal, wrong-content, wrong-audience, and
 wrong-purpose grants fail closed. Revocation is a separate authenticated,
 idempotent operation and takes effect at its recorded UTC timestamp. Neither
@@ -59,6 +65,7 @@ Its records contain control metadata, not message payloads, prompts,
 provider responses, secrets, or an unkeyed hash of private content. It stores:
 
 - exact consent grants and revocations;
+- payload-free consent-use attempts and their dispatch state;
 - deletion operation identity, source reference/category, times, disposition,
   reason code, authenticated actor, authentication event, and correlation;
 - payload-free technical audit records;

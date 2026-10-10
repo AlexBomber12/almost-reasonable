@@ -73,8 +73,6 @@ class ConsentService:
         require_token(content_reference, "content reference")
         require_token(audience, "audience")
         require_token(correlation_id, "correlation id")
-        used_at = self._clock()
-        require_utc(used_at, "use timestamp")
         if not isinstance(purpose, ConsentPurpose):
             raise ValueError("invalid consent purpose")
         if context.origin is not OperationOrigin.CONTROL:
@@ -87,11 +85,13 @@ class ConsentService:
                 content_reference=content_reference,
                 audience=audience,
                 purpose=purpose,
-                used_at=used_at,
                 correlation_id=correlation_id,
                 actor_reference=context.actor_reference,
+                authentication_event_id=context.authentication_event_id,
+                clock=self._clock,
                 dispatch=dispatch,
             )
+        used_at = self._trusted_time()
         self.ledger.record_audit(
             AuditRecord(
                 correlation_id,
