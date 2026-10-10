@@ -301,6 +301,8 @@ def _require_database_identity(source: _PinnedDatabase) -> None:
         raise BackupError("backup source identity changed")
     current = _pin_database(source.path, "backup source", pin_sidecars=True)
     try:
+        if source.immutable and current.sidecars:
+            raise BackupError("immutable backup contains SQLite sidecars")
         expected = os.fstat(source.descriptor)
         observed = os.fstat(current.descriptor)
         if (observed.st_dev, observed.st_ino) != (expected.st_dev, expected.st_ino):
@@ -649,9 +651,12 @@ class QuarantinedRestore:
         ready_path = Path(f"{quarantine}.ready.json")
         _validate_new_file(ready_path, "readiness marker")
         staging = quarantine.with_name(f".privacy-restore-{uuid4()}.sqlite3")
-        pinned_backup = _pin_database(backup, "backup", immutable=True)
+        pinned_backup = _pin_database(
+            backup, "backup", immutable=True, pin_sidecars=True
+        )
         owned: list[_OwnedFile] = []
         try:
+            _require_database_identity(pinned_backup)
             _load_metadata(backup, self.expected_schema_version)
             if (
                 _schema_version(

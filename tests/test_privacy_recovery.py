@@ -1426,6 +1426,35 @@ def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
     adapters[0].connection.close()
 
 
+def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    writer = sqlite3.connect(backup)
+    try:
+        writer.execute("PRAGMA journal_mode=WAL")
+        writer.execute("PRAGMA wal_autocheckpoint=0")
+        writer.execute("DELETE FROM synthetic_private")
+        writer.commit()
+        assert writer.execute("SELECT COUNT(*) FROM synthetic_private").fetchone() == (
+            0,
+        )
+        assert Path(f"{backup}-wal").exists()
+
+        with pytest.raises(BackupError, match="sidecar"):
+            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+                backup, quarantine, NOW
+            )
+    finally:
+        writer.close()
+
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+
 def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
     tmp_path, monkeypatch
 ):
