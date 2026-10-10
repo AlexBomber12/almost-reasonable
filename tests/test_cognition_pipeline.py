@@ -97,6 +97,11 @@ class HostileExtractorIdentity(ExtractorIdentity):
         return super().__getattribute__(name)
 
 
+class HostileEqualityString(str):
+    def __eq__(self, _other):
+        raise RuntimeError("synthetic hostile equality adapter")
+
+
 class HostileString(str):
     def __ne__(self, _other):
         raise RuntimeError("synthetic hostile string adapter")
@@ -559,6 +564,7 @@ def test_evidence_inputs_are_bounded_and_authorized_before_extraction(
         tuple(f"event-extra-{index}" for index in range(50)),
         (event_id,),
         ("bad id",),
+        (HostileEqualityString("event-other"),),
         ([],),
         ("event-other", "event-other"),
     )

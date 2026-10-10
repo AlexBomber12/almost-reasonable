@@ -268,6 +268,8 @@ class MemoryContextSelector:
     def _validate_request(request: object) -> None:
         if not isinstance(request, RetrievalRequest):
             raise ValueError("invalid retrieval request")
+        if type(request.relevant_topic) is not str:
+            raise ValueError("invalid retrieval request")
         try:
             MemoryRetrievalLimits(request.total_utf8_bytes, request.max_records)
             request.relevant_topic.encode("utf-8")
@@ -275,7 +277,6 @@ class MemoryContextSelector:
             raise ValueError("invalid retrieval request") from None
         if (
             not isinstance(request.purpose, RetrievalPurpose)
-            or type(request.relevant_topic) is not str
             or len(request.relevant_topic.encode("utf-8")) > 4096
             or type(request.include_terminal) is not bool
             or (

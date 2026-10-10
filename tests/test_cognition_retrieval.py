@@ -44,6 +44,11 @@ from app.core.store import EventStore, EventStoreError
 NOW = datetime(2026, 3, 3, 10, 0, tzinfo=UTC)
 
 
+class HostileString(str):
+    def encode(self, _encoding="utf-8", _errors="strict"):
+        raise RuntimeError("synthetic hostile string adapter")
+
+
 def principal(name):
     return TrustedPrincipalContext(
         ParticipantId(f"participant-{name}"),
@@ -362,6 +367,12 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
     [
         RetrievalRequest(RetrievalPurpose.CONVERSATION, "topic", 0, 1),
         RetrievalRequest(RetrievalPurpose.CONVERSATION, "topic", 100, 0),
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            HostileString("topic"),
+            100,
+            1,
+        ),
         RetrievalRequest(
             RetrievalPurpose.CONVERSATION,
             "topic",

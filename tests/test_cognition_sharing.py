@@ -156,6 +156,8 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
     ("value", "reason"),
     [
         ("Contact ada@example.test about uncertainty.", AbstractReason.IDENTIFIER),
+        ("Contact alice@example about uncertainty.", AbstractReason.IDENTIFIER),
+        ("Contact alice@localhost about uncertainty.", AbstractReason.IDENTIFIER),
         ("Contact иван@пример.рф about uncertainty.", AbstractReason.IDENTIFIER),
         (
             "Discuss broad lessons without contacting @иван directly.",

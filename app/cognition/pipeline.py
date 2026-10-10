@@ -101,8 +101,8 @@ class CognitionEngine:
         if (
             type(evidence_event_ids) is not tuple
             or len(evidence_event_ids) >= MAX_EVIDENCE_PER_REVISION
-            or source_event_id in evidence_event_ids
             or any(not self._valid_token(item) for item in evidence_event_ids)
+            or source_event_id in evidence_event_ids
             or len(set(evidence_event_ids)) != len(evidence_event_ids)
         ):
             return self._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
