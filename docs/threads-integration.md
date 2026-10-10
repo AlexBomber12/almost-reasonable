@@ -146,9 +146,10 @@ The closed lifecycle is:
    pre-dispatch attempts.
 
 The service resolves current approval and privacy state when an item becomes
-ready, rechecks both after acquiring SQLite's writer lock for the `ready`
-transition, checks again before entering `sending`, and immediately before both
-container creation and publication. Each effect check occurs after its final durable
+ready, rechecks both after acquiring SQLite's writer lock for the `ready` and
+`sending` transitions, and immediately before both container creation and
+publication. The `sending` fence also rechecks the stop and pinned account before
+incrementing the bounded attempt count. Each effect check occurs after its final durable
 dispatch-marker write, so no intervening store update creates an authorization
 gap before the provider call. After all potentially blocking authorization
 and unresolved-publication store lookups, the service obtains a fresh atomic

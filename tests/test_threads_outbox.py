@@ -663,6 +663,81 @@ def test_revocation_or_privacy_change_before_dispatch_blocks_all_effects(tmp_pat
 
 
 @pytest.mark.parametrize(
+    "change, expected_exception, message",
+    [
+        ("approval", ValueError, "revoked"),
+        ("privacy", PolicyDeniedError, "current draft privacy"),
+        ("account", PolicyDeniedError, "account mismatch"),
+        ("stop", PolicyDeniedError, "stop"),
+    ],
+)
+def test_sending_transition_rechecks_authorization_before_consuming_attempt(
+    tmp_path, monkeypatch, change, expected_exception, message
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    transition = service.store.transition
+
+    def transition_with_authorization_change(*args, **kwargs):
+        if args[1] is OutboxState.SENDING:
+            authorization_fence = kwargs["precommit_check"]
+
+            def changed_authorization_fence():
+                if change == "approval":
+                    service.authorization_provider.set_approval(approve(revoked=True))
+                elif change == "privacy":
+                    service.authorization_provider.set_privacy(
+                        "account-1", "operation-1", False
+                    )
+                elif change == "account":
+                    service.simulator.account_ref = "account-2"
+                else:
+                    service.policy.emergency_stop = True
+                authorization_fence()
+
+            kwargs = kwargs | {"precommit_check": changed_authorization_fence}
+        return transition(*args, **kwargs)
+
+    monkeypatch.setattr(
+        service.store, "transition", transition_with_authorization_change
+    )
+    with pytest.raises(expected_exception, match=message):
+        service.dispatch("operation-1", approval, now=NOW)
+
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.attempt_count == 0
+    assert blocked.dispatch_evidence is None
+    assert service.simulator.trace == []
+
+
+def test_authorization_change_after_sending_commit_is_proven_not_transmitted(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    transition = service.store.transition
+
+    def transition_then_withdraw_privacy(*args, **kwargs):
+        result = transition(*args, **kwargs)
+        if args[1] is OutboxState.SENDING:
+            service.authorization_provider.set_privacy(
+                "account-1", "operation-1", False
+            )
+        return result
+
+    monkeypatch.setattr(service.store, "transition", transition_then_withdraw_privacy)
+    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+        service.dispatch("operation-1", approval, now=NOW)
+
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.attempt_count == 1
+    assert blocked.dispatch_evidence == "container_not_transmitted"
+    assert service.simulator.trace == []
+
+
+@pytest.mark.parametrize(
     "withdrawal, error, message",
     [
         ("privacy", PolicyDeniedError, "current draft privacy"),
@@ -1303,7 +1378,7 @@ def test_approval_expiry_is_rechecked_after_final_authorization_lookup(
         nonlocal snapshot_checks
         snapshot_checks += 1
         result = current_snapshot(**kwargs)
-        if snapshot_checks == 4:
+        if snapshot_checks == 5:
             current_time[0] = NOW + timedelta(minutes=2)
         return result
 
@@ -1318,6 +1393,7 @@ def test_approval_expiry_is_rechecked_after_final_authorization_lookup(
     assert blocked.state is OutboxState.READY
     assert blocked.dispatch_evidence == "publish_not_transmitted"
     assert simulator.trace == [("create_container", "operation-1")]
+    assert snapshot_checks == 5
 
 
 def test_dispatch_persists_the_current_approval_reference(tmp_path):

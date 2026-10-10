@@ -222,6 +222,19 @@ class ThreadsService:
             raise ThreadsStoreError("only a ready operation can be dispatched")
         try:
             current_approval = self._check_ready_policy(item, approval, now=now)
+            item = self.store.transition(
+                operation_id,
+                OutboxState.SENDING,
+                reason="durable_dispatch_intent",
+                now=now,
+                approval_reference=current_approval.reference,
+                approval_status="approved",
+                dispatch_evidence="pre_dispatch_intent",
+                increment_attempt=True,
+                precommit_check=lambda: self._recheck_immediately_before_effect(
+                    item, approval, self.utc_now()
+                ),
+            )
         except (PolicyDeniedError, ValueError):
             self._audit_policy_denial(
                 item,
@@ -230,16 +243,6 @@ class ThreadsService:
                 expected_state=OutboxState.READY,
             )
             raise
-        item = self.store.transition(
-            operation_id,
-            OutboxState.SENDING,
-            reason="durable_dispatch_intent",
-            now=now,
-            approval_reference=current_approval.reference,
-            approval_status="approved",
-            dispatch_evidence="pre_dispatch_intent",
-            increment_attempt=True,
-        )
         try:
             container_id = item.provider_container_id
             try:
