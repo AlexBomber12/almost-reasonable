@@ -31,6 +31,7 @@ from .models import (
 
 
 PRIVACY_LEDGER_SCHEMA_VERSION = 1
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 
 _SCHEMA = (
@@ -294,7 +295,7 @@ class PrivacyLedger:
         journal_mode = connection.execute("PRAGMA journal_mode=WAL").fetchone()
         if journal_mode != ("wal",):
             raise RuntimeError("privacy ledger requires WAL journal mode")
-        for suffix in ("-wal", "-shm"):
+        for suffix in _SQLITE_SIDECAR_SUFFIXES:
             try:
                 sidecar_descriptor = os.open(
                     f"{self.path.name}{suffix}",
@@ -311,7 +312,7 @@ class PrivacyLedger:
                 os.close(sidecar_descriptor)
 
     def _require_trusted_sidecars(self) -> None:
-        for suffix in ("-wal", "-shm"):
+        for suffix in _SQLITE_SIDECAR_SUFFIXES:
             try:
                 descriptor = os.open(
                     f"{self.path.name}{suffix}",

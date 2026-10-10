@@ -1311,7 +1311,8 @@ def test_privacy_ledger_file_open_failure_closes_pinned_parent(tmp_path, monkeyp
         os.fstat(parent_descriptors[0])
 
 
-def test_privacy_ledger_rejects_non_regular_sidecars(tmp_path):
+@pytest.mark.parametrize("suffix", ["-wal", "-shm", "-journal"])
+def test_privacy_ledger_rejects_non_regular_sidecars(tmp_path, suffix):
     class WalConnection:
         @staticmethod
         def execute(statement):
@@ -1328,7 +1329,7 @@ def test_privacy_ledger_rejects_non_regular_sidecars(tmp_path):
     ledger = object.__new__(PrivacyLedger)
     ledger.path = tmp_path / "privacy.sqlite3"
     ledger._parent_descriptor = ledger_module.open_trusted_directory_chain(tmp_path)
-    os.mkfifo(tmp_path / "privacy.sqlite3-wal")
+    os.mkfifo(tmp_path / f"privacy.sqlite3{suffix}")
     try:
         with pytest.raises(RuntimeError, match="sidecar is unsafe"):
             ledger._configure(WalConnection())
@@ -1336,19 +1337,20 @@ def test_privacy_ledger_rejects_non_regular_sidecars(tmp_path):
         os.close(ledger._parent_descriptor)
 
 
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
 @pytest.mark.parametrize("sidecar_kind", ["writable", "symlink"])
 def test_privacy_ledger_rejects_unsafe_sidecars_before_connecting(
-    tmp_path, monkeypatch, sidecar_kind
+    tmp_path, monkeypatch, suffix, sidecar_kind
 ):
     path = tmp_path / "privacy.sqlite3"
     PrivacyLedger(path)
-    sidecar = Path(f"{path}-wal")
+    sidecar = Path(f"{path}{suffix}")
     if sidecar_kind == "writable":
-        sidecar.write_bytes(b"untrusted-wal")
+        sidecar.write_bytes(b"untrusted-sidecar")
         sidecar.chmod(0o666)
     else:
-        target = tmp_path / "foreign-wal"
-        target.write_bytes(b"untrusted-wal")
+        target = tmp_path / f"foreign{suffix}"
+        target.write_bytes(b"untrusted-sidecar")
         sidecar.symlink_to(target)
     connection_attempted = False
 
@@ -1365,18 +1367,19 @@ def test_privacy_ledger_rejects_unsafe_sidecars_before_connecting(
         PrivacyLedger(path)
 
     assert connection_attempted is False
-    assert sidecar.read_bytes() == b"untrusted-wal"
+    assert sidecar.read_bytes() == b"untrusted-sidecar"
     if sidecar_kind == "writable":
         assert stat.S_IMODE(sidecar.stat().st_mode) == 0o666
     else:
         assert sidecar.is_symlink()
 
 
+@pytest.mark.parametrize("suffix", ["-wal", "-journal"])
 def test_privacy_ledger_revalidates_sidecars_before_every_connection(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, suffix
 ):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    sidecar = Path(f"{ledger.path}-wal")
+    sidecar = Path(f"{ledger.path}{suffix}")
     sidecar.touch()
     sidecar.chmod(0o666)
     connection_attempted = False
