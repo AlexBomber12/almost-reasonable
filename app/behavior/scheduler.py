@@ -14,6 +14,8 @@ SCHEDULER_VERSION = "behavior-scheduler-v1"
 MAX_PENDING_WAKEUPS = 1024
 MAX_PROCESSED_EVENTS = 4096
 MAX_ACTION_HISTORY = 4096
+MAX_WAKEUP_EVENT_ID_UTF8_BYTES = 256
+MAX_WAKEUP_TRIGGER_UTF8_BYTES = 1024
 
 
 class SchedulerOutcome(StrEnum):
@@ -84,8 +86,12 @@ class WakeupEvent:
     trigger: str
 
     def __post_init__(self) -> None:
-        if not self.event_id or not self.trigger:
-            raise ValueError("event_id and trigger must be non-empty")
+        if not _valid_event_text(
+            self.event_id, MAX_WAKEUP_EVENT_ID_UTF8_BYTES
+        ) or not _valid_event_text(self.trigger, MAX_WAKEUP_TRIGGER_UTF8_BYTES):
+            raise ValueError(
+                "event_id and trigger must be non-empty bounded UTF-8 text"
+            )
         if self.scheduled_at.tzinfo is None:
             raise ValueError("scheduled_at must be timezone-aware")
 
@@ -342,6 +348,15 @@ def _is_finite_number(value: int | float) -> bool:
     try:
         return math.isfinite(float(value))
     except OverflowError:
+        return False
+
+
+def _valid_event_text(value: object, max_bytes: int) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= max_bytes
+    except UnicodeEncodeError:
         return False
 
 

@@ -733,6 +733,17 @@ def _validate_active_mission(
         for record in records
     ):
         raise ValueError("superseded proposal lacks a confirmed sibling")
+    confirmed_snapshots = {
+        record.proposal.current_mission_version: record.proposal.invariants
+        for record in confirmed
+    }
+    if any(
+        record.status is MissionStatus.SUPERSEDED
+        and record.proposal.invariants
+        != confirmed_snapshots[record.proposal.current_mission_version]
+        for record in records
+    ):
+        raise ValueError("superseded proposal has a conflicting invariant snapshot")
     if any(
         record.status is MissionStatus.PENDING
         and record.proposal.current_mission_version != current.version

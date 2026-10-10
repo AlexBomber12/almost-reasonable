@@ -6,6 +6,8 @@ from app.behavior.deliberation import AgentDecision
 from app.behavior.scheduler import (
     MAX_ACTION_HISTORY,
     MAX_PROCESSED_EVENTS,
+    MAX_WAKEUP_EVENT_ID_UTF8_BYTES,
+    MAX_WAKEUP_TRIGGER_UTF8_BYTES,
     SCHEDULER_VERSION,
     InMemorySchedulerStore,
     MutableClock,
@@ -215,6 +217,15 @@ def test_overnight_active_hours_expired_duplicate_and_validation() -> None:
         policy(max_iterations=0)
     with pytest.raises(ValueError, match="event_id"):
         WakeupEvent("", NOW, "periodic")
+    invalid_event_text = (
+        ("ы" * (MAX_WAKEUP_EVENT_ID_UTF8_BYTES // 2 + 1), "periodic"),
+        ("event", "ы" * (MAX_WAKEUP_TRIGGER_UTF8_BYTES // 2 + 1)),
+        ("event", "\ud800"),
+        (1, "periodic"),
+    )
+    for event_id, trigger in invalid_event_text:
+        with pytest.raises(ValueError, match="event_id and trigger"):
+            WakeupEvent(event_id, NOW, trigger)  # type: ignore[arg-type]
 
 
 def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:

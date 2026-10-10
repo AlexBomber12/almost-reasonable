@@ -909,6 +909,19 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     with pytest.raises(ValueError, match="superseded"):
         repository.load()
 
+    conflicting_superseded = json.loads(json.dumps(resolved))
+    conflicting_sibling = json.loads(json.dumps(pending["proposals"][0]))
+    conflicting_sibling["proposal"]["proposal_id"] = "mp-snapshot-conflict"
+    conflicting_sibling["proposal"]["version_identity"] = "proposal-snapshot-conflict"
+    conflicting_sibling["proposal"]["initiating_event_id"] = "event-snapshot-conflict"
+    conflicting_sibling["proposal"]["correlation_id"] = "corr-snapshot-conflict"
+    conflicting_sibling["proposal"]["invariants"]["deployment_stage"] = "production"
+    conflicting_sibling["status"] = MissionStatus.SUPERSEDED.value
+    conflicting_superseded["proposals"].append(conflicting_sibling)
+    path.write_text(json.dumps(conflicting_superseded), encoding="utf-8")
+    with pytest.raises(ValueError, match="superseded.*snapshot"):
+        repository.load()
+
     late_superseded = json.loads(json.dumps(resolved))
     late_sibling = json.loads(json.dumps(pending["proposals"][0]))
     late_sibling["proposal"]["proposal_id"] = "mp-late"

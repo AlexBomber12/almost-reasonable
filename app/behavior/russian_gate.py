@@ -1,5 +1,6 @@
 """Versioned deterministic H-class gate for conversational Russian output."""
 
+import ast
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -92,16 +93,6 @@ _CODE_SIGNAL = re.compile(
     r"order\s+by|limit)\b)|"
     r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
     r"</?[A-Za-z][^>]*>)",
-    re.IGNORECASE,
-)
-_ASSIGNMENT_CODE_SIGNAL = re.compile(
-    r"^\s*[A-Za-z_]\w*\s*=\s*(?:"
-    r"\"(?:\\.|[^\"\\])*\"|\'(?:\\.|[^\'\\])*\'|"
-    r"[+-]?(?:\d+(?:\.\d*)?|\.\d+)|"
-    r"(?:True|False|None|null)\b|"
-    r"\[[^\r\n]*\]|\{[^\r\n]*\}|\([^\r\n]*\)|"
-    r"[A-Za-z_]\w*\s*\([^\r\n]*\)"
-    r")\s*;?\s*$",
     re.IGNORECASE,
 )
 _TAGGED_FENCED_CODE_SIGNAL = re.compile(
@@ -384,14 +375,34 @@ def _replace_fenced_code_span(match: re.Match[str]) -> str:
 
 def _replace_code_span(match: re.Match[str]) -> str:
     content = match.group(1)
-    return " " if _has_code_signal(content) else content
+    return " " if _has_complete_code_signal(content) else content
 
 
 def _has_code_signal(content: str) -> bool:
-    return bool(
-        _CODE_SIGNAL.search(content)
-        or _ASSIGNMENT_CODE_SIGNAL.fullmatch(content)
-        or _is_json_object(content)
+    return bool(_CODE_SIGNAL.search(content) or _has_complete_code_signal(content))
+
+
+def _has_complete_code_signal(content: str) -> bool:
+    if _CODE_SIGNAL.fullmatch(content) or _is_json_object(content):
+        return True
+    try:
+        parsed = ast.parse(content, mode="exec")
+    except SyntaxError:
+        return False
+    code_nodes = (
+        ast.Assign,
+        ast.AnnAssign,
+        ast.AugAssign,
+        ast.ClassDef,
+        ast.FunctionDef,
+        ast.Import,
+        ast.ImportFrom,
+    )
+    return bool(parsed.body) and all(
+        isinstance(node, code_nodes)
+        or isinstance(node, ast.Expr)
+        and isinstance(node.value, ast.Call)
+        for node in parsed.body
     )
 
 
