@@ -1036,7 +1036,73 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
             "WHERE outcome_id=?",
             (f"outcome-{outcome.value}",),
         ).fetchone() == ("correlation-decision",)
-    assert threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+    if outcome is ConversationOutcome.DEFER:
+        assert threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == (
+            event("decision"),
+        )
+        deferred = threads.store.deferred_inbound_events("account-1", InboundKind.REPLY)
+        assert len(deferred) == 1
+        assert deferred[0].event == event("decision")
+        assert deferred[0].resume_condition == "after-research"
+    else:
+        assert (
+            threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+        )
+        assert (
+            threads.store.deferred_inbound_events("account-1", InboundKind.REPLY) == ()
+        )
+
+
+def test_deferred_event_survives_restart_and_can_be_resumed(tmp_path):
+    store = service(tmp_path).store
+    inbound = event("deferred-restart")
+    store.commit_poll_page(
+        correlation_id="poll-deferred-restart",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(inbound,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-defer-first",
+        correlation_id=inbound.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=inbound.event_id,
+        outcome=ConversationOutcome.DEFER,
+        reason="awaiting-public-evidence",
+        resume_condition="public-evidence-arrives",
+        now=NOW,
+    )
+
+    restarted = ThreadsStore(store.database)
+    deferred = restarted.deferred_inbound_events("account-1", InboundKind.REPLY)
+    assert len(deferred) == 1
+    assert deferred[0].event == inbound
+    assert deferred[0].outcome_id == "outcome-defer-first"
+    assert deferred[0].outcome_correlation_id == inbound.correlation_id
+    assert deferred[0].reason == "awaiting-public-evidence"
+    assert deferred[0].resume_condition == "public-evidence-arrives"
+    assert deferred[0].deferred_at == NOW
+
+    resumed_at = NOW.replace(minute=NOW.minute + 1)
+    restarted.record_conversation_outcome(
+        outcome_id="outcome-resumed-no-action",
+        correlation_id=inbound.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=inbound.event_id,
+        outcome=ConversationOutcome.NO_ACTION,
+        reason="resumed-after-public-evidence",
+        resume_condition=None,
+        now=resumed_at,
+    )
+    assert restarted.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+    assert restarted.deferred_inbound_events("account-1", InboundKind.REPLY) == ()
 
 
 def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):

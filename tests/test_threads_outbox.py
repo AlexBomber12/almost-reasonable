@@ -228,6 +228,52 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
 
 
+def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
+    path = tmp_path / "threads.sqlite3"
+    ThreadsStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO threads_poll_actions "
+            "(correlation_id, account_ref, stream, actor_reference, action, "
+            "cursor_identity, occurred_at) VALUES "
+            "('poll-legacy-v6', 'account-1', 'reply', 'account-actor-1', "
+            "'poll_committed', 'old-identity', ?)",
+            (NOW.isoformat(),),
+        )
+        connection.execute("DROP TABLE threads_reconciliation_attempts")
+        connection.execute(
+            "ALTER TABLE threads_poll_actions DROP COLUMN cursor_identity"
+        )
+        connection.execute("UPDATE threads_schema_metadata SET version=6")
+
+    migrated = ThreadsStore(path)
+    with sqlite3.connect(path) as connection:
+        cursor_column = next(
+            row
+            for row in connection.execute("PRAGMA table_info(threads_poll_actions)")
+            if row[1] == "cursor_identity"
+        )
+        assert cursor_column[3] == 1
+        assert connection.execute(
+            "SELECT cursor_identity FROM threads_poll_actions "
+            "WHERE correlation_id='poll-legacy-v6'"
+        ).fetchone() == ("legacy-v6:poll-legacy-v6",)
+
+    with pytest.raises(ThreadsStoreError, match="legacy poll correlation"):
+        migrated.commit_poll_page(
+            correlation_id="poll-legacy-v6",
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor=None,
+            events=(),
+            now=NOW,
+            precommit_check=lambda: None,
+        )
+    assert migrated.cursor("account-1", InboundKind.REPLY) is None
+
+
 def test_existing_database_requires_version_metadata_row(tmp_path):
     path = tmp_path / "threads.sqlite3"
     ThreadsStore(path)

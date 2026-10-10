@@ -10,6 +10,7 @@ from typing import Iterator
 
 from .domain import (
     ConversationOutcome,
+    DeferredInboundEvent,
     InboundEvent,
     InboundKind,
     OutboxItem,
@@ -1153,6 +1154,12 @@ class ThreadsStore:
                     "FROM threads_poll_actions WHERE correlation_id=?",
                     (correlation_id,),
                 ).fetchone()
+                if existing is not None and existing["cursor_identity"].startswith(
+                    "legacy-v6:"
+                ):
+                    raise ThreadsStoreError(
+                        "legacy poll correlation requires a new correlation ID"
+                    )
                 expected = (
                     account_ref,
                     stream.value,
@@ -1223,30 +1230,27 @@ class ThreadsStore:
                 raise ThreadsStoreError(
                     "conversation outcome correlation does not match inbound event"
                 )
-            acknowledged = connection.execute(
-                "UPDATE threads_inbound_events SET processed_at=? "
-                "WHERE account_ref=? AND kind=? AND event_id=? "
-                "AND correlation_id=? AND processed_at IS NULL",
-                (
-                    now.isoformat(),
-                    account_ref,
-                    stream.value,
-                    inbound_event_id,
-                    correlation_id,
-                ),
-            ).rowcount
-            if acknowledged != 1:
-                raise ThreadsStoreError("inbound event is already processed")
+            if outcome is not ConversationOutcome.DEFER:
+                acknowledged = connection.execute(
+                    "UPDATE threads_inbound_events SET processed_at=? "
+                    "WHERE account_ref=? AND kind=? AND event_id=? "
+                    "AND correlation_id=? AND processed_at IS NULL",
+                    (
+                        now.isoformat(),
+                        account_ref,
+                        stream.value,
+                        inbound_event_id,
+                        correlation_id,
+                    ),
+                ).rowcount
+                if acknowledged != 1:
+                    raise ThreadsStoreError("inbound event is already processed")
             connection.commit()
 
     def pending_inbound_events(
         self, account_ref: str, stream: InboundKind, *, limit: int = 100
     ) -> tuple[InboundEvent, ...]:
-        require_reference("account reference", account_ref)
-        if type(stream) is not InboundKind:
-            raise ValueError("invalid inbound stream")
-        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INBOUND_EVENTS:
-            raise ValueError("invalid pending inbound limit")
+        self._validate_inbound_query(account_ref, stream, limit)
         with self._open() as connection:
             rows = connection.execute(
                 "SELECT * FROM threads_inbound_events WHERE account_ref=? AND kind=? "
@@ -1254,6 +1258,57 @@ class ThreadsStore:
                 (account_ref, stream.value, limit),
             ).fetchall()
         return tuple(_inbound_event(row) for row in rows)
+
+    def deferred_inbound_events(
+        self, account_ref: str, stream: InboundKind, *, limit: int = 100
+    ) -> tuple[DeferredInboundEvent, ...]:
+        self._validate_inbound_query(account_ref, stream, limit)
+        with self._open() as connection:
+            rows = connection.execute(
+                "SELECT event.*, outcome.outcome_id AS defer_outcome_id, "
+                "outcome.correlation_id AS defer_correlation_id, "
+                "outcome.reason AS defer_reason, "
+                "outcome.resume_condition AS defer_resume_condition, "
+                "outcome.occurred_at AS deferred_at "
+                "FROM threads_inbound_events AS event "
+                "JOIN threads_conversation_outcomes AS outcome "
+                "ON outcome.inbound_account_ref=event.account_ref "
+                "AND outcome.inbound_kind=event.kind "
+                "AND outcome.inbound_event_id=event.event_id "
+                "WHERE event.account_ref=? AND event.kind=? "
+                "AND event.processed_at IS NULL AND outcome.outcome='defer' "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM threads_conversation_outcomes AS later "
+                "WHERE later.inbound_account_ref=outcome.inbound_account_ref "
+                "AND later.inbound_kind=outcome.inbound_kind "
+                "AND later.inbound_event_id=outcome.inbound_event_id "
+                "AND (later.occurred_at>outcome.occurred_at OR "
+                "(later.occurred_at=outcome.occurred_at "
+                "AND later.outcome_id>outcome.outcome_id))) "
+                "ORDER BY outcome.occurred_at, outcome.outcome_id LIMIT ?",
+                (account_ref, stream.value, limit),
+            ).fetchall()
+        return tuple(
+            DeferredInboundEvent(
+                event=_inbound_event(row),
+                outcome_id=row["defer_outcome_id"],
+                outcome_correlation_id=row["defer_correlation_id"],
+                reason=row["defer_reason"],
+                resume_condition=row["defer_resume_condition"],
+                deferred_at=datetime.fromisoformat(row["deferred_at"]),
+            )
+            for row in rows
+        )
+
+    @staticmethod
+    def _validate_inbound_query(
+        account_ref: str, stream: InboundKind, limit: int
+    ) -> None:
+        require_reference("account reference", account_ref)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
+        if type(limit) is not int or not 1 <= limit <= MAX_PENDING_INBOUND_EVENTS:
+            raise ValueError("invalid pending inbound limit")
 
     @staticmethod
     def _record_transition(
@@ -1620,7 +1675,24 @@ CREATE TABLE threads_poll_actions (
 
 
 _MIGRATION_6_TO_7 = """
-ALTER TABLE threads_poll_actions ADD COLUMN cursor_identity TEXT;
+ALTER TABLE threads_poll_actions RENAME TO threads_poll_actions_v6;
+CREATE TABLE threads_poll_actions (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    action TEXT NOT NULL CHECK(action='poll_committed'),
+    cursor_identity TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
+);
+INSERT INTO threads_poll_actions(
+    correlation_id, account_ref, stream, actor_reference, action,
+    cursor_identity, occurred_at
+)
+SELECT correlation_id, account_ref, stream, actor_reference, action,
+       'legacy-v6:' || correlation_id, occurred_at
+FROM threads_poll_actions_v6;
+DROP TABLE threads_poll_actions_v6;
 CREATE TABLE threads_reconciliation_attempts (
     correlation_id TEXT PRIMARY KEY,
     operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),

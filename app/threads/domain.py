@@ -246,6 +246,16 @@ class InboundEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class DeferredInboundEvent:
+    event: InboundEvent
+    outcome_id: str
+    outcome_correlation_id: str
+    reason: str
+    resume_condition: str
+    deferred_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
 class PollResult:
     new_events: tuple[InboundEvent, ...]
     duplicate_count: int

@@ -268,10 +268,19 @@ repeated cursors, and oversized pages. Public text is inert data even when it
 claims to be Meta, the owner, or an administrator. No inbound event calls a
 model or creates a reply by itself.
 
+Version-6 poll actions lacked cursor-range evidence. Migration rebuilds their
+table with the version-7 `NOT NULL` invariant and marks those rows explicitly as
+legacy. Because the missing range cannot be reconstructed safely, reuse of a
+legacy correlation fails closed with a requirement to supply a new correlation.
+
 Conversation handling records `no_action`, supported `defer` with a resumption
 condition, `terminate_conversation`, or `cooldown` separately from delivery
-outcomes. A chosen public reply starts as a distinct proposal and traverses the
-same approval, unknown, reconciliation, and duplicate controls as a post.
+outcomes. `defer` leaves the inbound event unprocessed, and the durable
+`deferred_inbound_events` query returns the event, reason, resume condition, and
+defer timestamp after restart. Recording a later non-deferred outcome is the
+explicit acknowledgement that removes it from both pending and deferred work.
+A chosen public reply starts as a distinct proposal and traverses the same
+approval, unknown, reconciliation, and duplicate controls as a post.
 
 All persisted and authorization timestamps must be genuinely timezone-aware:
 a non-null `tzinfo` whose UTC offset is unavailable or raises is rejected.
