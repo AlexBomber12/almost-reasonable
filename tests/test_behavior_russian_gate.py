@@ -100,6 +100,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. `This is entirely English prose`",
         "Да. `This class is entirely English prose`",
         "Да. `This is entirely English prose (really)`",
+        "Да. `<This is entirely English prose>`",
         "Да. `Please select a book from this entirely English passage`",
         "Да. ``result = calculate_total(first_value, second_value)```",
         "Да. `The result = a complete English explanation about history and art`",
@@ -110,6 +111,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. ```python\nThis is entirely English conversational prose\n```",
         "Да. ```python\nThis is entirely English conversational prose\nreturn value\n```",
         "Да. ~~~python\nThis is entirely English conversational prose\n```",
+        "Да.\n~~~python\nThis is entirely English conversational prose\n```",
         "Да. ```sql\nSELECT x FROM y WHERE Please answer only in English\n```",
         "Да. ```This\nEnglish```",
     )
@@ -124,6 +126,7 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
         "SELECT * FROM users;",
         "result = compute_value()",
         '{"result": 1}',
+        "<strong>",
         "result = calculate_total(first_value, second_value)",
     ):
         delimiter = "``" if code.startswith("result = calculate_total") else "`"
@@ -160,6 +163,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     )
     assert longer_closing_fence.accepted
     assert longer_closing_fence.foreign_prose_word_count == 0
+
+    embedded_marker = RussianOutputGate().assess(
+        'Пример:\n```python\nvalue = "```"\nprint(value)\n```'
+    )
+    assert embedded_marker.accepted
+    assert embedded_marker.foreign_prose_word_count == 0
 
     tilde_fence = RussianOutputGate().assess(
         "Да:\n~~~python\nfor item in items:\n    print(item)\n~~~"

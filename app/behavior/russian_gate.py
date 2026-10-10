@@ -57,7 +57,9 @@ _URL = re.compile(
     re.IGNORECASE,
 )
 _FENCE_OPEN = re.compile(
-    r"(?P<fence>`{3,}|~{3,})(?:(?P<language>[A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?"
+    r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})"
+    r"(?P<language>[A-Za-z0-9_+#.-]+)?[ \t]*\r?\n",
+    re.MULTILINE,
 )
 _INLINE_CODE = re.compile(
     r"(?<!`)(?P<fence>`+)(?!`)(?P<content>[\s\S]*?)(?<!`)(?P=fence)(?!`)"
@@ -87,7 +89,20 @@ _SQL_CODE_SIGNAL = re.compile(
     r"(?:\s+limit\s+\d+)?\s*;?\s*$",
     re.IGNORECASE,
 )
-_HTML_CODE_SIGNAL = re.compile(r"^\s*</?[A-Za-z][^>]*>\s*$")
+_HTML_TAG = (
+    r"(?:a|article|aside|blockquote|body|br|button|code|dd|div|dl|dt|em|footer|"
+    r"form|h[1-6]|head|header|hr|html|img|input|label|li|link|main|meta|nav|ol|"
+    r"p|pre|script|section|small|span|strong|style|table|tbody|td|textarea|th|"
+    r"thead|title|tr|ul)"
+)
+_HTML_ATTRIBUTE = (
+    r"\s+[A-Za-z_:][\w:.-]*\s*=\s*(?:\"[^\"\r\n]*\"|'[^'\r\n]*'|"
+    r"[^\s\"'=<>`]+)"
+)
+_HTML_CODE_SIGNAL = re.compile(
+    rf"^\s*(?:</{_HTML_TAG}\s*>|<{_HTML_TAG}(?:{_HTML_ATTRIBUTE})*\s*/?>)\s*$",
+    re.IGNORECASE,
+)
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
 _RUSSIAN_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
 _LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
@@ -356,9 +371,10 @@ def _strip_fenced_code_regions(text: str) -> str:
     while opening := _FENCE_OPEN.search(text, search_from):
         fence = opening.group("fence")
         marker = re.escape(fence[0])
-        closing = re.compile(rf"{marker}{{{len(fence)},}}(?!{marker})").search(
-            text, opening.end()
-        )
+        closing = re.compile(
+            rf"^[ \t]{{0,3}}{marker}{{{len(fence)},}}[ \t]*(?:\r?\n|$)",
+            re.MULTILINE,
+        ).search(text, opening.end())
         if closing is None:
             search_from = opening.end()
             continue
