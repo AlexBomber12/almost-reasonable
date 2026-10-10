@@ -331,6 +331,8 @@ class CognitionEngine:
         source_event_id: str,
         available_evidence_ids: frozenset[str],
     ) -> CognitionOutcome:
+        if not CognitionEngine._valid_token(proposal.source_event_id):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
         if proposal.source_event_id != source_event_id:
             return self._rejected(CognitionReason.SOURCE_MISMATCH)
         if (
@@ -365,35 +367,32 @@ class CognitionEngine:
     ) -> CognitionReason | None:
         if type(proposal) is not ProposalContext:
             return CognitionReason.INVALID_PROPOSAL
+        if not CognitionEngine._valid_token(proposal.source_event_id):
+            return CognitionReason.INVALID_PROPOSAL
         if proposal.source_event_id != source_event_id:
             return CognitionReason.SOURCE_MISMATCH
-        counterevidence_only = (
-            allow_counterevidence_only
-            and proposal.expected_revision is not None
-            and type(proposal.counterevidence_event_ids) is tuple
-            and bool(proposal.counterevidence_event_ids)
-        )
         if (
             not CognitionEngine._valid_token(proposal.operation_id)
             or not CognitionEngine._valid_text(proposal.reason)
             or not CognitionEngine._valid_time(proposal.proposed_at)
             or not CognitionEngine._valid_time(proposal.review_at)
             or type(proposal.supporting_event_ids) is not tuple
-            or (not proposal.supporting_event_ids and not counterevidence_only)
             or type(proposal.counterevidence_event_ids) is not tuple
-            or proposal.source_event_id
-            not in (
-                *proposal.supporting_event_ids,
-                *proposal.counterevidence_event_ids,
-            )
-            or len(proposal.supporting_event_ids)
-            + len(proposal.counterevidence_event_ids)
-            + 1
-            > MAX_EVIDENCE_PER_REVISION
         ):
             return CognitionReason.INVALID_PROPOSAL
         all_ids = (*proposal.supporting_event_ids, *proposal.counterevidence_event_ids)
         if any(not CognitionEngine._valid_token(item) for item in all_ids):
+            return CognitionReason.INVALID_PROPOSAL
+        counterevidence_only = (
+            allow_counterevidence_only
+            and proposal.expected_revision is not None
+            and bool(proposal.counterevidence_event_ids)
+        )
+        if (
+            (not proposal.supporting_event_ids and not counterevidence_only)
+            or proposal.source_event_id not in all_ids
+            or len(all_ids) + 1 > MAX_EVIDENCE_PER_REVISION
+        ):
             return CognitionReason.INVALID_PROPOSAL
         if len(set(all_ids)) != len(all_ids):
             return CognitionReason.EVIDENCE_ROLE_CONFLICT

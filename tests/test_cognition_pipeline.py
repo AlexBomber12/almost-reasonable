@@ -85,6 +85,9 @@ class HostileDatetime(datetime):
 
 
 class HostileString(str):
+    def __ne__(self, _other):
+        raise RuntimeError("synthetic hostile string adapter")
+
     def strip(self, _characters=None):
         raise RuntimeError("synthetic hostile string adapter")
 
@@ -716,6 +719,62 @@ def test_invalidated_replay_after_identity_race_is_store_rejected(
     assert outcome.status is CognitionOutcomeStatus.REJECTED
     assert outcome.reason is CognitionReason.STORE_REJECTED
     assert calls == 2
+
+
+def test_transactional_duplicate_rejects_concurrent_invalidation(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    proposal = InterestMemoryProposal(
+        proposal_context(event_id, "transactional-invalidated-duplicate"),
+        "interest-transactional-invalidated-duplicate",
+        "Transactional invalidated duplicate",
+        40,
+        InterestStatus.ACTIVE,
+        "Duplicate replay must enforce chain invalidation atomically.",
+    )
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+    durable_persist = engine._persist
+
+    def miss_before_transactional_duplicate(_request_context, _change):
+        return None
+
+    def insert_invalidate_then_persist(
+        request_context,
+        requested_proposal,
+        identity,
+        decided_at,
+        expected_candidate_revisions,
+    ):
+        inserted = CognitionEngine(
+            events, state, extractor=FakeExtractor(proposal)
+        ).process(context, event_id)
+        assert inserted.status is CognitionOutcomeStatus.PERSISTED
+        with sqlite3.connect(events.database_path) as connection:
+            connection.execute(
+                "UPDATE protected_state_provenance "
+                "SET retention_status = 'invalidated' WHERE event_id = ?",
+                (event_id,),
+            )
+        return durable_persist(
+            request_context,
+            requested_proposal,
+            identity,
+            decided_at,
+            expected_candidate_revisions,
+        )
+
+    monkeypatch.setattr(
+        engine._read,
+        "replay_private_operation",
+        miss_before_transactional_duplicate,
+    )
+    monkeypatch.setattr(engine, "_persist", insert_invalidate_then_persist)
+
+    outcome = engine.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STORE_REJECTED
 
 
 def test_identical_operation_race_replays_durable_winner(cognition_setup, monkeypatch):
@@ -1689,6 +1748,14 @@ def test_hostile_string_subclasses_are_rejected_without_invoking_overrides(
             interest,
             context=replace(interest.context, reason=hostile),
         ),
+        replace(
+            interest,
+            context=replace(interest.context, source_event_id=hostile),
+        ),
+        replace(
+            interest,
+            context=replace(interest.context, supporting_event_ids=(hostile,)),
+        ),
         replace(interest, item_id=hostile),
         replace(interest, topic=hostile),
         BeliefMemoryProposal(
@@ -1719,6 +1786,7 @@ def test_hostile_string_subclasses_are_rejected_without_invoking_overrides(
             VerificationStatus.UNVERIFIED,
         ),
         NoChangeProposal(event_id, hostile, (event_id,)),
+        NoChangeProposal(hostile, "Plain reason.", (event_id,)),
     )
 
     for proposal in proposals:

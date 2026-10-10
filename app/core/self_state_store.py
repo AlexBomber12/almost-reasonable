@@ -480,6 +480,12 @@ class SelfStateStore:
                     change.revision.operation_id,
                 )
                 if duplicate is not None:
+                    if self._revision_chain_has_invalidated_provenance(
+                        connection, duplicate
+                    ):
+                        raise SelfStateValidationError(
+                            "operation provenance is invalidated"
+                        )
                     if self._logical_change(
                         self._stored_change(connection, duplicate)
                     ) != self._logical_change(change):
@@ -680,6 +686,26 @@ class SelfStateStore:
         }
         if actual != expected_by_id:
             raise SelfStateConflictError("candidate snapshot conflict")
+
+    @staticmethod
+    def _revision_chain_has_invalidated_provenance(
+        connection: sqlite3.Connection, revision_key: int
+    ) -> bool:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM state_revisions AS replayed_revision
+            JOIN state_revisions AS item_revision
+              ON item_revision.item_key = replayed_revision.item_key
+            JOIN protected_state_provenance AS source
+              ON source.revision_key = item_revision.revision_key
+            WHERE replayed_revision.revision_key = ?
+              AND source.retention_status = 'invalidated'
+            LIMIT 1
+            """,
+            (revision_key,),
+        ).fetchone()
+        return row is not None
 
     @staticmethod
     def _find_operation(

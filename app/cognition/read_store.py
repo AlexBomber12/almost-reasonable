@@ -407,21 +407,9 @@ class CognitionReadStore:
                 )
                 if revision_key is None:
                     return None
-                invalidated = connection.execute(
-                    """
-                    SELECT 1
-                    FROM state_revisions AS replayed_revision
-                    JOIN state_revisions AS item_revision
-                      ON item_revision.item_key = replayed_revision.item_key
-                    JOIN protected_state_provenance AS source
-                      ON source.revision_key = item_revision.revision_key
-                    WHERE replayed_revision.revision_key = ?
-                      AND source.retention_status = 'invalidated'
-                    LIMIT 1
-                    """,
-                    (revision_key,),
-                ).fetchone()
-                if invalidated is not None:
+                if self._state._revision_chain_has_invalidated_provenance(
+                    connection, revision_key
+                ):
                     raise SelfStateValidationError(
                         "operation provenance is invalidated"
                     )
