@@ -63,7 +63,7 @@ for future behavior intents.
 rejects hidden control/format characters, removes URLs and code from
 conversational-language accounting,
 tolerates bounded Latin technical terminology and proper names, and excludes
-HTTP(S), FTP, `www`, bare-domain URLs, and code regions before comparing
+HTTP(S), FTP, `www`, conservative known-suffix bare-domain URLs, and code regions before comparing
 Cyrillic and foreign prose with no fixed short-reply allowance: unrecognized
 foreign words must not outnumber Russian words. Non-Latin letter scripts are converted to bounded
 word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
@@ -195,6 +195,9 @@ to consistent backup/restore and retention procedures, serialize writes through
 the application's single-writer discipline, and connect protected evidence IDs
 to an `EvidenceAuthority` implementation without rendering private provenance
 into ordinary model context.
+Repository loads re-run proposal and confirmation validation and enforce status /
+confirmation consistency before returning a document; persisted text never
+becomes trusted merely because it came from the mission JSON file.
 
 ## Behavioral evaluation artifacts
 

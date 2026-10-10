@@ -49,7 +49,8 @@ class DeliveryResult:
 
 _URL = re.compile(
     r"(?<![\w@])(?:(?:(?:https?|ftp)://|www\.)[^\s<>()]+|"
-    r"(?:[a-z0-9-]+\.)+(?:[a-z]{2,63}|xn--[a-z0-9-]{2,59})"
+    r"(?:[a-z0-9-]+\.)+(?:com|org|net|edu|gov|io|ai|ru|it|de|fr|uk|"
+    r"dev|app|info|biz|me|co|photography|xn--[a-z0-9-]{2,59})"
     r"(?:/[^\s<>()]*)?)",
     re.IGNORECASE,
 )

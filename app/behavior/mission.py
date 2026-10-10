@@ -343,6 +343,8 @@ def _validate_confirmation(
     proposal: MissionProposal,
     confirmation: MissionConfirmation,
 ) -> None:
+    if confirmation.proposal_id != proposal.proposal_id:
+        raise ValueError("confirmation does not match its proposal")
     if confirmation.event_id == proposal.initiating_event_id:
         raise ValueError("confirmation requires an independent event")
     if confirmation.correlation_id == proposal.correlation_id:
@@ -554,6 +556,7 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
         current_raw["parent_version"],
         MissionPurpose(current_raw["purpose"]),
     )
+    _validate_stored_mission(current)
     invariants_raw = raw["invariants"]
     stored_invariants = (
         CapabilityPolicyInvariants(**invariants_raw)
@@ -581,6 +584,7 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
             **proposal_values["invariants"]
         )
         parsed_proposal = MissionProposal(**proposal_values)
+        _validate_proposal(parsed_proposal)
         confirmation_raw = item["confirmation"]
         parsed_confirmation = None
         if confirmation_raw is not None:
@@ -605,11 +609,35 @@ def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
                 **confirmation_values["invariants"]
             )
             parsed_confirmation = MissionConfirmation(**confirmation_values)
+            _validate_confirmation(parsed_proposal, parsed_confirmation)
+        status = MissionStatus(item["status"])
+        resolved = status in (MissionStatus.CONFIRMED, MissionStatus.REJECTED)
+        if resolved != (parsed_confirmation is not None) or (
+            parsed_confirmation is not None
+            and status.value != parsed_confirmation.outcome.value
+        ):
+            raise ValueError("mission record status is inconsistent")
         records.append(
             MissionRecord(
                 parsed_proposal,
-                MissionStatus(item["status"]),
+                status,
                 parsed_confirmation,
             )
         )
     return MissionDocument(current, tuple(records), stored_invariants)
+
+
+def _validate_stored_mission(mission: Mission) -> None:
+    if (
+        not _valid_identifier(mission.version)
+        or not _valid_text(mission.text)
+        or mission.parent_version is not None
+        and not _valid_identifier(mission.parent_version)
+        or not isinstance(mission.purpose, MissionPurpose)
+    ):
+        raise ValueError("stored current mission is invalid")
+    _validate_time(mission.activated_at)
+    if mission.parent_version is not None and not _mission_matches_purpose(
+        mission.text, mission.purpose
+    ):
+        raise ValueError("stored current mission does not match its purpose")
