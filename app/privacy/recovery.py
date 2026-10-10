@@ -33,6 +33,7 @@ BACKUP_PAGE_BATCH = 256
 MAX_BACKUP_BUSY_ATTEMPTS = 20
 BACKUP_BUSY_SLEEP_SECONDS = 0.01
 MAX_BACKUP_METADATA_BYTES = 4096
+_SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 
 _directory_is_trusted = _files.directory_is_trusted
 _regular_file_is_trusted = _files.regular_file_is_trusted
@@ -250,7 +251,7 @@ def _pin_database(
         )
         opened_descriptors.append(descriptor)
         if pin_sidecars:
-            for suffix in ("-wal", "-shm"):
+            for suffix in _SQLITE_SIDECAR_SUFFIXES:
                 sidecar_path = Path(f"{path}{suffix}")
                 try:
                     sidecar_descriptor = os.open(
@@ -334,7 +335,7 @@ def _descriptor_sha256(descriptor: int) -> str:
 
 
 def _sqlite_sidecars_absent(path: Path, parent_descriptor: int) -> bool:
-    for suffix in ("-wal", "-shm"):
+    for suffix in _SQLITE_SIDECAR_SUFFIXES:
         try:
             os.stat(
                 f"{path.name}{suffix}",
@@ -511,9 +512,8 @@ def create_sqlite_backup(
     source = Path(source_path)
     destination = Path(destination_path)
     metadata_path = Path(f"{destination}.metadata.json")
-    sidecar_paths = (
-        Path(f"{destination}-wal"),
-        Path(f"{destination}-shm"),
+    sidecar_paths = tuple(
+        Path(f"{destination}{suffix}") for suffix in _SQLITE_SIDECAR_SUFFIXES
     )
     require_utc(created_at, "backup timestamp")
     _validate_existing_file(source, "source")

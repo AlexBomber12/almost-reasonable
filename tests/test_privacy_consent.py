@@ -579,6 +579,26 @@ def test_consent_rejects_duplicate_scope_revision_and_uses_newer_revision(tmp_pa
     assert (result.allowed, result.consent_id) == (True, "consent-003")
 
 
+def test_consent_rejects_stale_scope_revision(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    consent = ConsentService(ledger, clock=lambda: NOW)
+    consent.grant(context(), grant(revision=3))
+
+    with pytest.raises(ValueError, match="consent revision conflict"):
+        consent.grant(
+            context(),
+            grant(
+                consent_id="consent-002",
+                operation_id="grant-operation-002",
+                revision=2,
+                correlation_id="correlation-002",
+            ),
+        )
+
+    assert ledger.consent_principal("consent-002") is None
+    assert len(ledger.audit_records()) == 1
+
+
 def test_ledger_rejects_cross_principal_direct_revocation(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     ledger.insert_consent(context(), grant())

@@ -529,7 +529,14 @@ def test_restore_copy_interrupt_cleans_quarantine_and_descriptors(
 
 
 @pytest.mark.parametrize(
-    "race_target", ["destination", "metadata", "wal_sidecar", "shm_sidecar"]
+    "race_target",
+    [
+        "destination",
+        "metadata",
+        "wal_sidecar",
+        "shm_sidecar",
+        "journal_sidecar",
+    ],
 )
 def test_backup_race_never_deletes_a_concurrently_created_file(
     tmp_path, monkeypatch, race_target
@@ -543,6 +550,7 @@ def test_backup_race_never_deletes_a_concurrently_created_file(
         "metadata": metadata,
         "wal_sidecar": Path(f"{destination}-wal"),
         "shm_sidecar": Path(f"{destination}-shm"),
+        "journal_sidecar": Path(f"{destination}-journal"),
     }[race_target]
     real_open_owned_file = recovery_module._open_owned_file
 
@@ -1451,6 +1459,24 @@ def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
     finally:
         writer.close()
 
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+
+def test_restore_rejects_a_backup_with_a_rollback_journal(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    journal = Path(f"{backup}-journal")
+    journal.write_bytes(b"unrecovered rollback journal")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(BackupError, match="sidecar"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert journal.read_bytes() == b"unrecovered rollback journal"
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
 

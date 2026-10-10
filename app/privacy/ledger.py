@@ -388,19 +388,17 @@ class PrivacyLedger:
                 if existing != values:
                     raise ValueError("consent operation identity conflict")
             else:
-                revision_conflict = connection.execute(
-                    "SELECT consent_id FROM consent_grants WHERE principal_id=? "
-                    "AND content_reference=? AND audience=? AND purpose=? "
-                    "AND revision=?",
+                latest_revision = connection.execute(
+                    "SELECT MAX(revision) FROM consent_grants WHERE principal_id=? "
+                    "AND content_reference=? AND audience=? AND purpose=?",
                     (
                         grant.principal_id,
                         grant.content_reference,
                         grant.audience,
                         grant.purpose.value,
-                        grant.revision,
                     ),
-                ).fetchone()
-                if revision_conflict is not None:
+                ).fetchone()[0]
+                if latest_revision is not None and grant.revision <= latest_revision:
                     raise ValueError("consent revision conflict")
                 connection.execute(
                     "INSERT INTO consent_grants VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values
