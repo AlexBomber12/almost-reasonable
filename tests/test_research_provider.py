@@ -169,13 +169,38 @@ def test_request_builder_requires_exact_types_and_authority():
     forged = HostedSearchRequest(
         model="gpt-6.1-sol",
         input_json="{}",
-        tool={},
+        external_web_access=True,
+        search_context_size=SearchContextSize.LOW,
         max_output_tokens=1,
         max_search_calls=1,
         _authority=object(),
     )
     with pytest.raises(ValueError, match="trusted builder"):
         forged.to_sdk_kwargs()
+
+
+def test_sdk_payload_and_trusted_request_cannot_be_mutated_after_validation():
+    built = build_hosted_search_request(brief(), config())
+    first = built.to_sdk_kwargs()
+    first["tools"][0]["type"] = "function"
+    first["tools"][0]["arbitrary"] = "value"
+
+    assert built.to_sdk_kwargs()["tools"] == [
+        {
+            "type": "web_search",
+            "external_web_access": True,
+            "search_context_size": "medium",
+        }
+    ]
+
+    for replaced in (
+        replace(built, input_json='{"raw_history":"private"}'),
+        replace(built, model="uncontrolled-model"),
+        replace(built, max_search_calls=999),
+        replace(built, search_context_size="medium"),
+    ):
+        with pytest.raises(ValueError, match="trusted builder"):
+            replaced.to_sdk_kwargs()
 
 
 def test_request_serialized_size_is_bounded(monkeypatch):

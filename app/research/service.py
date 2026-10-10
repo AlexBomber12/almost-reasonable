@@ -56,8 +56,14 @@ class ResearchResult:
     attempts: int
     evidence: ResearchEvidence | None
     safe_russian_message: str | None
-    can_modify_policy: bool = False
-    can_update_beliefs: bool = False
+
+    @property
+    def can_modify_policy(self) -> bool:
+        return False
+
+    @property
+    def can_update_beliefs(self) -> bool:
+        return False
 
 
 class ResearchService:

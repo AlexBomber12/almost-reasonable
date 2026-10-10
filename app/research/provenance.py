@@ -3,7 +3,10 @@
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
+import hmac
+import json
 import re
+import secrets
 import unicodedata
 from urllib.parse import urlsplit
 
@@ -19,6 +22,8 @@ MAX_PROVIDER_OUTPUT_ITEMS = 16
 MAX_CONSULTED_SOURCES = 100
 _PROVIDER_SOURCE_AUTHORITY = object()
 _VERIFIED_SOURCE_AUTHORITY = object()
+_PROVIDER_SOURCE_INTEGRITY_KEY = secrets.token_bytes(32)
+_VERIFIED_SOURCE_INTEGRITY_KEY = secrets.token_bytes(32)
 
 
 class SourceKind(StrEnum):
@@ -67,6 +72,7 @@ class SourceRecord:
     independently_verified: bool
     verification_evidence: VerificationEvidence | None
     _authority: object = field(repr=False, compare=False)
+    _integrity: bytes = field(default=b"", repr=False, compare=False)
 
     @property
     def retrieved_at(self) -> datetime:
@@ -74,15 +80,18 @@ class SourceRecord:
 
     @property
     def is_sourced(self) -> bool:
+        integrity_valid = _source_integrity_valid(self)
         provider_recorded = (
-            self._authority is _PROVIDER_SOURCE_AUTHORITY
+            integrity_valid
+            and self._authority is _PROVIDER_SOURCE_AUTHORITY
             and self.kind is SourceKind.PROVIDER_ANNOTATION
             and self.status is SourceStatus.RECORDED
             and self.provider_source_reference is not None
             and self.metadata_validated
         )
         independently_verified = (
-            self._authority is _VERIFIED_SOURCE_AUTHORITY
+            integrity_valid
+            and self._authority is _VERIFIED_SOURCE_AUTHORITY
             and self.kind is SourceKind.INDEPENDENTLY_VERIFIED
             and self.status is SourceStatus.VERIFIED
             and self.independently_verified
@@ -90,6 +99,71 @@ class SourceRecord:
             and self.metadata_validated
         )
         return provider_recorded or independently_verified
+
+
+def _source_record(**values: object) -> SourceRecord:
+    authority = values.get("_authority")
+    record = SourceRecord(**values)
+    key = _source_integrity_key(authority)
+    if key is None:
+        raise ValueError("invalid source construction authority")
+    object.__setattr__(record, "_integrity", _source_integrity(record, key))
+    return record
+
+
+def _source_integrity_key(authority: object) -> bytes | None:
+    if authority is _PROVIDER_SOURCE_AUTHORITY:
+        return _PROVIDER_SOURCE_INTEGRITY_KEY
+    if authority is _VERIFIED_SOURCE_AUTHORITY:
+        return _VERIFIED_SOURCE_INTEGRITY_KEY
+    return None
+
+
+def _source_integrity_valid(record: SourceRecord) -> bool:
+    key = _source_integrity_key(record._authority)
+    if key is None or not isinstance(record._integrity, bytes):
+        return False
+    try:
+        expected = _source_integrity(record, key)
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return hmac.compare_digest(record._integrity, expected)
+
+
+def _source_integrity(record: SourceRecord, key: bytes) -> bytes:
+    evidence = record.verification_evidence
+    evidence_payload = (
+        None
+        if evidence is None
+        else {
+            "method": evidence.method,
+            "artifact_reference": evidence.artifact_reference,
+            "verified_at": evidence.verified_at.isoformat(),
+        }
+    )
+    serialized = json.dumps(
+        {
+            "reference": record.reference,
+            "kind": record.kind.value,
+            "status": record.status.value,
+            "provider_source_reference": record.provider_source_reference,
+            "url": record.url,
+            "title": record.title,
+            "publisher": record.publisher,
+            "source_language": record.source_language,
+            "retrieval_time": record.retrieval_time.isoformat(),
+            "publication_date": record.publication_date,
+            "annotation_exists": record.annotation_exists,
+            "metadata_validated": record.metadata_validated,
+            "evidence_support": record.evidence_support.value,
+            "independently_verified": record.independently_verified,
+            "verification_evidence": evidence_payload,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hmac.digest(key, serialized.encode("utf-8"), "sha256")
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,7 +235,7 @@ def parse_hosted_search_response(
     )
     if not annotation_records:
         annotation_records = (
-            SourceRecord(
+            _source_record(
                 reference=f"{response.response_id}:{call_ids[0]}:missing",
                 kind=SourceKind.PROVIDER_ANNOTATION,
                 status=SourceStatus.MISSING_ANNOTATION,
@@ -216,7 +290,7 @@ def register_independently_verified_source(
     )
     _require_timestamp(evidence.verified_at)
     verified_evidence = VerificationEvidence(method, artifact, evidence.verified_at)
-    return SourceRecord(
+    return _source_record(
         reference=reference,
         kind=SourceKind.INDEPENDENTLY_VERIFIED,
         status=SourceStatus.VERIFIED,
@@ -243,9 +317,27 @@ def _parse_search_call(item: dict[str, object]) -> tuple[str, tuple[str, ...]]:
     if item.get("status") != "completed":
         raise ValueError("incomplete web search call")
     action = item.get("action")
-    if type(action) is not dict or action.get("type") != "search":
+    if type(action) is not dict:
         raise ValueError("unsupported web search action")
-    raw_sources = action.get("sources")
+    action_type = action.get("type")
+    if action_type == "open_page":
+        url = action.get("url")
+        if url is None:
+            return call_id, ()
+        if not isinstance(url, str):
+            raise ValueError("malformed open-page URL")
+        return call_id, (url,)
+    if action_type == "find_in_page":
+        url = action.get("url")
+        pattern = action.get("pattern")
+        if not isinstance(url, str) or not _valid_optional_metadata(pattern):
+            raise ValueError("malformed find-in-page action")
+        return call_id, (url,)
+    if action_type != "search":
+        raise ValueError("unsupported web search action")
+    raw_sources = action.get("sources", [])
+    if raw_sources is None:
+        raw_sources = []
     if type(raw_sources) is not list:
         raise ValueError("malformed web search sources")
     if len(raw_sources) > MAX_CONSULTED_SOURCES:
@@ -347,13 +439,13 @@ def _parse_annotation(
         "_authority": _PROVIDER_SOURCE_AUTHORITY,
     }
     if annotation.get("type") != "url_citation":
-        return SourceRecord(
+        return _source_record(
             status=SourceStatus.UNSUPPORTED_ANNOTATION,
             metadata_validated=False,
             **common,
         )
     if not isinstance(url, str) or not _valid_https_url(url):
-        return SourceRecord(
+        return _source_record(
             status=SourceStatus.UNSUPPORTED_URL,
             metadata_validated=False,
             **common,
@@ -369,7 +461,7 @@ def _parse_annotation(
         or type(end) is not int
         or not 0 <= start < end <= len(text)
     ):
-        return SourceRecord(
+        return _source_record(
             status=SourceStatus.MALFORMED_ANNOTATION,
             metadata_validated=False,
             **common,
@@ -379,18 +471,18 @@ def _parse_annotation(
         or (language is not None and not _valid_language(language))
         or (publication_date is not None and not _valid_date(publication_date))
     ):
-        return SourceRecord(
+        return _source_record(
             status=SourceStatus.MALFORMED_METADATA,
             metadata_validated=False,
             **common,
         )
     if url not in consulted_urls:
-        return SourceRecord(
+        return _source_record(
             status=SourceStatus.UNSUPPORTED_ANNOTATION,
             metadata_validated=False,
             **common,
         )
-    return SourceRecord(
+    return _source_record(
         status=SourceStatus.RECORDED,
         metadata_validated=True,
         **common,
@@ -400,7 +492,7 @@ def _parse_annotation(
 def _invalid_provider_source(
     reference: str, status: SourceStatus, retrieved_at: datetime
 ) -> SourceRecord:
-    return SourceRecord(
+    return _source_record(
         reference=reference,
         kind=SourceKind.PROVIDER_ANNOTATION,
         status=status,

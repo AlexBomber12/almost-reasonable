@@ -48,7 +48,10 @@ class ResearchSynthesis:
     contradictions: tuple[str, ...]
     unverified_claims: tuple[str, ...]
     source_statuses: tuple[SourceRecord, ...]
-    requires_shared_russian_output_gate: bool = True
+
+    @property
+    def requires_shared_russian_output_gate(self) -> bool:
+        return True
 
 
 def build_russian_synthesis(

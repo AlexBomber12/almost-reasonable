@@ -56,6 +56,25 @@ def test_multilingual_public_questions_build_a_minimized_closed_brief(
     assert "participant" not in result.brief.to_json().lower()
 
 
+def test_valid_isbn_and_pmid_references_are_not_misclassified_as_phone_numbers():
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion("Compare the public catalogue records"),
+            PublicReference("isbn:978-3-16-148410-0"),
+            PublicReference("pmid:123456789"),
+        ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+
+    assert result.disposition is BriefDisposition.READY
+    assert result.brief.public_reference_identifiers == (
+        "isbn:978-3-16-148410-0",
+        "pmid:123456789",
+    )
+
+
 @pytest.mark.parametrize(
     ("record", "reason"),
     [
@@ -252,6 +271,21 @@ def test_dataclass_replacement_cannot_smuggle_untyped_record_collection():
     valid = records(ResearchQuestion("A public question"))
     with pytest.raises(TypeError):
         replace(valid, records=[ResearchQuestion("Still text")])
+
+
+def test_replacing_a_screened_brief_revokes_its_construction_authority():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("A public question")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.brief.built_by_safe_pipeline is True
+
+    replaced = replace(result.brief, question="raw private history")
+
+    assert replaced.built_by_safe_pipeline is False
+    assert replace(result.brief, result_budget=object()).built_by_safe_pipeline is False
 
 
 def test_builder_rejects_forged_containers_wrong_types_and_missing_question():

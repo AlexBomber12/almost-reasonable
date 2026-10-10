@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -185,6 +186,54 @@ def test_multiple_distinct_search_calls_are_accepted_within_the_bound():
     assert parsed.search_calls == 2
 
 
+@pytest.mark.parametrize(
+    "action",
+    [
+        {"type": "open_page", "url": "https://example.org/paper"},
+        {
+            "type": "find_in_page",
+            "url": "https://example.org/paper",
+            "pattern": "synthetic evidence",
+        },
+    ],
+)
+def test_documented_page_action_variants_can_validate_citation_provenance(action):
+    valid = response()
+    call = dict(valid.output[0])
+    call["action"] = action
+    parsed = parse_hosted_search_response(
+        HostedSearchResponse(valid.response_id, valid.status, (call, valid.output[1])),
+        retrieved_at=NOW,
+    )
+
+    assert parsed.sources[0].status is SourceStatus.RECORDED
+    assert parsed.sources[0].is_sourced is True
+
+
+def test_open_page_without_a_url_is_valid_but_cannot_establish_provenance():
+    valid = response()
+    call = dict(valid.output[0])
+    call["action"] = {"type": "open_page", "url": None}
+    parsed = parse_hosted_search_response(
+        HostedSearchResponse(valid.response_id, valid.status, (call, valid.output[1])),
+        retrieved_at=NOW,
+    )
+
+    assert parsed.sources[0].status is SourceStatus.UNSUPPORTED_ANNOTATION
+    assert parsed.sources[0].is_sourced is False
+
+
+def test_search_action_may_omit_its_optional_source_list():
+    valid = response(annotation=False)
+    call = dict(valid.output[0])
+    call["action"] = {"type": "search", "sources": None}
+    parsed = parse_hosted_search_response(
+        HostedSearchResponse(valid.response_id, valid.status, (call, valid.output[1])),
+        retrieved_at=NOW,
+    )
+    assert parsed.sources[0].status is SourceStatus.MISSING_ANNOTATION
+
+
 def test_duplicate_search_call_ids_and_result_budget_overflow_fail_closed():
     valid = response()
     duplicate_id = HostedSearchResponse(
@@ -262,8 +311,9 @@ def test_provider_output_item_count_is_bounded():
     [
         {"id": "bad id"},
         {"status": "failed"},
-        {"action": {"type": "open_page", "sources": []}},
-        {"action": {"type": "search", "sources": None}},
+        {"action": {"type": "unsupported_action"}},
+        {"action": None},
+        {"action": {"type": "search", "sources": "not-a-list"}},
         {"action": {"type": "search", "sources": [None]}},
         {"action": {"type": "search", "sources": [{"type": "url", "url": 3}]}},
         {
@@ -273,6 +323,14 @@ def test_provider_output_item_count_is_bounded():
                     {"type": "url", "url": f"https://example.org/{index}"}
                     for index in range(101)
                 ],
+            }
+        },
+        {"action": {"type": "open_page", "url": 3}},
+        {
+            "action": {
+                "type": "find_in_page",
+                "url": "https://example.org/paper",
+                "pattern": "",
             }
         },
     ],
@@ -428,6 +486,49 @@ def test_directly_forged_source_record_cannot_become_sourced():
         _authority=object(),
     )
     assert forged.is_sourced is False
+
+
+def test_replacing_a_sourced_record_revokes_its_provenance_authority():
+    verified = register_independently_verified_source(
+        reference="prior-source-1",
+        url="https://example.org/verified",
+        title="Verified synthetic source",
+        publisher=None,
+        source_language="en",
+        publication_date=None,
+        evidence=VerificationEvidence(
+            "manual_primary_source_check", "audit:synthetic-001", NOW
+        ),
+    )
+    provider = parse_hosted_search_response(response(), retrieved_at=NOW).sources[0]
+
+    assert replace(verified, url="file:///invented").is_sourced is False
+    assert replace(verified, retrieval_time=object()).is_sourced is False
+    assert replace(provider, title="Invented title").is_sourced is False
+
+
+def test_internal_source_factory_rejects_unknown_construction_authority():
+    import app.research.provenance as provenance_module
+
+    with pytest.raises(ValueError, match="construction authority"):
+        provenance_module._source_record(
+            reference="forged",
+            kind=SourceKind.INDEPENDENTLY_VERIFIED,
+            status=SourceStatus.VERIFIED,
+            provider_source_reference=None,
+            url="https://example.org/forged",
+            title="Forged",
+            publisher=None,
+            source_language="en",
+            retrieval_time=NOW,
+            publication_date=None,
+            annotation_exists=False,
+            metadata_validated=True,
+            evidence_support=EvidenceSupport.NOT_EVALUATED,
+            independently_verified=True,
+            verification_evidence=VerificationEvidence("claimed", "claimed", NOW),
+            _authority=object(),
+        )
 
 
 @pytest.mark.parametrize(

@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -64,6 +65,8 @@ def test_typed_russian_synthesis_separates_observation_interpretation_and_confli
     assert result.uncertainty
     assert result.contradictions
     assert result.unverified_claims
+    with pytest.raises(TypeError):
+        replace(result, requires_shared_russian_output_gate=False)
 
 
 def test_missing_or_invalid_evidence_link_downgrades_claim_without_fabrication():

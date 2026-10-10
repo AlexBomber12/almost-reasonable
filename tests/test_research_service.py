@@ -26,10 +26,10 @@ from app.research.service import (
 NOW = datetime(2026, 10, 10, 12, 0, tzinfo=UTC)
 
 
-def brief():
+def brief(*, result_budget=3):
     result = build_safe_research_brief(
         ResearchRecordSet((ResearchQuestion("How do auroral substorms form?"),)),
-        result_budget=3,
+        result_budget=result_budget,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
     )
@@ -137,7 +137,7 @@ def test_brief_result_budget_is_enforced_on_provider_annotations():
         over_budget.status,
         (over_budget.output[0], message),
     )
-    limited = replace(brief(), result_budget=1)
+    limited = brief(result_budget=1)
     instance, _transport, _sleeps, _marks = service([over_budget])
     result = instance.run(limited)
     assert result.outcome is ResearchOutcome.INVALID_RESPONSE
@@ -329,6 +329,8 @@ def test_malicious_page_text_remains_untrusted_data_and_cannot_add_tools():
     assert len(payload["tools"]) == 1
     assert result.can_modify_policy is False
     assert result.can_update_beliefs is False
+    with pytest.raises(TypeError):
+        replace(result, can_modify_policy=True)
 
 
 @pytest.mark.parametrize(

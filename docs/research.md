@@ -52,7 +52,9 @@ history, participant or authenticated-source identifiers, personal details,
 relationship state, private quotations, protected provenance, credentials,
 provider headers, arbitrary request parameters, paths, commands, or tools.
 Trusted result limits and provider settings are supplied separately and never
-accepted from model output.
+accepted from model output. An integrity seal binds every approved field to the
+screening decision, so copying a valid brief while replacing any field revokes
+its construction authority.
 
 The H screen compares only the already-abstracted brief against trusted local
 screening material. It checks direct email/phone identifiers, participant
@@ -70,7 +72,8 @@ scientific, and philosophical questions remain permitted when safely abstracted.
 
 ## Hosted-search isolation and bounds
 
-`HostedSearchRequest.to_sdk_kwargs()` produces a fixed Responses request:
+`HostedSearchRequest.to_sdk_kwargs()` revalidates an integrity-bound set of
+immutable typed fields and produces a fresh fixed Responses request:
 
 - `store=false`, `background=false`, `stream=false`, and no continuation ID;
 - exactly one configured tool type, `web_search`;
@@ -97,7 +100,8 @@ spending configuration or Core Self, or directly persist beliefs and goals.
 Provider output is normalized only after all of these relationships validate:
 
 1. the response completed;
-2. a bounded set of completed `web_search_call` items is present;
+2. a bounded set of completed `web_search_call` items is present, including the
+   documented `search`, `open_page`, and `find_in_page` action variants;
 3. search-call IDs are unique;
 4. the response contains exactly one completed assistant output-text message;
 5. every sourced citation is an in-message `url_citation` annotation;
@@ -112,9 +116,10 @@ and well-formed; that does not make it independently verified.
 
 An independently verified prior source can be registered only with a concrete,
 timezone-stamped `VerificationEvidence` record naming the verification method
-and audit artifact. Source records carry an internal construction authority, so
-directly constructed records cannot become sourced. No network verification is
-claimed by this package.
+and audit artifact. Source records carry an integrity seal over all metadata as
+well as an internal construction authority, so direct construction or field
+replacement cannot become sourced. No network verification is claimed by this
+package.
 
 The three distinct states remain observable:
 

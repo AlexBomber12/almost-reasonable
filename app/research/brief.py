@@ -1,11 +1,13 @@
 """Closed research-brief records and bounded privacy screening."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 import base64
 import binascii
+import hmac
 import json
 import re
+import secrets
 import unicodedata
 
 
@@ -53,6 +55,7 @@ _INJECTION_PATTERNS = (
     "ignora le istruzioni precedenti",
 )
 _BRIEF_AUTHORITY = object()
+_BRIEF_INTEGRITY_KEY = secrets.token_bytes(32)
 
 
 class BriefDisposition(StrEnum):
@@ -176,11 +179,20 @@ class ResearchBrief:
     public_reference_identifiers: tuple[str, ...]
     result_budget: int
     trusted_config_version: str
-    _authority: object
+    _authority: object = field(repr=False, compare=False)
+    _integrity: bytes = field(default=b"", repr=False, compare=False)
 
     @property
     def built_by_safe_pipeline(self) -> bool:
-        return self._authority is _BRIEF_AUTHORITY
+        if self._authority is not _BRIEF_AUTHORITY or not isinstance(
+            self._integrity, bytes
+        ):
+            return False
+        try:
+            expected = _brief_integrity(self.to_json())
+        except (TypeError, ValueError):
+            return False
+        return hmac.compare_digest(self._integrity, expected)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -262,15 +274,18 @@ def build_safe_research_brief(
     purpose = selected.get(ResearchPurpose)
     languages = selected.get(LanguagePreferences)
     time_requirement = selected.get(TimeRequirement)
-    values = [
+    free_text_values = [
         question_record.text,
         *(record.text for record in (topic, purpose, time_requirement) if record),
+    ]
+    values = [
+        *free_text_values,
         *references,
     ]
     if any(len(value.encode("utf-8")) > MAX_FIELD_UTF8_BYTES for value in values):
         return _decline("field_too_large")
 
-    reason = _screen(values, screening)
+    reason = _screen(values, screening, identifier_values=free_text_values)
     if reason is not None:
         return _decline(reason)
 
@@ -289,6 +304,7 @@ def build_safe_research_brief(
         trusted_config_version=trusted_config_version,
         _authority=_BRIEF_AUTHORITY,
     )
+    object.__setattr__(brief, "_integrity", _brief_integrity(brief.to_json()))
     if len(brief.to_json().encode("utf-8")) > MAX_BRIEF_UTF8_BYTES:
         return _decline("brief_too_large")
     return BriefBuildResult(BriefDisposition.READY, None, brief)
@@ -316,7 +332,12 @@ def _contains(values: list[str], needles: tuple[str, ...]) -> bool:
     )
 
 
-def _screen(values: list[str], screening: ResearchScreeningContext) -> str | None:
+def _screen(
+    values: list[str],
+    screening: ResearchScreeningContext,
+    *,
+    identifier_values: list[str] | None = None,
+) -> str | None:
     if _contains(values, screening.private_canaries):
         return "private_canary"
     if _contains(values, screening.participant_identifiers):
@@ -326,7 +347,10 @@ def _screen(values: list[str], screening: ResearchScreeningContext) -> str | Non
     if _contains(values, screening.sensitive_details):
         return "sensitive_detail"
     combined = "\n".join(values)
-    if _EMAIL.search(combined) or _PHONE.search(combined):
+    identifier_text = "\n".join(
+        values if identifier_values is None else identifier_values
+    )
+    if _EMAIL.search(identifier_text) or _PHONE.search(identifier_text):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):
         return "recognizable_private_overlap"
@@ -342,6 +366,10 @@ def _screen(values: list[str], screening: ResearchScreeningContext) -> str | Non
         if decoded is not None and _contains([decoded], screening.private_canaries):
             return "encoded_leakage"
     return None
+
+
+def _brief_integrity(serialized: str) -> bytes:
+    return hmac.digest(_BRIEF_INTEGRITY_KEY, serialized.encode("utf-8"), "sha256")
 
 
 def _decode_base64(value: str) -> str | None:
