@@ -254,6 +254,15 @@ def test_missing_fake_cross_scope_and_exposed_provenance_fail_closed(sharing_set
         is AbstractReason.MISSING_PROVENANCE
     )
 
+    for marked in (
+        "General themes mention partici\u0301pant-a.",
+        "General themes mention eve\u0301nt-a.",
+    ):
+        assert (
+            validator.validate(context_a, proposal(event_a, marked)).reason
+            is AbstractReason.PROTECTED_METADATA
+        )
+
 
 def test_short_protected_ids_require_token_boundaries(tmp_path):
     events = EventStore(tmp_path / "events.sqlite3")

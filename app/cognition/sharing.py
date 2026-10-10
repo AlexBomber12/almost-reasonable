@@ -84,6 +84,15 @@ def _normalize_privacy_text(value: str) -> str:
     )
 
 
+def _canonical_identifier_text(value: str) -> str:
+    decomposed = unicodedata.normalize("NFKD", _normalize_privacy_text(value))
+    return "".join(
+        character
+        for character in decomposed
+        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
+    )
+
+
 def screen_abstract_candidate(
     candidate: AbstractCandidate,
     sources: tuple[PrivateConversationEvent, ...],
@@ -91,11 +100,7 @@ def screen_abstract_candidate(
     """Conservative H screen for obvious identity, quotation, and copy leakage."""
 
     normalized_candidate = _normalize_privacy_text(candidate.value)
-    identifier_candidate = "".join(
-        character
-        for character in normalized_candidate
-        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
-    )
+    identifier_candidate = _canonical_identifier_text(candidate.value)
     if _IDENTIFIER.search(identifier_candidate) is not None:
         return PrivacyScreenResult(
             PRIVACY_SCREEN_VERSION,
@@ -139,9 +144,10 @@ def _normalized_words(value: str) -> tuple[str, ...]:
 
 
 def _contains_protected_marker(value: str, marker: str) -> bool:
-    normalized_marker = _normalize_privacy_text(marker).casefold()
+    normalized_value = _canonical_identifier_text(value).casefold()
+    normalized_marker = _canonical_identifier_text(marker).casefold()
     pattern = re.compile(rf"(?<!\w){re.escape(normalized_marker)}(?!\w)")
-    return pattern.search(value) is not None
+    return pattern.search(normalized_value) is not None
 
 
 class AbstractToSharedValidator:
@@ -242,9 +248,8 @@ class AbstractToSharedValidator:
             context.principal_id.value,
             *protected_ids,
         )
-        normalized_value = _normalize_privacy_text(candidate.value).casefold()
         if any(
-            _contains_protected_marker(normalized_value, marker)
+            _contains_protected_marker(candidate.value, marker)
             for marker in protected_markers
         ):
             return self._result(
