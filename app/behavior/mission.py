@@ -1,0 +1,404 @@
+"""Isolated durable two-phase state machine for major mission revision."""
+
+from dataclasses import asdict, dataclass
+from datetime import datetime
+from enum import StrEnum
+import json
+from pathlib import Path
+import re
+from typing import Protocol
+
+
+MISSION_SCHEMA_VERSION = "mission-store-v1"
+MAX_MISSION_TEXT_UTF8_BYTES = 4096
+_FORBIDDEN_MISSION_CONTENT = re.compile(
+    r"https?://|ignore\s+previous|system\s+prompt|credential|"
+    r"tool\s+permission|change\s+(?:security|budget|deployment)|"
+    r"(?:выполни|запусти|вызови|управляй)\s+(?:инструмент|команд)",
+    re.IGNORECASE,
+)
+
+
+class MissionStatus(StrEnum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+
+
+class ConfirmationOutcome(StrEnum):
+    CONFIRMED = "confirmed"
+    REJECTED = "rejected"
+
+
+@dataclass(frozen=True, slots=True)
+class CapabilityPolicyInvariants:
+    core_self_version: str
+    operational_policy_version: str
+    credentials_version: str
+    provider_budget_version: str
+    deployment_stage: str
+    tool_permissions_version: str
+    emergency_stop_available: bool
+
+    def to_dict(self) -> dict[str, str | bool]:
+        return asdict(self)
+
+
+@dataclass(frozen=True, slots=True)
+class Mission:
+    version: str
+    text: str
+    activated_at: datetime
+    parent_version: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class MissionProposal:
+    proposal_id: str
+    proposed_mission: str
+    current_mission_version: str
+    initiating_event_id: str
+    supporting_reasons: tuple[str, ...]
+    counterevidence: tuple[str, ...]
+    version_identity: str
+    decided_at: datetime
+    correlation_id: str
+    model_identifier: str
+    prompt_version: str
+    invariants: CapabilityPolicyInvariants
+
+
+@dataclass(frozen=True, slots=True)
+class MissionConfirmation:
+    proposal_id: str
+    event_id: str
+    correlation_id: str
+    decided_at: datetime
+    outcome: ConfirmationOutcome
+    reasons: tuple[str, ...]
+    counterevidence: tuple[str, ...]
+    evidence_ids: tuple[str, ...]
+    invariants: CapabilityPolicyInvariants
+
+
+@dataclass(frozen=True, slots=True)
+class MissionRecord:
+    proposal: MissionProposal
+    status: MissionStatus
+    confirmation: MissionConfirmation | None
+
+
+@dataclass(frozen=True, slots=True)
+class MissionDocument:
+    current: Mission
+    proposals: tuple[MissionRecord, ...]
+    invariants: CapabilityPolicyInvariants | None
+
+
+class MissionRepository(Protocol):
+    def load(self) -> MissionDocument: ...
+
+    def save(self, document: MissionDocument) -> None: ...
+
+
+class JsonMissionRepository:
+    """Versioned atomic JSON repository, isolated from the shared EventStore."""
+
+    def __init__(self, path: Path, initial_mission: Mission):
+        self._path = Path(path)
+        if not self._path.exists():
+            self.save(MissionDocument(initial_mission, (), None))
+
+    def load(self) -> MissionDocument:
+        raw = json.loads(self._path.read_text(encoding="utf-8"))
+        if raw.get("schema_version") != MISSION_SCHEMA_VERSION:
+            raise ValueError("unsupported mission repository schema")
+        return _document_from_dict(raw)
+
+    def save(self, document: MissionDocument) -> None:
+        payload = _document_to_dict(document)
+        temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
+        temporary.write_text(
+            json.dumps(
+                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ),
+            encoding="utf-8",
+        )
+        temporary.replace(self._path)
+
+
+class MissionStateMachine:
+    def __init__(self, repository: MissionRepository):
+        self._repository = repository
+
+    def current_mission(self) -> Mission:
+        return self._repository.load().current
+
+    def propose(self, proposal: MissionProposal) -> MissionRecord:
+        document = self._repository.load()
+        _validate_proposal(proposal)
+        if proposal.current_mission_version != document.current.version:
+            raise ValueError("proposal does not reference the current mission")
+        if proposal.version_identity == document.current.version or any(
+            item.proposal.version_identity == proposal.version_identity
+            for item in document.proposals
+        ):
+            raise ValueError("mission version identity already exists")
+        if any(
+            item.proposal.proposal_id == proposal.proposal_id
+            for item in document.proposals
+        ):
+            raise ValueError("proposal already exists")
+        if (
+            document.invariants is not None
+            and proposal.invariants != document.invariants
+        ):
+            raise ValueError("capability-policy invariants changed")
+        record = MissionRecord(proposal, MissionStatus.PENDING, None)
+        self._repository.save(
+            MissionDocument(
+                document.current,
+                (*document.proposals, record),
+                proposal.invariants,
+            )
+        )
+        return record
+
+    def confirm(self, confirmation: MissionConfirmation) -> MissionRecord:
+        if not isinstance(confirmation, MissionConfirmation):
+            raise TypeError("confirmation must be a MissionConfirmation")
+        document = self._repository.load()
+        matches = [
+            (index, item)
+            for index, item in enumerate(document.proposals)
+            if item.proposal.proposal_id == confirmation.proposal_id
+        ]
+        if not matches:
+            raise ValueError("unknown proposal")
+        index, existing = matches[0]
+        if existing.status is not MissionStatus.PENDING:
+            raise ValueError("proposal is already resolved")
+        if existing.proposal.current_mission_version != document.current.version:
+            raise ValueError("proposal parent is no longer the current mission")
+        _validate_confirmation(existing.proposal, confirmation, document.invariants)
+        status = MissionStatus(confirmation.outcome.value)
+        resolved = MissionRecord(existing.proposal, status, confirmation)
+        proposals = list(document.proposals)
+        proposals[index] = resolved
+        current = document.current
+        if status is MissionStatus.CONFIRMED:
+            current = Mission(
+                existing.proposal.version_identity,
+                existing.proposal.proposed_mission,
+                confirmation.decided_at,
+                existing.proposal.current_mission_version,
+            )
+        self._repository.save(
+            MissionDocument(current, tuple(proposals), document.invariants)
+        )
+        return resolved
+
+
+def _validate_proposal(proposal: MissionProposal) -> None:
+    if not isinstance(proposal, MissionProposal):
+        raise TypeError("proposal must be a MissionProposal")
+    for name in (
+        "proposal_id",
+        "proposed_mission",
+        "current_mission_version",
+        "initiating_event_id",
+        "version_identity",
+        "correlation_id",
+        "model_identifier",
+        "prompt_version",
+    ):
+        if not _valid_text(getattr(proposal, name)):
+            raise ValueError(f"{name} is invalid")
+    mission_fields = (
+        proposal.proposed_mission,
+        *proposal.supporting_reasons,
+        *proposal.counterevidence,
+    )
+    if any(_FORBIDDEN_MISSION_CONTENT.search(value) for value in mission_fields):
+        raise ValueError(
+            "closed mission text rejects instructions, links, and policy changes"
+        )
+    _validate_text_tuple(proposal.supporting_reasons, "supporting_reasons")
+    _validate_text_tuple(proposal.counterevidence, "counterevidence")
+    _validate_time(proposal.decided_at)
+    _validate_invariants(proposal.invariants)
+
+
+def _validate_confirmation(
+    proposal: MissionProposal,
+    confirmation: MissionConfirmation,
+    invariants: CapabilityPolicyInvariants | None,
+) -> None:
+    if confirmation.event_id == proposal.initiating_event_id:
+        raise ValueError("confirmation requires an independent event")
+    if confirmation.correlation_id == proposal.correlation_id:
+        raise ValueError("confirmation requires an independent correlation")
+    _validate_time(confirmation.decided_at)
+    if confirmation.decided_at <= proposal.decided_at:
+        raise ValueError("confirmation must be later than the proposal")
+    if not isinstance(confirmation.outcome, ConfirmationOutcome):
+        raise ValueError("confirmation outcome is invalid")
+    for name in ("proposal_id", "event_id", "correlation_id"):
+        if not _valid_text(getattr(confirmation, name)):
+            raise ValueError(f"{name} is invalid")
+    _validate_text_tuple(confirmation.reasons, "reasons")
+    _validate_text_tuple(confirmation.counterevidence, "counterevidence")
+    _validate_text_tuple(confirmation.evidence_ids, "evidence_ids")
+    if proposal.initiating_event_id in confirmation.evidence_ids:
+        raise ValueError("confirmation requires independent evidence")
+    _validate_invariants(confirmation.invariants)
+    if invariants is None or confirmation.invariants != invariants:
+        raise ValueError("capability-policy invariants changed")
+
+
+def _validate_invariants(value: CapabilityPolicyInvariants) -> None:
+    if not isinstance(value, CapabilityPolicyInvariants):
+        raise ValueError("capability-policy invariants are invalid")
+    fields = (
+        value.core_self_version,
+        value.operational_policy_version,
+        value.credentials_version,
+        value.provider_budget_version,
+        value.deployment_stage,
+        value.tool_permissions_version,
+    )
+    if (
+        any(not _valid_text(item) for item in fields)
+        or type(value.emergency_stop_available) is not bool
+    ):
+        raise ValueError("capability-policy invariants are invalid")
+
+
+def _validate_text_tuple(value: tuple[str, ...], name: str) -> None:
+    if (
+        type(value) is not tuple
+        or not value
+        or any(not _valid_text(item) for item in value)
+    ):
+        raise ValueError(f"{name} must contain bounded text")
+
+
+def _validate_time(value: datetime) -> None:
+    if not isinstance(value, datetime) or value.tzinfo is None:
+        raise ValueError("decision timestamp must be timezone-aware")
+
+
+def _valid_text(value: object) -> bool:
+    if not isinstance(value, str) or not value:
+        return False
+    try:
+        return len(value.encode("utf-8")) <= MAX_MISSION_TEXT_UTF8_BYTES
+    except UnicodeEncodeError:
+        return False
+
+
+def _document_to_dict(document: MissionDocument) -> dict[str, object]:
+    return {
+        "schema_version": MISSION_SCHEMA_VERSION,
+        "current": _mission_to_dict(document.current),
+        "invariants": (
+            document.invariants.to_dict() if document.invariants is not None else None
+        ),
+        "proposals": [_record_to_dict(record) for record in document.proposals],
+    }
+
+
+def _mission_to_dict(mission: Mission) -> dict[str, object]:
+    return {
+        "version": mission.version,
+        "text": mission.text,
+        "activated_at": mission.activated_at.isoformat(),
+        "parent_version": mission.parent_version,
+    }
+
+
+def _proposal_to_dict(proposal: MissionProposal) -> dict[str, object]:
+    result = asdict(proposal)
+    result["decided_at"] = proposal.decided_at.isoformat()
+    result["invariants"] = proposal.invariants.to_dict()
+    return result
+
+
+def _confirmation_to_dict(confirmation: MissionConfirmation) -> dict[str, object]:
+    result = asdict(confirmation)
+    result["decided_at"] = confirmation.decided_at.isoformat()
+    result["outcome"] = confirmation.outcome.value
+    result["invariants"] = confirmation.invariants.to_dict()
+    return result
+
+
+def _record_to_dict(record: MissionRecord) -> dict[str, object]:
+    return {
+        "proposal": _proposal_to_dict(record.proposal),
+        "status": record.status.value,
+        "confirmation": (
+            _confirmation_to_dict(record.confirmation)
+            if record.confirmation is not None
+            else None
+        ),
+    }
+
+
+def _document_from_dict(raw: dict[str, object]) -> MissionDocument:
+    current_raw = raw["current"]
+    if not isinstance(current_raw, dict):
+        raise ValueError("mission repository current record is invalid")
+    current = Mission(
+        current_raw["version"],
+        current_raw["text"],
+        datetime.fromisoformat(current_raw["activated_at"]),
+        current_raw["parent_version"],
+    )
+    invariants_raw = raw["invariants"]
+    stored_invariants = (
+        CapabilityPolicyInvariants(**invariants_raw)
+        if isinstance(invariants_raw, dict)
+        else None
+    )
+    proposals_raw = raw["proposals"]
+    if not isinstance(proposals_raw, list):
+        raise ValueError("mission repository proposals are invalid")
+    records: list[MissionRecord] = []
+    for item in proposals_raw:
+        proposal_raw = item["proposal"]
+        proposal_values = dict(proposal_raw)
+        proposal_values["decided_at"] = datetime.fromisoformat(
+            proposal_values["decided_at"]
+        )
+        proposal_values["supporting_reasons"] = tuple(
+            proposal_values["supporting_reasons"]
+        )
+        proposal_values["counterevidence"] = tuple(proposal_values["counterevidence"])
+        proposal_values["invariants"] = CapabilityPolicyInvariants(
+            **proposal_values["invariants"]
+        )
+        parsed_proposal = MissionProposal(**proposal_values)
+        confirmation_raw = item["confirmation"]
+        parsed_confirmation = None
+        if confirmation_raw is not None:
+            confirmation_values = dict(confirmation_raw)
+            confirmation_values["decided_at"] = datetime.fromisoformat(
+                confirmation_values["decided_at"]
+            )
+            confirmation_values["outcome"] = ConfirmationOutcome(
+                confirmation_values["outcome"]
+            )
+            for key in ("reasons", "counterevidence", "evidence_ids"):
+                confirmation_values[key] = tuple(confirmation_values[key])
+            confirmation_values["invariants"] = CapabilityPolicyInvariants(
+                **confirmation_values["invariants"]
+            )
+            parsed_confirmation = MissionConfirmation(**confirmation_values)
+        records.append(
+            MissionRecord(
+                parsed_proposal,
+                MissionStatus(item["status"]),
+                parsed_confirmation,
+            )
+        )
+    return MissionDocument(current, tuple(records), stored_invariants)

@@ -1,0 +1,244 @@
+"""Versioned deterministic H-class gate for conversational Russian output."""
+
+from collections.abc import Callable
+from dataclasses import dataclass
+from enum import StrEnum
+import re
+import unicodedata
+
+
+RUSSIAN_GATE_VERSION = "russian-h-gate-v1"
+RUSSIAN_GATE_CORPUS_VERSION = "russian-h-corpus-v1"
+
+
+class GateReason(StrEnum):
+    ACCEPTED = "accepted"
+    EMPTY = "empty"
+    DISALLOWED_CONTROL = "disallowed_control"
+    NON_RUSSIAN_PROSE = "non_russian_prose"
+    NEARBY_LANGUAGE = "nearby_language"
+
+
+@dataclass(frozen=True, slots=True)
+class GateAssessment:
+    version: str
+    accepted: bool
+    reason: GateReason
+    russian_word_count: int
+    foreign_prose_word_count: int
+
+
+@dataclass(frozen=True, slots=True)
+class RussianCorpusCase:
+    case_id: str
+    category: str
+    text: str
+    expected_accept: bool
+    limitation_note: str
+
+
+@dataclass(frozen=True, slots=True)
+class DeliveryResult:
+    text: str
+    used_fallback: bool
+    regeneration_attempts: int
+    assessments: tuple[GateAssessment, ...]
+
+
+_URL = re.compile(r"https?://\S+", re.IGNORECASE)
+_FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`[^`]*`")
+_QUOTED = re.compile(r"[«“\"](?:[^»”\"]|\"(?!\s))*[»”\"]")
+_CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
+_LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
+_UKRAINIAN_WORDS = frozenset(
+    ("це", "який", "яка", "яке", "містить", "інші", "український", "та")
+)
+_BELARUSIAN_WORDS = frozenset(
+    ("гэта", "які", "якая", "мае", "іншыя", "беларускі", "тэкст")
+)
+_COMMON_LATIN_TERMS = frozenset(
+    (
+        "api",
+        "async",
+        "await",
+        "openai",
+        "python",
+        "json",
+        "http",
+        "https",
+        "sql",
+        "sqlite",
+        "threads",
+        "linux",
+    )
+)
+
+
+class RussianOutputGate:
+    """Conservative corpus-calibrated heuristic; it is not authorization."""
+
+    def assess(self, text: object) -> GateAssessment:
+        if not isinstance(text, str) or not text.strip():
+            return _assessment(False, GateReason.EMPTY, 0, 0)
+        normalized = unicodedata.normalize("NFC", text)
+        if any(_is_disallowed_control(character) for character in normalized):
+            return _assessment(False, GateReason.DISALLOWED_CONTROL, 0, 0)
+
+        prose = _strip_allowed_foreign_regions(normalized)
+        cyrillic = [word.casefold() for word in _CYRILLIC_WORD.findall(prose)]
+        latin = [word.casefold() for word in _LATIN_WORD.findall(prose)]
+        nearby_score = sum(word in _UKRAINIAN_WORDS for word in cyrillic)
+        nearby_score = max(
+            nearby_score, sum(word in _BELARUSIAN_WORDS for word in cyrillic)
+        )
+        nearby_letters = sum(character in "іїєґўІЇЄҐЎ" for character in prose)
+        foreign = sum(word not in _COMMON_LATIN_TERMS for word in latin)
+        if nearby_letters and nearby_score >= 2:
+            return _assessment(
+                False, GateReason.NEARBY_LANGUAGE, len(cyrillic), foreign
+            )
+        if not cyrillic or foreign > max(3, len(cyrillic)):
+            return _assessment(
+                False, GateReason.NON_RUSSIAN_PROSE, len(cyrillic), foreign
+            )
+        return _assessment(True, GateReason.ACCEPTED, len(cyrillic), foreign)
+
+
+class RussianOutputPolicy:
+    """Bounded regenerate-or-application-fallback delivery policy."""
+
+    SAFE_FALLBACK = (
+        "Не удалось подготовить корректный ответ по-русски. Попробуем позже."
+    )
+
+    def __init__(self, max_regenerations: int = 1):
+        if type(max_regenerations) is not int or not 0 <= max_regenerations <= 2:
+            raise ValueError("max_regenerations must be an integer from 0 to 2")
+        self._max_regenerations = max_regenerations
+        self._gate = RussianOutputGate()
+
+    def deliver(
+        self,
+        draft: str,
+        regenerate: Callable[[str], str] | None = None,
+    ) -> DeliveryResult:
+        current = draft
+        assessments: list[GateAssessment] = []
+        attempt = 0
+        while True:
+            assessment = self._gate.assess(current)
+            assessments.append(assessment)
+            if assessment.accepted:
+                return DeliveryResult(current, False, attempt, tuple(assessments))
+            if regenerate is None or attempt == self._max_regenerations:
+                break
+            current = regenerate(current)
+            attempt += 1
+        return DeliveryResult(
+            self.SAFE_FALLBACK,
+            True,
+            len(assessments) - 1,
+            tuple(assessments),
+        )
+
+
+def corpus_cases() -> tuple[RussianCorpusCase, ...]:
+    """Frozen examples publish known decisions, not a claim of perfect detection."""
+
+    return (
+        RussianCorpusCase(
+            "ru-fluent",
+            "fluent_russian",
+            "Мне кажется, этот вывод требует более сильных доказательств.",
+            True,
+            "Короткая естественная русская проза.",
+        ),
+        RussianCorpusCase(
+            "ru-tech",
+            "technical_english",
+            "В Python удобно использовать async/await для API OpenAI.",
+            True,
+            "Технические токены исключаются из латинской прозы.",
+        ),
+        RussianCorpusCase(
+            "ru-italy",
+            "italian_names",
+            "Маршрут проходит через Reggio Emilia и Piazza Navona в Италии.",
+            True,
+            "Несколько имён допустимы при достаточном русском контексте.",
+        ),
+        RussianCorpusCase(
+            "uk-near",
+            "ukrainian_proximity",
+            "Це український текст, який містить інші слова.",
+            False,
+            "Близкие языки дают неизбежные пограничные ошибки.",
+        ),
+        RussianCorpusCase(
+            "be-near",
+            "belarusian_proximity",
+            "Гэта беларускі тэкст, які мае іншыя словы.",
+            False,
+            "Эвристика использует ограниченный список маркеров.",
+        ),
+        RussianCorpusCase(
+            "en-only",
+            "english_only",
+            "This answer contains only English conversational prose.",
+            False,
+            "Латинская проза без кириллицы отклоняется.",
+        ),
+        RussianCorpusCase(
+            "mixed-prose",
+            "mixed_script",
+            "Привет. This is a long conversational answer in English.",
+            False,
+            "Короткий русский маркер не маскирует длинную иностранную прозу.",
+        ),
+        RussianCorpusCase(
+            "unicode-control",
+            "unicode_controls",
+            "Нормальный\u200b ответ со скрытым символом.",
+            False,
+            "Невидимые форматирующие символы отклоняются консервативно.",
+        ),
+        RussianCorpusCase(
+            "foreign-quote",
+            "foreign_quote",
+            "Автор пишет: «The map is not the territory». Это уместная цитата с пояснением.",
+            True,
+            "Атрибутированность и необходимость остаются M-вопросом.",
+        ),
+        RussianCorpusCase(
+            "code-url",
+            "code_and_url",
+            "Пример кода: `print('ok')`. Документация: https://example.com/docs",
+            True,
+            "Код и URL не считаются разговорной прозой.",
+        ),
+    )
+
+
+def _strip_allowed_foreign_regions(text: str) -> str:
+    without_code = _FENCED_CODE.sub(" ", text)
+    without_code = _INLINE_CODE.sub(" ", without_code)
+    without_urls = _URL.sub(" ", without_code)
+    without_quotes = _QUOTED.sub(" ", without_urls)
+    return "\n".join(
+        " " if line.lstrip().startswith(">") else line
+        for line in without_quotes.splitlines()
+    )
+
+
+def _is_disallowed_control(character: str) -> bool:
+    return character not in "\n\r\t" and unicodedata.category(character) in (
+        "Cc",
+        "Cf",
+    )
+
+
+def _assessment(
+    accepted: bool, reason: GateReason, russian: int, foreign: int
+) -> GateAssessment:
+    return GateAssessment(RUSSIAN_GATE_VERSION, accepted, reason, russian, foreign)
