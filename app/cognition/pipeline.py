@@ -132,8 +132,7 @@ class CognitionEngine:
 
         if not self._valid_token(source_event_id):
             return InvalidationPlan(InvalidationStatus.REJECTED, "", ())
-        source = self._read.retrieve_exact_private_event(context, source_event_id)
-        if source is None:
+        if not self._read.has_private_event_envelope(context, source_event_id):
             return InvalidationPlan(InvalidationStatus.REJECTED, source_event_id, ())
         affected = self._read.retrieve_private_revision_references(
             context, source_event_id

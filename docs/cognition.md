@@ -144,13 +144,17 @@ Terminal records are excluded by default and may be requested only for an
 explicit revision purpose; `include_terminal` is rejected for conversation or
 general deliberation.
 
-The retrieval request can receive externally supplied invalidated event IDs and
-will omit current candidates when any revision in their complete provenance
-chain is tainted by one of them. `plan_source_invalidation` finds all affected
-private revisions without applying the core 100-revision presentation cap, but
-returns `pending_integration` and performs no durable deletion. This is an
-explicit hook for the future authenticated deletion ledger, not a claim that
-cascade deletion or backup reconciliation exists now.
+Retrieval reads invalidated provenance directly from the participant-scoped
+store and omits a candidate when any revision in its complete provenance chain
+is tainted, without requiring callers to enumerate the deletion ledger. A
+request may also provide a byte-bounded set of in-flight invalidation hints that
+have not reached durable provenance yet; this supplemental set is not the source
+of completeness. `plan_source_invalidation` authorizes retries from the retained
+event envelope and finds active or already-invalidated affected revisions
+without applying the core 100-revision presentation cap. It returns
+`pending_integration` and performs no durable deletion. This is an explicit hook
+for the future authenticated deletion ledger, not a claim that cascade deletion
+or backup reconciliation exists now.
 
 ## Model and security boundary
 

@@ -37,6 +37,7 @@ class PrivateCandidateRead:
     decision_origin: DecisionOrigin
     revision_reason: str
     evidence_event_ids: tuple[str, ...]
+    has_invalidated_evidence: bool
 
 
 class _BufferedRows:
@@ -141,6 +142,34 @@ class CognitionReadStore:
     ) -> PrivateConversationEvent | None:
         return retrieve_exact_private_event(self._events, context, event_id)
 
+    def has_private_event_envelope(
+        self, context: TrustedPrincipalContext, event_id: str
+    ) -> bool:
+        """Authorize retained event identity without requiring readable content."""
+
+        self._events._validate_context(context)
+        connection = self._events._open()
+        try:
+            with connection:
+                connection.execute("BEGIN")
+                self._events._verify_current_schema(connection)
+                row = connection.execute(
+                    """
+                    SELECT 1
+                    FROM event_envelopes AS event
+                    WHERE event.event_id = ?
+                      AND event.audience_type = 'private_participant'
+                      AND event.audience_principal_id = ?
+                    LIMIT 1
+                    """,
+                    (event_id, context.principal_id.value),
+                ).fetchone()
+                return row is not None
+        except sqlite3.Error as error:
+            raise self._events._translated_error(error) from None
+        finally:
+            connection.close()
+
     def retrieve_exact_private_candidate(
         self, context: TrustedPrincipalContext, item_id: str
     ) -> PrivateCandidate | None:
@@ -180,7 +209,8 @@ class CognitionReadStore:
                 )
                 evidence_rows = connection.execute(
                     """
-                    SELECT DISTINCT revision.item_key, source.event_id
+                    SELECT DISTINCT
+                        revision.item_key, source.event_id, source.retention_status
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
@@ -190,7 +220,8 @@ class CognitionReadStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND source.retention_status IN ('active', 'invalidated')
-                    ORDER BY revision.item_key, source.event_id
+                    ORDER BY revision.item_key, source.event_id,
+                             source.retention_status
                     """,
                     (context.principal_id.value,),
                 ).fetchall()
@@ -225,9 +256,12 @@ class CognitionReadStore:
                     """,
                     (context.principal_id.value, context.principal_id.value),
                 ).fetchall()
-                evidence_by_item: dict[int, list[str]] = {}
-                for item_key, event_id in evidence_rows:
-                    evidence_by_item.setdefault(item_key, []).append(event_id)
+                evidence_by_item: dict[int, set[str]] = {}
+                invalidated_items: set[int] = set()
+                for item_key, event_id, retention_status in evidence_rows:
+                    evidence_by_item.setdefault(item_key, set()).add(event_id)
+                    if retention_status == "invalidated":
+                        invalidated_items.add(item_key)
                 payloads: dict[tuple[str, int], list[tuple[str]]] = {}
                 for table, revision_key, _ordinal, value in payload_rows:
                     payloads.setdefault((table, revision_key), []).append((value,))
@@ -254,7 +288,8 @@ class CognitionReadStore:
                             self._state._parse_time(row[27]),
                             DecisionOrigin(row[28]),
                             row[29],
-                            tuple(evidence_by_item.get(row[0], ())),
+                            tuple(sorted(evidence_by_item.get(row[0], ()))),
+                            row[0] in invalidated_items,
                         )
                     )
                 return tuple(records)

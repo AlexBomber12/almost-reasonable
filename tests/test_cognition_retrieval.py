@@ -209,6 +209,16 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
             "SET retention_status = 'invalidated' WHERE event_id = ?",
             (event_a1,),
         )
+        connection.execute(
+            """
+            UPDATE private_payloads
+            SET retention_status = 'deleted'
+            WHERE payload_id = (
+                SELECT payload_id FROM event_envelopes WHERE event_id = ?
+            )
+            """,
+            (event_a1,),
+        )
 
     retry_plan = engine.plan_source_invalidation(context_a, event_a1)
     assert retry_plan.status is InvalidationStatus.PENDING_INTEGRATION
@@ -221,7 +231,6 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
             "orbital",
             4096,
             5,
-            invalidated_event_ids=(event_a1,),
         ),
     )
     assert [record.item_id for record in selected.records] == ["interest-a-art"]
@@ -372,7 +381,9 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
             "topic",
             100,
             1,
-            invalidated_event_ids=tuple(f"event-{index}" for index in range(101)),
+            invalidated_event_ids=tuple(
+                f"event-{index:05d}-" + "x" * 100 for index in range(600)
+            ),
         ),
         RetrievalRequest(
             RetrievalPurpose.CONVERSATION,
@@ -397,6 +408,21 @@ def test_retrieval_limits_and_identifiers_are_validated(
 
     with pytest.raises(ValueError, match="invalid retrieval request"):
         MemoryContextSelector(events, state).select(context, object())
+
+
+def test_retrieval_accepts_more_than_one_hundred_invalidation_hints(retrieval_setup):
+    events, state, context, _, _, _ = retrieval_setup
+    request = RetrievalRequest(
+        RetrievalPurpose.CONVERSATION,
+        "topic",
+        4096,
+        5,
+        invalidated_event_ids=tuple(f"event-{index}" for index in range(101)),
+    )
+
+    selection = MemoryContextSelector(events, state).select(context, request)
+
+    assert len(selection.records) == 2
 
 
 def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_setup):

@@ -131,6 +131,18 @@ def test_exact_event_sql_failure_is_translated(read_setup, monkeypatch):
         )
 
 
+def test_event_envelope_sql_failure_is_translated(read_setup, monkeypatch):
+    events, state, context = read_setup
+    monkeypatch.setattr(
+        events,
+        "_verify_current_schema",
+        lambda _connection: (_ for _ in ()).throw(sqlite3.OperationalError("boom")),
+    )
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        CognitionReadStore(events, state).has_private_event_envelope(context, "event-a")
+
+
 def test_replay_sql_failure_is_translated(read_setup, monkeypatch):
     events, state, context = read_setup
     monkeypatch.setattr(

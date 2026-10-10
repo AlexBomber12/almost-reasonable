@@ -29,6 +29,7 @@ from .read_store import CognitionReadStore
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _WORD = re.compile(r"\w+", re.UNICODE)
 _TERMINAL_STATUSES = {"completed", "abandoned"}
+_MAX_INVALIDATION_HINT_BYTES = 64 * 1024
 
 
 class MemoryContextSelector:
@@ -71,7 +72,9 @@ class MemoryContextSelector:
             if not request.include_terminal and candidate.item_id in terminal_items:
                 omitted = True
                 continue
-            if invalidated & set(candidate_read.evidence_event_ids):
+            if candidate_read.has_invalidated_evidence or invalidated & set(
+                candidate_read.evidence_event_ids
+            ):
                 omitted = True
                 continue
             record = self._record(
@@ -254,11 +257,12 @@ class MemoryContextSelector:
                 and request.purpose is not RetrievalPurpose.REVISION
             )
             or type(request.invalidated_event_ids) is not tuple
-            or len(request.invalidated_event_ids) > 100
             or any(
                 not isinstance(item, str) or _TOKEN.fullmatch(item) is None
                 for item in request.invalidated_event_ids
             )
+            or sum(len(item.encode("utf-8")) for item in request.invalidated_event_ids)
+            > _MAX_INVALIDATION_HINT_BYTES
             or len(set(request.invalidated_event_ids))
             != len(request.invalidated_event_ids)
         ):
