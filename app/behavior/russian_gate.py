@@ -66,7 +66,9 @@ _INLINE_CODE = re.compile(
 )
 _INDENTED_CODE = re.compile(
     r"(?:\A|(?<=\n\n)|(?<=\r\n\r\n))"
-    r"(?P<content>(?:(?: {4}|\t)[^\r\n]*(?:\r?\n|$))+)",
+    r"(?P<content>(?: {4}|\t)[^\r\n]*(?:\r?\n|$)"
+    r"(?:(?:[ \t]*\r?\n)+(?=(?: {4}|\t))|"
+    r"(?: {4}|\t)[^\r\n]*(?:\r?\n|$))*)",
 )
 _INDENTED_CODE_PREFIX = re.compile(r"^(?: {4}|\t)", re.MULTILINE)
 _SUPPORTED_FENCED_CODE_LANGUAGES = frozenset(

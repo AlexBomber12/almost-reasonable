@@ -183,6 +183,13 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     assert indented_code.accepted
     assert indented_code.foreign_prose_word_count == 0
 
+    indented_code_with_blank = RussianOutputGate().assess(
+        "Пример:\n\n    def active_names(users):\n\n"
+        "        return [user.name for user in users if user.active]"
+    )
+    assert indented_code_with_blank.accepted
+    assert indented_code_with_blank.foreign_prose_word_count == 0
+
     tilde_fence = RussianOutputGate().assess(
         "Да:\n~~~python\nfor item in items:\n    print(item)\n~~~"
     )
