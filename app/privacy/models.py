@@ -21,6 +21,13 @@ def require_token(value: object, name: str) -> str:
     return value
 
 
+def audit_correlation(value: object, trusted_fallback: str) -> str:
+    try:
+        return require_token(value, "correlation id")
+    except ValueError:
+        return require_token(trusted_fallback, "audit correlation fallback")
+
+
 def require_utc(value: object, name: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError(f"invalid {name}")

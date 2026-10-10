@@ -12,6 +12,7 @@ from .models import (
     OperationOrigin,
     OperationResult,
     TrustedPrivacyContext,
+    audit_correlation,
     require_token,
     require_utc,
 )
@@ -69,10 +70,13 @@ class ConsentService:
         correlation_id: str,
         dispatch: Callable[[], None],
     ) -> ConsentUseResult:
-        require_token(correlation_id, "correlation id")
         if context.origin is not OperationOrigin.CONTROL:
+            correlation_id = audit_correlation(
+                correlation_id, context.authentication_event_id
+            )
             result = ConsentUseResult(False, "invalid_authentication")
         else:
+            require_token(correlation_id, "correlation id")
             require_token(principal_id, "principal id")
             require_token(content_reference, "content reference")
             require_token(audience, "audience")
@@ -115,10 +119,13 @@ class ConsentService:
         revoked_at: datetime,
         correlation_id: str,
     ) -> OperationResult:
-        require_token(correlation_id, "correlation id")
         if context.origin is not OperationOrigin.CONTROL:
+            correlation_id = audit_correlation(
+                correlation_id, context.authentication_event_id
+            )
             reason = "invalid_authentication"
         else:
+            require_token(correlation_id, "correlation id")
             require_token(consent_id, "consent id")
             require_token(operation_id, "operation id")
             require_utc(revoked_at, "revocation timestamp")

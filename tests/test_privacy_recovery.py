@@ -1477,13 +1477,14 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
         ),
         "unknown",
         datetime(2026, 10, 10),
-        "notice-model-unknown",
+        "notice model unknown",
     )
     assert (rejected_unknown.created, rejected_unknown.reason) == (
         False,
         "invalid_authentication",
     )
     assert ledger.audit_records()[-1].result_code == "invalid_authentication"
+    assert ledger.audit_records()[-1].correlation_id == "auth-a"
     with pytest.raises(ValueError, match="notice version"):
         service.acknowledge(context(), "unknown", NOW, "notice-bad-version")
     unsupported = ledger.audit_records()[-1]

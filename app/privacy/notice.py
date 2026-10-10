@@ -9,6 +9,7 @@ from .models import (
     OperationOrigin,
     OperationResult,
     TrustedPrivacyContext,
+    audit_correlation,
     require_token,
     require_utc,
 )
@@ -64,8 +65,10 @@ class NoticeService:
         acknowledged_at: datetime,
         correlation_id: str,
     ) -> OperationResult:
-        require_token(correlation_id, "correlation id")
         if context.origin is not OperationOrigin.CONTROL:
+            correlation_id = audit_correlation(
+                correlation_id, context.authentication_event_id
+            )
             occurred_at = self._clock()
             require_utc(occurred_at, "notice rejection timestamp")
             self.ledger.record_audit(
@@ -80,6 +83,7 @@ class NoticeService:
                 )
             )
             return OperationResult(False, "invalid_authentication")
+        require_token(correlation_id, "correlation id")
         require_utc(acknowledged_at, "acknowledgement timestamp")
         if notice_version != NOTICE_VERSION:
             occurred_at = self._clock()

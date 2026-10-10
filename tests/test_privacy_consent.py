@@ -416,12 +416,13 @@ def test_unauthenticated_consent_operations_reject_before_validation_or_reads(
         content_reference="bad content",
         audience="bad audience",
         purpose="bad purpose",
-        correlation_id="unauthenticated-use",
+        correlation_id="unauthenticated use",
         dispatch=unexpected_ledger_access,
     )
 
     assert (use.allowed, use.reason) == (False, "invalid_authentication")
     assert ledger.audit_records()[-1].result_code == "invalid_authentication"
+    assert ledger.audit_records()[-1].correlation_id == "auth-event-a"
 
     monkeypatch.setattr(ledger, "consent_principal", unexpected_ledger_access)
     revocation = consent.revoke(
@@ -429,7 +430,7 @@ def test_unauthenticated_consent_operations_reject_before_validation_or_reads(
         consent_id="bad consent",
         operation_id="bad operation",
         revoked_at=datetime(2026, 10, 10),
-        correlation_id="unauthenticated-revocation",
+        correlation_id="unauthenticated revocation",
     )
 
     assert (revocation.created, revocation.reason) == (
@@ -437,6 +438,7 @@ def test_unauthenticated_consent_operations_reject_before_validation_or_reads(
         "invalid_authentication",
     )
     assert ledger.audit_records()[-1].result_code == "invalid_authentication"
+    assert ledger.audit_records()[-1].correlation_id == "auth-event-a"
 
 
 def test_consent_use_cannot_borrow_another_principals_grant(service):

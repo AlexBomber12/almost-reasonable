@@ -41,8 +41,10 @@ and each persisted deletion transition and its audit row, commit in the same
 privacy-ledger transaction; an audit write failure rolls back the control state.
 Rejected-operation audits attribute the trusted context actor rather than
 submitted grant fields. Rejected notice acknowledgements are likewise recorded
-as payload-free audit decisions. Rejection audit timestamps always come from the
-service clock rather than rejected request fields.
+as payload-free audit decisions. Authentication is checked before untrusted
+request fields; a malformed submitted correlation ID is replaced in rejection
+audits by the trusted authentication-event reference. Rejection audit timestamps
+always come from the service clock rather than rejected request fields.
 
 Ordinary derivatives must retain every source audience. The only proposed
 cross-scope transition is `abstract_to_shared`. Its validator requires a valid
