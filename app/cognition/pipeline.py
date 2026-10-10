@@ -88,6 +88,8 @@ class CognitionEngine:
             return self._rejected(CognitionReason.CAPABILITY_DISABLED)
         if self._extractor is None:
             return self._rejected(CognitionReason.EXTRACTOR_NOT_CONFIGURED)
+        if not self._valid_token(source_event_id):
+            return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
         source = self._read.retrieve_exact_private_event(context, source_event_id)
         if source is None:
             return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
@@ -128,6 +130,8 @@ class CognitionEngine:
     ) -> InvalidationPlan:
         """Identify affected revisions without pretending deletion integration exists."""
 
+        if not self._valid_token(source_event_id):
+            return InvalidationPlan(InvalidationStatus.REJECTED, "", ())
         source = self._read.retrieve_exact_private_event(context, source_event_id)
         if source is None:
             return InvalidationPlan(InvalidationStatus.REJECTED, source_event_id, ())
@@ -356,52 +360,12 @@ class CognitionEngine:
             return CognitionReason.STALE_REVISION
         if not CognitionEngine._same_state_type(proposal, existing):
             return CognitionReason.STALE_REVISION
-        if isinstance(existing, InterestCandidate):
-            allowed = {
-                InterestStatus.ACTIVE: {
-                    InterestStatus.ACTIVE,
-                    InterestStatus.SUSPENDED,
-                    InterestStatus.ABANDONED,
-                },
-                InterestStatus.SUSPENDED: {
-                    InterestStatus.ACTIVE,
-                    InterestStatus.SUSPENDED,
-                    InterestStatus.ABANDONED,
-                },
-                InterestStatus.ABANDONED: {InterestStatus.ABANDONED},
-            }
-        elif isinstance(existing, BeliefCandidate):
-            allowed = {
-                BeliefStatus.ACTIVE: {
-                    BeliefStatus.ACTIVE,
-                    BeliefStatus.SUSPENDED,
-                    BeliefStatus.ABANDONED,
-                },
-                BeliefStatus.SUSPENDED: {
-                    BeliefStatus.ACTIVE,
-                    BeliefStatus.SUSPENDED,
-                    BeliefStatus.ABANDONED,
-                },
-                BeliefStatus.ABANDONED: {BeliefStatus.ABANDONED},
-            }
-        else:
-            allowed = {
-                GoalStatus.ACTIVE: {
-                    GoalStatus.ACTIVE,
-                    GoalStatus.SUSPENDED,
-                    GoalStatus.COMPLETED,
-                    GoalStatus.ABANDONED,
-                },
-                GoalStatus.SUSPENDED: {
-                    GoalStatus.ACTIVE,
-                    GoalStatus.SUSPENDED,
-                    GoalStatus.COMPLETED,
-                    GoalStatus.ABANDONED,
-                },
-                GoalStatus.COMPLETED: {GoalStatus.COMPLETED},
-                GoalStatus.ABANDONED: {GoalStatus.ABANDONED},
-            }
-        if proposal.status not in allowed[existing.status]:
+        if existing.status in {
+            InterestStatus.ABANDONED,
+            BeliefStatus.ABANDONED,
+            GoalStatus.COMPLETED,
+            GoalStatus.ABANDONED,
+        }:
             return CognitionReason.INVALID_STATUS_TRANSITION
         return None
 

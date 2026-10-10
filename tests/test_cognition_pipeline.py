@@ -13,6 +13,7 @@ from app.cognition import (
     GenericMemoryProposal,
     GoalMemoryProposal,
     InterestMemoryProposal,
+    InvalidationStatus,
     MemoryKind,
     NoChangeProposal,
     ProposalContext,
@@ -330,6 +331,18 @@ def test_goal_lifecycle_allows_suspension_and_completion_but_terminal_is_final(
         .status
         is CognitionOutcomeStatus.PERSISTED
     )
+    terminal_rewrite = replace(
+        completed,
+        context=proposal_context(event_id, "goal-rewrite", expected_revision=3),
+        description="Rewrite an already completed goal.",
+    )
+    rewrite_outcome = CognitionEngine(
+        events, state, extractor=FakeExtractor(terminal_rewrite)
+    ).process(context, event_id)
+    assert rewrite_outcome.reason is CognitionReason.INVALID_STATUS_TRANSITION
+    assert state.retrieve_private_candidates(context)[0].description == (
+        "Compare two bounded explanations."
+    )
     resume = replace(
         base,
         context=proposal_context(event_id, "goal-resume", expected_revision=3),
@@ -340,6 +353,27 @@ def test_goal_lifecycle_allows_suspension_and_completion_but_terminal_is_final(
     )
     assert rejected.reason is CognitionReason.INVALID_STATUS_TRANSITION
     assert state.retrieve_private_candidates(context)[0].status is GoalStatus.COMPLETED
+
+
+def test_unbindable_source_id_is_rejected_before_store_lookup(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    proposal = InterestMemoryProposal(
+        proposal_context(event_id, "invalid-source-id"),
+        "interest-invalid-source",
+        "Source validation",
+        50,
+        InterestStatus.ACTIVE,
+        "Unbindable identifiers must not reach SQLite.",
+    )
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+
+    outcome = engine.process(context, [])
+    invalidation = engine.plan_source_invalidation(context, {})
+
+    assert outcome.reason is CognitionReason.SOURCE_NOT_FOUND
+    assert invalidation.status is InvalidationStatus.REJECTED
+    assert invalidation.affected_items == ()
+    assert state.retrieve_private_candidates(context) == ()
 
 
 def test_scope_fake_evidence_stale_revision_and_duplicate_operation_are_deterministic(
