@@ -105,6 +105,7 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
         ({"principal_id": "participant-b"}, "no_matching_consent"),
         ({"audience": "participant-b"}, "no_matching_consent"),
         ({"purpose": ConsentPurpose.IDENTIFIABLE_DISCLOSURE}, "no_matching_consent"),
+        ({"used_at": NOW - timedelta(microseconds=1)}, "not_yet_valid"),
         ({"used_at": NOW + timedelta(hours=1)}, "expired"),
     ],
 )

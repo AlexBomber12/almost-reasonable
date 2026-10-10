@@ -179,10 +179,11 @@ class PrivacyLedger:
         content_reference: str,
         audience: str,
         purpose: ConsentPurpose,
-    ) -> tuple[str, datetime, bool] | None:
+    ) -> tuple[str, datetime, datetime, bool] | None:
         with self._open() as connection:
             row = connection.execute(
-                "SELECT g.consent_id, g.expires_at, r.consent_id IS NOT NULL "
+                "SELECT g.consent_id, g.granted_at, g.expires_at, "
+                "r.consent_id IS NOT NULL "
                 "FROM consent_grants g LEFT JOIN consent_revocations r "
                 "ON r.consent_id=g.consent_id WHERE g.principal_id=? "
                 "AND g.content_reference=? AND g.audience=? AND g.purpose=? "
@@ -191,7 +192,7 @@ class PrivacyLedger:
             ).fetchone()
         if row is None:
             return None
-        return row[0], _time(row[1]), bool(row[2])
+        return row[0], _time(row[1]), _time(row[2]), bool(row[3])
 
     def consent_principal(self, consent_id: str) -> str | None:
         with self._open() as connection:

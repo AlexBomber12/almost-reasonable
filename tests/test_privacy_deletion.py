@@ -182,3 +182,26 @@ def test_missing_provenance_and_identity_conflicts_fail_closed(tmp_path):
             DeletionDisposition.PENDING,
             "awaiting_erasure",
         )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"payload_removed": "false"},
+        {"tombstone_written": 1},
+        {"invalidated_categories": frozenset({"private_payload"})},
+        {"invalidated_categories": set(REQUIRED)},
+        {"blockers": ["search_index_not_invalidated"]},
+        {"blockers": ("bad blocker",)},
+    ],
+)
+def test_erasure_report_rejects_deserialized_or_malformed_types(changes):
+    values = {
+        "payload_removed": True,
+        "tombstone_written": True,
+        "invalidated_categories": REQUIRED,
+        "blockers": (),
+    }
+    values.update(changes)
+    with pytest.raises(ValueError, match="erasure report"):
+        ErasureReport(**values)

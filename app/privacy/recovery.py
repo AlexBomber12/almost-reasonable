@@ -130,6 +130,13 @@ def _integrity_ok(path: Path) -> bool:
         return connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
+def _safe_integrity_ok(path: Path) -> bool:
+    try:
+        return _integrity_ok(path)
+    except sqlite3.Error:
+        return False
+
+
 def create_sqlite_backup(
     source_path: str | Path,
     destination_path: str | Path,
@@ -240,11 +247,7 @@ class QuarantinedRestore:
             _cleanup_created(quarantine)
             raise BackupError("quarantine copy failed") from error
         restore_id = f"restore-{uuid4()}"
-        try:
-            quarantine_integrity_ok = _integrity_ok(quarantine)
-        except sqlite3.Error:
-            quarantine_integrity_ok = False
-        if not quarantine_integrity_ok:
+        if not _safe_integrity_ok(quarantine):
             result = RestoreResult(
                 restore_id,
                 RestoreDisposition.BLOCKED,
@@ -263,6 +266,17 @@ class QuarantinedRestore:
             )
             self.ledger.record_restore(
                 restore_id, restored_at, result.disposition, reason
+            )
+            return result
+        if not _safe_integrity_ok(quarantine):
+            result = RestoreResult(
+                restore_id,
+                RestoreDisposition.BLOCKED,
+                False,
+                "post_reconciliation_integrity_failed",
+            )
+            self.ledger.record_restore(
+                restore_id, restored_at, result.disposition, result.reason
             )
             return result
         self.ledger.record_restore(

@@ -394,6 +394,38 @@ def test_restore_checks_quarantine_integrity_before_adapter_or_readiness(
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
+@pytest.mark.parametrize(
+    "post_integrity_outcome", [False, sqlite3.DatabaseError("post-write corrupt")]
+)
+def test_restore_rechecks_integrity_after_reconciliation(
+    tmp_path, monkeypatch, post_integrity_outcome
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    outcomes = iter((True, post_integrity_outcome))
+
+    def integrity(_path):
+        outcome = next(outcomes)
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(recovery_module, "_integrity_ok", integrity)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "post_reconciliation_integrity_failed",
+    )
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+
 def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     tmp_path, monkeypatch
 ):

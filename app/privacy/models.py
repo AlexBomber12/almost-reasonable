@@ -180,6 +180,23 @@ class ErasureReport:
     invalidated_categories: frozenset[ContentCategory]
     blockers: tuple[str, ...]
 
+    def __post_init__(self) -> None:
+        if (
+            type(self.payload_removed) is not bool
+            or type(self.tombstone_written) is not bool
+        ):
+            raise ValueError("invalid erasure report flags")
+        if not isinstance(self.invalidated_categories, frozenset) or any(
+            not isinstance(category, ContentCategory)
+            for category in self.invalidated_categories
+        ):
+            raise ValueError("invalid erasure report categories")
+        if not isinstance(self.blockers, tuple) or any(
+            not isinstance(blocker, str) or not _TOKEN.fullmatch(blocker)
+            for blocker in self.blockers
+        ):
+            raise ValueError("invalid erasure report blockers")
+
 
 @dataclass(frozen=True, slots=True)
 class DeletionOutcome:
