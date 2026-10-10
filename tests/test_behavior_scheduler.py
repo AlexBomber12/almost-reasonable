@@ -1,4 +1,4 @@
-from datetime import UTC, datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -21,6 +21,11 @@ from app.behavior.scheduler import (
 
 
 NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
+
+
+class PseudoAwareTimezone(tzinfo):
+    def utcoffset(self, value: datetime | None) -> None:
+        return None
 
 
 def event(event_id: str, scheduled_at: datetime = NOW) -> WakeupEvent:
@@ -287,8 +292,14 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
             policy(**changes)
     with pytest.raises(ValueError, match="scheduled_at"):
         WakeupEvent("e", NOW.replace(tzinfo=None), "periodic")
+    with pytest.raises(ValueError, match="scheduled_at"):
+        WakeupEvent("e", 0, "periodic")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="scheduled_at"):
+        WakeupEvent("e", NOW.replace(tzinfo=PseudoAwareTimezone()), "periodic")
     with pytest.raises(ValueError, match="clock"):
         MutableClock(NOW.replace(tzinfo=None))
+    with pytest.raises(ValueError, match="clock"):
+        MutableClock(NOW.replace(tzinfo=PseudoAwareTimezone()))
     scheduler = TestScheduler(
         policy(active_start=time(0), active_end=time(0)),
         InMemorySchedulerStore(),
@@ -296,6 +307,20 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
         lambda _, timeout: AgentDecision.NO_ACTION,
     )
     assert scheduler.run((event("all-day"),)).outcome is SchedulerOutcome.NO_ACTION
+
+    class PseudoAwareClock:
+        def now(self) -> datetime:
+            return NOW.replace(tzinfo=PseudoAwareTimezone())
+
+    invalid_clock_scheduler = TestScheduler(
+        policy(),
+        InMemorySchedulerStore(),
+        PseudoAwareClock(),
+        lambda *_: pytest.fail("invalid clock must not deliberate"),
+    )
+    with pytest.raises(ValueError, match="timestamp"):
+        invalid_clock_scheduler.run((event("invalid-clock"),))
+
     with pytest.raises(TypeError, match="pending"):
         scheduler.run([event("bad")])  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="coalescing bound"):

@@ -477,6 +477,8 @@ def _validate_input(value: DeliberationInput) -> None:
         or not isinstance(value.deadline, datetime)
         or value.now.tzinfo is None
         or value.deadline.tzinfo is None
+        or value.now.utcoffset() is None
+        or value.deadline.utcoffset() is None
     ):
         raise ValueError("times must be timezone-aware")
 

@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -27,6 +27,11 @@ from app.core.core_self import initial_core_self
 
 
 NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
+
+
+class PseudoAwareTimezone(tzinfo):
+    def utcoffset(self, value: datetime | None) -> None:
+        return None
 
 
 def engine(model, clock=lambda: NOW) -> DeliberationEngine:
@@ -321,6 +326,8 @@ def test_deliberation_input_rejects_every_untrusted_shape() -> None:
         replace(base, budget=DeliberationBudget(1, 1, float("inf"))),
         replace(base, budget=DeliberationBudget(1, 1, 10**400)),
         replace(base, now=NOW.replace(tzinfo=None)),
+        replace(base, now=NOW.replace(tzinfo=PseudoAwareTimezone())),
+        replace(base, deadline=NOW.replace(tzinfo=PseudoAwareTimezone())),
     )
     for invalid in invalid_values:
         with pytest.raises(ValueError):

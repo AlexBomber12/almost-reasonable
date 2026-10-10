@@ -398,10 +398,13 @@ def _has_complete_code_signal(content: str, language: str | None = None) -> bool
         ast.While,
         ast.With,
     )
+    expression_nodes: tuple[type[ast.expr], ...] = (ast.Call,)
+    if normalized_language == "python":
+        expression_nodes = (ast.Call, ast.Dict, ast.List, ast.Set, ast.Tuple)
     return bool(parsed.body) and all(
         isinstance(node, code_nodes)
         or isinstance(node, ast.Expr)
-        and isinstance(node.value, ast.Call)
+        and isinstance(node.value, expression_nodes)
         for node in parsed.body
     )
 

@@ -92,7 +92,7 @@ class WakeupEvent:
             raise ValueError(
                 "event_id and trigger must be non-empty bounded UTF-8 text"
             )
-        if self.scheduled_at.tzinfo is None:
+        if not _is_aware_datetime(self.scheduled_at):
             raise ValueError("scheduled_at must be timezone-aware")
 
 
@@ -132,7 +132,7 @@ class Clock(Protocol):
 
 class MutableClock:
     def __init__(self, current: datetime):
-        if current.tzinfo is None:
+        if not _is_aware_datetime(current):
             raise ValueError("clock must be timezone-aware")
         self._current = current
 
@@ -412,7 +412,17 @@ def _retention_cutoff(now: datetime, duration: timedelta) -> datetime:
 
 
 def _instant(value: datetime) -> datetime:
+    if not _is_aware_datetime(value):
+        raise ValueError("timestamp must be timezone-aware")
     return value.astimezone(UTC)
+
+
+def _is_aware_datetime(value: object) -> bool:
+    return (
+        isinstance(value, datetime)
+        and value.tzinfo is not None
+        and value.utcoffset() is not None
+    )
 
 
 def _inside_active_hours(current: time, policy: WakeupPolicy) -> bool:

@@ -162,6 +162,18 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     assert json_fence.accepted
     assert json_fence.foreign_prose_word_count == 0
 
+    for collection in (
+        '{"name": "Alice", "role": "engineer"}',
+        "['apple', 'banana', 'cherry']",
+        "('apple', 'banana', 'cherry')",
+        "{'apple', 'banana', 'cherry'}",
+    ):
+        python_collection = RussianOutputGate().assess(
+            f"Краткий пример:\n```python\n{collection}\n```"
+        )
+        assert python_collection.accepted
+        assert python_collection.foreign_prose_word_count == 0
+
 
 def test_short_majority_foreign_prose_is_not_hidden_by_an_absolute_floor() -> None:
     for text in ("Да. This is English.", "Да. This.is.entirely.English.prose."):
