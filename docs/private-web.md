@@ -44,7 +44,9 @@ Open `http://127.0.0.1:8000/login`. The `--insecure-http` switch is explicitly
 for loopback development; the CLI rejects it unless both the bind address and
 the HTTP browser origin use a numeric loopback IP. Omit it behind an HTTPS
 endpoint so every session and CSRF cookie has the `Secure` attribute; secure
-mode rejects a non-HTTPS browser origin.
+mode rejects a non-HTTPS browser origin. Listener addresses are explicit
+numeric IPv4 or IPv6 values; bracket IPv6 literals in `--allowed-host` and the
+browser origin (for example, `[::1]:8000`).
 
 When an HTTPS terminator is required, explicitly list each numeric address from
 which the WSGI process may accept a forwarded client address:

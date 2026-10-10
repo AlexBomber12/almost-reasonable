@@ -1,6 +1,7 @@
 from pathlib import Path
 import getpass
 import runpy
+import socket
 import sys
 
 import pytest
@@ -211,8 +212,9 @@ def test_ipv6_loopback_insecure_mode_is_accepted(tmp_path):
         def serve_forever(self):
             observed["served"] = True
 
-    def server_factory(host, _port, _application):
+    def server_factory(host, _port, _application, **kwargs):
         observed["host"] = host
+        observed.update(kwargs)
         return Server()
 
     assert (
@@ -235,7 +237,9 @@ def test_ipv6_loopback_insecure_mode_is_accepted(tmp_path):
         )
         == 0
     )
-    assert observed == {"host": "::1", "served": True}
+    assert observed["host"] == "::1"
+    assert observed["served"] is True
+    assert observed["server_class"].address_family == socket.AF_INET6
 
 
 def test_invalid_trusted_proxy_is_rejected_before_database_creation(tmp_path):
@@ -257,6 +261,25 @@ def test_invalid_trusted_proxy_is_rejected_before_database_creation(tmp_path):
             ]
         )
     assert not database.exists()
+
+
+def test_listener_must_be_a_numeric_address(tmp_path):
+    with pytest.raises(SystemExit, match="numeric IP address"):
+        main(
+            [
+                "serve",
+                "--auth-db",
+                str(tmp_path / "auth.sqlite3"),
+                "--event-db",
+                str(tmp_path / "events.sqlite3"),
+                "--listen-host",
+                "localhost",
+                "--allowed-host",
+                "chat.example",
+                "--allowed-origin",
+                "https://chat.example",
+            ]
+        )
 
 
 def test_module_entrypoint_invokes_main(tmp_path, monkeypatch):

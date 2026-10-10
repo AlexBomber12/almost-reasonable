@@ -81,11 +81,12 @@ def _valid_origin(value: object) -> bool:
         return False
     try:
         parsed = urlsplit(value)
+        parsed.port
     except ValueError:
         return False
     return (
         parsed.scheme in {"http", "https"}
-        and bool(parsed.netloc)
+        and _valid_host(parsed.netloc)
         and not parsed.path
         and not parsed.query
         and not parsed.fragment

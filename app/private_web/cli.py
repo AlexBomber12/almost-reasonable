@@ -4,9 +4,10 @@ import argparse
 from collections.abc import Callable, Sequence
 from getpass import getpass
 from ipaddress import ip_address
+from socket import AF_INET6
 from typing import Any
 from urllib.parse import urlsplit
-from wsgiref.simple_server import make_server
+from wsgiref.simple_server import make_server, WSGIServer
 
 from app.core.context import ContextLimits, PrivateContextAssembler
 from app.core.store import EventStore
@@ -14,6 +15,12 @@ from app.core.store import EventStore
 from .auth import AuthStore
 from .conversation import ConversationService
 from .wsgi import PrivateWebApplication, PrivateWebConfig
+
+
+class IPv6WSGIServer(WSGIServer):
+    """WSGI reference server variant for an explicit IPv6 listener."""
+
+    address_family = AF_INET6
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -98,6 +105,10 @@ def main(
         )
     if not args.insecure_http and not _https_origin(args.allowed_origin):
         raise SystemExit("secure mode requires an HTTPS browser origin")
+    try:
+        listener_address = ip_address(args.listen_host)
+    except ValueError:
+        raise SystemExit("listen host must be a numeric IP address") from None
 
     web_config = PrivateWebConfig(
         allowed_hosts=frozenset({args.allowed_host}),
@@ -117,7 +128,10 @@ def main(
         conversations,
         web_config,
     )
-    server = server_factory(args.listen_host, args.port, application)
+    server_options = (
+        {"server_class": IPv6WSGIServer} if listener_address.version == 6 else {}
+    )
+    server = server_factory(args.listen_host, args.port, application, **server_options)
     print(f"Serving private chat on {args.listen_host}:{args.port}")
     server.serve_forever()
     return 0
