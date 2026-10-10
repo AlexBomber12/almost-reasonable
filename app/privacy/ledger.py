@@ -171,6 +171,7 @@ class PrivacyLedger:
                     self._has_valid_schema(connection)
                     os.fchmod(descriptor, 0o600)
                     self._configure(connection)
+                    initialized_schema = False
                     with connection:
                         connection.execute("BEGIN IMMEDIATE")
                         if not self._has_valid_schema(connection):
@@ -183,6 +184,9 @@ class PrivacyLedger:
                             connection.execute(
                                 "INSERT INTO privacy_control_generation VALUES(1, 0)"
                             )
+                            initialized_schema = True
+                    if initialized_schema:
+                        os.fsync(parent_descriptor)
                 finally:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
         except BaseException:

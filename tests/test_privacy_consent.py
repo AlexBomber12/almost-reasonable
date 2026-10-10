@@ -801,6 +801,35 @@ def test_privacy_ledger_survives_restart_and_rejects_bad_schema(tmp_path):
         PrivacyLedger(malformed)
 
 
+def test_privacy_ledger_fsyncs_parent_after_first_schema_commit(tmp_path, monkeypatch):
+    path = tmp_path / "privacy.sqlite3"
+    real_fsync = os.fsync
+    fsync_observations = []
+
+    def observe_fsync(descriptor):
+        with sqlite3.connect(path) as connection:
+            version = connection.execute(
+                "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
+            ).fetchone()
+        identity = os.fstat(descriptor)
+        fsync_observations.append((identity.st_dev, identity.st_ino, version))
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(ledger_module.os, "fsync", observe_fsync)
+
+    PrivacyLedger(path)
+    PrivacyLedger(path)
+
+    parent_identity = tmp_path.stat()
+    assert fsync_observations == [
+        (
+            parent_identity.st_dev,
+            parent_identity.st_ino,
+            (ledger_module.PRIVACY_LEDGER_SCHEMA_VERSION,),
+        )
+    ]
+
+
 def test_privacy_ledger_rejects_path_replacement_before_mutation(tmp_path, monkeypatch):
     path = tmp_path / "privacy.sqlite3"
     path.touch(mode=0o640)
