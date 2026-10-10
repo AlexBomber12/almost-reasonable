@@ -177,6 +177,10 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
         "['apple', 'banana', 'cherry']",
         "('apple', 'banana', 'cherry')",
         "{'apple', 'banana', 'cherry'}",
+        "[user.name for user in users if user.active]",
+        "{user.name for user in users if user.active}",
+        "{user.name: user.role for user in users if user.active}",
+        "(user.name for user in users if user.active)",
     ):
         python_collection = RussianOutputGate().assess(
             f"Краткий пример:\n```python\n{collection}\n```"

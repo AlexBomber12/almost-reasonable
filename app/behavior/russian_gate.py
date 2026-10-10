@@ -402,7 +402,17 @@ def _has_complete_code_signal(content: str, language: str | None = None) -> bool
     )
     expression_nodes: tuple[type[ast.expr], ...] = (ast.Call,)
     if normalized_language == "python":
-        expression_nodes = (ast.Call, ast.Dict, ast.List, ast.Set, ast.Tuple)
+        expression_nodes = (
+            ast.Call,
+            ast.Dict,
+            ast.DictComp,
+            ast.GeneratorExp,
+            ast.List,
+            ast.ListComp,
+            ast.Set,
+            ast.SetComp,
+            ast.Tuple,
+        )
     return bool(parsed.body) and all(
         isinstance(node, code_nodes)
         or isinstance(node, ast.Expr)
