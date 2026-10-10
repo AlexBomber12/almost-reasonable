@@ -58,6 +58,33 @@ _URL = re.compile(
 )
 _FENCED_CODE = re.compile(r"```(?:([A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?(.*?)```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
+_FENCED_CODE_LANGUAGES = frozenset(
+    (
+        "bash",
+        "c",
+        "cpp",
+        "csharp",
+        "css",
+        "go",
+        "html",
+        "java",
+        "javascript",
+        "json",
+        "php",
+        "python",
+        "ruby",
+        "rust",
+        "sh",
+        "shell",
+        "sql",
+        "toml",
+        "ts",
+        "typescript",
+        "xml",
+        "yaml",
+        "yml",
+    )
+)
 _CODE_SIGNAL = re.compile(
     r"(?:\b(?:def|class)\s+[A-Za-z_]\w*\s*[:({]|"
     r"\b(?:const|let|var)\s+[A-Za-z_]\w*\s*=|"
@@ -330,7 +357,10 @@ def _strip_non_prose_regions(text: str) -> str:
 
 
 def _replace_fenced_code_span(match: re.Match[str]) -> str:
+    language = match.group(1)
     content = match.group(2)
+    if language is not None and language.casefold() not in _FENCED_CODE_LANGUAGES:
+        content = f"{language}\n{content}"
     return " " if _has_complete_code_signal(content) else content
 
 
