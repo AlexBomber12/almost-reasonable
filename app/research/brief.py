@@ -41,7 +41,7 @@ _GROUPED_QUANTITY = re.compile(
     r"(?!\d)(?![ .\u00a0\u202f]\d)"
 )
 _BASE64 = re.compile(
-    r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_=-])"
+    r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_=-])"
 )
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
