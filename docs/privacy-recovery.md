@@ -60,7 +60,10 @@ general intellectual abstraction does not require a separate consent per change.
 mode `0600`. First-time schema creation is one explicit SQLite transaction, and
 idempotent control inserts serialize their identity check with `BEGIN IMMEDIATE`.
 Initialization rejects a nonempty database without privacy-ledger metadata, so an
-application/EventStore file cannot silently become the independent ledger.
+application/EventStore file cannot silently become the independent ledger. An
+existing file is inspected through an inode-matched connection before its mode
+or journal configuration is changed, so rejection does not mutate an unrelated
+database.
 Its records contain control metadata, not message payloads, prompts,
 provider responses, secrets, or an unkeyed hash of private content. It stores:
 
@@ -146,7 +149,10 @@ contains no participant content.
 Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic-link destinations, unsafe parents, existing outputs,
 schema mismatch, integrity failure, interruption, and SQLite busy/locked faults
-fail closed. Outputs are created with `O_EXCL|O_NOFOLLOW` and mode `0600`.
+fail closed. The source inode remains pinned while schema validation and the
+online copy open the pathname, with identity checks around each open. Outputs
+are created with `O_EXCL|O_NOFOLLOW` and mode `0600`; metadata and readiness
+markers are written completely before `fsync`, including retrying short writes.
 Failure removes only files whose filesystem identity proves they were created by
 that backup attempt; a concurrently created or replaced path is preserved.
 Existing production databases are never overwritten by default. This is a

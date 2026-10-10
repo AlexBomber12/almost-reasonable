@@ -1,6 +1,7 @@
 """Minimal, payload-free SQLite privacy ledger."""
 
 from collections.abc import Callable
+from contextlib import closing
 from datetime import UTC, datetime
 import os
 from pathlib import Path
@@ -131,45 +132,66 @@ class PrivacyLedger:
             os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
             0o600,
         )
-        os.fchmod(descriptor, 0o600)
-        os.close(descriptor)
-        with self._open() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            tables = connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' "
-                "AND name='privacy_schema_metadata'"
-            ).fetchone()
-            if tables is None:
-                unrelated = connection.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' "
-                    "AND name NOT LIKE 'sqlite_%' LIMIT 1"
-                ).fetchone()
-                if unrelated is not None:
-                    raise RuntimeError("privacy ledger path contains unrelated tables")
-                for statement in _SCHEMA:
-                    connection.execute(statement)
-                connection.execute(
-                    "INSERT INTO privacy_schema_metadata VALUES(1, ?)",
-                    (PRIVACY_LEDGER_SCHEMA_VERSION,),
-                )
-                connection.execute(
-                    "INSERT INTO privacy_control_generation VALUES(1, 0)"
-                )
-            version = connection.execute(
-                "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
-            ).fetchone()
-            if version != (PRIVACY_LEDGER_SCHEMA_VERSION,):
-                raise RuntimeError("unsupported privacy ledger schema")
+        with os.fdopen(descriptor, "r+b") as ledger_file:
+            with closing(sqlite3.connect(self.path, timeout=5.0)) as connection:
+                current = self.path.stat(follow_symlinks=False)
+                identity = os.fstat(ledger_file.fileno())
+                if (current.st_dev, current.st_ino) != (
+                    identity.st_dev,
+                    identity.st_ino,
+                ):
+                    raise RuntimeError("privacy ledger path identity changed")
+                try:
+                    metadata = connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table' "
+                        "AND name='privacy_schema_metadata'"
+                    ).fetchone()
+                    if metadata is None:
+                        unrelated = connection.execute(
+                            "SELECT name FROM sqlite_master WHERE type='table' "
+                            "AND name NOT LIKE 'sqlite_%' LIMIT 1"
+                        ).fetchone()
+                        if unrelated is not None:
+                            raise RuntimeError(
+                                "privacy ledger path contains unrelated tables"
+                            )
+                    else:
+                        version = connection.execute(
+                            "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
+                        ).fetchone()
+                        if version != (PRIVACY_LEDGER_SCHEMA_VERSION,):
+                            raise RuntimeError("unsupported privacy ledger schema")
+                except sqlite3.Error as error:
+                    raise RuntimeError(
+                        "unable to validate existing privacy ledger"
+                    ) from error
+                os.fchmod(ledger_file.fileno(), 0o600)
+                self._configure(connection)
+                with connection:
+                    connection.execute("BEGIN IMMEDIATE")
+                    if metadata is None:
+                        for statement in _SCHEMA:
+                            connection.execute(statement)
+                        connection.execute(
+                            "INSERT INTO privacy_schema_metadata VALUES(1, ?)",
+                            (PRIVACY_LEDGER_SCHEMA_VERSION,),
+                        )
+                        connection.execute(
+                            "INSERT INTO privacy_control_generation VALUES(1, 0)"
+                        )
 
     def _open(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.path, timeout=5.0)
+        self._configure(connection)
+        return connection
+
+    def _configure(self, connection: sqlite3.Connection) -> None:
         connection.execute("PRAGMA foreign_keys=ON")
         connection.execute("PRAGMA journal_mode=WAL")
         for suffix in ("-wal", "-shm"):
             sidecar = Path(f"{self.path}{suffix}")
             if sidecar.exists():
                 os.chmod(sidecar, 0o600, follow_symlinks=False)
-        return connection
 
     def insert_consent(self, grant: ConsentGrant) -> bool:
         values = (

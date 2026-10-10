@@ -2,6 +2,7 @@ from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
 import os
 import sqlite3
+import stat
 import threading
 
 import pytest
@@ -541,15 +542,43 @@ def test_privacy_ledger_survives_restart_and_rejects_bad_schema(tmp_path):
     with pytest.raises(RuntimeError, match="unsupported privacy ledger schema"):
         PrivacyLedger(path)
 
+    malformed = tmp_path / "malformed-ledger.sqlite3"
+    malformed.write_text("not sqlite")
+    with pytest.raises(RuntimeError, match="validate existing"):
+        PrivacyLedger(malformed)
+
+
+def test_privacy_ledger_rejects_path_replacement_before_mutation(tmp_path, monkeypatch):
+    path = tmp_path / "privacy.sqlite3"
+    path.touch(mode=0o640)
+    replacement = tmp_path / "replacement.sqlite3"
+    replacement.touch(mode=0o644)
+    real_connect = sqlite3.connect
+
+    def replace_after_open(database, *args, **kwargs):
+        connection = real_connect(database, *args, **kwargs)
+        path.unlink()
+        replacement.rename(path)
+        return connection
+
+    monkeypatch.setattr(ledger_module.sqlite3, "connect", replace_after_open)
+    with pytest.raises(RuntimeError, match="identity changed"):
+        PrivacyLedger(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+
 
 def test_privacy_ledger_rejects_an_unrelated_existing_database(tmp_path):
     path = tmp_path / "application.sqlite3"
     with sqlite3.connect(path) as connection:
         connection.execute("CREATE TABLE application_events(event_id TEXT PRIMARY KEY)")
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
+    path.chmod(0o640)
 
     with pytest.raises(RuntimeError, match="unrelated tables"):
         PrivacyLedger(path)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
     with sqlite3.connect(path) as connection:
+        assert connection.execute("PRAGMA journal_mode").fetchone() == ("delete",)
         tables = {
             row[0]
             for row in connection.execute(

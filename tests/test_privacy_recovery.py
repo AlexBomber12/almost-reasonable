@@ -273,6 +273,55 @@ def test_backup_copy_cannot_follow_a_replaced_destination_path(tmp_path, monkeyp
     assert destination.is_symlink()
 
 
+def test_backup_copy_cannot_follow_a_replaced_source_path(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source, "intended-source").close()
+    substitute = tmp_path / "substitute.sqlite3"
+    make_source(substitute, "substitute-source").close()
+    destination = tmp_path / "backup.sqlite3"
+    real_copy = recovery_module._sqlite_copy
+
+    def replace_before_copy(pinned_source, destination_descriptor):
+        source.unlink()
+        source.symlink_to(substitute)
+        return real_copy(pinned_source, destination_descriptor)
+
+    monkeypatch.setattr(recovery_module, "_sqlite_copy", replace_before_copy)
+    with pytest.raises(BackupError, match="source identity"):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert source.is_symlink()
+    assert not destination.exists()
+    with sqlite3.connect(substitute) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("substitute-source",)
+
+
+@pytest.mark.parametrize("race", ["open", "identity"])
+def test_backup_source_pin_rejects_path_races(tmp_path, monkeypatch, race):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    real_open = recovery_module.os.open
+
+    def race_open(path, flags, *args):
+        if Path(path) == source and flags == os.O_RDONLY | os.O_NOFOLLOW:
+            if race == "open":
+                source.unlink()
+                return real_open(path, flags, *args)
+            descriptor = real_open(path, flags, *args)
+            source.unlink()
+            source.write_text("replacement")
+            return descriptor
+        return real_open(path, flags, *args)
+
+    monkeypatch.setattr(recovery_module.os, "open", race_open)
+    with pytest.raises(BackupError, match="identity"):
+        create_sqlite_backup(source, destination, 3, NOW)
+    assert not destination.exists()
+
+
 @pytest.mark.parametrize("mutation", ["replace", "remove"])
 def test_backup_verifies_the_owned_destination_not_a_substitute(tmp_path, mutation):
     source = tmp_path / "source.sqlite3"
@@ -319,6 +368,78 @@ def test_backup_verifies_owned_metadata_before_success(tmp_path, monkeypatch):
 
     assert metadata.read_text() == "concurrent-metadata"
     assert not destination.exists()
+
+
+def test_backup_and_readiness_marker_retry_short_writes(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    real_write = os.write
+    writes = []
+
+    def short_write(descriptor, payload):
+        count = max(1, len(payload) // 2)
+        writes.append(count)
+        return real_write(descriptor, payload[:count])
+
+    monkeypatch.setattr(recovery_module.os, "write", short_write)
+    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    assert json.loads(metadata.path.read_text())["database_filename"] == backup.name
+
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert result.activation_eligible is True
+    assert json.loads(Path(f"{quarantine}.ready.json").read_text())["restore_id"] == (
+        result.restore_id
+    )
+    assert len(writes) > 2
+
+
+def test_zero_length_writes_fail_closed_and_remove_partial_outputs(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    failed_backup = tmp_path / "failed.sqlite3"
+    monkeypatch.setattr(recovery_module.os, "write", lambda _descriptor, _data: 0)
+    with pytest.raises(BackupError, match="backup failed"):
+        create_sqlite_backup(source, failed_backup, 3, NOW)
+    assert not failed_backup.exists()
+    assert not Path(f"{failed_backup}.metadata.json").exists()
+
+    monkeypatch.undo()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    monkeypatch.setattr(recovery_module.os, "write", lambda _descriptor, _data: 0)
+    with pytest.raises(BackupError, match="readiness marker write failed"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+
+def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    marker = Path(f"{quarantine}.ready.json")
+    real_fsync = os.fsync
+
+    def replace_marker(descriptor):
+        real_fsync(descriptor)
+        marker.unlink()
+        marker.write_text("concurrent-marker")
+
+    monkeypatch.setattr(recovery_module.os, "fsync", replace_marker)
+    with pytest.raises(BackupError, match="readiness marker write failed"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+    assert marker.read_text() == "concurrent-marker"
 
 
 def test_backup_rejects_malformed_database_and_verification_faults(

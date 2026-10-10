@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from contextlib import closing
+from dataclasses import dataclass
 from datetime import datetime
 import json
 import os
@@ -90,6 +91,12 @@ def _schema_version(path_or_descriptor: Path | int) -> int:
 _OwnedFile = tuple[Path, int]
 
 
+@dataclass(frozen=True, slots=True)
+class _PinnedDatabase:
+    path: Path
+    descriptor: int
+
+
 def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
     descriptor = os.open(path, access | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     owned.append((path, descriptor))
@@ -127,39 +134,67 @@ def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
     return (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino)
 
 
-def _sqlite_copy(source: Path, destination_descriptor: int) -> None:
-    with (
-        closing(
-            sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=0.1)
-        ) as source_connection,
-        closing(
-            sqlite3.connect(
-                f"file:/proc/self/fd/{destination_descriptor}?mode=rw",
-                uri=True,
-                timeout=0.1,
-            )
-        ) as destination_connection,
+def _pin_database(path: Path, label: str) -> _PinnedDatabase:
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as error:
+        raise BackupError(f"{label} identity changed") from error
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode) or not _path_matches_descriptor(
+        path, descriptor
     ):
-        busy_attempts = 0
+        os.close(descriptor)
+        raise BackupError(f"{label} identity changed")
+    return _PinnedDatabase(path, descriptor)
 
-        def progress(status: int, _remaining: int, _total: int) -> None:
-            nonlocal busy_attempts
-            if status in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
-                busy_attempts += 1
-                if busy_attempts >= MAX_BACKUP_BUSY_ATTEMPTS:
-                    error = sqlite3.OperationalError(
-                        "bounded SQLite backup wait expired"
-                    )
-                    error.sqlite_errorcode = status
-                    raise error
 
-        source_connection.backup(
-            destination_connection,
-            pages=BACKUP_PAGE_BATCH,
-            progress=progress,
-            sleep=BACKUP_BUSY_SLEEP_SECONDS,
+def _require_database_identity(source: _PinnedDatabase) -> None:
+    if not _path_matches_descriptor(source.path, source.descriptor):
+        raise BackupError("backup source identity changed")
+
+
+def _sqlite_copy(source: _PinnedDatabase, destination_descriptor: int) -> None:
+    _require_database_identity(source)
+    source_connection = sqlite3.connect(
+        f"{source.path.as_uri()}?mode=ro", uri=True, timeout=0.1
+    )
+    with closing(source_connection):
+        _require_database_identity(source)
+        destination_connection = sqlite3.connect(
+            f"file:/proc/self/fd/{destination_descriptor}?mode=rw",
+            uri=True,
+            timeout=0.1,
         )
-        destination_connection.commit()
+        with closing(destination_connection):
+            busy_attempts = 0
+
+            def progress(status: int, _remaining: int, _total: int) -> None:
+                nonlocal busy_attempts
+                if status in {sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED}:
+                    busy_attempts += 1
+                    if busy_attempts >= MAX_BACKUP_BUSY_ATTEMPTS:
+                        error = sqlite3.OperationalError(
+                            "bounded SQLite backup wait expired"
+                        )
+                        error.sqlite_errorcode = status
+                        raise error
+
+            source_connection.backup(
+                destination_connection,
+                pages=BACKUP_PAGE_BATCH,
+                progress=progress,
+                sleep=BACKUP_BUSY_SLEEP_SECONDS,
+            )
+            destination_connection.commit()
+        _require_database_identity(source)
+
+
+def _write_all(descriptor: int, payload: bytes) -> None:
+    remaining = memoryview(payload)
+    while remaining:
+        written = os.write(descriptor, remaining)
+        if written <= 0:
+            raise OSError("incomplete file write")
+        remaining = remaining[written:]
 
 
 def _is_busy(error: sqlite3.OperationalError) -> bool:
@@ -197,49 +232,54 @@ def create_sqlite_backup(
     _validate_existing_file(source, "source")
     _validate_new_file(destination, "destination")
     _validate_new_file(metadata_path, "metadata destination")
-    if _schema_version(source) != expected_schema_version:
-        raise BackupError("unsupported source schema")
-    owned: list[_OwnedFile] = []
+    pinned_source = _pin_database(source, "backup source")
     try:
-        destination_descriptor = _open_owned_file(destination, os.O_RDWR, owned)
-        _sqlite_copy(source, destination_descriptor)
-        if after_copy is not None:
-            after_copy(destination)
-        if not _path_matches_descriptor(destination, destination_descriptor):
-            raise BackupError("backup destination identity changed")
-        if _schema_version(destination_descriptor) != expected_schema_version:
-            raise BackupError("backup schema verification failed")
-        if not _integrity_ok(destination_descriptor):
-            raise BackupError("backup consistency verification failed")
-        payload = json.dumps(
-            {
-                "format_version": BACKUP_FORMAT_VERSION,
-                "schema_version": expected_schema_version,
-                "created_at": created_at.isoformat(timespec="microseconds"),
-                "database_filename": destination.name,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
-        descriptor = _open_owned_file(metadata_path, os.O_WRONLY, owned)
-        os.write(descriptor, payload)
-        os.fsync(descriptor)
-        if not all(
-            _path_matches_descriptor(path, owned_descriptor)
-            for path, owned_descriptor in owned
-        ):
-            raise BackupError("backup output identity changed")
-    except sqlite3.OperationalError as error:
-        _cleanup_created(owned)
-        if _is_busy(error):
-            raise BackupBusyError("SQLite source is busy") from error
-        raise BackupError("SQLite backup failed") from error
-    except BackupError:
-        _cleanup_created(owned)
-        raise
-    except Exception as error:
-        _cleanup_created(owned)
-        raise BackupError("SQLite backup failed") from error
-    _close_owned(owned)
+        if _schema_version(source) != expected_schema_version:
+            raise BackupError("unsupported source schema")
+        _require_database_identity(pinned_source)
+        owned: list[_OwnedFile] = []
+        try:
+            destination_descriptor = _open_owned_file(destination, os.O_RDWR, owned)
+            _sqlite_copy(pinned_source, destination_descriptor)
+            if after_copy is not None:
+                after_copy(destination)
+            if not _path_matches_descriptor(destination, destination_descriptor):
+                raise BackupError("backup destination identity changed")
+            if _schema_version(destination_descriptor) != expected_schema_version:
+                raise BackupError("backup schema verification failed")
+            if not _integrity_ok(destination_descriptor):
+                raise BackupError("backup consistency verification failed")
+            payload = json.dumps(
+                {
+                    "format_version": BACKUP_FORMAT_VERSION,
+                    "schema_version": expected_schema_version,
+                    "created_at": created_at.isoformat(timespec="microseconds"),
+                    "database_filename": destination.name,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+            descriptor = _open_owned_file(metadata_path, os.O_WRONLY, owned)
+            _write_all(descriptor, payload)
+            os.fsync(descriptor)
+            if not all(
+                _path_matches_descriptor(path, owned_descriptor)
+                for path, owned_descriptor in owned
+            ):
+                raise BackupError("backup output identity changed")
+        except sqlite3.OperationalError as error:
+            _cleanup_created(owned)
+            if _is_busy(error):
+                raise BackupBusyError("SQLite source is busy") from error
+            raise BackupError("SQLite backup failed") from error
+        except BackupError:
+            _cleanup_created(owned)
+            raise
+        except Exception as error:
+            _cleanup_created(owned)
+            raise BackupError("SQLite backup failed") from error
+        _close_owned(owned)
+    finally:
+        os.close(pinned_source.descriptor)
     return BackupMetadata(metadata_path, expected_schema_version, created_at)
 
 
@@ -286,17 +326,22 @@ class QuarantinedRestore:
         _validate_new_file(quarantine, "quarantine")
         ready_path = Path(f"{quarantine}.ready.json")
         _validate_new_file(ready_path, "readiness marker")
-        _load_metadata(backup, self.expected_schema_version)
-        if _schema_version(backup) != self.expected_schema_version:
-            raise BackupError("unsupported backup schema")
-        owned: list[_OwnedFile] = []
+        pinned_backup = _pin_database(backup, "backup")
         try:
-            quarantine_descriptor = _open_owned_file(quarantine, os.O_RDWR, owned)
-            _sqlite_copy(backup, quarantine_descriptor)
-        except (OSError, sqlite3.Error) as error:
-            _cleanup_created(owned)
-            raise BackupError("quarantine copy failed") from error
-        _close_owned(owned)
+            _load_metadata(backup, self.expected_schema_version)
+            if _schema_version(backup) != self.expected_schema_version:
+                raise BackupError("unsupported backup schema")
+            _require_database_identity(pinned_backup)
+            owned: list[_OwnedFile] = []
+            try:
+                quarantine_descriptor = _open_owned_file(quarantine, os.O_RDWR, owned)
+                _sqlite_copy(pinned_backup, quarantine_descriptor)
+            except (OSError, sqlite3.Error, BackupError) as error:
+                _cleanup_created(owned)
+                raise BackupError("quarantine copy failed") from error
+            _close_owned(owned)
+        finally:
+            os.close(pinned_backup.descriptor)
         restore_id = f"restore-{uuid4()}"
         if not _safe_integrity_ok(quarantine):
             result = RestoreResult(
@@ -383,14 +428,17 @@ class QuarantinedRestore:
             },
             sort_keys=True,
         ).encode("utf-8")
-        descriptor = os.open(
-            ready_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-        )
+        marker_files: list[_OwnedFile] = []
         try:
-            os.write(descriptor, marker)
+            descriptor = _open_owned_file(ready_path, os.O_WRONLY, marker_files)
+            _write_all(descriptor, marker)
             os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+            if not _path_matches_descriptor(ready_path, descriptor):
+                raise BackupError("readiness marker identity changed")
+        except Exception as error:
+            _cleanup_created(marker_files)
+            raise BackupError("readiness marker write failed") from error
+        _close_owned(marker_files)
         return RestoreResult(
             restore_id,
             RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
