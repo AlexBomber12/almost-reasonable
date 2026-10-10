@@ -191,6 +191,33 @@ def test_flood_page_and_time_step_limits_fail_closed(tmp_path):
         timed.poll(InboundKind.REPLY, now=NOW)
 
 
+def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
+    threads = service(tmp_path)
+    duplicates = (event("1"), event("2"))
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor="cursor-1",
+        events=duplicates,
+    )
+    threads.poll(InboundKind.REPLY, now=NOW, max_pages=1)
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor="cursor-1",
+        next_cursor="cursor-2",
+        events=duplicates,
+    )
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor="cursor-2",
+        next_cursor="cursor-3",
+        events=duplicates,
+    )
+    with pytest.raises(PollingError, match="event limit"):
+        threads.poll(InboundKind.REPLY, now=NOW, max_events=3)
+    assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-2"
+
+
 @pytest.mark.parametrize(
     "kwargs",
     [

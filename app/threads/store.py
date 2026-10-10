@@ -89,16 +89,21 @@ class ThreadsStore:
                 "AND name='threads_schema_metadata'"
             ).fetchone()
             if existing is None:
-                connection.executescript(_SCHEMA)
+                for statement in _SCHEMA.split(";"):
+                    if statement.strip():
+                        connection.execute(statement)
                 connection.execute(
                     "INSERT INTO threads_schema_metadata(singleton, version) "
                     "VALUES (1, ?)",
                     (SCHEMA_VERSION,),
                 )
             else:
-                version = connection.execute(
+                metadata = connection.execute(
                     "SELECT version FROM threads_schema_metadata WHERE singleton=1"
-                ).fetchone()[0]
+                ).fetchone()
+                if metadata is None:
+                    raise ThreadsStoreError("Threads schema metadata is missing")
+                version = metadata[0]
                 if version != SCHEMA_VERSION:
                     raise ThreadsStoreError(
                         f"unsupported Threads schema version: {version}"

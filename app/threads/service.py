@@ -202,9 +202,14 @@ class ThreadsService:
         if item.state is not OutboxState.SENDING:
             raise ThreadsStoreError("recovery requires sending state")
         if item.dispatch_evidence in {"pre_dispatch_intent", "no_transmission"}:
+            state = (
+                OutboxState.READY
+                if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                else OutboxState.FAILED_TERMINAL
+            )
             return self.store.transition(
                 operation_id,
-                OutboxState.READY,
+                state,
                 reason="recovered_proven_pre_dispatch",
                 now=now,
                 dispatch_evidence="recovery_no_effect",
@@ -279,6 +284,7 @@ class ThreadsService:
         seen_cursors = {cursor}
         collected = []
         duplicates = 0
+        fetched_count = 0
         pages = 0
         while pages < max_pages:
             if self.clock() - started >= timeout_seconds:
@@ -293,7 +299,7 @@ class ThreadsService:
                 or page.requested_cursor != cursor
             ):
                 raise PollingError("poll page source is not verified")
-            if len(collected) + len(page.events) > max_events:
+            if fetched_count + len(page.events) > max_events:
                 raise PollingError("poll event limit reached")
             if page.next_cursor is not None and page.next_cursor in seen_cursors:
                 raise PollingError("pagination cursor loop detected")
@@ -308,6 +314,7 @@ class ThreadsService:
             )
             collected.extend(inserted)
             duplicates += duplicate_count
+            fetched_count += len(page.events)
             pages += 1
             cursor = page.next_cursor
             if cursor is None:
@@ -340,6 +347,10 @@ class ThreadsService:
         if item.replacement_of is not None:
             if item.replacement_of not in unresolved_ids:
                 raise PolicyDeniedError("replacement target is no longer unresolved")
+            if unresolved_ids != {item.replacement_of}:
+                raise PolicyDeniedError(
+                    "account is paused by an additional unresolved publication"
+                )
         elif unresolved_ids:
             raise PolicyDeniedError("account is paused by unresolved publication")
 

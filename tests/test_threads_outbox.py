@@ -3,6 +3,7 @@ import sqlite3
 
 import pytest
 
+from app.threads import store as store_module
 from app.threads.domain import (
     AccountPolicy,
     Approval,
@@ -108,6 +109,31 @@ def test_database_is_versioned_wal_and_reopens_durably(tmp_path):
         assert connection.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
         connection.execute("UPDATE threads_schema_metadata SET version=99")
     with pytest.raises(ThreadsStoreError, match="unsupported"):
+        ThreadsStore(path)
+
+
+def test_initial_schema_and_version_row_are_one_transaction(tmp_path, monkeypatch):
+    path = tmp_path / "threads.sqlite3"
+    monkeypatch.setattr(
+        store_module,
+        "_SCHEMA",
+        f"{store_module._SCHEMA}\nCREATE TABLE invalid(",
+    )
+    with pytest.raises(sqlite3.OperationalError):
+        ThreadsStore(path)
+    with sqlite3.connect(path) as connection:
+        tables = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    assert tables == []
+
+
+def test_existing_database_requires_version_metadata_row(tmp_path):
+    path = tmp_path / "threads.sqlite3"
+    ThreadsStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute("DELETE FROM threads_schema_metadata")
+    with pytest.raises(ThreadsStoreError, match="metadata is missing"):
         ThreadsStore(path)
 
 
@@ -312,6 +338,22 @@ def test_restart_recovery_uses_durable_dispatch_evidence(
         reopened.recover_sending("operation-1", now=NOW)
 
 
+def test_recovered_pre_dispatch_failures_obey_attempt_cap(tmp_path):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    service.simulator.set_fault(
+        "operation-1", "container", Fault.CRASH_BEFORE_TRANSMISSION
+    )
+    with pytest.raises(SimulatedCrash):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.recover_sending("operation-1", now=NOW).state is OutboxState.READY
+    with pytest.raises(SimulatedCrash):
+        service.dispatch("operation-1", approval, now=NOW)
+    terminal = service.recover_sending("operation-1", now=NOW)
+    assert terminal.state is OutboxState.FAILED_TERMINAL
+    assert terminal.attempt_count == 2
+
+
 @pytest.mark.parametrize("stage", ["container", "publish"])
 def test_abrupt_process_death_after_durable_boundary_marker_is_unknown(
     tmp_path, monkeypatch, stage
@@ -457,6 +499,34 @@ def test_replacement_is_blocked_if_target_reconciles_before_dispatch(tmp_path):
     service.reconcile("operation-1", now=NOW)
     with pytest.raises(PolicyDeniedError, match="no longer unresolved"):
         service.dispatch("operation-2", risk_approval, now=NOW)
+
+
+def test_replacement_cannot_bypass_an_additional_unknown_publication(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    second_approval = approve("operation-2", duplicate_risk_acknowledged=True)
+    propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=second_approval,
+    )
+    service.submit_for_approval("operation-2", now=NOW)
+    service.authorize("operation-2", second_approval, now=NOW)
+    service.simulator.set_fault("operation-2", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-2", second_approval, now=NOW)
+    third_approval = approve("operation-3", duplicate_risk_acknowledged=True)
+    propose(
+        service,
+        "operation-3",
+        replacement_of="operation-1",
+        replacement_approval=third_approval,
+    )
+    service.submit_for_approval("operation-3", now=NOW)
+    with pytest.raises(PolicyDeniedError, match="additional unresolved"):
+        service.authorize("operation-3", third_approval, now=NOW)
 
 
 def test_replacement_rejects_resolved_target_and_missing_authenticated_ack(tmp_path):
