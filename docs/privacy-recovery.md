@@ -151,6 +151,11 @@ matching expected `schema_metadata` and `PRAGMA user_version` values plus
 `PRAGMA integrity_check`. A separate owner-only metadata file records only format
 version, database schema version, UTC creation time, and backup filename; it
 contains no participant content.
+The destination WAL and shared-memory names are exclusively reserved during the
+copy, and the completed database is normalized to rollback-journal mode before
+those owned reservations are removed. Descriptor-backed validation then treats
+the self-contained snapshot as immutable, so it does not create or consume
+undeclared sidecars. Restore uses the same immutable view of the backup.
 
 Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic links anywhere in a parent chain, unsafe parents,

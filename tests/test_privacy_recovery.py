@@ -137,6 +137,8 @@ def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
         thread.join()
         writer.close()
 
+    assert not Path(f"{destination}-wal").exists()
+    assert not Path(f"{destination}-shm").exists()
     with sqlite3.connect(destination) as restored:
         assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert (
@@ -356,7 +358,9 @@ def test_restore_copy_interrupt_cleans_quarantine_and_descriptors(
             os.fstat(owned_file.parent_descriptor)
 
 
-@pytest.mark.parametrize("race_target", ["destination", "metadata"])
+@pytest.mark.parametrize(
+    "race_target", ["destination", "metadata", "wal_sidecar", "shm_sidecar"]
+)
 def test_backup_race_never_deletes_a_concurrently_created_file(
     tmp_path, monkeypatch, race_target
 ):
@@ -364,7 +368,12 @@ def test_backup_race_never_deletes_a_concurrently_created_file(
     make_source(source).close()
     destination = tmp_path / "backup.sqlite3"
     metadata = Path(f"{destination}.metadata.json")
-    raced_path = destination if race_target == "destination" else metadata
+    raced_path = {
+        "destination": destination,
+        "metadata": metadata,
+        "wal_sidecar": Path(f"{destination}-wal"),
+        "shm_sidecar": Path(f"{destination}-shm"),
+    }[race_target]
     real_open_owned_file = recovery_module._open_owned_file
 
     def race(path, access, owned):
@@ -377,7 +386,7 @@ def test_backup_race_never_deletes_a_concurrently_created_file(
         create_sqlite_backup(source, destination, 3, NOW)
 
     assert raced_path.read_text() == f"concurrent-{race_target}"
-    if race_target == "metadata":
+    if race_target != "destination":
         assert not destination.exists()
 
 
@@ -639,6 +648,8 @@ def test_zero_length_writes_fail_closed_and_remove_partial_outputs(
         create_sqlite_backup(source, failed_backup, 3, NOW)
     assert not failed_backup.exists()
     assert not Path(f"{failed_backup}.metadata.json").exists()
+    assert not Path(f"{failed_backup}-wal").exists()
+    assert not Path(f"{failed_backup}-shm").exists()
 
     monkeypatch.undo()
     backup = tmp_path / "backup.sqlite3"
@@ -762,9 +773,24 @@ def test_backup_rejects_malformed_database_and_verification_faults(
             source, tmp_path / "changed.sqlite3", 3, NOW, after_copy=alter_schema
         )
 
-    monkeypatch.setattr(recovery_module, "_integrity_ok", lambda _path: False)
+    monkeypatch.setattr(
+        recovery_module, "_integrity_ok", lambda _path, **_kwargs: False
+    )
     with pytest.raises(BackupError, match="consistency"):
         create_sqlite_backup(source, tmp_path / "bad-integrity.sqlite3", 3, NOW)
+
+
+def test_backup_rejects_an_unfinalized_wal_snapshot():
+    class WalConnection:
+        def execute(self, statement):
+            assert statement == "PRAGMA journal_mode=DELETE"
+            return self
+
+        def fetchone(self):
+            return ("wal",)
+
+    with pytest.raises(sqlite3.OperationalError, match="finalize"):
+        recovery_module._use_rollback_journal(WalConnection())
 
 
 @pytest.mark.parametrize("sqlite_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
@@ -1119,11 +1145,11 @@ def test_restore_validates_the_pinned_backup_schema_before_adapters(
     real_schema_version = recovery_module._schema_version
     validated_targets = []
 
-    def schema_version(target):
+    def schema_version(target, **kwargs):
         validated_targets.append(target)
         if target == backup:
             return 3
-        return real_schema_version(target)
+        return real_schema_version(target, **kwargs)
 
     adapter_called = False
 

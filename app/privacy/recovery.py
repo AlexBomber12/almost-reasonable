@@ -84,14 +84,20 @@ def _validate_new_file(path: Path, label: str) -> None:
         raise BackupError(f"{label} already exists")
 
 
-def _database_target(path_or_descriptor: Path | int) -> tuple[str | Path, bool]:
+def _database_target(
+    path_or_descriptor: Path | int, *, immutable: bool = False
+) -> tuple[str | Path, bool]:
     if type(path_or_descriptor) is int:
-        return f"file:/proc/self/fd/{path_or_descriptor}?mode=ro", True
+        immutable_parameter = "&immutable=1" if immutable else ""
+        return (
+            f"file:/proc/self/fd/{path_or_descriptor}?mode=ro{immutable_parameter}",
+            True,
+        )
     return path_or_descriptor, False
 
 
-def _schema_version(path_or_descriptor: Path | int) -> int:
-    target, uri = _database_target(path_or_descriptor)
+def _schema_version(path_or_descriptor: Path | int, *, immutable: bool = False) -> int:
+    target, uri = _database_target(path_or_descriptor, immutable=immutable)
     try:
         with sqlite3.connect(target, timeout=0.1, uri=uri) as connection:
             row = connection.execute(
@@ -116,6 +122,7 @@ class _OwnedFile:
 class _PinnedDatabase:
     path: Path
     descriptor: int
+    immutable: bool = False
 
 
 def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
@@ -176,7 +183,9 @@ def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
     return (current.st_dev, current.st_ino) == (identity.st_dev, identity.st_ino)
 
 
-def _pin_database(path: Path, label: str) -> _PinnedDatabase:
+def _pin_database(
+    path: Path, label: str, *, immutable: bool = False
+) -> _PinnedDatabase:
     try:
         parent_descriptor = _open_directory_chain(path.parent)
     except OSError as error:
@@ -196,7 +205,7 @@ def _pin_database(path: Path, label: str) -> _PinnedDatabase:
     ):
         os.close(descriptor)
         raise BackupError(f"{label} identity changed")
-    return _PinnedDatabase(path, descriptor)
+    return _PinnedDatabase(path, descriptor, immutable)
 
 
 def _require_database_identity(source: _PinnedDatabase) -> None:
@@ -212,9 +221,16 @@ def _require_connection_identity(
         raise BackupError("backup source connection identity changed")
 
 
+def _use_rollback_journal(connection: sqlite3.Connection) -> None:
+    if connection.execute("PRAGMA journal_mode=DELETE").fetchone() != ("delete",):
+        raise sqlite3.OperationalError("unable to finalize backup journal")
+
+
 def _sqlite_copy(source: _PinnedDatabase, destination_descriptor: int) -> None:
     _require_database_identity(source)
-    source_target, source_uri = _database_target(source.descriptor)
+    source_target, source_uri = _database_target(
+        source.descriptor, immutable=source.immutable
+    )
     source_connection = sqlite3.connect(source_target, uri=source_uri, timeout=0.1)
     with closing(source_connection):
         _require_database_identity(source)
@@ -245,6 +261,7 @@ def _sqlite_copy(source: _PinnedDatabase, destination_descriptor: int) -> None:
                 sleep=BACKUP_BUSY_SLEEP_SECONDS,
             )
             destination_connection.commit()
+            _use_rollback_journal(destination_connection)
         _require_database_identity(source)
 
 
@@ -264,8 +281,8 @@ def _is_busy(error: sqlite3.OperationalError) -> bool:
     }
 
 
-def _integrity_ok(path_or_descriptor: Path | int) -> bool:
-    target, uri = _database_target(path_or_descriptor)
+def _integrity_ok(path_or_descriptor: Path | int, *, immutable: bool = False) -> bool:
+    target, uri = _database_target(path_or_descriptor, immutable=immutable)
     with sqlite3.connect(target, uri=uri) as connection:
         return (
             connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
@@ -291,26 +308,42 @@ def create_sqlite_backup(
     source = Path(source_path)
     destination = Path(destination_path)
     metadata_path = Path(f"{destination}.metadata.json")
+    sidecar_paths = (
+        Path(f"{destination}-wal"),
+        Path(f"{destination}-shm"),
+    )
     require_utc(created_at, "backup timestamp")
     _validate_existing_file(source, "source")
     _validate_new_file(destination, "destination")
     _validate_new_file(metadata_path, "metadata destination")
+    for sidecar_path in sidecar_paths:
+        _validate_new_file(sidecar_path, "destination sidecar")
     pinned_source = _pin_database(source, "backup source")
     try:
         if _schema_version(source) != expected_schema_version:
             raise BackupError("unsupported source schema")
         _require_database_identity(pinned_source)
         owned: list[_OwnedFile] = []
+        sidecar_reservations: list[_OwnedFile] = []
         try:
+            for sidecar_path in sidecar_paths:
+                _open_owned_file(sidecar_path, os.O_RDWR, sidecar_reservations)
             destination_descriptor = _open_owned_file(destination, os.O_RDWR, owned)
             _sqlite_copy(pinned_source, destination_descriptor)
+            _cleanup_created(sidecar_reservations)
+            sidecar_reservations.clear()
+            for sidecar_path in sidecar_paths:
+                _validate_new_file(sidecar_path, "destination sidecar")
             if after_copy is not None:
                 after_copy(destination)
             if not _path_matches_descriptor(destination, destination_descriptor):
                 raise BackupError("backup destination identity changed")
-            if _schema_version(destination_descriptor) != expected_schema_version:
+            if (
+                _schema_version(destination_descriptor, immutable=True)
+                != expected_schema_version
+            ):
                 raise BackupError("backup schema verification failed")
-            if not _integrity_ok(destination_descriptor):
+            if not _integrity_ok(destination_descriptor, immutable=True):
                 raise BackupError("backup consistency verification failed")
             payload = json.dumps(
                 {
@@ -331,18 +364,18 @@ def create_sqlite_backup(
                 raise BackupError("backup output identity changed")
             _fsync_owned_parents(owned)
         except sqlite3.OperationalError as error:
-            _cleanup_created(owned)
+            _cleanup_created([*sidecar_reservations, *owned])
             if _is_busy(error):
                 raise BackupBusyError("SQLite source is busy") from error
             raise BackupError("SQLite backup failed") from error
         except BackupError:
-            _cleanup_created(owned)
+            _cleanup_created([*sidecar_reservations, *owned])
             raise
         except Exception as error:
-            _cleanup_created(owned)
+            _cleanup_created([*sidecar_reservations, *owned])
             raise BackupError("SQLite backup failed") from error
         except BaseException:
-            _cleanup_created(owned)
+            _cleanup_created([*sidecar_reservations, *owned])
             raise
         _close_owned(owned)
     finally:
@@ -409,12 +442,14 @@ class QuarantinedRestore:
         _validate_new_file(quarantine, "quarantine")
         ready_path = Path(f"{quarantine}.ready.json")
         _validate_new_file(ready_path, "readiness marker")
-        pinned_backup = _pin_database(backup, "backup")
+        pinned_backup = _pin_database(backup, "backup", immutable=True)
         owned: list[_OwnedFile] = []
         try:
             _load_metadata(backup, self.expected_schema_version)
             if (
-                _schema_version(pinned_backup.descriptor)
+                _schema_version(
+                    pinned_backup.descriptor, immutable=pinned_backup.immutable
+                )
                 != self.expected_schema_version
             ):
                 raise BackupError("unsupported backup schema")
