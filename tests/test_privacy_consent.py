@@ -61,6 +61,7 @@ def service(tmp_path):
 
 def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
     consent, ledger = service
+    dispatched = []
     assert consent.grant(context(), grant()).created is True
     assert consent.grant(context(), grant()).created is False
     assert (
@@ -71,9 +72,11 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
             audience="public-threads",
             purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
             correlation_id="use-correlation-001",
+            dispatch=lambda: dispatched.append("sent"),
         ).allowed
         is True
     )
+    assert dispatched == ["sent"]
 
     first = consent.revoke(
         context(),
@@ -98,8 +101,10 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
         audience="public-threads",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="use-correlation-002",
+        dispatch=lambda: dispatched.append("revoked-send"),
     )
     assert (denied.allowed, denied.reason) == (False, "revoked")
+    assert dispatched == ["sent"]
     assert all(
         "synthetic-private-canary" not in repr(row) for row in ledger.audit_records()
     )
@@ -121,12 +126,55 @@ def test_future_revocation_does_not_take_effect_early(service):
         "audience": "public-threads",
         "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
         "correlation_id": "future-revocation-use",
+        "dispatch": lambda: None,
     }
     consent._clock = lambda: NOW + timedelta(minutes=29)
     assert consent.authorize(context(), **request).allowed
     consent._clock = lambda: NOW + timedelta(minutes=30)
     assert consent.authorize(context(), **request).reason == "revoked"
     assert ledger.revocations() == (("consent-001", NOW + timedelta(minutes=30)),)
+
+
+def test_consent_dispatch_fences_concurrent_revocation(service):
+    consent, _ = service
+    consent.grant(context(), grant())
+    revocation_started = threading.Event()
+    revocation_finished = threading.Event()
+    effects = []
+
+    def revoke():
+        revocation_started.set()
+        consent.revoke(
+            context(),
+            consent_id="consent-001",
+            operation_id="revoke-during-dispatch",
+            revoked_at=NOW + timedelta(minutes=1),
+            correlation_id="revoke-during-dispatch-correlation",
+        )
+        revocation_finished.set()
+
+    thread = threading.Thread(target=revoke)
+
+    def dispatch():
+        thread.start()
+        assert revocation_started.wait(timeout=1)
+        assert not revocation_finished.wait(timeout=0.1)
+        effects.append("sent")
+
+    result = consent.authorize(
+        context(),
+        principal_id="participant-a",
+        content_reference="event-001",
+        audience="public-threads",
+        purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        correlation_id="fenced-dispatch",
+        dispatch=dispatch,
+    )
+    thread.join(timeout=2)
+
+    assert result.allowed is True
+    assert effects == ["sent"]
+    assert revocation_finished.is_set()
 
 
 @pytest.mark.parametrize(
@@ -163,6 +211,7 @@ def test_consent_fails_closed_for_scope_or_expiry(
         "audience": "public-threads",
         "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
         "correlation_id": "use-correlation-003",
+        "dispatch": lambda: None,
     }
     request.update(overrides)
     result = consent.authorize(context(), **request)
@@ -202,6 +251,7 @@ def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
         ).reason
         == "invalid_authentication"
     )
+    assert ledger.audit_records()[-1].occurred_at == NOW + timedelta(minutes=1)
     spoofed = consent.grant(
         context(),
         grant(
@@ -212,6 +262,7 @@ def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
     )
     assert spoofed.reason == "invalid_authentication"
     assert ledger.audit_records()[-1].actor_reference == "actor-a"
+    assert ledger.audit_records()[-1].occurred_at == NOW + timedelta(minutes=1)
     assert (
         consent.revoke(
             context(origin=OperationOrigin.CHAT),
@@ -237,6 +288,7 @@ def test_consent_use_cannot_borrow_another_principals_grant(service):
         audience="public-threads",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="cross-principal-use",
+        dispatch=lambda: None,
     )
     assert (result.allowed, result.reason) == (False, "invalid_authorization")
 
@@ -252,6 +304,7 @@ def test_consent_use_time_cannot_be_supplied_by_the_caller(service):
             audience="public-threads",
             purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
             correlation_id="backdated-use",
+            dispatch=lambda: None,
             used_at=NOW,
         )
 
@@ -273,6 +326,7 @@ def test_consent_rejects_privilege_purpose_and_conflicting_operation(service):
             audience="public-threads",
             purpose="administrative_tools",
             correlation_id="bad-purpose",
+            dispatch=lambda: None,
         )
     consent.revoke(
         context(),
@@ -395,6 +449,7 @@ def test_privacy_ledger_survives_restart_and_rejects_bad_schema(tmp_path):
             audience="public-threads",
             purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
             correlation_id="restart-use",
+            dispatch=lambda: None,
         )
         .allowed
     )
@@ -403,6 +458,23 @@ def test_privacy_ledger_survives_restart_and_rejects_bad_schema(tmp_path):
         connection.execute("UPDATE privacy_schema_metadata SET version = 999")
     with pytest.raises(RuntimeError, match="unsupported privacy ledger schema"):
         PrivacyLedger(path)
+
+
+def test_privacy_ledger_rejects_an_unrelated_existing_database(tmp_path):
+    path = tmp_path / "application.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute("CREATE TABLE application_events(event_id TEXT PRIMARY KEY)")
+
+    with pytest.raises(RuntimeError, match="unrelated tables"):
+        PrivacyLedger(path)
+    with sqlite3.connect(path) as connection:
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert tables == {"application_events"}
 
 
 @pytest.mark.parametrize(
@@ -514,6 +586,7 @@ def test_consent_use_requires_control_origin_and_audits_decision(service):
         audience="public-threads",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="chat-consent-use",
+        dispatch=lambda: None,
     )
     assert (result.allowed, result.reason) == (False, "invalid_authentication")
     audit = ledger.audit_records()[-1]

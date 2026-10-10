@@ -792,7 +792,8 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
         assert required.lower() in NOTICE_RU.lower()
     assert "гарант" not in NOTICE_RU.lower()
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    service = NoticeService(ledger)
+    rejection_time = NOW + timedelta(minutes=5)
+    service = NoticeService(ledger, clock=lambda: rejection_time)
     first = service.acknowledge(context(), NOTICE_VERSION, NOW, "notice-correlation")
     second = service.acknowledge(context(), NOTICE_VERSION, NOW, "notice-correlation")
     assert (first.created, second.created) == (True, False)
@@ -812,6 +813,7 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
         "notice_acknowledgement",
         "invalid_authentication",
     )
+    assert audit.occurred_at == rejection_time
     with pytest.raises(ValueError, match="notice version"):
         service.acknowledge(context(), "unknown", NOW, "notice-bad-version")
 

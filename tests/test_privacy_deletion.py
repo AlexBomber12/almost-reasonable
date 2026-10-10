@@ -89,7 +89,10 @@ def test_deletion_writes_pending_first_then_applies_idempotently(tmp_path):
 
 def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    coordinator = DeletionCoordinator(ledger, FakeErasureAdapter())
+    rejection_time = NOW + timedelta(minutes=5)
+    coordinator = DeletionCoordinator(
+        ledger, FakeErasureAdapter(), clock=lambda: rejection_time
+    )
     wrong = coordinator.delete(context("participant-b"), request())
     chat = coordinator.delete(
         context(origin=OperationOrigin.CHAT),
@@ -120,6 +123,11 @@ def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):
     )
     assert chat.disposition is DeletionDisposition.INVALID_AUTHORIZATION
     assert ineligible.disposition is DeletionDisposition.NOT_ELIGIBLE
+    assert {
+        entry.occurred_at
+        for entry in ledger.audit_records()
+        if entry.action_type == "deletion_rejected"
+    } == {rejection_time}
 
 
 def test_partial_or_failed_erasure_is_never_completed(tmp_path):

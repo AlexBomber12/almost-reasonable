@@ -1,5 +1,6 @@
 """Minimal, payload-free SQLite privacy ledger."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 import os
 from pathlib import Path
@@ -9,6 +10,7 @@ from .models import (
     AuditRecord,
     ConsentGrant,
     ConsentPurpose,
+    ConsentUseResult,
     DeletionDisposition,
     DeletionRecord,
     DeletionRequest,
@@ -125,6 +127,12 @@ class PrivacyLedger:
                 "AND name='privacy_schema_metadata'"
             ).fetchone()
             if tables is None:
+                unrelated = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' LIMIT 1"
+                ).fetchone()
+                if unrelated is not None:
+                    raise RuntimeError("privacy ledger path contains unrelated tables")
                 for statement in _SCHEMA:
                     connection.execute(statement)
                 connection.execute(
@@ -196,27 +204,58 @@ class PrivacyLedger:
             )
         return created
 
-    def matching_consent(
+    def authorize_consent_use(
         self,
+        *,
         principal_id: str,
         content_reference: str,
         audience: str,
         purpose: ConsentPurpose,
-    ) -> tuple[str, datetime, datetime, datetime | None] | None:
+        used_at: datetime,
+        correlation_id: str,
+        actor_reference: str,
+        dispatch: Callable[[], None],
+    ) -> ConsentUseResult:
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             row = connection.execute(
-                "SELECT g.consent_id, g.granted_at, g.expires_at, "
-                "r.revoked_at "
+                "SELECT g.consent_id, g.granted_at, g.expires_at, r.revoked_at "
                 "FROM consent_grants g LEFT JOIN consent_revocations r "
                 "ON r.consent_id=g.consent_id WHERE g.principal_id=? "
                 "AND g.content_reference=? AND g.audience=? AND g.purpose=? "
                 "ORDER BY g.revision DESC LIMIT 1",
                 (principal_id, content_reference, audience, purpose.value),
             ).fetchone()
-        if row is None:
-            return None
-        revoked_at = None if row[3] is None else _time(row[3])
-        return row[0], _time(row[1]), _time(row[2]), revoked_at
+            if row is None:
+                result = ConsentUseResult(False, "no_matching_consent")
+            else:
+                consent_id = row[0]
+                granted_at = _time(row[1])
+                expires_at = _time(row[2])
+                revoked_at = None if row[3] is None else _time(row[3])
+                if used_at < granted_at:
+                    result = ConsentUseResult(False, "not_yet_valid", consent_id)
+                elif revoked_at is not None and used_at >= revoked_at:
+                    result = ConsentUseResult(False, "revoked", consent_id)
+                elif used_at >= expires_at:
+                    result = ConsentUseResult(False, "expired", consent_id)
+                else:
+                    result = ConsentUseResult(True, "authorized", consent_id)
+            self._insert_audit(
+                connection,
+                AuditRecord(
+                    correlation_id,
+                    actor_reference,
+                    "consent_use",
+                    "consent",
+                    used_at,
+                    result.reason,
+                    "payload_free",
+                ),
+            )
+            if result.allowed:
+                dispatch()
+        return result
 
     def consent_principal(self, consent_id: str) -> str | None:
         with self._open() as connection:

@@ -67,6 +67,7 @@ class ConsentService:
         audience: str,
         purpose: ConsentPurpose,
         correlation_id: str,
+        dispatch: Callable[[], None],
     ) -> ConsentUseResult:
         require_token(principal_id, "principal id")
         require_token(content_reference, "content reference")
@@ -81,21 +82,16 @@ class ConsentService:
         elif context.principal_id != principal_id:
             result = ConsentUseResult(False, "invalid_authorization")
         else:
-            match = self.ledger.matching_consent(
-                principal_id, content_reference, audience, purpose
+            return self.ledger.authorize_consent_use(
+                principal_id=principal_id,
+                content_reference=content_reference,
+                audience=audience,
+                purpose=purpose,
+                used_at=used_at,
+                correlation_id=correlation_id,
+                actor_reference=context.actor_reference,
+                dispatch=dispatch,
             )
-            if match is None:
-                result = ConsentUseResult(False, "no_matching_consent")
-            else:
-                consent_id, granted_at, expires_at, revoked_at = match
-                if used_at < granted_at:
-                    result = ConsentUseResult(False, "not_yet_valid", consent_id)
-                elif revoked_at is not None and used_at >= revoked_at:
-                    result = ConsentUseResult(False, "revoked", consent_id)
-                elif used_at >= expires_at:
-                    result = ConsentUseResult(False, "expired", consent_id)
-                else:
-                    result = ConsentUseResult(True, "authorized", consent_id)
         self.ledger.record_audit(
             AuditRecord(
                 correlation_id,
@@ -148,7 +144,7 @@ class ConsentService:
                 context.actor_reference,
                 "consent_revocation",
                 "consent",
-                revoked_at,
+                self._trusted_time(),
                 reason,
                 "payload_free",
             )
@@ -169,8 +165,13 @@ class ConsentService:
                 actor_reference,
                 action,
                 "consent",
-                grant.granted_at,
+                self._trusted_time(),
                 result,
                 "payload_free",
             )
         )
+
+    def _trusted_time(self) -> datetime:
+        occurred_at = self._clock()
+        require_utc(occurred_at, "audit timestamp")
+        return occurred_at

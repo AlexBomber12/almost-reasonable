@@ -135,13 +135,15 @@ class DeletionCoordinator:
         request: DeletionRequest,
         reason: str,
     ) -> DeletionOutcome:
+        occurred_at = self.clock()
+        require_utc(occurred_at, "deletion rejection timestamp")
         self.ledger.record_audit(
             AuditRecord(
                 request.correlation_id,
                 context.actor_reference,
                 "deletion_rejected",
                 request.content_category.value,
-                request.requested_at,
+                occurred_at,
                 f"{DeletionDisposition.INVALID_AUTHORIZATION.value}:{reason}",
                 "payload_free",
             )

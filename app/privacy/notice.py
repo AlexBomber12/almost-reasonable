@@ -1,6 +1,7 @@
 """Versioned Russian pre-enrollment privacy notice and acknowledgment API."""
 
-from datetime import datetime
+from collections.abc import Callable
+from datetime import UTC, datetime
 
 from .ledger import PrivacyLedger
 from .models import (
@@ -47,8 +48,14 @@ OPERATOR_LEGAL_DECISIONS_RU = (
 
 
 class NoticeService:
-    def __init__(self, ledger: PrivacyLedger):
+    def __init__(
+        self,
+        ledger: PrivacyLedger,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.ledger = ledger
+        self._clock = clock or (lambda: datetime.now(UTC))
 
     def acknowledge(
         self,
@@ -62,13 +69,15 @@ class NoticeService:
         if notice_version != NOTICE_VERSION:
             raise ValueError("unsupported notice version")
         if context.origin is not OperationOrigin.CONTROL:
+            occurred_at = self._clock()
+            require_utc(occurred_at, "notice rejection timestamp")
             self.ledger.record_audit(
                 AuditRecord(
                     correlation_id,
                     context.actor_reference,
                     "notice_acknowledgement",
                     "privacy_notice",
-                    acknowledged_at,
+                    occurred_at,
                     "invalid_authentication",
                     "payload_free",
                 )

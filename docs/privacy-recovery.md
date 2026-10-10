@@ -15,7 +15,9 @@ Consent is an immutable, typed grant for one principal, exact content reference,
 audience, purpose (`identifiable_quotation` or `identifiable_disclosure`), grant
 time, expiry, trusted actor, authentication event, revision, operation ID, and
 correlation ID. Use is checked against the current ledger with a service-owned
-UTC clock immediately before the outbound effect; callers cannot backdate it.
+UTC clock; callers cannot backdate it. The required dispatch callback runs while
+the privacy ledger holds a write fence, so revocation cannot commit between the
+check and the outbound effect. Dispatch code must not re-enter the privacy ledger.
 Missing, expired, revoked, wrong-principal, wrong-content, wrong-audience, and
 wrong-purpose grants fail closed. Revocation is a separate authenticated,
 idempotent operation and takes effect at its recorded UTC timestamp. Neither
@@ -30,7 +32,8 @@ and each persisted deletion transition and its audit row, commit in the same
 privacy-ledger transaction; an audit write failure rolls back the control state.
 Rejected-operation audits attribute the trusted context actor rather than
 submitted grant fields. Rejected notice acknowledgements are likewise recorded
-as payload-free audit decisions.
+as payload-free audit decisions. Rejection audit timestamps always come from the
+service clock rather than rejected request fields.
 
 Ordinary derivatives must retain every source audience. The only proposed
 cross-scope transition is `abstract_to_shared`. Its validator requires a valid
@@ -50,6 +53,8 @@ general intellectual abstraction does not require a separate consent per change.
 `PrivacyLedger` is a separate, schema-versioned SQLite database with owner-only
 mode `0600`. First-time schema creation is one explicit SQLite transaction, and
 idempotent control inserts serialize their identity check with `BEGIN IMMEDIATE`.
+Initialization rejects a nonempty database without privacy-ledger metadata, so an
+application/EventStore file cannot silently become the independent ledger.
 Its records contain control metadata, not message payloads, prompts,
 provider responses, secrets, or an unkeyed hash of private content. It stores:
 
