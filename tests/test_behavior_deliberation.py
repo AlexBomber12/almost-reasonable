@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -356,6 +357,32 @@ def test_model_adapter_timeout_and_post_call_deadline_are_enforced() -> None:
         lambda: next(backwards),
     ).deliberate(behavior_input())
     assert failed_closed.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+
+    new_york = ZoneInfo("America/New_York")
+    fold_start = datetime(2026, 11, 1, 1, 15, tzinfo=new_york, fold=0)
+    fold_finish = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=1)
+    fold_moments = iter((fold_start, fold_finish))
+    fold_result = engine(
+        RecordedBehaviorModel(({"decision": "reply", "content": "Ответ"},)),
+        lambda: next(fold_moments),
+    ).deliberate(
+        replace(
+            behavior_input(
+                budget=DeliberationBudget(1, 1, 30 * 60),
+                deadline=datetime(2026, 11, 1, 2, 0, tzinfo=new_york, fold=1),
+            ),
+            now=fold_start,
+        )
+    )
+    assert fold_result.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+
+    absolute_past_deadline = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=0)
+    not_called = RecordedBehaviorModel(())
+    expired_fold = engine(not_called, lambda: fold_start).deliberate(
+        replace(behavior_input(deadline=absolute_past_deadline), now=fold_finish)
+    )
+    assert expired_fold.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+    assert not_called.requests == []
 
 
 def test_deliberation_context_has_section_and_aggregate_byte_bounds() -> None:

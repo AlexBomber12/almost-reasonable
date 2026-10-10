@@ -307,18 +307,21 @@ class DeliberationEngine:
             return _result(DeliberationOutcome.SKIPPED_SPEND)
         started_at = self._clock()
         _validate_clock_time(started_at)
+        now_instant = _instant(value.now)
+        deadline_instant = _instant(value.deadline)
+        started_instant = _instant(started_at)
         if (
             value.budget.max_steps < 1
             or value.budget.max_model_calls < 1
             or value.budget.max_execution_seconds <= 0
-            or value.deadline <= value.now
-            or value.deadline <= started_at
+            or deadline_instant <= now_instant
+            or deadline_instant <= started_instant
         ):
             return _result(DeliberationOutcome.BUDGET_EXHAUSTED)
 
         timeout_seconds = min(
             value.budget.max_execution_seconds,
-            (value.deadline - started_at).total_seconds(),
+            (deadline_instant - started_instant).total_seconds(),
         )
         try:
             raw_proposal = self._model.complete(_build_request(value), timeout_seconds)
@@ -328,10 +331,11 @@ class DeliberationEngine:
             )
         finished_at = self._clock()
         _validate_clock_time(finished_at)
+        finished_instant = _instant(finished_at)
         if (
-            finished_at < started_at
-            or finished_at > value.deadline
-            or (finished_at - started_at).total_seconds()
+            finished_instant < started_instant
+            or finished_instant > deadline_instant
+            or (finished_instant - started_instant).total_seconds()
             > value.budget.max_execution_seconds
         ):
             return DeliberationResult(
@@ -477,8 +481,16 @@ def _validate_input(value: DeliberationInput) -> None:
 
 
 def _validate_clock_time(value: datetime) -> None:
-    if not isinstance(value, datetime) or value.tzinfo is None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
         raise ValueError("clock must return a timezone-aware datetime")
+
+
+def _instant(value: datetime) -> datetime:
+    return value.astimezone(UTC)
 
 
 def _is_finite_number(value: int | float) -> bool:
