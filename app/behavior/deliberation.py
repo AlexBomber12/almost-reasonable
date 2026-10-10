@@ -314,6 +314,7 @@ class DeliberationEngine:
             value.budget.max_steps < 1
             or value.budget.max_model_calls < 1
             or value.budget.max_execution_seconds <= 0
+            or started_instant < now_instant
             or deadline_instant <= now_instant
             or deadline_instant <= started_instant
         ):

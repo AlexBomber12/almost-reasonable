@@ -358,6 +358,15 @@ def test_model_adapter_timeout_and_post_call_deadline_are_enforced() -> None:
     ).deliberate(behavior_input())
     assert failed_closed.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
 
+    not_called_after_pre_call_rollback = RecordedBehaviorModel(())
+    pre_call_rollback = engine(
+        not_called_after_pre_call_rollback,
+        lambda: NOW - timedelta(seconds=1),
+    ).deliberate(behavior_input())
+    assert pre_call_rollback.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+    assert pre_call_rollback.model_calls == 0
+    assert not_called_after_pre_call_rollback.requests == []
+
     new_york = ZoneInfo("America/New_York")
     fold_start = datetime(2026, 11, 1, 1, 15, tzinfo=new_york, fold=0)
     fold_finish = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=1)
