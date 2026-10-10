@@ -89,6 +89,9 @@ class RestoreAdapter:
     def rebuild_dependencies(self):
         return not self.fail
 
+    def release_writers(self):
+        return True
+
 
 def pending_deletion(ledger):
     request = DeletionRequest(
@@ -993,14 +996,21 @@ def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
     opened = []
+    closed = []
     real_open_owned_file = recovery_module._open_owned_file
+    real_close = os.close
 
     def track_open(path, access, owned):
         descriptor = real_open_owned_file(path, access, owned)
         opened.append(owned[-1])
         return descriptor
 
+    def track_close(descriptor):
+        closed.append(descriptor)
+        real_close(descriptor)
+
     monkeypatch.setattr(recovery_module, "_open_owned_file", track_open)
+    monkeypatch.setattr(recovery_module.os, "close", track_close)
     monkeypatch.setattr(
         recovery_module,
         "_write_all",
@@ -1012,10 +1022,8 @@ def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
 
     assert not marker.exists()
     for owned_file in opened:
-        with pytest.raises(OSError):
-            os.fstat(owned_file.descriptor)
-        with pytest.raises(OSError):
-            os.fstat(owned_file.parent_descriptor)
+        assert owned_file.descriptor in closed
+        assert owned_file.parent_descriptor in closed
 
 
 def test_backup_rejects_malformed_database_and_verification_faults(
@@ -1276,6 +1284,83 @@ def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
     adapters[0].connection.close()
 
 
+def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+    adapters = []
+
+    class RetainedRollbackAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            assert self.connection.execute("PRAGMA journal_mode").fetchone() == (
+                "delete",
+            )
+
+        def apply_deletion(self, record):
+            self.connection.execute(
+                "DELETE FROM synthetic_private WHERE event_id=?",
+                (record.content_reference,),
+            )
+            self.connection.commit()
+            return ErasureReport(
+                True,
+                True,
+                frozenset(ContentCategory.required_erasure_categories()),
+                (),
+            )
+
+    def adapter_factory(path):
+        adapter = RetainedRollbackAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    real_descriptor_sha256 = recovery_module._descriptor_sha256
+    retained_write_attempted = False
+
+    def write_through_retained_connection(descriptor):
+        nonlocal retained_write_attempted
+        if adapters and not retained_write_attempted:
+            retained_write_attempted = True
+            try:
+                adapters[0].connection.execute(
+                    "INSERT INTO synthetic_private VALUES"
+                    "('event-001', 'retained-write')"
+                )
+                adapters[0].connection.commit()
+            except sqlite3.Error:
+                adapters[0].connection.rollback()
+        return real_descriptor_sha256(descriptor)
+
+    monkeypatch.setattr(
+        recovery_module, "_descriptor_sha256", write_through_retained_connection
+    )
+    quarantine = tmp_path / "quarantine.sqlite3"
+    try:
+        result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+            backup, quarantine, NOW
+        )
+        assert result.activation_eligible is True
+    finally:
+        adapters[0].connection.close()
+
+    assert retained_write_attempted is True
+    with sqlite3.connect(quarantine) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == (0,)
+    marker = json.loads(Path(f"{quarantine}.ready.json").read_text())
+    assert (
+        marker["database_sha256"] == hashlib.sha256(quarantine.read_bytes()).hexdigest()
+    )
+
+
 def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -1324,6 +1409,71 @@ def test_snapshot_finalization_rejects_an_unpinnable_parent(tmp_path, monkeypatc
         assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is False
     finally:
         os.close(descriptor)
+
+
+def test_fresh_snapshot_seal_rejects_a_fence_connection_failure(tmp_path, monkeypatch):
+    source = tmp_path / "snapshot.sqlite3"
+    make_source(source).close()
+    descriptor = os.open(source, os.O_RDWR)
+    monkeypatch.setattr(
+        recovery_module.sqlite3,
+        "connect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            sqlite3.OperationalError("fence unavailable")
+        ),
+    )
+    try:
+        assert (
+            recovery_module._seal_fresh_snapshot(
+                source, descriptor, tmp_path / "sealed.sqlite3"
+            )
+            is None
+        )
+    finally:
+        os.close(descriptor)
+
+
+def test_fresh_snapshot_seal_cleans_an_identity_mismatch(tmp_path, monkeypatch):
+    source = tmp_path / "snapshot.sqlite3"
+    make_source(source).close()
+    descriptor = os.open(source, os.O_RDWR)
+    sealed = tmp_path / "sealed.sqlite3"
+    real_matches = recovery_module._path_matches_descriptor
+
+    def reject_sealed(path, candidate_descriptor):
+        if path == sealed:
+            return False
+        return real_matches(path, candidate_descriptor)
+
+    monkeypatch.setattr(recovery_module, "_path_matches_descriptor", reject_sealed)
+    try:
+        assert recovery_module._seal_fresh_snapshot(source, descriptor, sealed) is None
+    finally:
+        os.close(descriptor)
+
+    assert not sealed.exists()
+
+
+def test_fresh_snapshot_seal_cleans_an_interruption(tmp_path, monkeypatch):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "snapshot.sqlite3"
+    make_source(source).close()
+    descriptor = os.open(source, os.O_RDWR)
+    sealed = tmp_path / "sealed.sqlite3"
+    monkeypatch.setattr(
+        recovery_module.shutil,
+        "copyfileobj",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(SimulatedInterrupt()),
+    )
+    try:
+        with pytest.raises(SimulatedInterrupt):
+            recovery_module._seal_fresh_snapshot(source, descriptor, sealed)
+    finally:
+        os.close(descriptor)
+
+    assert not sealed.exists()
 
 
 def test_restore_never_blesses_a_public_path_created_before_publication(
@@ -1882,6 +2032,9 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
         ("rebuild_dependencies", "false", "dependency_rebuild_incomplete"),
         ("rebuild_dependencies", "string_false", "dependency_rebuild_incomplete"),
         ("rebuild_dependencies", "raise", "dependency_rebuild_failure"),
+        ("release_writers", "false", "adapter_writer_release_incomplete"),
+        ("release_writers", "string_false", "adapter_writer_release_incomplete"),
+        ("release_writers", "raise", "adapter_writer_release_failure"),
     ],
 )
 def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
@@ -1938,6 +2091,13 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
                     raise RuntimeError("private fault")
                 return "false" if behavior == "string_false" else False
             return super().rebuild_dependencies()
+
+        def release_writers(self):
+            if method == "release_writers":
+                if behavior == "raise":
+                    raise RuntimeError("private fault")
+                return "false" if behavior == "string_false" else False
+            return super().release_writers()
 
     result = QuarantinedRestore(ledger, 3, FaultAdapter).restore(
         backup, tmp_path / f"quarantine-{method}-{behavior}.sqlite3", NOW

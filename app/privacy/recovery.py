@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import sqlite3
 import stat
 from typing import Protocol
@@ -56,6 +57,8 @@ class RestoreAdapter(Protocol):
     def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool: ...
 
     def rebuild_dependencies(self) -> bool: ...
+
+    def release_writers(self) -> bool: ...
 
 
 def _validate_parent_chain(path: Path, label: str) -> None:
@@ -415,6 +418,54 @@ def _finalize_sqlite_snapshot(path: Path, descriptor: int) -> bool:
     return True
 
 
+def _seal_fresh_snapshot(
+    source_path: Path,
+    source_descriptor: int,
+    destination_path: Path,
+) -> _OwnedFile | None:
+    source = _PinnedDatabase(source_path, source_descriptor)
+    target = f"file:/proc/self/fd/{source_descriptor}?mode=rw"
+    try:
+        fence = sqlite3.connect(target, uri=True, timeout=0.1, isolation_level=None)
+    except sqlite3.Error:
+        return None
+    sealed: list[_OwnedFile] = []
+    try:
+        _require_connection_identity(fence, source)
+        if not _finalize_sqlite_snapshot(source_path, source_descriptor):
+            return None
+        fence.execute("BEGIN EXCLUSIVE")
+        _require_database_identity(source)
+        destination_descriptor = _open_owned_file(destination_path, os.O_RDWR, sealed)
+        with (
+            os.fdopen(os.dup(source_descriptor), "rb") as source_file,
+            os.fdopen(os.dup(destination_descriptor), "wb") as destination_file,
+        ):
+            shutil.copyfileobj(source_file, destination_file, 1024 * 1024)
+            destination_file.flush()
+            os.fsync(destination_file.fileno())
+        os.fchmod(destination_descriptor, 0o400)
+        os.fsync(destination_descriptor)
+        if os.fstat(source_descriptor).st_size != os.fstat(
+            destination_descriptor
+        ).st_size or not _path_matches_descriptor(
+            destination_path, destination_descriptor
+        ):
+            raise BackupError("sealed quarantine identity changed")
+        _fsync_owned_parents(sealed)
+    except (OSError, sqlite3.Error, BackupError):
+        _cleanup_created(sealed)
+        return None
+    except BaseException:
+        _cleanup_created(sealed)
+        raise
+    finally:
+        if fence.in_transaction:
+            fence.rollback()
+        fence.close()
+    return sealed[0]
+
+
 def create_sqlite_backup(
     source_path: str | Path,
     destination_path: str | Path,
@@ -595,15 +646,17 @@ class QuarantinedRestore:
                     quarantine_descriptor,
                     ready_path,
                     restored_at,
-                    owned[0],
+                    owned,
                 )
-                if not result.activation_eligible and _path_matches_descriptor(
-                    staging, quarantine_descriptor
+                if (
+                    not result.activation_eligible
+                    and owned[0].path != quarantine
+                    and _path_matches_descriptor(owned[0].path, owned[0].descriptor)
                 ):
-                    _publish_owned_file(staging, quarantine, owned[0])
+                    _publish_owned_file(owned[0].path, quarantine, owned[0])
                 return result
             except BaseException:
-                if _path_matches_descriptor(owned[0].path, quarantine_descriptor):
+                if _path_matches_descriptor(owned[0].path, owned[0].descriptor):
                     _cleanup_created(owned)
                     owned.clear()
                 raise
@@ -617,8 +670,9 @@ class QuarantinedRestore:
         quarantine_descriptor: int,
         ready_path: Path,
         restored_at: datetime,
-        owned_quarantine: _OwnedFile,
+        owned: list[_OwnedFile],
     ) -> RestoreResult:
+        owned_quarantine = owned[0]
         restore_id = f"restore-{uuid4()}"
         try:
             self._require_quarantine_identity(staging, quarantine_descriptor)
@@ -641,10 +695,22 @@ class QuarantinedRestore:
             if reason is not None:
                 return self._blocked_restore(restore_id, restored_at, reason)
             self._require_quarantine_identity(staging, quarantine_descriptor)
-            if not _finalize_sqlite_snapshot(staging, quarantine_descriptor):
+            sealed_staging = quarantine.with_name(f".privacy-sealed-{uuid4()}.sqlite3")
+            sealed_quarantine = _seal_fresh_snapshot(
+                staging,
+                quarantine_descriptor,
+                sealed_staging,
+            )
+            if sealed_quarantine is None:
                 return self._blocked_restore(
                     restore_id, restored_at, "quarantine_finalization_failed"
                 )
+            _cleanup_created([owned_quarantine])
+            owned.clear()
+            owned.append(sealed_quarantine)
+            staging = sealed_staging
+            quarantine_descriptor = sealed_quarantine.descriptor
+            owned_quarantine = sealed_quarantine
             self._require_quarantine_identity(staging, quarantine_descriptor)
             try:
                 schema_matches = (
@@ -803,4 +869,9 @@ class QuarantinedRestore:
                 return "dependency_rebuild_incomplete"
         except Exception:
             return "dependency_rebuild_failure"
+        try:
+            if adapter.release_writers() is not True:
+                return "adapter_writer_release_incomplete"
+        except Exception:
+            return "adapter_writer_release_failure"
         return None

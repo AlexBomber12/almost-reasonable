@@ -148,7 +148,9 @@ transaction in the application database which:
 The adapter must return blockers, including missing source provenance, instead
 of guessing. Legal holds/public actions must be reported as not eligible by the
 authenticated integration layer. It must be safe to repeat after an uncertain
-process crash.
+process crash. After reconciliation it must explicitly release every database
+writer and return success from `release_writers`; failure or an exception blocks
+the restore before sealing.
 
 If integration needs EventStore schema v4, its reviewed migration must add
 protected source-to-derived edges for every memory/summary/revision/index/shared
@@ -212,11 +214,12 @@ successfully is insufficient. The workflow:
    than the snapshot, through `RestoreAdapter`;
 5. applies every current consent revocation;
 6. requires the adapter to rebuild or invalidate dependent state and indexes,
-   checkpoints those writes into a self-contained rollback-journal database,
-   rejects remaining WAL/shared-memory sidecars, and then repeats schema-version
-   and SQLite integrity verification against an immutable view of the main file;
+   release every writer, and checkpoints those writes into a self-contained
+   rollback-journal database;
 7. confirms that every applicable ledger deletion was applied to this quarantine
-   without changing the live database disposition;
+   without changing the live database disposition, acquires an exclusive SQLite
+   fence, and copies the finalized bytes into a fresh inode that was never exposed
+   to the adapter;
 8. writes and validates an owner-only `.ready.json` eligibility marker; and
 9. rechecks the reconciled generation under the privacy-ledger write lock while
    durably recording the payload-free eligible outcome.
@@ -230,11 +233,15 @@ unreconciled rows to the eligible snapshot. If readiness creation or validation
 then fails, that published inode is still tracked as owned and is identity-safely
 removed; a concurrent replacement is preserved.
 
-The owned quarantine descriptor remains open through integrity checks,
-reconciliation, schema revalidation, and readiness publication. Restore adapters
-receive a descriptor-backed path valid for that callback lifetime, rather than
-the replaceable public pathname; the public path must still name the owned inode
-at every validation boundary and before eligibility is recorded.
+The adapter-exposed quarantine descriptor remains pinned through reconciliation
+and finalization, then is discarded after the exclusive-fenced copy. A separate
+descriptor for the fresh sealed inode remains open through schema and integrity
+revalidation and readiness publication. Restore adapters receive a
+descriptor-backed path valid for their callback lifetime, rather than the
+replaceable public pathname; retained adapter descriptors can refer only to the
+discarded inode. The current private or public path must still name the owned
+sealed inode at every later validation boundary and before eligibility is
+recorded.
 Backup metadata is likewise opened through a no-follow pinned descriptor and
 read with a strict size bound, so validation and parsing cannot be redirected to
 a replacement or unbounded special file.

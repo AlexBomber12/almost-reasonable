@@ -971,6 +971,8 @@ class PrivacyLedger:
             RestoreDisposition.ELIGIBLE_FOR_ACTIVATION: {"reconciliation_complete"},
             RestoreDisposition.BLOCKED: {
                 "adapter_initialization_failure",
+                "adapter_writer_release_failure",
+                "adapter_writer_release_incomplete",
                 "deletion_adapter_failure",
                 "deletion_reconciliation_incomplete",
                 "dependency_rebuild_failure",
