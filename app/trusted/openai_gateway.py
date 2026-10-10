@@ -153,9 +153,21 @@ class TrustedOpenAIGateway:
             if preflight is not None:
                 return self._result(preflight, attempts=completed_attempts)
             ready_monotonic = self._checked_monotonic()
+            if self._emergency_stop():
+                return self._finish_reserved_without_call(
+                    request=request,
+                    correlation_id=correlation_id,
+                    attempt_id=attempt_id,
+                    attempt_number=attempt_number,
+                    started_at=started_at,
+                    started_monotonic=started_monotonic,
+                    ended_monotonic=ready_monotonic,
+                    outcome=GatewayOutcome.EMERGENCY_STOP,
+                    completed_attempts=completed_attempts,
+                )
             remaining = deadline - ready_monotonic
             if remaining <= 0:
-                persisted = self._record(
+                return self._finish_reserved_without_call(
                     request=request,
                     correlation_id=correlation_id,
                     attempt_id=attempt_id,
@@ -164,17 +176,8 @@ class TrustedOpenAIGateway:
                     started_monotonic=started_monotonic,
                     ended_monotonic=ready_monotonic,
                     outcome=GatewayOutcome.TIMEOUT,
-                    response_id=None,
-                    usage=None,
-                    error_code=None,
-                    suspend=None,
+                    completed_attempts=completed_attempts,
                 )
-                if not persisted:
-                    return self._result(
-                        GatewayOutcome.PERSISTENCE_FAILURE,
-                        attempts=completed_attempts,
-                    )
-                return self._result(GatewayOutcome.TIMEOUT, attempts=completed_attempts)
             timeout = min(self._config.timeout_seconds, remaining)
             try:
                 response = self._transport.call(
@@ -337,6 +340,40 @@ class TrustedOpenAIGateway:
             self._persistence_failed = True
             return False
         return True
+
+    def _finish_reserved_without_call(
+        self,
+        *,
+        request: ModelRequest,
+        correlation_id: str,
+        attempt_id: str,
+        attempt_number: int,
+        started_at: datetime,
+        started_monotonic: float,
+        ended_monotonic: float,
+        outcome: GatewayOutcome,
+        completed_attempts: int,
+    ) -> GatewayResult:
+        persisted = self._record(
+            request=request,
+            correlation_id=correlation_id,
+            attempt_id=attempt_id,
+            attempt_number=attempt_number,
+            started_at=started_at,
+            started_monotonic=started_monotonic,
+            ended_monotonic=ended_monotonic,
+            outcome=outcome,
+            response_id=None,
+            usage=None,
+            error_code=None,
+            suspend=None,
+        )
+        if not persisted:
+            return self._result(
+                GatewayOutcome.PERSISTENCE_FAILURE,
+                attempts=completed_attempts,
+            )
+        return self._result(outcome, attempts=completed_attempts)
 
     def _retry_delay(self, attempt_number: int, error: OpenAITransportError) -> float:
         backoff = min(

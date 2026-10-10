@@ -2,7 +2,7 @@
 
 from copy import deepcopy
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Context, Decimal, localcontext
 from enum import StrEnum
 import json
 import math
@@ -20,6 +20,8 @@ MAX_PROVIDER_INPUT_UTF8_BYTES = 384 * 1024
 MAX_PROVIDER_OUTPUT_TOKENS = 4096
 MAX_PROVIDER_TOKEN_COUNT = 2**63 - 1
 MAX_PRICE_PER_MILLION = Decimal("1000000")
+MAX_PRICE_DECIMAL_PLACES = 12
+MAX_PRICE_DIGITS = 19
 MAX_ATTEMPTS = 3
 MAX_TIMEOUT_SECONDS = 120.0
 MAX_OVERALL_TIMEOUT_SECONDS = 300.0
@@ -227,12 +229,13 @@ def estimate_cost(
     assert input_tokens is not None
     assert cached_tokens is not None
     assert output_tokens is not None
-    million = Decimal(1_000_000)
-    amount = (
-        Decimal(input_tokens - cached_tokens) * pricing.input_per_million
-        + Decimal(cached_tokens) * pricing.cached_input_per_million
-        + Decimal(output_tokens) * pricing.output_per_million
-    ) / million
+    with localcontext(Context(prec=64)):
+        million = Decimal(1_000_000)
+        amount = (
+            Decimal(input_tokens - cached_tokens) * pricing.input_per_million
+            + Decimal(cached_tokens) * pricing.cached_input_per_million
+            + Decimal(output_tokens) * pricing.output_per_million
+        ) / million
     return CostEstimate(
         CostEstimateStatus.ESTIMATED,
         amount,
@@ -351,9 +354,17 @@ def _validate_pricing(pricing: PricingConfig) -> None:
         pricing.cached_input_per_million,
         pricing.output_per_million,
     ):
-        if (
+        invalid_value = (
             type(value) is not Decimal
             or not value.is_finite()
             or not 0 <= value <= MAX_PRICE_PER_MILLION
-        ):
+        )
+        if not invalid_value:
+            decimal_tuple = value.as_tuple()
+            invalid_value = (
+                len(decimal_tuple.digits) > MAX_PRICE_DIGITS
+                or decimal_tuple.exponent < -MAX_PRICE_DECIMAL_PLACES
+                or decimal_tuple.exponent > 6
+            )
+        if invalid_value:
             raise ValueError("pricing rate is invalid")

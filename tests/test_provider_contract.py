@@ -1,5 +1,5 @@
 from dataclasses import replace
-from decimal import Decimal
+from decimal import Decimal, Inexact, localcontext
 
 import pytest
 
@@ -235,6 +235,7 @@ def test_provider_usage_and_pricing_require_exact_contract_types():
         {"cached_input_per_million": 0},
         {"output_per_million": Decimal("NaN")},
         {"output_per_million": Decimal("1e999999")},
+        {"output_per_million": Decimal("1e-999999")},
     ],
 )
 def test_invalid_pricing_configuration_fails_closed(changes):
@@ -265,3 +266,21 @@ def test_price_for_a_different_model_is_unavailable():
 
     assert result.status is CostEstimateStatus.PRICING_UNAVAILABLE
     assert result.amount is None
+
+
+def test_cost_estimate_is_isolated_from_ambient_decimal_context():
+    pricing = PricingConfig(
+        version="pricing-v1",
+        model="gpt-6-luna",
+        currency="USD",
+        input_per_million=Decimal("0.123456789012"),
+        cached_input_per_million=Decimal("0.012345678901"),
+        output_per_million=Decimal("0.987654321098"),
+    )
+
+    with localcontext() as ambient:
+        ambient.prec = 2
+        ambient.traps[Inexact] = True
+        result = estimate_cost(ProviderUsage(3, 1, 2, 5), pricing, "gpt-6-luna")
+
+    assert result.amount == Decimal("0.000002234567899121")

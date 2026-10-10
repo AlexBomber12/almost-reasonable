@@ -80,9 +80,9 @@ never enables hosted `web_search`.
 Configuration bounds every attempt timeout, overall allowance, output size, number
 of attempts (maximum three), exponential backoff, and injected jitter. The gateway
 rechecks the trusted emergency stop and atomically reserves against durable spend
-suspension before every paid attempt, then rechecks the overall deadline after that
-reservation. A request already transmitted may still complete; the stop cannot
-revoke it.
+suspension before every paid attempt, then rechecks both the stop and overall
+deadline after that reservation. A request already transmitted may still complete;
+the stop cannot revoke it.
 
 Only ordinary documented rate limits, transport timeouts/connections, and 5xx
 server failures retry. Confirmed spend limits, other billing/quota conditions,
@@ -113,9 +113,10 @@ or raw provider message. Missing usage or matching versioned pricing is represen
 as unavailable/incomplete, never zero.
 
 Cost uses exact `Decimal` arithmetic and only explicit operator-supplied per-million
-token prices, bounded to USD 1,000,000 per million tokens so arithmetic remains
-total over accepted usage. It is informational, not a reservation ledger or
-invoice. The provider's USD 10 monthly project hard limit is the primary monetary
+token prices, bounded to USD 1,000,000 per million tokens and twelve fractional
+digits. Calculation uses a private 64-digit Decimal context so ambient thread
+settings cannot alter it. The estimate is informational, not a reservation ledger
+or invoice. The provider's USD 10 monthly project hard limit is the primary monetary
 boundary, but provider timing, token accounting, delayed reporting, taxes, credits,
 and an in-flight/lost response mean it is not a mathematical invoice guarantee.
 

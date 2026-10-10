@@ -423,7 +423,7 @@ def test_confirmed_spend_limit_persists_before_reporting_and_blocks_restart(
 
 
 def test_emergency_stop_is_checked_before_every_attempt(tmp_path):
-    checks = iter([False, True])
+    checks = iter([False, False, True])
     instance, transport, store = gateway(
         tmp_path,
         [OpenAITransportError(status_code=500), response()],
@@ -437,6 +437,22 @@ def test_emergency_stop_is_checked_before_every_attempt(tmp_path):
     assert result.outcome is GatewayOutcome.EMERGENCY_STOP
     assert len(transport.calls) == 1
     assert store.usage_attempt_count() == 1
+
+
+def test_stop_activated_during_reservation_blocks_provider_call(tmp_path):
+    checks = iter([False, True])
+    instance, transport, store = gateway(
+        tmp_path, [response()], emergency_stop=lambda: next(checks)
+    )
+
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+
+    assert result.outcome is GatewayOutcome.EMERGENCY_STOP
+    assert result.attempts == 0
+    assert transport.calls == []
+    assert store.usage_attempt("operation-a:1").outcome == "emergency_stop"
 
 
 def test_preexisting_stop_blocks_without_transport_or_telemetry(tmp_path):
