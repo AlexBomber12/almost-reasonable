@@ -221,6 +221,7 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
     invalid_policy_changes = (
         {"max_execution_seconds": 0},
         {"max_execution_seconds": float("nan")},
+        {"max_execution_seconds": 10**400},
         {"cadence": timedelta(0)},
         {"duplicate_window": timedelta(0)},
         {"per_action_limits": (("research", 1),)},
@@ -337,6 +338,33 @@ def test_rejected_decisions_do_not_refresh_rate_limit_window() -> None:
     assert (
         scheduler.run((event("eligible-again", clock.now()),)).outcome
         is SchedulerOutcome.PROPOSED
+    )
+
+
+def test_rate_limit_window_starts_when_deliberation_finishes() -> None:
+    store = InMemorySchedulerStore()
+    clock = MutableClock(NOW)
+
+    def deliberate_slowly(*_: object) -> AgentDecision:
+        clock.advance(timedelta(seconds=2))
+        return AgentDecision.RESEARCH
+
+    scheduler = TestScheduler(
+        policy(
+            cadence=timedelta(seconds=1),
+            cooldown=timedelta(0),
+            max_execution_seconds=3,
+        ),
+        store,
+        clock,
+        deliberate_slowly,
+    )
+
+    assert scheduler.run((event("first"),)).outcome is SchedulerOutcome.PROPOSED
+    assert store.load().action_history == ((AgentDecision.RESEARCH, clock.now()),)
+    assert (
+        scheduler.run((event("immediate", clock.now()),)).outcome
+        is SchedulerOutcome.RATE_LIMITED
     )
 
 

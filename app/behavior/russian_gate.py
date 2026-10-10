@@ -4,6 +4,7 @@ from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
+import json
 import math
 import re
 import unicodedata
@@ -90,8 +91,7 @@ _CODE_SIGNAL = re.compile(
     r"\s+from\s+[A-Za-z_]\w*(?:\s*;|\s+(?:where|join|group\s+by|"
     r"order\s+by|limit)\b)|"
     r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
-    r"</?[A-Za-z][^>]*>|"
-    r"\{[^{}]*(?::|=)[^{}]*\})",
+    r"</?[A-Za-z][^>]*>)",
     re.IGNORECASE,
 )
 _ASSIGNMENT_CODE_SIGNAL = re.compile(
@@ -389,8 +389,18 @@ def _replace_code_span(match: re.Match[str]) -> str:
 
 def _has_code_signal(content: str) -> bool:
     return bool(
-        _CODE_SIGNAL.search(content) or _ASSIGNMENT_CODE_SIGNAL.fullmatch(content)
+        _CODE_SIGNAL.search(content)
+        or _ASSIGNMENT_CODE_SIGNAL.fullmatch(content)
+        or _is_json_object(content)
     )
+
+
+def _is_json_object(content: str) -> bool:
+    try:
+        value = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return type(value) is dict
 
 
 def _foreign_script_units(text: str) -> int:

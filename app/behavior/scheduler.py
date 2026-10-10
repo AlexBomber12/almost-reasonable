@@ -53,7 +53,7 @@ class WakeupPolicy:
             raise ValueError("max_iterations must be positive")
         if (
             type(self.max_execution_seconds) not in (int, float)
-            or not math.isfinite(float(self.max_execution_seconds))
+            or not _is_finite_number(self.max_execution_seconds)
             or self.max_execution_seconds <= 0
         ):
             raise ValueError("max_execution_seconds must be positive")
@@ -285,7 +285,7 @@ class TestScheduler:
             SchedulerOutcome.PROPOSED,
             SchedulerOutcome.NO_ACTION,
         ) and valid_decision in dict(self._policy.per_action_limits):
-            history = (*history, (valid_decision, now))
+            history = (*history, (valid_decision, finished_at))
         updated = replace(
             state,
             processed_events=_append_processed(state, unprocessed_due, now),
@@ -336,6 +336,13 @@ class TestScheduler:
             limit is not None
             and sum(prior is decision for prior, _ in state.action_history) >= limit
         )
+
+
+def _is_finite_number(value: int | float) -> bool:
+    try:
+        return math.isfinite(float(value))
+    except OverflowError:
+        return False
 
 
 def _append_processed(
