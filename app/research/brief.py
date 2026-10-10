@@ -337,6 +337,15 @@ def _contains(values: list[str], needles: tuple[str, ...]) -> bool:
     )
 
 
+def _contains_at_boundaries(values: list[str], needles: tuple[str, ...]) -> bool:
+    normalized_values = tuple(_normalized(value) for value in values)
+    return any(
+        re.search(rf"(?<!\w){re.escape(_normalized(needle))}(?!\w)", value) is not None
+        for needle in needles
+        for value in normalized_values
+    )
+
+
 def _screen(
     values: list[str],
     screening: ResearchScreeningContext,
@@ -376,7 +385,7 @@ def _privacy_reason(
 ) -> str | None:
     if _contains(values, screening.private_canaries):
         return "private_canary"
-    if _contains(values, screening.participant_identifiers):
+    if _contains_at_boundaries(values, screening.participant_identifiers):
         return "participant_identifier"
     if _contains(values, screening.private_quotations):
         return "private_quotation"

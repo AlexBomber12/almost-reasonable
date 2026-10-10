@@ -234,6 +234,27 @@ def test_search_action_may_omit_its_optional_source_list():
     assert parsed.sources[0].status is SourceStatus.MISSING_ANNOTATION
 
 
+def test_documented_realtime_feed_sources_are_ignored_for_url_provenance():
+    valid = response()
+    call = dict(valid.output[0])
+    call["action"] = {
+        "type": "search",
+        "sources": [
+            {"type": "oai-sports"},
+            {"type": "oai-weather"},
+            {"type": "oai-finance"},
+            {"type": "url", "url": "https://example.org/paper"},
+        ],
+    }
+    parsed = parse_hosted_search_response(
+        HostedSearchResponse(valid.response_id, valid.status, (call, valid.output[1])),
+        retrieved_at=NOW,
+    )
+
+    assert parsed.sources[0].status is SourceStatus.RECORDED
+    assert parsed.sources[0].url == "https://example.org/paper"
+
+
 def test_duplicate_search_call_ids_and_result_budget_overflow_fail_closed():
     valid = response()
     duplicate_id = HostedSearchResponse(
@@ -315,6 +336,7 @@ def test_provider_output_item_count_is_bounded():
         {"action": None},
         {"action": {"type": "search", "sources": "not-a-list"}},
         {"action": {"type": "search", "sources": [None]}},
+        {"action": {"type": "search", "sources": [{"type": "unknown"}]}},
         {"action": {"type": "search", "sources": [{"type": "url", "url": 3}]}},
         {
             "action": {

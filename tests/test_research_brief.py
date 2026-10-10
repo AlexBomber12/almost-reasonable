@@ -226,6 +226,25 @@ def test_cross_participant_material_is_never_serialized_even_as_provenance():
     assert "CROSS-USER-CANARY" not in serialized
 
 
+def test_short_participant_names_match_only_at_text_boundaries():
+    screening = ResearchScreeningContext(participant_identifiers=("Ann",))
+    allowed = build_safe_research_brief(
+        records(ResearchQuestion("What are urban planning methods?")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=screening,
+    )
+    declined = build_safe_research_brief(
+        records(ResearchQuestion("Find public work by Ann")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=screening,
+    )
+
+    assert allowed.disposition is BriefDisposition.READY
+    assert declined.reason == "participant_identifier"
+
+
 @pytest.mark.parametrize(
     "changes",
     [

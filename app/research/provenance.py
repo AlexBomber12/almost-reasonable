@@ -20,6 +20,7 @@ MAX_RESPONSE_TEXT_UTF8_BYTES = 64 * 1024
 MAX_SOURCE_RESULTS = 10
 MAX_PROVIDER_OUTPUT_ITEMS = 16
 MAX_CONSULTED_SOURCES = 100
+_KNOWN_NON_URL_SOURCE_TYPES = frozenset(("oai-sports", "oai-weather", "oai-finance"))
 _PROVIDER_SOURCE_AUTHORITY = object()
 _VERIFIED_SOURCE_AUTHORITY = object()
 _PROVIDER_SOURCE_INTEGRITY_KEY = secrets.token_bytes(32)
@@ -344,7 +345,12 @@ def _parse_search_call(item: dict[str, object]) -> tuple[str, tuple[str, ...]]:
         raise ValueError("web search source list exceeds bound")
     urls: list[str] = []
     for source in raw_sources:
-        if type(source) is not dict or source.get("type") != "url":
+        if type(source) is not dict:
+            raise ValueError("malformed web search source")
+        source_type = source.get("type")
+        if source_type in _KNOWN_NON_URL_SOURCE_TYPES:
+            continue
+        if source_type != "url":
             raise ValueError("malformed web search source")
         url = source.get("url")
         if not isinstance(url, str):
