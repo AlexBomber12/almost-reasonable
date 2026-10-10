@@ -410,8 +410,13 @@ class CognitionReadStore:
                 invalidated = connection.execute(
                     """
                     SELECT 1
-                    FROM protected_state_provenance
-                    WHERE revision_key = ? AND retention_status = 'invalidated'
+                    FROM state_revisions AS replayed_revision
+                    JOIN state_revisions AS item_revision
+                      ON item_revision.item_key = replayed_revision.item_key
+                    JOIN protected_state_provenance AS source
+                      ON source.revision_key = item_revision.revision_key
+                    WHERE replayed_revision.revision_key = ?
+                      AND source.retention_status = 'invalidated'
                     LIMIT 1
                     """,
                     (revision_key,),

@@ -1037,6 +1037,46 @@ def test_invalidated_candidate_is_excluded_from_extraction_and_revision(
     assert replay.reason is CognitionReason.STORE_REJECTED
 
 
+def test_replay_rejects_invalidation_on_later_item_revision(cognition_setup):
+    events, state, context, first_event = cognition_setup
+    later_event = append_event(events, context, "later-invalidated-revision")
+    created = InterestMemoryProposal(
+        proposal_context(first_event, "chain-invalidation-create"),
+        "interest-chain-invalidation",
+        "Replay invalidation chain",
+        40,
+        InterestStatus.ACTIVE,
+        "Every revision in the item chain affects replay visibility.",
+    )
+    revised = replace(
+        created,
+        context=proposal_context(
+            later_event, "chain-invalidation-revise", expected_revision=1
+        ),
+        strength=60,
+    )
+    for proposal, source_event in ((created, first_event), (revised, later_event)):
+        assert (
+            CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+            .process(context, source_event)
+            .status
+            is CognitionOutcomeStatus.PERSISTED
+        )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE protected_state_provenance "
+            "SET retention_status = 'invalidated' WHERE event_id = ?",
+            (later_event,),
+        )
+
+    replay = CognitionEngine(events, state, extractor=FakeExtractor(created)).process(
+        context, first_event
+    )
+
+    assert replay.status is CognitionOutcomeStatus.REJECTED
+    assert replay.reason is CognitionReason.STORE_REJECTED
+
+
 def test_candidate_invalidation_during_extraction_rejects_new_output(
     cognition_setup,
 ):
