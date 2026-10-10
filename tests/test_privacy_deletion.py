@@ -1,4 +1,4 @@
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 import threading
 
 import pytest
@@ -164,11 +164,16 @@ def test_crash_after_ledger_write_leaves_durable_pending_for_reconciliation(tmp_
         DeletionDisposition.PENDING
     )
     adapter = FakeErasureAdapter()
-    outcomes = DeletionCoordinator(restarted_ledger, adapter).reconcile_pending()
+    completed_at = NOW + timedelta(hours=2)
+    outcomes = DeletionCoordinator(
+        restarted_ledger, adapter, clock=lambda: completed_at
+    ).reconcile_pending()
     assert [outcome.disposition for outcome in outcomes] == [
         DeletionDisposition.APPLIED
     ]
     assert adapter.calls == ["delete-operation-001"]
+    assert restarted_ledger.deletion("delete-operation-001").updated_at == completed_at
+    assert restarted_ledger.audit_records()[-1].occurred_at == completed_at
 
 
 def test_missing_provenance_and_identity_conflicts_fail_closed(tmp_path):

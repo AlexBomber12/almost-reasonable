@@ -4,6 +4,7 @@ from datetime import datetime
 
 from .ledger import PrivacyLedger
 from .models import (
+    AuditRecord,
     OperationOrigin,
     OperationResult,
     TrustedPrivacyContext,
@@ -61,6 +62,17 @@ class NoticeService:
         if notice_version != NOTICE_VERSION:
             raise ValueError("unsupported notice version")
         if context.origin is not OperationOrigin.CONTROL:
+            self.ledger.record_audit(
+                AuditRecord(
+                    correlation_id,
+                    context.actor_reference,
+                    "notice_acknowledgement",
+                    "privacy_notice",
+                    acknowledged_at,
+                    "invalid_authentication",
+                    "payload_free",
+                )
+            )
             return OperationResult(False, "invalid_authentication")
         created = self.ledger.acknowledge_notice(
             context.principal_id,

@@ -28,7 +28,8 @@ allow or denial before returning. Valid grant/revocation state and its audit row
 and each persisted deletion transition and its audit row, commit in the same
 privacy-ledger transaction; an audit write failure rolls back the control state.
 Rejected-operation audits attribute the trusted context actor rather than
-submitted grant fields.
+submitted grant fields. Rejected notice acknowledgements are likewise recorded
+as payload-free audit decisions.
 
 Ordinary derivatives must retain every source audience. The only proposed
 cross-scope transition is `abstract_to_shared`. Its validator rejects explicit
@@ -63,7 +64,8 @@ ledger before calling the application erasure adapter. A crash at that boundary
 leaves a durable pending entry. Startup/restore integration must reconcile every
 `pending` or `incomplete_blocked` entry before participant reads. Adapter failure,
 missing provenance, an incomplete invalidation set, or an unwritten tombstone is
-`incomplete_blocked`, never `applied`.
+`incomplete_blocked`, never `applied`. A reconciled transition records its actual
+completion time, not the original request time.
 
 Every committed deletion or revocation advances a monotonic privacy-control
 generation. Restore reconciles one transactionally consistent snapshot, blocks
@@ -127,9 +129,10 @@ Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic-link destinations, unsafe parents, existing outputs,
 schema mismatch, integrity failure, interruption, and SQLite busy/locked faults
 fail closed. Outputs are created with `O_EXCL|O_NOFOLLOW` and mode `0600`.
-Failure removes only files created by that backup attempt. Existing production
-databases are never overwritten by default. This is a purpose-specific SQLite
-workflow, not a general file-copy capability.
+Failure removes only files whose filesystem identity proves they were created by
+that backup attempt; a concurrently created or replaced path is preserved.
+Existing production databases are never overwritten by default. This is a
+purpose-specific SQLite workflow, not a general file-copy capability.
 
 Deployment still must decide an encrypted backup location, encryption/key
 lifecycle, backup schedule, retention/expiry, restore drills, and which operating

@@ -323,7 +323,10 @@ class PrivacyLedger:
                 "WHERE singleton=1"
             )
             self._insert_audit(
-                connection, self._deletion_audit(request, disposition, reason)
+                connection,
+                self._deletion_audit(
+                    request, disposition, reason, request.requested_at
+                ),
             )
         return True
 
@@ -362,7 +365,8 @@ class PrivacyLedger:
                 (disposition.value, reason, _stamp(updated_at), request.operation_id),
             )
             self._insert_audit(
-                connection, self._deletion_audit(request, disposition, reason)
+                connection,
+                self._deletion_audit(request, disposition, reason, updated_at),
             )
 
     @staticmethod
@@ -370,13 +374,14 @@ class PrivacyLedger:
         request: DeletionRequest,
         disposition: DeletionDisposition,
         reason: str,
+        occurred_at: datetime,
     ) -> AuditRecord:
         return AuditRecord(
             request.correlation_id,
             request.actor_reference,
             "deletion",
             request.content_category.value,
-            request.requested_at,
+            occurred_at,
             f"{disposition.value}:{reason}",
             "content_free_tombstone"
             if disposition is DeletionDisposition.APPLIED

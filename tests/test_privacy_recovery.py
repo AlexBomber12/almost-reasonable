@@ -201,6 +201,52 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
     assert not Path(f"{interrupted}.metadata.json").exists()
 
 
+@pytest.mark.parametrize("race_target", ["destination", "metadata"])
+def test_backup_race_never_deletes_a_concurrently_created_file(
+    tmp_path, monkeypatch, race_target
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    metadata = Path(f"{destination}.metadata.json")
+    raced_path = destination if race_target == "destination" else metadata
+    real_open_owned_file = recovery_module._open_owned_file
+
+    def race(path, access, owned):
+        if path == raced_path:
+            path.write_text(f"concurrent-{race_target}")
+        return real_open_owned_file(path, access, owned)
+
+    monkeypatch.setattr(recovery_module, "_open_owned_file", race)
+    with pytest.raises(BackupError, match="backup failed"):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert raced_path.read_text() == f"concurrent-{race_target}"
+    if race_target == "metadata":
+        assert not destination.exists()
+
+
+@pytest.mark.parametrize("mutation", ["replace", "remove"])
+def test_backup_cleanup_only_unlinks_the_inode_it_created(tmp_path, mutation):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+
+    def interrupt(path):
+        path.unlink()
+        if mutation == "replace":
+            path.write_text("concurrent-replacement")
+        raise RuntimeError("interrupted")
+
+    with pytest.raises(BackupError, match="backup failed"):
+        create_sqlite_backup(source, destination, 3, NOW, after_copy=interrupt)
+
+    if mutation == "replace":
+        assert destination.read_text() == "concurrent-replacement"
+    else:
+        assert not destination.exists()
+
+
 def test_backup_rejects_malformed_database_and_verification_faults(
     tmp_path, monkeypatch
 ):
@@ -657,14 +703,21 @@ def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
     second = service.acknowledge(context(), NOTICE_VERSION, NOW, "notice-correlation")
     assert (first.created, second.created) == (True, False)
     assert service.has_acknowledged("participant-a", NOTICE_VERSION)
-    assert not service.acknowledge(
+    rejected = service.acknowledge(
         TrustedPrivacyContext(
             "participant-a", "actor-a", "auth-a", OperationOrigin.CHAT
         ),
         NOTICE_VERSION,
         NOW,
         "notice-chat",
-    ).created
+    )
+    assert (rejected.created, rejected.reason) == (False, "invalid_authentication")
+    audit = ledger.audit_records()[-1]
+    assert (audit.actor_reference, audit.action_type, audit.result_code) == (
+        "actor-a",
+        "notice_acknowledgement",
+        "invalid_authentication",
+    )
     with pytest.raises(ValueError, match="notice version"):
         service.acknowledge(context(), "unknown", NOW, "notice-bad-version")
 

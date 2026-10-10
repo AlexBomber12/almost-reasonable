@@ -1,6 +1,7 @@
 """Durable deletion coordination across the non-atomic ledger/application boundary."""
 
 from collections.abc import Callable
+from datetime import UTC, datetime
 from typing import Protocol
 
 from .ledger import PrivacyLedger
@@ -13,6 +14,7 @@ from .models import (
     ErasureReport,
     OperationOrigin,
     TrustedPrivacyContext,
+    require_utc,
 )
 
 
@@ -23,9 +25,16 @@ class ErasureAdapter(Protocol):
 
 
 class DeletionCoordinator:
-    def __init__(self, ledger: PrivacyLedger, adapter: ErasureAdapter):
+    def __init__(
+        self,
+        ledger: PrivacyLedger,
+        adapter: ErasureAdapter,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self.ledger = ledger
         self.adapter = adapter
+        self.clock = clock or (lambda: datetime.now(UTC))
 
     def delete(
         self,
@@ -137,5 +146,7 @@ class DeletionCoordinator:
     def _finish(
         self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
     ) -> DeletionOutcome:
-        self.ledger.update_deletion(request, disposition, reason, request.requested_at)
+        completed_at = self.clock()
+        require_utc(completed_at, "deletion transition timestamp")
+        self.ledger.update_deletion(request, disposition, reason, completed_at)
         return DeletionOutcome(request.operation_id, disposition, reason)

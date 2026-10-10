@@ -79,18 +79,38 @@ def _schema_version(path: Path) -> int:
     return row[0]
 
 
-def _cleanup_created(*paths: Path) -> None:
-    for path in paths:
-        if path.exists() and not path.is_symlink():
-            path.unlink()
+_OwnedFile = tuple[Path, int]
+
+
+def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
+    descriptor = os.open(path, access | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    owned.append((path, descriptor))
+    os.fchmod(descriptor, 0o600)
+    return descriptor
+
+
+def _cleanup_created(owned: list[_OwnedFile]) -> None:
+    for path, descriptor in owned:
+        try:
+            current = path.stat(follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            identity = os.fstat(descriptor)
+            if (current.st_dev, current.st_ino) == (
+                identity.st_dev,
+                identity.st_ino,
+            ):
+                path.unlink()
+        os.close(descriptor)
+
+
+def _close_owned(owned: list[_OwnedFile]) -> None:
+    for _path, descriptor in owned:
+        os.close(descriptor)
 
 
 def _sqlite_copy(source: Path, destination: Path) -> None:
-    descriptor = os.open(
-        destination, os.O_RDWR | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600
-    )
-    os.fchmod(descriptor, 0o600)
-    os.close(descriptor)
     with (
         closing(
             sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=0.1)
@@ -155,7 +175,9 @@ def create_sqlite_backup(
     _validate_new_file(metadata_path, "metadata destination")
     if _schema_version(source) != expected_schema_version:
         raise BackupError("unsupported source schema")
+    owned: list[_OwnedFile] = []
     try:
+        _open_owned_file(destination, os.O_RDWR, owned)
         _sqlite_copy(source, destination)
         if after_copy is not None:
             after_copy(destination)
@@ -172,27 +194,21 @@ def create_sqlite_backup(
             },
             sort_keys=True,
         ).encode("utf-8")
-        descriptor = os.open(
-            metadata_path,
-            os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
-            0o600,
-        )
-        try:
-            os.write(descriptor, payload)
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        descriptor = _open_owned_file(metadata_path, os.O_WRONLY, owned)
+        os.write(descriptor, payload)
+        os.fsync(descriptor)
     except sqlite3.OperationalError as error:
-        _cleanup_created(destination, metadata_path)
+        _cleanup_created(owned)
         if _is_busy(error):
             raise BackupBusyError("SQLite source is busy") from error
         raise BackupError("SQLite backup failed") from error
     except BackupError:
-        _cleanup_created(destination, metadata_path)
+        _cleanup_created(owned)
         raise
     except Exception as error:
-        _cleanup_created(destination, metadata_path)
+        _cleanup_created(owned)
         raise BackupError("SQLite backup failed") from error
+    _close_owned(owned)
     return BackupMetadata(metadata_path, expected_schema_version, created_at)
 
 
@@ -242,11 +258,14 @@ class QuarantinedRestore:
         _load_metadata(backup, self.expected_schema_version)
         if _schema_version(backup) != self.expected_schema_version:
             raise BackupError("unsupported backup schema")
+        owned: list[_OwnedFile] = []
         try:
+            _open_owned_file(quarantine, os.O_RDWR, owned)
             _sqlite_copy(backup, quarantine)
-        except sqlite3.Error as error:
-            _cleanup_created(quarantine)
+        except (OSError, sqlite3.Error) as error:
+            _cleanup_created(owned)
             raise BackupError("quarantine copy failed") from error
+        _close_owned(owned)
         restore_id = f"restore-{uuid4()}"
         if not _safe_integrity_ok(quarantine):
             result = RestoreResult(
