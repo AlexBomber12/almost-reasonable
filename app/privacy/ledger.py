@@ -7,11 +7,10 @@ import fcntl
 import os
 from pathlib import Path
 import sqlite3
-import stat
 from uuid import UUID
 from weakref import finalize
 
-from .files import open_trusted_directory_chain
+from .files import open_trusted_directory_chain, regular_file_is_trusted
 from .models import (
     AuditRecord,
     ConsentGrant,
@@ -164,6 +163,8 @@ class PrivacyLedger:
             raise
         self._parent_descriptor = parent_descriptor
         try:
+            if not regular_file_is_trusted(os.fstat(descriptor)):
+                raise ValueError("privacy ledger file is unsafe")
             with closing(self._connect_descriptor(descriptor)) as connection:
                 self._require_file_identity(connection, descriptor)
                 fcntl.flock(descriptor, fcntl.LOCK_EX)
@@ -299,7 +300,7 @@ class PrivacyLedger:
             except FileNotFoundError:
                 continue
             try:
-                if not stat.S_ISREG(os.fstat(sidecar_descriptor).st_mode):
+                if not regular_file_is_trusted(os.fstat(sidecar_descriptor)):
                     raise RuntimeError("privacy ledger sidecar is unsafe")
                 os.fchmod(sidecar_descriptor, 0o600)
             finally:

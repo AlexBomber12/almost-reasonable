@@ -68,6 +68,9 @@ general intellectual abstraction does not require a separate consent per change.
 `PrivacyLedger` is a separate, schema-versioned SQLite database with owner-only
 mode `0600`. First-time schema creation is one explicit SQLite transaction, and
 idempotent control inserts serialize their identity check with `BEGIN IMMEDIATE`.
+Before an existing ledger or sidecar is inspected or reused, its pinned inode
+must be owned by root or the service account and must not be group- or
+world-writable; unsafe files are rejected rather than repaired in place.
 Initialization rejects a nonempty database without privacy-ledger metadata, so an
 application/EventStore file cannot silently become the independent ledger. An
 existing file is inspected through an inode-matched connection before its mode
@@ -174,10 +177,13 @@ undeclared sidecars. Restore uses the same immutable view of the backup.
 
 Source, destination, and metadata paths must be absolute regular paths. Leaf
 symbolic links, symbolic links anywhere in a parent chain, unsafe parents,
+existing inputs owned by an untrusted account or writable by other accounts,
 existing outputs, schema mismatch, integrity failure, interruption, and SQLite
-busy/locked faults fail closed. The source inode remains pinned while schema
-validation and the online copy run; SQLite opens the source through that
-descriptor, and the resulting connection is checked against the same inode.
+busy/locked faults fail closed. Input ownership and permissions are checked both
+before opening and again on the pinned descriptor. The source inode remains
+pinned while schema validation and the online copy run; SQLite opens the source
+through that descriptor, and the resulting connection is checked against the
+same inode.
 Output parent directories are traversed with directory-relative no-follow opens,
 and outputs are created through the pinned parent with `O_EXCL|O_NOFOLLOW` and
 mode `0600`; metadata and readiness markers are written completely before

@@ -34,6 +34,7 @@ BACKUP_BUSY_SLEEP_SECONDS = 0.01
 MAX_BACKUP_METADATA_BYTES = 4096
 
 _directory_is_trusted = _files.directory_is_trusted
+_regular_file_is_trusted = _files.regular_file_is_trusted
 _open_directory_chain = _files.open_trusted_directory_chain
 
 
@@ -71,8 +72,14 @@ def _validate_existing_file(path: Path, label: str) -> None:
     _validate_parent_chain(path, label)
     if path.is_symlink():
         raise BackupError(f"{label} must not be a symbolic link")
-    if not path.is_file() or not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
+    try:
+        identity = path.stat(follow_symlinks=False)
+    except OSError:
+        raise BackupError(f"{label} must be a regular file") from None
+    if not stat.S_ISREG(identity.st_mode):
         raise BackupError(f"{label} must be a regular file")
+    if not _regular_file_is_trusted(identity):
+        raise BackupError(f"{label} file is unsafe")
 
 
 def _validate_new_file(path: Path, label: str) -> None:
@@ -220,9 +227,9 @@ def _pin_database(
         os.close(parent_descriptor)
         raise BackupError(f"{label} identity changed") from error
     os.close(parent_descriptor)
-    if not stat.S_ISREG(os.fstat(descriptor).st_mode) or not _path_matches_descriptor(
-        path, descriptor
-    ):
+    if not _regular_file_is_trusted(
+        os.fstat(descriptor)
+    ) or not _path_matches_descriptor(path, descriptor):
         os.close(descriptor)
         raise BackupError(f"{label} identity changed")
     return _PinnedDatabase(path, descriptor, immutable)

@@ -14,6 +14,14 @@ def directory_is_trusted(identity: os.stat_result, *, has_descendant: bool) -> b
     return has_descendant and bool(identity.st_mode & stat.S_ISVTX)
 
 
+def regular_file_is_trusted(identity: os.stat_result) -> bool:
+    return (
+        stat.S_ISREG(identity.st_mode)
+        and identity.st_uid in {0, os.geteuid()}
+        and not identity.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+    )
+
+
 def open_trusted_directory_chain(directory: Path) -> int:
     flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
     descriptor = os.open("/", flags)

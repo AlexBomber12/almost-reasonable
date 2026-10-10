@@ -1058,6 +1058,45 @@ def test_timestamps_must_be_utc_and_ledger_path_is_protected(tmp_path):
     assert os.stat(path).st_mode & 0o777 == 0o600
 
 
+@pytest.mark.parametrize("mode", [0o620, 0o602])
+def test_privacy_ledger_rejects_existing_files_writable_by_other_accounts(
+    tmp_path, mode
+):
+    path = tmp_path / "privacy.sqlite3"
+    path.touch()
+    path.chmod(mode)
+
+    with pytest.raises(ValueError, match="file is unsafe"):
+        PrivacyLedger(path)
+
+    assert stat.S_IMODE(path.stat().st_mode) == mode
+
+
+def test_privacy_ledger_rejects_an_existing_file_owned_by_another_account(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "privacy.sqlite3"
+    path.touch(mode=0o600)
+    target_identity = path.stat()
+    real_fstat = os.fstat
+
+    def report_foreign_owner(descriptor):
+        identity = real_fstat(descriptor)
+        if (identity.st_dev, identity.st_ino) == (
+            target_identity.st_dev,
+            target_identity.st_ino,
+        ):
+            values = list(identity)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return identity
+
+    monkeypatch.setattr(ledger_module.os, "fstat", report_foreign_owner)
+
+    with pytest.raises(ValueError, match="file is unsafe"):
+        PrivacyLedger(path)
+
+
 def test_privacy_ledger_rejects_unsafe_parent_chains(tmp_path):
     unsafe = tmp_path / "unsafe"
     nested = unsafe / "nested"

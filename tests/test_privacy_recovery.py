@@ -197,6 +197,59 @@ def test_backup_rejects_direct_or_ancestor_writable_by_other_accounts(tmp_path):
             create_sqlite_backup(source, destination, 3, NOW)
 
 
+@pytest.mark.parametrize("input_kind", ["source", "backup", "metadata"])
+def test_backup_and_restore_reject_inputs_writable_by_other_accounts(
+    tmp_path, input_kind
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+
+    if input_kind == "source":
+        source.chmod(0o620)
+        with pytest.raises(BackupError, match="source file is unsafe"):
+            create_sqlite_backup(source, backup, 3, NOW)
+        assert not backup.exists()
+        return
+
+    create_sqlite_backup(source, backup, 3, NOW)
+    target = backup if input_kind == "backup" else Path(f"{backup}.metadata.json")
+    target.chmod(0o602)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(BackupError, match=f"{input_kind} file is unsafe"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert not quarantine.exists()
+
+
+def test_backup_pin_rejects_a_source_owned_by_another_account(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    source_identity = source.stat()
+    destination = tmp_path / "backup.sqlite3"
+    real_fstat = os.fstat
+
+    def report_foreign_owner(descriptor):
+        identity = real_fstat(descriptor)
+        if (identity.st_dev, identity.st_ino) == (
+            source_identity.st_dev,
+            source_identity.st_ino,
+        ):
+            values = list(identity)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return identity
+
+    monkeypatch.setattr(recovery_module.os, "fstat", report_foreign_owner)
+
+    with pytest.raises(BackupError, match="source identity"):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert not destination.exists()
+
+
 def test_backup_rejects_foreign_key_violations(tmp_path):
     source = tmp_path / "source.sqlite3"
     with make_source(source) as connection:
@@ -265,6 +318,9 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
     directory.mkdir()
     with pytest.raises(BackupError, match="regular"):
         create_sqlite_backup(directory, tmp_path / "x.sqlite3", 3, NOW)
+    missing_source = tmp_path / "missing-source.sqlite3"
+    with pytest.raises(BackupError, match="regular"):
+        create_sqlite_backup(missing_source, tmp_path / "x.sqlite3", 3, NOW)
     with pytest.raises(BackupError, match="parent"):
         create_sqlite_backup(source, tmp_path / "missing" / "x.sqlite3", 3, NOW)
     existing = tmp_path / "existing.sqlite3"
