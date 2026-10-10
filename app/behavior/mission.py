@@ -597,11 +597,13 @@ def _document_from_dict(
     )
     _validate_stored_mission(current)
     invariants_raw = raw["invariants"]
-    stored_invariants = (
-        CapabilityPolicyInvariants(**invariants_raw)
-        if isinstance(invariants_raw, dict)
-        else None
-    )
+    if invariants_raw is None:
+        stored_invariants = None
+    elif isinstance(invariants_raw, dict):
+        stored_invariants = CapabilityPolicyInvariants(**invariants_raw)
+        _validate_invariants(stored_invariants)
+    else:
+        raise ValueError("mission document invariant snapshot is invalid")
     proposals_raw = raw["proposals"]
     if not isinstance(proposals_raw, list):
         raise ValueError("mission repository proposals are invalid")
@@ -671,8 +673,15 @@ def _document_from_dict(
                 parsed_confirmation,
             )
         )
-    _validate_active_mission(current, tuple(records), trusted_root)
-    return MissionDocument(current, tuple(records), stored_invariants)
+    parsed_records = tuple(records)
+    _validate_active_mission(current, parsed_records, trusted_root)
+    if any(
+        record.status is MissionStatus.PENDING
+        and record.proposal.invariants != stored_invariants
+        for record in parsed_records
+    ):
+        raise ValueError("mission document invariant snapshot conflicts with pending")
+    return MissionDocument(current, parsed_records, stored_invariants)
 
 
 def _require_json_list(value: object, name: str) -> list[object]:

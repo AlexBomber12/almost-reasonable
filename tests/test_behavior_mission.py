@@ -792,6 +792,18 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     with pytest.raises(ValueError, match="conflicting invariant"):
         repository.load()
 
+    conflicting_document_snapshot = json.loads(json.dumps(pending))
+    conflicting_document_snapshot["invariants"]["deployment_stage"] = "production"
+    path.write_text(json.dumps(conflicting_document_snapshot), encoding="utf-8")
+    with pytest.raises(ValueError, match="document invariant snapshot"):
+        repository.load()
+
+    malformed_document_snapshot = json.loads(json.dumps(pending))
+    malformed_document_snapshot["invariants"] = "production"
+    path.write_text(json.dumps(malformed_document_snapshot), encoding="utf-8")
+    with pytest.raises(ValueError, match="document invariant snapshot"):
+        repository.load()
+
     invalid_current = json.loads(json.dumps(pending))
     invalid_current["current"]["version"] = ""
     path.write_text(json.dumps(invalid_current), encoding="utf-8")

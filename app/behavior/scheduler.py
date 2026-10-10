@@ -277,7 +277,7 @@ class TestScheduler:
             ):
                 outcome = SchedulerOutcome.EXECUTION_LIMIT
                 valid_decision = None
-            elif self._rate_limited(state, decision, now):
+            elif self._rate_limited(state, decision, finished_at):
                 outcome = SchedulerOutcome.RATE_LIMITED
                 valid_decision = decision
             else:
@@ -288,6 +288,7 @@ class TestScheduler:
                 )
                 valid_decision = decision
 
+        state = self._pruned_state(state, finished_at)
         history = state.action_history
         if outcome in (
             SchedulerOutcome.PROPOSED,
@@ -337,12 +338,16 @@ class TestScheduler:
     def _rate_limited(
         self, state: SchedulerState, decision: AgentDecision, now: datetime
     ) -> bool:
-        del now
         limits = dict(self._policy.per_action_limits)
         limit = limits.get(decision)
+        cutoff = _retention_cutoff(now, self._policy.cadence)
         return (
             limit is not None
-            and sum(prior is decision for prior, _ in state.action_history) >= limit
+            and sum(
+                prior is decision and recorded_at > cutoff
+                for prior, recorded_at in state.action_history
+            )
+            >= limit
         )
 
 

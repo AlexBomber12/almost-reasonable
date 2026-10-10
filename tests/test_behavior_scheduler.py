@@ -362,7 +362,7 @@ def test_rate_limit_window_starts_when_deliberation_finishes() -> None:
 
     scheduler = TestScheduler(
         policy(
-            cadence=timedelta(seconds=1),
+            cadence=timedelta(seconds=3),
             cooldown=timedelta(0),
             max_execution_seconds=3,
         ),
@@ -377,6 +377,31 @@ def test_rate_limit_window_starts_when_deliberation_finishes() -> None:
         scheduler.run((event("immediate", clock.now()),)).outcome
         is SchedulerOutcome.RATE_LIMITED
     )
+
+
+def test_rate_limit_history_is_repruned_at_deliberation_finish() -> None:
+    started_at = NOW + timedelta(minutes=59, seconds=59)
+    clock = MutableClock(started_at)
+    store = InMemorySchedulerStore(
+        SchedulerState(action_history=((AgentDecision.RESEARCH, NOW),))
+    )
+
+    def cross_cadence_boundary(*_: object) -> AgentDecision:
+        clock.advance(timedelta(seconds=2))
+        return AgentDecision.RESEARCH
+
+    scheduler = TestScheduler(
+        policy(cooldown=timedelta(0), max_execution_seconds=3),
+        store,
+        clock,
+        cross_cadence_boundary,
+    )
+
+    assert (
+        scheduler.run((event("boundary", started_at),)).outcome
+        is SchedulerOutcome.PROPOSED
+    )
+    assert store.load().action_history == ((AgentDecision.RESEARCH, clock.now()),)
 
 
 def test_completed_run_state_uses_deliberation_finish_time() -> None:
