@@ -220,8 +220,8 @@ successfully is insufficient. The workflow:
    rollback-journal database;
 7. confirms that every applicable ledger deletion was applied to this quarantine
    without changing the live database disposition, acquires an exclusive SQLite
-   fence, and copies the finalized bytes into a fresh inode that was never exposed
-   to the adapter;
+   writer fence, and makes a logical SQLite copy into a fresh inode that was never
+   exposed to the adapter;
 8. writes and validates an owner-only `.ready.json` eligibility marker; and
 9. rechecks the reconciled generation under the privacy-ledger write lock while
    durably recording the payload-free eligible outcome.

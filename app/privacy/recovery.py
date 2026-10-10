@@ -8,7 +8,6 @@ import hashlib
 import json
 import os
 from pathlib import Path
-import shutil
 import sqlite3
 import stat
 from typing import Protocol
@@ -430,42 +429,6 @@ def _safe_integrity_ok(
         return False
 
 
-def _finalize_sqlite_snapshot(
-    path: Path,
-    descriptor: int,
-    connection: sqlite3.Connection | None = None,
-) -> bool:
-    try:
-        parent_descriptor = _open_directory_chain(path.parent)
-    except OSError:
-        return False
-    owned_connection: sqlite3.Connection | None = None
-    try:
-        if connection is None:
-            target = f"file:/proc/self/fd/{descriptor}?mode=rw"
-            owned_connection = sqlite3.connect(
-                target, uri=True, timeout=0.1, isolation_level=None
-            )
-            connection = owned_connection
-        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-        _use_rollback_journal(connection)
-        connection.execute("BEGIN EXCLUSIVE")
-        os.fsync(descriptor)
-        if not _sqlite_sidecars_absent(path, parent_descriptor):
-            return False
-        os.fchmod(descriptor, 0o400)
-        os.fsync(descriptor)
-        os.fsync(parent_descriptor)
-    except (OSError, sqlite3.Error):
-        return False
-    finally:
-        if owned_connection is not None:
-            owned_connection.rollback()
-            owned_connection.close()
-        os.close(parent_descriptor)
-    return True
-
-
 def _seal_fresh_snapshot(
     source_path: Path,
     source_descriptor: int,
@@ -480,24 +443,29 @@ def _seal_fresh_snapshot(
     sealed: list[_OwnedFile] = []
     try:
         _require_connection_identity(fence, source)
-        if not _finalize_sqlite_snapshot(source_path, source_descriptor, fence):
-            return None
+        fence.execute("BEGIN IMMEDIATE")
         _require_database_identity(source)
         destination_descriptor = _open_owned_file(destination_path, os.O_RDWR, sealed)
+        source_target = f"file:/proc/self/fd/{source_descriptor}?mode=ro"
+        destination_target = f"file:/proc/self/fd/{destination_descriptor}?mode=rw"
         with (
-            os.fdopen(os.dup(source_descriptor), "rb") as source_file,
-            os.fdopen(os.dup(destination_descriptor), "wb") as destination_file,
+            closing(
+                sqlite3.connect(source_target, uri=True, timeout=0.1)
+            ) as source_connection,
+            closing(
+                sqlite3.connect(destination_target, uri=True, timeout=0.1)
+            ) as destination_connection,
         ):
-            shutil.copyfileobj(source_file, destination_file, 1024 * 1024)
-            destination_file.flush()
-            os.fsync(destination_file.fileno())
+            _require_connection_identity(source_connection, source)
+            source_connection.backup(destination_connection)
+            destination_connection.commit()
+            _use_rollback_journal(destination_connection)
+        _require_database_identity(source)
+        if not _sqlite_sidecars_absent(destination_path, sealed[0].parent_descriptor):
+            raise BackupError("sealed quarantine contains SQLite sidecars")
         os.fchmod(destination_descriptor, 0o400)
         os.fsync(destination_descriptor)
-        if os.fstat(source_descriptor).st_size != os.fstat(
-            destination_descriptor
-        ).st_size or not _path_matches_descriptor(
-            destination_path, destination_descriptor
-        ):
+        if not _path_matches_descriptor(destination_path, destination_descriptor):
             raise BackupError("sealed quarantine identity changed")
         _fsync_owned_parents(sealed)
     except (OSError, sqlite3.Error, BackupError):
@@ -507,8 +475,7 @@ def _seal_fresh_snapshot(
         _cleanup_created(sealed)
         raise
     finally:
-        if fence.in_transaction:
-            fence.rollback()
+        fence.rollback()
         fence.close()
     return sealed[0]
 

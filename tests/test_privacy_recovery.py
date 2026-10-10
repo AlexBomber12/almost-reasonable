@@ -1383,7 +1383,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     assert result.ledger_generation != ledger.control_generation()
 
 
-def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
+def test_restore_seals_away_from_a_long_lived_wal_adapter(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
@@ -1424,13 +1424,17 @@ def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
     )
 
     assert (result.disposition, result.reason) == (
-        RestoreDisposition.BLOCKED,
-        "quarantine_finalization_failed",
+        RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+        "reconciliation_complete",
     )
     assert quarantine.exists()
     assert list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
     assert list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
-    assert not Path(f"{quarantine}.ready.json").exists()
+    assert Path(f"{quarantine}.ready.json").exists()
+    with sqlite3.connect(quarantine) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == (0,)
     adapters[0].connection.close()
 
 
@@ -1643,26 +1647,26 @@ def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatc
         adapters.append(adapter)
         return adapter
 
-    real_finalize = recovery_module._finalize_sqlite_snapshot
+    real_require_identity = recovery_module._require_database_identity
     retained_write_blocked = False
 
-    def attempt_write_after_finalization(path, descriptor, connection=None):
+    def attempt_write_after_fence(database):
         nonlocal retained_write_blocked
-        finalized = real_finalize(path, descriptor, connection)
-        try:
-            adapters[0].connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-001', 'late write')"
-            )
-            adapters[0].connection.commit()
-        except sqlite3.Error:
-            retained_write_blocked = True
-            adapters[0].connection.rollback()
-        return finalized
+        if adapters and not retained_write_blocked:
+            try:
+                adapters[0].connection.execute(
+                    "INSERT INTO synthetic_private VALUES('event-001', 'late write')"
+                )
+                adapters[0].connection.commit()
+            except sqlite3.Error:
+                retained_write_blocked = True
+                adapters[0].connection.rollback()
+        return real_require_identity(database)
 
     monkeypatch.setattr(
         recovery_module,
-        "_finalize_sqlite_snapshot",
-        attempt_write_after_finalization,
+        "_require_database_identity",
+        attempt_write_after_fence,
     )
     quarantine = tmp_path / "quarantine.sqlite3"
     try:
@@ -1712,35 +1716,6 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
     assert quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
-
-
-def test_snapshot_finalization_rejects_an_unpinnable_parent(tmp_path, monkeypatch):
-    database = tmp_path / "snapshot.sqlite3"
-    sqlite3.connect(database).close()
-    descriptor = os.open(database, os.O_RDWR)
-    monkeypatch.setattr(
-        recovery_module,
-        "_open_directory_chain",
-        lambda _path: (_ for _ in ()).throw(OSError("parent unavailable")),
-    )
-    try:
-        assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is False
-    finally:
-        os.close(descriptor)
-
-
-def test_snapshot_finalization_owns_its_exclusive_connection(tmp_path):
-    database = tmp_path / "snapshot.sqlite3"
-    make_source(database).close()
-    descriptor = os.open(database, os.O_RDWR)
-    try:
-        assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is True
-    finally:
-        os.close(descriptor)
-
-    assert stat.S_IMODE(database.stat().st_mode) == 0o400
-    assert not Path(f"{database}-wal").exists()
-    assert not Path(f"{database}-shm").exists()
 
 
 def test_fresh_snapshot_seal_rejects_a_fence_connection_failure(tmp_path, monkeypatch):
@@ -1795,8 +1770,8 @@ def test_fresh_snapshot_seal_cleans_an_interruption(tmp_path, monkeypatch):
     descriptor = os.open(source, os.O_RDWR)
     sealed = tmp_path / "sealed.sqlite3"
     monkeypatch.setattr(
-        recovery_module.shutil,
-        "copyfileobj",
+        recovery_module,
+        "_use_rollback_journal",
         lambda *_args, **_kwargs: (_ for _ in ()).throw(SimulatedInterrupt()),
     )
     try:
@@ -1856,17 +1831,17 @@ def test_restore_never_blesses_a_public_path_created_before_publication(
     create_sqlite_backup(source, backup, 3, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
-    real_finalize = recovery_module._finalize_sqlite_snapshot
+    real_seal = recovery_module._seal_fresh_snapshot
 
-    def create_public_path_before_publish(staging, descriptor, connection=None):
+    def create_public_path_before_publish(staging, descriptor, destination):
         assert not quarantine.exists()
-        finalized = real_finalize(staging, descriptor, connection)
+        sealed = real_seal(staging, descriptor, destination)
         quarantine.write_text("concurrent-public-file")
-        return finalized
+        return sealed
 
     monkeypatch.setattr(
         recovery_module,
-        "_finalize_sqlite_snapshot",
+        "_seal_fresh_snapshot",
         create_public_path_before_publish,
     )
     with pytest.raises(BackupError, match="publication"):
