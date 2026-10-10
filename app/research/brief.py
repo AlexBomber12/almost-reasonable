@@ -19,13 +19,21 @@ _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _PUBLIC_REFERENCE = re.compile(
     r"(?i)(?:doi|arxiv|pmid|isbn):[A-Za-z0-9][A-Za-z0-9./_()-]{0,255}\Z"
 )
-_EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
+_EMAIL = re.compile(
+    r"(?i)(?<![\w.!#$%&'*+/=?^_`{|}~-])"
+    r"[\w.!#$%&'*+/=?^_`{|}~-]+@(?:[\w-]+\.)+[\w-]+"
+)
 _PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s()./–—-]{5,}\d)(?!\w)")
 _YEAR_RANGE = re.compile(
     r"(?<!\d)(?:1[5-9]\d{2}|20\d{2}|21\d{2})\s*[-/–—]\s*"
     r"(?:1[5-9]\d{2}|20\d{2}|21\d{2})(?!\d)"
 )
-_ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
+_CALENDAR_DATE = re.compile(
+    r"(?<!\d)(?:"
+    r"\d{4}[-./](?:0?[1-9]|1[0-2])[-./](?:0?[1-9]|[12]\d|3[01])"
+    r"|(?:0?[1-9]|[12]\d|3[01])[-./](?:0?[1-9]|1[0-2])[-./]\d{4}"
+    r")(?!\d)"
+)
 _BASE64 = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=])")
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
@@ -376,9 +384,16 @@ def _screen(
     reason = _privacy_reason(values, screening, identifier_values)
     if reason is not None:
         return reason
-    if _encoded_depth >= _MAX_ENCODED_SCREEN_DEPTH:
-        return None
     combined = "\n".join(values)
+    if _encoded_depth >= _MAX_ENCODED_SCREEN_DEPTH:
+        return (
+            "encoded_leakage"
+            if any(
+                _decode_base64(match.group(0)) is not None
+                for match in _BASE64.finditer(combined)
+            )
+            else None
+        )
     for match in _BASE64.finditer(combined):
         decoded = _decode_base64(match.group(0))
         if decoded is None:
@@ -417,7 +432,7 @@ def _privacy_reason(
     )
     normalized_identifiers = _normalized(identifier_text)
     without_year_ranges = _YEAR_RANGE.sub(" ", normalized_identifiers)
-    without_dates = _ISO_DATE.sub(" ", without_year_ranges)
+    without_dates = _CALENDAR_DATE.sub(" ", without_year_ranges)
     if _EMAIL.search(normalized_identifiers) or _has_phone_number(without_dates):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):

@@ -95,6 +95,20 @@ def test_year_range_is_allowed_as_a_public_recency_requirement():
     assert result.disposition is BriefDisposition.READY
 
 
+@pytest.mark.parametrize("date", ["01/01/2020", "01.01.2020", "2020/01/01"])
+def test_calendar_dates_are_allowed_as_public_recency_requirements(date):
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion("How did the field change?"),
+            TimeRequirement(f"Предпочитать источники после {date}"),
+        ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
 @pytest.mark.parametrize(
     ("record", "reason"),
     [
@@ -136,6 +150,16 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
         ),
         (
             "Find alice@\u200bexample.com",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Find foo!@example.com",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Find user#@example.com",
             ResearchScreeningContext(),
             "direct_identifier",
         ),
@@ -468,11 +492,33 @@ def test_encoded_payloads_receive_the_complete_privacy_screen(private_value, scr
     assert result.reason == "encoded_leakage"
 
 
-def test_bounded_nested_encoding_does_not_reject_benign_public_text():
+def test_nested_encoding_fails_closed_at_the_screening_depth_limit():
     result = build_safe_research_brief(
         records(ResearchQuestion(encoded("ordinary public academic text", times=5))),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
     )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_benign_encoding_at_the_screening_depth_limit_is_allowed():
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded("ordinary public academic text", times=4))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
     assert result.disposition is BriefDisposition.READY
+
+
+def test_nested_sensitive_encoding_fails_closed_at_the_screening_depth_limit():
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded("alice@example.com", times=5))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
