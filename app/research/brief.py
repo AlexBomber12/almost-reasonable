@@ -456,6 +456,11 @@ def _brief_integrity(serialized: str) -> bytes:
 
 
 def _decode_base64(value: str) -> str | None:
+    missing_padding = -len(value) % 4
+    if missing_padding:
+        if "=" in value or missing_padding == 3:
+            return None
+        value += "=" * missing_padding
     try:
         raw = base64.b64decode(value, validate=True)
         decoded = raw.decode("utf-8")

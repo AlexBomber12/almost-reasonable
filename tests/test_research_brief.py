@@ -484,9 +484,31 @@ def test_disguised_encoded_private_values_are_rejected(question):
     assert result.reason == "encoded_leakage"
 
 
+def test_unpadded_encoded_private_value_is_rejected():
+    private_value = "alice@example.com"
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded(private_value).rstrip("="))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
 def test_benign_short_base64_shaped_text_is_allowed():
     result = build_safe_research_brief(
         records(ResearchQuestion("YWJj")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+def test_benign_unpadded_base64_shaped_text_is_allowed():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("YWJjZA")),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(),
