@@ -212,10 +212,10 @@ class MissionStateMachine:
         self._evidence_authority = evidence_authority
 
     def current_mission(self) -> Mission:
-        return self._repository.load().current
+        return self._load_authorized_document().current
 
     def propose(self, proposal: MissionProposal) -> MissionRecord:
-        document = self._repository.load()
+        document = self._load_authorized_document()
         _validate_proposal(proposal)
         if proposal.current_mission_version != document.current.version:
             raise ValueError("proposal does not reference the current mission")
@@ -252,7 +252,7 @@ class MissionStateMachine:
     def confirm(self, confirmation: MissionConfirmation) -> MissionRecord:
         if not isinstance(confirmation, MissionConfirmation):
             raise TypeError("confirmation must be a MissionConfirmation")
-        document = self._repository.load()
+        document = self._load_authorized_document()
         matches = [
             (index, item)
             for index, item in enumerate(document.proposals)
@@ -300,6 +300,24 @@ class MissionStateMachine:
             MissionDocument(current, tuple(proposals), document.invariants)
         )
         return resolved
+
+    def _load_authorized_document(self) -> MissionDocument:
+        document = self._repository.load()
+        for record in document.proposals:
+            if record.status is not MissionStatus.CONFIRMED:
+                continue
+            confirmation = record.confirmation
+            if confirmation is None or (
+                self._evidence_authority(
+                    record.proposal.initiating_source_id,
+                    confirmation.evidence_sources,
+                )
+                is not True
+            ):
+                raise ValueError(
+                    "persisted confirmation evidence is not independently authorized"
+                )
+        return document
 
 
 def _validate_proposal(proposal: MissionProposal) -> None:

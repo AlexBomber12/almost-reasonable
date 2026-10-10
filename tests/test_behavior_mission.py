@@ -851,3 +851,29 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     path.write_text(json.dumps(resolved), encoding="utf-8")
     with pytest.raises(ValueError, match="does not match"):
         repository.load()
+
+
+def test_state_machine_reauthorizes_confirmed_evidence_after_restart(tmp_path) -> None:
+    path = tmp_path / "reauthorization.json"
+    initial = Mission("mission-v1", "Миссия", NOW, None)
+    repository = JsonMissionRepository(path, initial)
+    machine = mission_machine(repository)
+    machine.propose(proposal())
+    machine.confirm(
+        MissionConfirmation(
+            "mp-1",
+            "event-2",
+            "corr-2",
+            NOW + timedelta(minutes=1),
+            ConfirmationOutcome.CONFIRMED,
+            ("Независимая причина",),
+            ("Учтён контраргумент",),
+            ("evidence-2",),
+            invariants(),
+            independent_sources(),
+        )
+    )
+
+    restarted = MissionStateMachine(repository, lambda initiating, sources: False)
+    with pytest.raises(ValueError, match="persisted confirmation evidence"):
+        restarted.current_mission()

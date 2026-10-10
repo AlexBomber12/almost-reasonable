@@ -54,6 +54,7 @@ def test_versioned_corpus_records_expected_tradeoffs() -> None:
             "Добър ден, обичам да чета книги и да разговарям с приятели.",
             GateReason.NEARBY_LANGUAGE,
         ),
+        ("Добър ден, обичам да чета книги.", GateReason.NEARBY_LANGUAGE),
     ],
 )
 def test_gate_rejection_reasons(text: str, reason: GateReason) -> None:
@@ -76,10 +77,16 @@ def test_gate_accepts_russian_technical_context_quote_code_and_url() -> None:
 
 
 def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
-    bypass = "«This response contains only English conversational prose.» Да."
-    assessment = RussianOutputGate().assess(bypass)
-    assert not assessment.accepted
-    assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
+    bypasses = (
+        "«This response contains only English conversational prose.» Да.",
+        "Да. `This is entirely English prose`",
+        "Да. `This class is entirely English prose`",
+        "Да. ```This is entirely English prose```",
+    )
+    for bypass in bypasses:
+        assessment = RussianOutputGate().assess(bypass)
+        assert not assessment.accepted
+        assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
 
 
 def test_short_majority_foreign_prose_is_not_hidden_by_an_absolute_floor() -> None:

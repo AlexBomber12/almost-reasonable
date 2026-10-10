@@ -54,8 +54,16 @@ _URL = re.compile(
     r"(?:/[^\s<>()]*)?)",
     re.IGNORECASE,
 )
-_FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
-_INLINE_CODE = re.compile(r"`[^`]*`")
+_FENCED_CODE = re.compile(r"```(.*?)```", re.DOTALL)
+_INLINE_CODE = re.compile(r"`([^`]*)`")
+_CODE_SIGNAL = re.compile(
+    r"(?:\b(?:def|class)\s+[A-Za-z_]\w*\s*[:({]|"
+    r"\b(?:const|let|var)\s+[A-Za-z_]\w*\s*=|"
+    r"\bselect\b.+\bfrom\b|\b[A-Za-z_]\w*\s*\([^)]*\)|"
+    r"\b[A-Za-z_]\w*\s*=\s*[^=]|</?[A-Za-z][^>]*>|"
+    r"\{[^{}]*(?::|=)[^{}]*\})",
+    re.IGNORECASE,
+)
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
 _RUSSIAN_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
 _LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
@@ -291,9 +299,14 @@ def corpus_cases() -> tuple[RussianCorpusCase, ...]:
 
 
 def _strip_non_prose_regions(text: str) -> str:
-    without_code = _FENCED_CODE.sub(" ", text)
-    without_code = _INLINE_CODE.sub(" ", without_code)
+    without_code = _FENCED_CODE.sub(_replace_code_span, text)
+    without_code = _INLINE_CODE.sub(_replace_code_span, without_code)
     return _URL.sub(" ", without_code)
+
+
+def _replace_code_span(match: re.Match[str]) -> str:
+    content = match.group(1)
+    return " " if _CODE_SIGNAL.search(content) else content
 
 
 def _foreign_script_units(text: str) -> int:
@@ -307,7 +320,7 @@ def _foreign_script_units(text: str) -> int:
 
 
 def _matches_nearby_cyrillic_profile(words: list[str]) -> bool:
-    if len(words) < 7:
+    if len(words) < 3:
         return False
     observed = _trigram_profile(" ".join(words))
     scores = {

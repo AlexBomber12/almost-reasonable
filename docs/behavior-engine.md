@@ -70,11 +70,14 @@ word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
 from the ratio. Foreign quotations remain in the language accounting, so their
 Russian framing and explanation must be proportionate to their size. A small
 marker set plus non-Russian Cyrillic letters rejects clear Ukrainian,
-Belarusian, and Bulgarian proximity cases. For longer Cyrillic passages, a
+Belarusian, and Bulgarian proximity cases. For Cyrillic passages, a
 frozen character-trigram profile compares Russian with Ukrainian, Belarusian,
 and Bulgarian references; a nearby language wins only with minimum similarity
 and margin thresholds. This broadens detection beyond exact marker tokens while
-remaining an explicitly imperfect, corpus-calibrated H heuristic.
+remaining an explicitly imperfect, corpus-calibrated H heuristic. The profile
+runs from three Cyrillic words onward. Backtick spans are excluded only when
+syntax or keywords make them code-like; prose merely wrapped as inline or fenced
+Markdown remains in language accounting.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
@@ -204,6 +207,9 @@ equal the application-supplied trusted initial mission. Global proposal/version
 identifiers are unique, the confirmed chain must terminate at that root without
 branches, and every proposal timestamp is no earlier than its parent's
 activation.
+Every state-machine load additionally rechecks all confirmed source/provenance
+records through the application-owned `EvidenceAuthority`, including after a
+restart; structurally valid JSON cannot substitute for protected authorization.
 
 ## Behavioral evaluation artifacts
 
