@@ -37,6 +37,15 @@ class PrivateWebConfig:
             not _valid_origin(origin) for origin in self.allowed_origins
         ):
             raise ValueError("allowed_origins must contain absolute HTTP(S) origins")
+        if type(self.secure_cookies) is not bool:
+            raise ValueError("secure_cookies must be a boolean")
+        if self.secure_cookies:
+            if any(
+                urlsplit(origin).scheme != "https" for origin in self.allowed_origins
+            ):
+                raise ValueError("secure cookie mode requires HTTPS origins")
+        elif any(not _loopback_http_origin(origin) for origin in self.allowed_origins):
+            raise ValueError("insecure cookie mode requires loopback HTTP origins")
         if type(self.max_body_bytes) is not int or self.max_body_bytes < 1:
             raise ValueError("max_body_bytes must be a positive integer")
         if any(
@@ -102,6 +111,16 @@ def _canonical_ip(value: object) -> str | None:
         return str(ip_address(value))
     except ValueError:
         return None
+
+
+def _loopback_http_origin(value: str) -> bool:
+    parsed = urlsplit(value)
+    address = _canonical_ip(parsed.hostname)
+    return (
+        parsed.scheme == "http"
+        and address is not None
+        and ip_address(address).is_loopback
+    )
 
 
 class _RequestError(Exception):

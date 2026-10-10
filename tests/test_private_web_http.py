@@ -747,6 +747,17 @@ def test_insecure_local_configuration_omits_secure_cookie_attribute(web):
         {"allowed_origins": frozenset({"https://chat.test:notaport"})},
         {"allowed_origins": frozenset({"https://chat.test:99999"})},
         {"allowed_origins": frozenset({1})},
+        {"allowed_origins": frozenset({"http://chat.test"})},
+        {"allowed_origins": frozenset({"http://127.0.0.1:8000"})},
+        {
+            "allowed_origins": frozenset({"https://127.0.0.1:8000"}),
+            "secure_cookies": False,
+        },
+        {
+            "allowed_origins": frozenset({"http://chat.test"}),
+            "secure_cookies": False,
+        },
+        {"secure_cookies": 1},
         {"trusted_proxy_addresses": frozenset({"proxy.example"})},
         {"trusted_proxy_addresses": frozenset({1})},
         {"max_body_bytes": 0},

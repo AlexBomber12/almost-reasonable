@@ -48,6 +48,10 @@ mode rejects a non-HTTPS browser origin. Listener addresses are explicit
 numeric IPv4 or IPv6 values; bracket IPv6 literals in `--allowed-host` and the
 browser origin (for example, `[::1]:8000`).
 
+The same transport rule is enforced by `PrivateWebConfig`, including for an
+embedded WSGI application: secure cookies require HTTPS origins, while cookies
+without `Secure` require numeric loopback HTTP origins.
+
 When an HTTPS terminator is required, explicitly list each numeric address from
 which the WSGI process may accept a forwarded client address:
 
