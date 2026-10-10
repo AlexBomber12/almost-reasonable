@@ -122,6 +122,7 @@ class ThreadsService:
         )
 
     def submit_for_approval(self, operation_id: str, *, now: datetime) -> OutboxItem:
+        self._require_owned_item(operation_id)
         return self.store.transition(
             operation_id,
             OutboxState.AWAITING_APPROVAL,
@@ -144,6 +145,7 @@ class ThreadsService:
         )
 
     def cancel(self, operation_id: str, *, now: datetime) -> OutboxItem:
+        self._require_owned_item(operation_id)
         return self.store.transition(
             operation_id,
             OutboxState.CANCELLED,
@@ -247,7 +249,7 @@ class ThreadsService:
         )
 
     def recover_sending(self, operation_id: str, *, now: datetime) -> OutboxItem:
-        item = self.store.get(operation_id)
+        item = self._require_owned_item(operation_id)
         if item.state is not OutboxState.SENDING:
             raise ThreadsStoreError("recovery requires sending state")
         if item.dispatch_evidence in {
@@ -277,7 +279,7 @@ class ThreadsService:
         )
 
     def reconcile(self, operation_id: str, *, now: datetime) -> OutboxItem:
-        item = self.store.get(operation_id)
+        item = self._require_owned_item(operation_id)
         if item.state is not OutboxState.UNKNOWN:
             raise ThreadsStoreError("reconciliation requires unknown state")
         try:
@@ -310,6 +312,7 @@ class ThreadsService:
         return self.store.note_reconciliation(operation_id, "invalid_result", now=now)
 
     def abandon_unknown(self, operation_id: str, *, now: datetime) -> OutboxItem:
+        self._require_owned_item(operation_id)
         return self.store.transition(
             operation_id,
             OutboxState.UNKNOWN_ABANDONED,
@@ -386,6 +389,12 @@ class ThreadsService:
     def stage_3_readiness(self) -> tuple[str, ...]:
         stage_3_policy = replace(self.policy, stage=Stage.STAGE_3)
         return stage_3_policy.publication_blockers(PublicationType.POST)
+
+    def _require_owned_item(self, operation_id: str) -> OutboxItem:
+        item = self.store.get(operation_id)
+        if item.account_ref != self.policy.account_ref:
+            raise PolicyDeniedError("outbound account mismatch")
+        return item
 
     def _check_ready_policy(
         self, item: OutboxItem, approval: Approval, *, now: datetime

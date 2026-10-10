@@ -262,6 +262,38 @@ def test_outbound_account_mismatch_fails_closed(tmp_path):
         service.authorize("operation-1", approve(), now=NOW)
 
 
+def test_shared_store_lifecycle_methods_reject_another_accounts_operation(tmp_path):
+    owner = make_service(tmp_path, account_ref="account-2")
+    other = make_service(tmp_path, account_ref="account-1")
+    propose(owner)
+
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        other.submit_for_approval("operation-1", now=NOW)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        other.cancel("operation-1", now=NOW)
+    assert owner.store.get("operation-1").state is OutboxState.PROPOSED
+
+    owner.submit_for_approval("operation-1", now=NOW)
+    approval = trust_approval(owner, approve(account_ref="account-2"))
+    owner.authorize("operation-1", approval, now=NOW)
+    owner.simulator.set_fault(
+        "operation-1", "container", Fault.CRASH_AFTER_TRANSMISSION
+    )
+    with pytest.raises(SimulatedCrash):
+        owner.dispatch("operation-1", approval, now=NOW)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        other.recover_sending("operation-1", now=NOW)
+    assert owner.store.get("operation-1").state is OutboxState.SENDING
+
+    assert owner.recover_sending("operation-1", now=NOW).state is OutboxState.UNKNOWN
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        other.reconcile("operation-1", now=NOW)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        other.abandon_unknown("operation-1", now=NOW)
+    assert owner.store.get("operation-1").state is OutboxState.UNKNOWN
+    assert other.simulator.trace == []
+
+
 def test_missing_current_authorization_provider_fails_closed(tmp_path):
     simulator = ThreadsSimulator(account_ref="account-1")
     service = ThreadsService(
