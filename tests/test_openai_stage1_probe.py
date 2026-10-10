@@ -75,7 +75,10 @@ def test_probe_main_has_distinct_success_and_failure_exit(
 
     assert probe.main(["--socket", str(socket_path)]) == 0
     assert probe.main(["--socket", str(tmp_path / "other.sock")]) == 1
-    assert "did not reach" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "Stage 1 probe did not complete successfully; inspect the sanitized "
+        "outcome and attempt count above.\n"
+    )
 
 
 def test_probe_module_entrypoint_is_nonzero_without_a_worker(
@@ -90,4 +93,7 @@ def test_probe_module_entrypoint_is_nonzero_without_a_worker(
         runpy.run_module("app.ops.openai_stage1_probe", run_name="__main__")
 
     assert caught.value.code == 1
-    assert "did not reach" in capsys.readouterr().err
+    assert capsys.readouterr().err == (
+        "Stage 1 probe did not complete successfully; inspect the sanitized "
+        "outcome and attempt count above.\n"
+    )

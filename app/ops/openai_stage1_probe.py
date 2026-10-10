@@ -36,7 +36,11 @@ def main(argv: list[str] | None = None) -> int:
     arguments = parser.parse_args(argv)
     if run_probe(arguments.socket):
         return 0
-    print("Stage 1 probe did not reach a paid-attempt outcome.", file=sys.stderr)
+    print(
+        "Stage 1 probe did not complete successfully; inspect the sanitized "
+        "outcome and attempt count above.",
+        file=sys.stderr,
+    )
     return 1
 
 
