@@ -107,6 +107,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. `{Note: This is entirely English conversational prose about history and art}`",
         "Да. ```This is entirely English prose```",
         "Да. ```python\nThis is entirely English conversational prose\n```",
+        "Да. ```python\nThis is entirely English conversational prose\nreturn value\n```",
     )
     for bypass in bypasses:
         assessment = RussianOutputGate().assess(bypass)
@@ -129,6 +130,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     )
     assert tagged_fence.accepted
     assert tagged_fence.foreign_prose_word_count == 0
+
+    crlf_fence = RussianOutputGate().assess(
+        "Краткий пример:\r\n```python\r\nfor item in items:\r\n    yield item\r\n```"
+    )
+    assert crlf_fence.accepted
+    assert crlf_fence.foreign_prose_word_count == 0
 
     json_fence = RussianOutputGate().assess(
         'Краткий пример:\n```json\n["apple", "banana", "cherry"]\n```'

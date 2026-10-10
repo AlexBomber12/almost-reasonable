@@ -56,35 +56,8 @@ _URL = re.compile(
     r"(?:/[^\s<>()]*)?)",
     re.IGNORECASE,
 )
-_FENCED_CODE = re.compile(r"```(?:([A-Za-z0-9_+#.-]+)[ \t]*\n)?(.*?)```", re.DOTALL)
+_FENCED_CODE = re.compile(r"```(?:([A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?(.*?)```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
-_FENCED_CODE_LANGUAGES = frozenset(
-    (
-        "bash",
-        "c",
-        "cpp",
-        "csharp",
-        "css",
-        "go",
-        "html",
-        "java",
-        "javascript",
-        "json",
-        "php",
-        "python",
-        "ruby",
-        "rust",
-        "sh",
-        "shell",
-        "sql",
-        "toml",
-        "ts",
-        "typescript",
-        "xml",
-        "yaml",
-        "yml",
-    )
-)
 _CODE_SIGNAL = re.compile(
     r"(?:\b(?:def|class)\s+[A-Za-z_]\w*\s*[:({]|"
     r"\b(?:const|let|var)\s+[A-Za-z_]\w*\s*=|"
@@ -94,11 +67,6 @@ _CODE_SIGNAL = re.compile(
     r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
     r"</?[A-Za-z][^>]*>)",
     re.IGNORECASE,
-)
-_TAGGED_FENCED_CODE_SIGNAL = re.compile(
-    r"^\s*(?:(?:for\s+\w+\s+in|while|if|elif|except|with)\b.*:|"
-    r"(?:else|try|finally)\s*:|(?:yield|return|import|from)\b)",
-    re.IGNORECASE | re.MULTILINE,
 )
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
 _RUSSIAN_CYRILLIC_LETTER = re.compile(r"[А-Яа-яЁё]")
@@ -362,24 +330,13 @@ def _strip_non_prose_regions(text: str) -> str:
 
 
 def _replace_fenced_code_span(match: re.Match[str]) -> str:
-    language = match.group(1)
     content = match.group(2)
-    if (
-        language is not None
-        and language.casefold() in _FENCED_CODE_LANGUAGES
-        and (_has_code_signal(content) or _TAGGED_FENCED_CODE_SIGNAL.search(content))
-    ):
-        return " "
-    return " " if _has_code_signal(content) else content
+    return " " if _has_complete_code_signal(content) else content
 
 
 def _replace_code_span(match: re.Match[str]) -> str:
     content = match.group(1)
     return " " if _has_complete_code_signal(content) else content
-
-
-def _has_code_signal(content: str) -> bool:
-    return bool(_CODE_SIGNAL.search(content) or _has_complete_code_signal(content))
 
 
 def _has_complete_code_signal(content: str) -> bool:
@@ -395,8 +352,15 @@ def _has_complete_code_signal(content: str) -> bool:
         ast.AugAssign,
         ast.ClassDef,
         ast.FunctionDef,
+        ast.For,
+        ast.If,
         ast.Import,
         ast.ImportFrom,
+        ast.Raise,
+        ast.Return,
+        ast.Try,
+        ast.While,
+        ast.With,
     )
     return bool(parsed.body) and all(
         isinstance(node, code_nodes)

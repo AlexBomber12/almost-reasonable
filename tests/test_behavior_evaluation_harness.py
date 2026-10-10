@@ -1,5 +1,6 @@
 import json
 from dataclasses import replace
+from decimal import Decimal
 from enum import StrEnum
 
 import pytest
@@ -247,6 +248,12 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
     )
     with pytest.raises(ValueError, match="rubric rule"):
         custom_harness((bad_rule,), assessor)
+    for invalid_threshold in (True, Decimal("0.5")):
+        with pytest.raises(ValueError, match="rubric rule"):
+            custom_harness(
+                (replace(rule, threshold=invalid_threshold),),  # type: ignore[arg-type]
+                assessor,
+            )
     harness = custom_harness((rule,), assessor)
     with pytest.raises(ValueError, match="case IDs"):
         harness.run(
