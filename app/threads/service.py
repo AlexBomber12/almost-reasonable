@@ -171,29 +171,61 @@ class ThreadsService:
             dispatch_evidence="pre_dispatch_intent",
             increment_attempt=True,
         )
-        replacement_reserved = False
         try:
             container_id = item.provider_container_id
+            try:
+                self._recheck_immediately_before_effect(item, approval, self.utc_now())
+            except (PolicyDeniedError, ValueError):
+                state = (
+                    OutboxState.READY
+                    if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                    else OutboxState.FAILED_TERMINAL
+                )
+                self.store.transition(
+                    operation_id,
+                    state,
+                    reason="pre_effect_policy_denial",
+                    now=now,
+                    provider_container_id=container_id,
+                    dispatch_evidence=(
+                        "container_not_transmitted"
+                        if container_id is None
+                        else "publish_not_transmitted"
+                    ),
+                    reconciliation_status="not_required",
+                )
+                raise
+            try:
+                self.store.reserve_publication_effect(
+                    operation_id=item.operation_id,
+                    account_ref=item.account_ref,
+                    replacement_target_operation_id=item.replacement_of,
+                    now=now,
+                )
+            except ThreadsStoreError as error:
+                state = (
+                    OutboxState.READY
+                    if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                    else OutboxState.FAILED_TERMINAL
+                )
+                self.store.transition(
+                    operation_id,
+                    state,
+                    reason="publication_effect_not_reserved",
+                    now=now,
+                    provider_container_id=container_id,
+                    dispatch_evidence=(
+                        "container_not_transmitted"
+                        if container_id is None
+                        else "publish_not_transmitted"
+                    ),
+                    reconciliation_status="not_required",
+                )
+                raise PolicyDeniedError(
+                    "publication effect is being dispatched or target is being "
+                    "reconciled or resolved"
+                ) from error
             if container_id is None:
-                try:
-                    self._recheck_immediately_before_effect(
-                        item, approval, self.utc_now()
-                    )
-                except (PolicyDeniedError, ValueError):
-                    state = (
-                        OutboxState.READY
-                        if item.attempt_count < MAX_DISPATCH_ATTEMPTS
-                        else OutboxState.FAILED_TERMINAL
-                    )
-                    self.store.transition(
-                        operation_id,
-                        state,
-                        reason="pre_container_policy_denial",
-                        now=now,
-                        dispatch_evidence="container_not_transmitted",
-                        reconciliation_status="not_required",
-                    )
-                    raise
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
                 )
@@ -220,35 +252,17 @@ class ThreadsService:
                     provider_container_id=container_id,
                     dispatch_evidence="publish_not_transmitted",
                     reconciliation_status="not_required",
+                    release_lock_target_operation_id=item.replacement_of,
+                    release_lock_kind=(
+                        "replacement_publication"
+                        if item.replacement_of is not None
+                        else None
+                    ),
+                    release_lock_required=item.replacement_of is not None,
+                    release_account_effect_lock=True,
+                    account_effect_lock_required=True,
                 )
                 raise
-            if item.replacement_of is not None:
-                try:
-                    self.store.reserve_replacement_publication(
-                        replacement_operation_id=item.operation_id,
-                        target_operation_id=item.replacement_of,
-                        account_ref=item.account_ref,
-                        now=now,
-                    )
-                    replacement_reserved = True
-                except ThreadsStoreError as error:
-                    state = (
-                        OutboxState.READY
-                        if item.attempt_count < MAX_DISPATCH_ATTEMPTS
-                        else OutboxState.FAILED_TERMINAL
-                    )
-                    self.store.transition(
-                        operation_id,
-                        state,
-                        reason="replacement_target_not_reserved",
-                        now=now,
-                        provider_container_id=container_id,
-                        dispatch_evidence="publish_not_transmitted",
-                        reconciliation_status="not_required",
-                    )
-                    raise PolicyDeniedError(
-                        "replacement target is being reconciled or resolved"
-                    ) from error
             self.store.update_sending_evidence(
                 operation_id,
                 "publish_dispatch_started",
@@ -269,7 +283,6 @@ class ThreadsService:
                 item,
                 error,
                 now=now,
-                release_replacement_lock=replacement_reserved,
             )
         return self.store.transition(
             operation_id,
@@ -282,9 +295,11 @@ class ThreadsService:
             reconciliation_status="not_required",
             release_lock_target_operation_id=item.replacement_of,
             release_lock_kind=(
-                "replacement_publication" if replacement_reserved else None
+                "replacement_publication" if item.replacement_of is not None else None
             ),
-            release_lock_required=replacement_reserved,
+            release_lock_required=item.replacement_of is not None,
+            release_account_effect_lock=True,
+            account_effect_lock_required=True,
         )
 
     def recover_sending(self, operation_id: str, *, now: datetime) -> OutboxItem:
@@ -313,6 +328,7 @@ class ThreadsService:
                     if item.replacement_of is not None
                     else None
                 ),
+                release_account_effect_lock=True,
             )
         else:
             result = self.store.transition(
@@ -328,6 +344,7 @@ class ThreadsService:
                     if item.replacement_of is not None
                     else None
                 ),
+                release_account_effect_lock=True,
             )
         return result
 
@@ -590,14 +607,15 @@ class ThreadsService:
         error: ProviderFailure,
         *,
         now: datetime,
-        release_replacement_lock: bool,
     ) -> OutboxItem:
         common = {
             "now": now,
             "provider_container_id": error.container_id,
             "dispatch_evidence": error.evidence,
+            "release_account_effect_lock": True,
+            "account_effect_lock_required": True,
         }
-        if release_replacement_lock:
+        if item.replacement_of is not None:
             common.update(
                 {
                     "release_lock_target_operation_id": item.replacement_of,

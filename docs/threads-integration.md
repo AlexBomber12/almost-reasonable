@@ -77,8 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-2 SQLite database in WAL mode, including an atomic version-1
-migration; it does not alter the main
+separate version-3 SQLite database in WAL mode, including atomic migrations
+from versions 1 and 2; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -151,6 +151,15 @@ activated before either call blocks it. A stop activated after a request is in
 flight cannot retract an already accepted effect; the resulting success or
 uncertainty is recorded honestly.
 
+After the last pre-effect authorization check and before the first provider
+request, dispatch atomically verifies account uncertainty and acquires one
+durable account-wide effect reservation. It holds that reservation across the
+container and publication sequence. A second operation for the same account
+therefore cannot pass its own atomic uncertainty check while the first can
+still become `unknown`. Final classification and ordinary crash recovery remove
+the reservation in the same transaction; an unclassified process death leaves
+it in place and fails closed until `sending` recovery classifies the operation.
+
 ## Failure and reconciliation rules
 
 | Evidence | Durable result | Automatic resend |
@@ -177,12 +186,12 @@ replacement must link the unresolved operation and carry a separate
 authenticated approval that explicitly acknowledges duplicate-publication risk;
 it never changes or retries the original item.
 
-Immediately before a replacement publication, the store atomically reserves
-its unresolved target. Reconciliation takes an exclusive claim on the same
-target. These durable claims serialize the two operations, closing the window
-where reconciliation could confirm the original after the last policy check but
+Before any replacement provider request, the same transaction also reserves
+its unresolved target. Reconciliation takes an exclusive claim on that target.
+These durable claims serialize the operations, closing the window where
+reconciliation could confirm the original after the last policy check but
 before replacement publication. Replacement final-state and crash-recovery
-transitions delete their reservation in the same SQLite transaction. A process
+transitions delete both reservations in the same SQLite transaction. A process
 death during reconciliation leaves its read claim fail-closed; clearing that
 claim requires a fresh, current `recover_reconciliation` operator approval
 through the explicit restart-recovery path before reconciliation can resume.
@@ -197,7 +206,11 @@ commit in one SQLite transaction. Each inbound event and conversation outcome
 also persists a bounded application correlation ID so ingestion, deliberation,
 and a later reply operation can share an internal trace without treating a
 provider ID as authority. A crash before commit safely replays; a replay after
-commit is suppressed by event ID.
+commit is suppressed by the `(account, stream, event ID)` identity. The same
+provider event ID remains valid in another account or stream. Reuse within one
+identity with different immutable event data is rejected as a conflict, and
+the page cursor is not advanced. Conversation outcomes retain the same scoped
+identity in their foreign key.
 
 The loop has hard page, event, and elapsed-time limits. It rejects account/source
 mismatches, invalid source evidence, stale cursor commits, repeated cursors, and

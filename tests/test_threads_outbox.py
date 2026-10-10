@@ -164,10 +164,11 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
         )
         connection.execute(
             "INSERT INTO threads_conversation_outcomes VALUES "
-            "('outcome-legacy', 'correlation-old', 'event-legacy', "
-            "'no_action', 'legacy-reason', NULL, ?)",
+            "('outcome-legacy', 'correlation-old', 'account-1', 'reply', "
+            "'event-legacy', 'no_action', 'legacy-reason', NULL, ?)",
             (NOW.isoformat(),),
         )
+        connection.execute("DROP TABLE threads_account_effect_locks")
         connection.execute("DROP TABLE threads_unknown_effect_locks")
         connection.execute("DROP TABLE threads_operator_decisions")
         connection.execute(
@@ -181,7 +182,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (2,)
+        ).fetchone() == (3,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -209,6 +210,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert "correlation_id" in inbound_columns
     assert "correlation_id" in outcome_columns
     assert "threads_unknown_effect_locks" in tables
+    assert "threads_account_effect_locks" in tables
     assert "threads_operator_decisions" in tables
 
 
@@ -1055,6 +1057,41 @@ def test_replacement_publication_serializes_target_reconciliation(
     assert service.reconcile("operation-1", now=NOW).state is OutboxState.UNKNOWN
 
 
+def test_account_effect_reservation_serializes_container_and_publish(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    _, second_approval = ready(service, "operation-2")
+    create_container = service.simulator.create_container
+
+    def create_while_second_dispatches(item):
+        if item.operation_id == "operation-1":
+            with sqlite3.connect(service.store.database) as connection:
+                assert connection.execute(
+                    "SELECT holder_operation_id FROM threads_account_effect_locks "
+                    "WHERE account_ref='account-1'"
+                ).fetchone() == ("operation-1",)
+            with pytest.raises(PolicyDeniedError, match="being dispatched"):
+                service.dispatch("operation-2", second_approval, now=NOW)
+            assert service.store.get("operation-2").state is OutboxState.READY
+        return create_container(item)
+
+    monkeypatch.setattr(
+        service.simulator, "create_container", create_while_second_dispatches
+    )
+    assert service.dispatch("operation-1", first_approval, now=NOW).state is (
+        OutboxState.CONFIRMED
+    )
+    assert service.dispatch("operation-2", second_approval, now=NOW).state is (
+        OutboxState.CONFIRMED
+    )
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_account_effect_locks"
+        ).fetchone() == (0,)
+
+
 def test_replacement_waits_when_target_reconciliation_claim_exists(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -1078,7 +1115,7 @@ def test_replacement_waits_when_target_reconciliation_claim_exists(tmp_path):
         service.dispatch("operation-2", risk_approval, now=NOW)
     blocked = service.store.get("operation-2")
     assert blocked.state is OutboxState.READY
-    assert blocked.dispatch_evidence == "publish_not_transmitted"
+    assert blocked.dispatch_evidence == "container_not_transmitted"
     service.store.release_unknown_effect_lock(
         target_operation_id="operation-1",
         holder_operation_id="operation-1",
@@ -1298,10 +1335,10 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
         is None
     )
     with pytest.raises(ThreadsStoreError, match="no longer reservable"):
-        service.store.reserve_replacement_publication(
-            replacement_operation_id="operation-1",
-            target_operation_id="operation-1",
+        service.store.reserve_publication_effect(
+            operation_id="operation-1",
             account_ref="account-1",
+            replacement_target_operation_id="operation-1",
             now=NOW,
         )
     with pytest.raises(ThreadsStoreError, match="target is unavailable"):
@@ -1328,6 +1365,39 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
             holder_operation_id="operation-1",
             lock_kind="reconciliation",
             required=True,
+        )
+    with pytest.raises(ValueError, match="account-effect release"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            account_effect_lock_required=True,
+        )
+    with pytest.raises(ValueError, match="account-effect release requirement"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_account_effect_lock=1,
+        )
+    with pytest.raises(ValueError, match="account-effect lock requirement"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            account_effect_lock_required=1,
+        )
+    with pytest.raises(ThreadsStoreError, match="account-effect reservation"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            release_account_effect_lock=True,
+            account_effect_lock_required=True,
         )
 
 

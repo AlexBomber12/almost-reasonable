@@ -20,7 +20,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
     OutboxState.PROPOSED: {
@@ -106,6 +106,15 @@ class ThreadsStore:
                 version = metadata[0]
                 if version == 1:
                     for statement in _MIGRATION_1_TO_2.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (2,),
+                    )
+                    version = 2
+                if version == 2:
+                    for statement in _MIGRATION_2_TO_3.split(";"):
                         if statement.strip():
                             connection.execute(statement)
                     connection.execute(
@@ -281,6 +290,8 @@ class ThreadsStore:
         release_lock_target_operation_id: str | None = None,
         release_lock_kind: str | None = None,
         release_lock_required: bool = False,
+        release_account_effect_lock: bool = False,
+        account_effect_lock_required: bool = False,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         if type(new_state) is not OutboxState:
@@ -311,6 +322,12 @@ class ThreadsStore:
             raise ValueError("invalid transition release-lock requirement")
         if release_lock_required and release_lock_target_operation_id is None:
             raise ValueError("required release lock is missing its target")
+        if type(release_account_effect_lock) is not bool:
+            raise ValueError("invalid account-effect release requirement")
+        if type(account_effect_lock_required) is not bool:
+            raise ValueError("invalid account-effect lock requirement")
+        if account_effect_lock_required and not release_account_effect_lock:
+            raise ValueError("required account-effect release is not enabled")
         if approval_status is not None and approval_status not in {
             "pending",
             "approved",
@@ -417,62 +434,103 @@ class ThreadsStore:
                     raise ThreadsStoreError(
                         "required unknown-effect reservation is missing"
                     )
+            if release_account_effect_lock:
+                changed = connection.execute(
+                    "DELETE FROM threads_account_effect_locks "
+                    "WHERE account_ref=? AND holder_operation_id=?",
+                    (row["account_ref"], operation_id),
+                ).rowcount
+                if account_effect_lock_required and changed != 1:
+                    raise ThreadsStoreError(
+                        "required account-effect reservation is missing"
+                    )
             result = connection.execute(
                 "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
             ).fetchone()
             connection.commit()
         return _outbox_item(result)
 
-    def reserve_replacement_publication(
+    def reserve_publication_effect(
         self,
         *,
-        replacement_operation_id: str,
-        target_operation_id: str,
+        operation_id: str,
         account_ref: str,
+        replacement_target_operation_id: str | None,
         now: datetime,
     ) -> None:
-        require_reference("replacement operation ID", replacement_operation_id)
-        require_reference("target operation ID", target_operation_id)
+        require_reference("operation ID", operation_id)
         require_reference("account reference", account_ref)
+        if replacement_target_operation_id is not None:
+            require_reference(
+                "replacement target operation ID", replacement_target_operation_id
+            )
         require_aware_time("reservation time", now)
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            reservable = connection.execute(
-                "SELECT 1 FROM threads_outbox AS replacement "
-                "JOIN threads_outbox AS target ON target.operation_id=? "
-                "WHERE replacement.operation_id=? "
-                "AND replacement.account_ref=? AND target.account_ref=? "
-                "AND replacement.state=? AND replacement.replacement_of=? "
-                "AND target.state IN (?, ?) "
-                "AND NOT EXISTS (SELECT 1 FROM threads_outbox AS other "
-                "WHERE other.account_ref=? AND other.operation_id<>? "
-                "AND other.state IN (?, ?))",
-                (
-                    target_operation_id,
-                    replacement_operation_id,
-                    account_ref,
-                    account_ref,
-                    OutboxState.SENDING.value,
-                    target_operation_id,
-                    OutboxState.UNKNOWN.value,
-                    OutboxState.UNKNOWN_ABANDONED.value,
-                    account_ref,
-                    target_operation_id,
-                    OutboxState.UNKNOWN.value,
-                    OutboxState.UNKNOWN_ABANDONED.value,
-                ),
-            ).fetchone()
+            if replacement_target_operation_id is None:
+                reservable = connection.execute(
+                    "SELECT 1 FROM threads_outbox WHERE operation_id=? "
+                    "AND account_ref=? AND state=? AND replacement_of IS NULL "
+                    "AND NOT EXISTS (SELECT 1 FROM threads_outbox "
+                    "WHERE account_ref=? AND state IN (?, ?))",
+                    (
+                        operation_id,
+                        account_ref,
+                        OutboxState.SENDING.value,
+                        account_ref,
+                        OutboxState.UNKNOWN.value,
+                        OutboxState.UNKNOWN_ABANDONED.value,
+                    ),
+                ).fetchone()
+            else:
+                reservable = connection.execute(
+                    "SELECT 1 FROM threads_outbox AS replacement "
+                    "JOIN threads_outbox AS target ON target.operation_id=? "
+                    "WHERE replacement.operation_id=? "
+                    "AND replacement.account_ref=? AND target.account_ref=? "
+                    "AND replacement.state=? AND replacement.replacement_of=? "
+                    "AND target.state IN (?, ?) "
+                    "AND NOT EXISTS (SELECT 1 FROM threads_outbox AS other "
+                    "WHERE other.account_ref=? AND other.operation_id<>? "
+                    "AND other.state IN (?, ?))",
+                    (
+                        replacement_target_operation_id,
+                        operation_id,
+                        account_ref,
+                        account_ref,
+                        OutboxState.SENDING.value,
+                        replacement_target_operation_id,
+                        OutboxState.UNKNOWN.value,
+                        OutboxState.UNKNOWN_ABANDONED.value,
+                        account_ref,
+                        replacement_target_operation_id,
+                        OutboxState.UNKNOWN.value,
+                        OutboxState.UNKNOWN_ABANDONED.value,
+                    ),
+                ).fetchone()
             if reservable is None:
-                raise ThreadsStoreError("replacement target is no longer reservable")
+                raise ThreadsStoreError("publication effect is no longer reservable")
             try:
+                if replacement_target_operation_id is not None:
+                    connection.execute(
+                        "INSERT INTO threads_unknown_effect_locks "
+                        "(target_operation_id, holder_operation_id, lock_kind, "
+                        "created_at) VALUES (?, ?, 'replacement_publication', ?)",
+                        (
+                            replacement_target_operation_id,
+                            operation_id,
+                            now.isoformat(),
+                        ),
+                    )
                 connection.execute(
-                    "INSERT INTO threads_unknown_effect_locks "
-                    "(target_operation_id, holder_operation_id, lock_kind, created_at) "
-                    "VALUES (?, ?, 'replacement_publication', ?)",
-                    (target_operation_id, replacement_operation_id, now.isoformat()),
+                    "INSERT INTO threads_account_effect_locks "
+                    "(account_ref, holder_operation_id, created_at) VALUES (?, ?, ?)",
+                    (account_ref, operation_id, now.isoformat()),
                 )
             except sqlite3.IntegrityError as error:
-                raise ThreadsStoreError("unknown effect is already reserved") from error
+                raise ThreadsStoreError(
+                    "publication effect is already reserved"
+                ) from error
             connection.commit()
 
     def claim_reconciliation(
@@ -719,6 +777,23 @@ class ThreadsStore:
                 if changed:
                     inserted.append(event)
                 else:
+                    existing = connection.execute(
+                        "SELECT correlation_id, source_ref, conversation_id, "
+                        "parent_message_id, occurred_at, content "
+                        "FROM threads_inbound_events WHERE account_ref=? "
+                        "AND kind=? AND event_id=?",
+                        (event.account_ref, event.kind.value, event.event_id),
+                    ).fetchone()
+                    expected_event = (
+                        event.correlation_id,
+                        event.source_ref,
+                        event.conversation_id,
+                        event.parent_message_id,
+                        event.occurred_at.isoformat(),
+                        event.content,
+                    )
+                    if existing is None or tuple(existing) != expected_event:
+                        raise ThreadsStoreError("inbound event identity conflict")
                     duplicates += 1
             connection.execute(
                 """INSERT INTO threads_poll_cursors(account_ref, stream, cursor, updated_at)
@@ -740,6 +815,8 @@ class ThreadsStore:
         *,
         outcome_id: str,
         correlation_id: str,
+        account_ref: str,
+        stream: InboundKind,
         inbound_event_id: str,
         outcome: ConversationOutcome,
         reason: str,
@@ -748,6 +825,9 @@ class ThreadsStore:
     ) -> None:
         require_reference("outcome ID", outcome_id)
         require_reference("correlation ID", correlation_id)
+        require_reference("account reference", account_ref)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
         require_reference("inbound event ID", inbound_event_id)
         require_reference("outcome reason", reason)
         if type(outcome) is not ConversationOutcome:
@@ -761,10 +841,11 @@ class ThreadsStore:
             try:
                 changed = connection.execute(
                     "INSERT INTO threads_conversation_outcomes "
-                    "(outcome_id, correlation_id, inbound_event_id, outcome, reason, "
-                    "resume_condition, occurred_at) "
-                    "SELECT ?, ?, event_id, ?, ?, ?, ? FROM threads_inbound_events "
-                    "WHERE event_id=? AND correlation_id=?",
+                    "(outcome_id, correlation_id, inbound_account_ref, inbound_kind, "
+                    "inbound_event_id, outcome, reason, resume_condition, occurred_at) "
+                    "SELECT ?, ?, account_ref, kind, event_id, ?, ?, ?, ? "
+                    "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
+                    "AND event_id=? AND correlation_id=?",
                     (
                         outcome_id,
                         correlation_id,
@@ -772,6 +853,8 @@ class ThreadsStore:
                         reason,
                         resume_condition,
                         now.isoformat(),
+                        account_ref,
+                        stream.value,
                         inbound_event_id,
                         correlation_id,
                     ),
@@ -929,7 +1012,7 @@ CREATE TABLE threads_outbox_transitions (
     PRIMARY KEY(operation_id, revision)
 );
 CREATE TABLE threads_inbound_events (
-    event_id TEXT PRIMARY KEY,
+    event_id TEXT NOT NULL,
     correlation_id TEXT NOT NULL,
     account_ref TEXT NOT NULL,
     source_ref TEXT NOT NULL,
@@ -938,7 +1021,8 @@ CREATE TABLE threads_inbound_events (
     parent_message_id TEXT,
     occurred_at TEXT NOT NULL,
     content TEXT NOT NULL,
-    received_at TEXT NOT NULL
+    received_at TEXT NOT NULL,
+    PRIMARY KEY(account_ref, kind, event_id)
 );
 CREATE TABLE threads_poll_cursors (
     account_ref TEXT NOT NULL,
@@ -950,11 +1034,15 @@ CREATE TABLE threads_poll_cursors (
 CREATE TABLE threads_conversation_outcomes (
     outcome_id TEXT PRIMARY KEY,
     correlation_id TEXT NOT NULL,
-    inbound_event_id TEXT NOT NULL REFERENCES threads_inbound_events(event_id),
+    inbound_account_ref TEXT NOT NULL,
+    inbound_kind TEXT NOT NULL CHECK(inbound_kind IN ('reply','mention')),
+    inbound_event_id TEXT NOT NULL,
     outcome TEXT NOT NULL,
     reason TEXT NOT NULL,
     resume_condition TEXT,
-    occurred_at TEXT NOT NULL
+    occurred_at TEXT NOT NULL,
+    FOREIGN KEY(inbound_account_ref, inbound_kind, inbound_event_id)
+        REFERENCES threads_inbound_events(account_ref, kind, event_id)
 );
 CREATE TABLE threads_operator_decisions (
     operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
@@ -969,6 +1057,11 @@ CREATE TABLE threads_unknown_effect_locks (
     lock_kind TEXT NOT NULL CHECK(
         lock_kind IN ('reconciliation','replacement_publication')
     ),
+    created_at TEXT NOT NULL
+);
+CREATE TABLE threads_account_effect_locks (
+    account_ref TEXT PRIMARY KEY,
+    holder_operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
     created_at TEXT NOT NULL
 );
 """
@@ -997,6 +1090,56 @@ CREATE TABLE threads_unknown_effect_locks (
     lock_kind TEXT NOT NULL CHECK(
         lock_kind IN ('reconciliation','replacement_publication')
     ),
+    created_at TEXT NOT NULL
+);
+"""
+
+
+_MIGRATION_2_TO_3 = """
+CREATE TABLE threads_inbound_events_v3 (
+    event_id TEXT NOT NULL,
+    correlation_id TEXT,
+    account_ref TEXT NOT NULL,
+    source_ref TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('reply','mention')),
+    conversation_id TEXT NOT NULL,
+    parent_message_id TEXT,
+    occurred_at TEXT NOT NULL,
+    content TEXT NOT NULL,
+    received_at TEXT NOT NULL,
+    PRIMARY KEY(account_ref, kind, event_id)
+);
+INSERT INTO threads_inbound_events_v3
+SELECT event_id, correlation_id, account_ref, source_ref, kind, conversation_id,
+       parent_message_id, occurred_at, content, received_at
+FROM threads_inbound_events;
+CREATE TABLE threads_conversation_outcomes_v3 (
+    outcome_id TEXT PRIMARY KEY,
+    correlation_id TEXT,
+    inbound_account_ref TEXT NOT NULL,
+    inbound_kind TEXT NOT NULL CHECK(inbound_kind IN ('reply','mention')),
+    inbound_event_id TEXT NOT NULL,
+    outcome TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    resume_condition TEXT,
+    occurred_at TEXT NOT NULL,
+    FOREIGN KEY(inbound_account_ref, inbound_kind, inbound_event_id)
+        REFERENCES threads_inbound_events_v3(account_ref, kind, event_id)
+);
+INSERT INTO threads_conversation_outcomes_v3
+SELECT outcome.outcome_id, outcome.correlation_id, event.account_ref, event.kind,
+       outcome.inbound_event_id, outcome.outcome, outcome.reason,
+       outcome.resume_condition, outcome.occurred_at
+FROM threads_conversation_outcomes AS outcome
+JOIN threads_inbound_events AS event
+  ON event.event_id=outcome.inbound_event_id;
+DROP TABLE threads_conversation_outcomes;
+DROP TABLE threads_inbound_events;
+ALTER TABLE threads_inbound_events_v3 RENAME TO threads_inbound_events;
+ALTER TABLE threads_conversation_outcomes_v3 RENAME TO threads_conversation_outcomes;
+CREATE TABLE threads_account_effect_locks (
+    account_ref TEXT PRIMARY KEY,
+    holder_operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
     created_at TEXT NOT NULL
 );
 """

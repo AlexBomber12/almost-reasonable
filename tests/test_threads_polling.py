@@ -242,6 +242,71 @@ def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
     assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-2"
 
 
+def test_inbound_identity_is_scoped_to_account_and_stream(tmp_path):
+    store = ThreadsStore(tmp_path / "threads.sqlite3")
+    first = event("shared")
+    second_account = event("shared", account_ref="account-2")
+    mention = event("shared", kind=InboundKind.MENTION)
+
+    for account_ref, stream, inbound in (
+        ("account-1", InboundKind.REPLY, first),
+        ("account-2", InboundKind.REPLY, second_account),
+        ("account-1", InboundKind.MENTION, mention),
+    ):
+        inserted, duplicates = store.commit_poll_page(
+            account_ref=account_ref,
+            stream=stream,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor=None,
+            events=(inbound,),
+            now=NOW,
+        )
+        assert inserted == (inbound,)
+        assert duplicates == 0
+
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT account_ref, kind, event_id FROM threads_inbound_events "
+            "ORDER BY account_ref, kind"
+        ).fetchall() == [
+            ("account-1", "mention", "event-shared"),
+            ("account-1", "reply", "event-shared"),
+            ("account-2", "reply", "event-shared"),
+        ]
+
+
+def test_conflicting_inbound_identity_rolls_back_event_and_cursor(tmp_path):
+    store = ThreadsStore(tmp_path / "threads.sqlite3")
+    original = event("shared")
+    store.commit_poll_page(
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(original,),
+        now=NOW,
+    )
+    with pytest.raises(ThreadsStoreError, match="identity conflict"):
+        store.commit_poll_page(
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor="cursor-conflict",
+            events=(replace(original, content="Подмененное содержание"),),
+            now=NOW,
+        )
+    assert store.cursor("account-1", InboundKind.REPLY) is None
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT content FROM threads_inbound_events WHERE account_ref=? "
+            "AND kind=? AND event_id=?",
+            ("account-1", "reply", "event-shared"),
+        ).fetchone() == (original.content,)
+
+
 def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
     threads = service(tmp_path)
     threads.simulator.add_poll_page(
@@ -415,6 +480,8 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
     threads.store.record_conversation_outcome(
         outcome_id=f"outcome-{outcome.value}",
         correlation_id="correlation-decision",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
         inbound_event_id="event-decision",
         outcome=outcome,
         reason="bounded-response",
@@ -443,6 +510,8 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     base = {
         "outcome_id": "outcome-1",
         "correlation_id": "correlation-decision",
+        "account_ref": "account-1",
+        "stream": InboundKind.REPLY,
         "inbound_event_id": "event-decision",
         "outcome": ConversationOutcome.NO_ACTION,
         "reason": "bounded-response",
@@ -452,6 +521,8 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     invalid = [
         {"outcome_id": "bad value"},
         {"correlation_id": "bad value"},
+        {"account_ref": "bad value"},
+        {"stream": "reply"},
         {"inbound_event_id": "bad value"},
         {"outcome": "no_action"},
         {"reason": "bad value"},
