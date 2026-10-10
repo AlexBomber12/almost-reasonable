@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime
+import sqlite3
 
 import pytest
 
@@ -62,6 +63,7 @@ def service(tmp_path, *, runtime_policy=None, clock=None):
 def event(name, *, kind=InboundKind.REPLY, content=None, **changes):
     values = {
         "event_id": f"event-{name}",
+        "correlation_id": f"correlation-{name}",
         "account_ref": "account-1",
         "source_ref": "meta-simulator-v1",
         "kind": kind,
@@ -85,6 +87,10 @@ def test_verified_pages_persist_events_and_stable_cursor_across_restart(tmp_path
     result = first.poll(InboundKind.REPLY, now=NOW, max_pages=1)
     assert [item.event_id for item in result.new_events] == ["event-1", "event-2"]
     assert result.final_cursor == "cursor-1"
+    with sqlite3.connect(first.store.database) as connection:
+        assert connection.execute(
+            "SELECT correlation_id FROM threads_inbound_events WHERE event_id='event-1'"
+        ).fetchone() == ("correlation-1",)
     restarted = ThreadsService(
         ThreadsStore(first.store.database), first.simulator, first.policy
     )
@@ -318,6 +324,7 @@ def test_polling_rejects_invalid_stream_time_and_provider_failure(tmp_path):
     [
         object(),
         event("bad-id", event_id="bad value"),
+        event("bad-correlation", correlation_id="bad value"),
         event("bad-source", source_ref="bad value"),
         event("forged-source", source_ref="forged-source"),
         event("bad-conversation", conversation_id="bad value"),
@@ -407,12 +414,19 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
     )
     threads.store.record_conversation_outcome(
         outcome_id=f"outcome-{outcome.value}",
+        correlation_id="correlation-decision",
         inbound_event_id="event-decision",
         outcome=outcome,
         reason="bounded-response",
         resume_condition=resume,
         now=NOW,
     )
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT correlation_id FROM threads_conversation_outcomes "
+            "WHERE outcome_id=?",
+            (f"outcome-{outcome.value}",),
+        ).fetchone() == ("correlation-decision",)
 
 
 def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
@@ -428,6 +442,7 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     )
     base = {
         "outcome_id": "outcome-1",
+        "correlation_id": "correlation-decision",
         "inbound_event_id": "event-decision",
         "outcome": ConversationOutcome.NO_ACTION,
         "reason": "bounded-response",
@@ -436,6 +451,7 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     }
     invalid = [
         {"outcome_id": "bad value"},
+        {"correlation_id": "bad value"},
         {"inbound_event_id": "bad value"},
         {"outcome": "no_action"},
         {"reason": "bad value"},
@@ -446,6 +462,16 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     for changes in invalid:
         with pytest.raises(ValueError):
             store.record_conversation_outcome(**(base | changes))
+    with pytest.raises(ThreadsStoreError, match="correlation"):
+        store.record_conversation_outcome(
+            **(
+                base
+                | {
+                    "outcome_id": "outcome-mismatched-correlation",
+                    "correlation_id": "correlation-other",
+                }
+            )
+        )
     store.record_conversation_outcome(**base)
     with pytest.raises(ThreadsStoreError):
         store.record_conversation_outcome(**base)

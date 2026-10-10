@@ -36,6 +36,11 @@ class PublicationType(StrEnum):
     REPLY = "reply"
 
 
+class ApprovalPurpose(StrEnum):
+    PUBLICATION = "publication"
+    ABANDON_UNKNOWN = "abandon_unknown"
+
+
 class SourceProvenance(StrEnum):
     PUBLIC = "public"
     APPROVED_PUBLIC_REFERENCE = "approved_public_reference"
@@ -70,6 +75,7 @@ class Approval:
     revoked: bool
     duplicate_risk_acknowledged: bool
     _authority: object
+    purpose: ApprovalPurpose = ApprovalPurpose.PUBLICATION
 
 
 def issue_approval(
@@ -80,6 +86,7 @@ def issue_approval(
     expires_at: datetime,
     revoked: bool = False,
     duplicate_risk_acknowledged: bool = False,
+    purpose: ApprovalPurpose = ApprovalPurpose.PUBLICATION,
 ) -> Approval:
     """Represent approval evidence authenticated by a trusted boundary."""
 
@@ -89,6 +96,8 @@ def issue_approval(
     require_aware_time("approval expiry", expires_at)
     if type(revoked) is not bool or type(duplicate_risk_acknowledged) is not bool:
         raise ValueError("invalid approval flags")
+    if type(purpose) is not ApprovalPurpose:
+        raise ValueError("invalid approval purpose")
     return Approval(
         reference,
         account_ref,
@@ -97,6 +106,7 @@ def issue_approval(
         revoked,
         duplicate_risk_acknowledged,
         _APPROVAL_AUTHORITY,
+        purpose,
     )
 
 
@@ -212,6 +222,7 @@ class CurrentAuthorizationProvider(Protocol):
 @dataclass(frozen=True, slots=True)
 class InboundEvent:
     event_id: str
+    correlation_id: str
     account_ref: str
     source_ref: str
     kind: InboundKind
@@ -236,12 +247,15 @@ def validate_approval(
     operation_id: str,
     now: datetime,
     require_duplicate_ack: bool = False,
+    purpose: ApprovalPurpose = ApprovalPurpose.PUBLICATION,
 ) -> None:
     if type(approval) is not Approval or approval._authority is not _APPROVAL_AUTHORITY:
         raise ValueError("approval is not authenticated")
     require_aware_time("current time", now)
     if approval.account_ref != account_ref or approval.operation_id != operation_id:
         raise ValueError("approval target mismatch")
+    if approval.purpose is not purpose:
+        raise ValueError("approval purpose mismatch")
     if approval.revoked:
         raise ValueError("approval is revoked")
     if approval.expires_at <= now:

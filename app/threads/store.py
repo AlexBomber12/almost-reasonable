@@ -20,7 +20,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
     OutboxState.PROPOSED: {
@@ -104,6 +104,15 @@ class ThreadsStore:
                 if metadata is None:
                     raise ThreadsStoreError("Threads schema metadata is missing")
                 version = metadata[0]
+                if version == 1:
+                    for statement in _MIGRATION_1_TO_2.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (SCHEMA_VERSION,),
+                    )
+                    version = SCHEMA_VERSION
                 if version != SCHEMA_VERSION:
                     raise ThreadsStoreError(
                         f"unsupported Threads schema version: {version}"
@@ -267,6 +276,8 @@ class ThreadsStore:
         dispatch_evidence: str | None = None,
         reconciliation_status: str | None = None,
         increment_attempt: bool = False,
+        operator_decision: str | None = None,
+        operator_approval_reference: str | None = None,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         if type(new_state) is not OutboxState:
@@ -279,9 +290,15 @@ class ThreadsStore:
             ("provider publication ID", provider_publication_id),
             ("dispatch evidence", dispatch_evidence),
             ("reconciliation status", reconciliation_status),
+            ("operator decision", operator_decision),
+            ("operator approval reference", operator_approval_reference),
         ):
             if value is not None:
                 require_reference(field, value)
+        if (operator_decision is None) != (operator_approval_reference is None):
+            raise ValueError("operator decision and approval must be supplied together")
+        if operator_decision is not None and operator_decision != "abandon_unknown":
+            raise ValueError("invalid operator decision")
         if approval_status is not None and approval_status not in {
             "pending",
             "approved",
@@ -301,6 +318,16 @@ class ThreadsStore:
                 raise ThreadsStoreError(
                     f"invalid outbox transition: {old_state.value} -> {new_state.value}"
                 )
+            if operator_decision is not None:
+                reservation = connection.execute(
+                    "SELECT 1 FROM threads_unknown_effect_locks "
+                    "WHERE target_operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if reservation is not None:
+                    raise ThreadsStoreError(
+                        "unknown effect is reserved by an active operation"
+                    )
             revision = row["revision"] + 1
             values = {
                 "approval_reference": approval_reference
@@ -351,11 +378,138 @@ class ThreadsStore:
                 reason,
                 now.isoformat(),
             )
+            if operator_decision is not None:
+                connection.execute(
+                    "INSERT INTO threads_operator_decisions "
+                    "(operation_id, decision, approval_reference, occurred_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (
+                        operation_id,
+                        operator_decision,
+                        operator_approval_reference,
+                        now.isoformat(),
+                    ),
+                )
             result = connection.execute(
                 "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
             ).fetchone()
             connection.commit()
         return _outbox_item(result)
+
+    def reserve_replacement_publication(
+        self,
+        *,
+        replacement_operation_id: str,
+        target_operation_id: str,
+        account_ref: str,
+        now: datetime,
+    ) -> None:
+        require_reference("replacement operation ID", replacement_operation_id)
+        require_reference("target operation ID", target_operation_id)
+        require_reference("account reference", account_ref)
+        require_aware_time("reservation time", now)
+        with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            reservable = connection.execute(
+                "SELECT 1 FROM threads_outbox AS replacement "
+                "JOIN threads_outbox AS target ON target.operation_id=? "
+                "WHERE replacement.operation_id=? "
+                "AND replacement.account_ref=? AND target.account_ref=? "
+                "AND replacement.state=? AND replacement.replacement_of=? "
+                "AND target.state IN (?, ?) "
+                "AND NOT EXISTS (SELECT 1 FROM threads_outbox AS other "
+                "WHERE other.account_ref=? AND other.operation_id<>? "
+                "AND other.state IN (?, ?))",
+                (
+                    target_operation_id,
+                    replacement_operation_id,
+                    account_ref,
+                    account_ref,
+                    OutboxState.SENDING.value,
+                    target_operation_id,
+                    OutboxState.UNKNOWN.value,
+                    OutboxState.UNKNOWN_ABANDONED.value,
+                    account_ref,
+                    target_operation_id,
+                    OutboxState.UNKNOWN.value,
+                    OutboxState.UNKNOWN_ABANDONED.value,
+                ),
+            ).fetchone()
+            if reservable is None:
+                raise ThreadsStoreError("replacement target is no longer reservable")
+            try:
+                connection.execute(
+                    "INSERT INTO threads_unknown_effect_locks "
+                    "(target_operation_id, holder_operation_id, lock_kind, created_at) "
+                    "VALUES (?, ?, 'replacement_publication', ?)",
+                    (target_operation_id, replacement_operation_id, now.isoformat()),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ThreadsStoreError("unknown effect is already reserved") from error
+            connection.commit()
+
+    def claim_reconciliation(
+        self, *, operation_id: str, account_ref: str, now: datetime
+    ) -> None:
+        require_reference("operation ID", operation_id)
+        require_reference("account reference", account_ref)
+        require_aware_time("reconciliation claim time", now)
+        with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            item = connection.execute(
+                "SELECT 1 FROM threads_outbox WHERE operation_id=? "
+                "AND account_ref=? AND state=?",
+                (operation_id, account_ref, OutboxState.UNKNOWN.value),
+            ).fetchone()
+            if item is None:
+                raise ThreadsStoreError("reconciliation target is unavailable")
+            try:
+                connection.execute(
+                    "INSERT INTO threads_unknown_effect_locks "
+                    "(target_operation_id, holder_operation_id, lock_kind, created_at) "
+                    "VALUES (?, ?, 'reconciliation', ?)",
+                    (operation_id, operation_id, now.isoformat()),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ThreadsStoreError("unknown effect is already reserved") from error
+            connection.commit()
+
+    def release_unknown_effect_lock(
+        self,
+        *,
+        target_operation_id: str,
+        holder_operation_id: str,
+        lock_kind: str,
+        required: bool,
+    ) -> None:
+        require_reference("target operation ID", target_operation_id)
+        require_reference("holder operation ID", holder_operation_id)
+        if lock_kind not in {"reconciliation", "replacement_publication"}:
+            raise ValueError("invalid unknown-effect lock kind")
+        if type(required) is not bool:
+            raise ValueError("invalid unknown-effect release requirement")
+        with self._open() as connection:
+            changed = connection.execute(
+                "DELETE FROM threads_unknown_effect_locks "
+                "WHERE target_operation_id=? AND holder_operation_id=? "
+                "AND lock_kind=?",
+                (target_operation_id, holder_operation_id, lock_kind),
+            ).rowcount
+        if required and changed != 1:
+            raise ThreadsStoreError("unknown-effect reservation is missing")
+
+    def operator_decision_reference(
+        self, operation_id: str, decision: str
+    ) -> str | None:
+        require_reference("operation ID", operation_id)
+        require_reference("operator decision", decision)
+        with self._open() as connection:
+            row = connection.execute(
+                "SELECT approval_reference FROM threads_operator_decisions "
+                "WHERE operation_id=? AND decision=?",
+                (operation_id, decision),
+            ).fetchone()
+        return None if row is None else row["approval_reference"]
 
     def update_sending_evidence(
         self,
@@ -478,11 +632,12 @@ class ThreadsStore:
                 _validate_inbound_event(event, account_ref, stream, verified_source_ref)
                 changed = connection.execute(
                     """INSERT OR IGNORE INTO threads_inbound_events(
-                       event_id, account_ref, source_ref, kind, conversation_id,
+                       event_id, correlation_id, account_ref, source_ref, kind, conversation_id,
                        parent_message_id, occurred_at, content, received_at
-                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         event.event_id,
+                        event.correlation_id,
                         event.account_ref,
                         event.source_ref,
                         event.kind.value,
@@ -516,6 +671,7 @@ class ThreadsStore:
         self,
         *,
         outcome_id: str,
+        correlation_id: str,
         inbound_event_id: str,
         outcome: ConversationOutcome,
         reason: str,
@@ -523,6 +679,7 @@ class ThreadsStore:
         now: datetime,
     ) -> None:
         require_reference("outcome ID", outcome_id)
+        require_reference("correlation ID", correlation_id)
         require_reference("inbound event ID", inbound_event_id)
         require_reference("outcome reason", reason)
         if type(outcome) is not ConversationOutcome:
@@ -534,21 +691,31 @@ class ThreadsStore:
         require_aware_time("outcome time", now)
         with self._open() as connection:
             try:
-                connection.execute(
-                    "INSERT INTO threads_conversation_outcomes VALUES (?, ?, ?, ?, ?, ?)",
+                changed = connection.execute(
+                    "INSERT INTO threads_conversation_outcomes "
+                    "(outcome_id, correlation_id, inbound_event_id, outcome, reason, "
+                    "resume_condition, occurred_at) "
+                    "SELECT ?, ?, event_id, ?, ?, ?, ? FROM threads_inbound_events "
+                    "WHERE event_id=? AND correlation_id=?",
                     (
                         outcome_id,
-                        inbound_event_id,
+                        correlation_id,
                         outcome.value,
                         reason,
                         resume_condition,
                         now.isoformat(),
+                        inbound_event_id,
+                        correlation_id,
                     ),
-                )
+                ).rowcount
             except sqlite3.IntegrityError as error:
                 raise ThreadsStoreError(
                     "invalid or duplicate conversation outcome"
                 ) from error
+            if changed != 1:
+                raise ThreadsStoreError(
+                    "conversation outcome correlation does not match inbound event"
+                )
 
     @staticmethod
     def _record_transition(
@@ -634,6 +801,7 @@ def _validate_inbound_event(
         raise ValueError("invalid inbound event")
     for field, value in (
         ("event ID", event.event_id),
+        ("correlation ID", event.correlation_id),
         ("source reference", event.source_ref),
         ("conversation ID", event.conversation_id),
     ):
@@ -694,6 +862,7 @@ CREATE TABLE threads_outbox_transitions (
 );
 CREATE TABLE threads_inbound_events (
     event_id TEXT PRIMARY KEY,
+    correlation_id TEXT NOT NULL,
     account_ref TEXT NOT NULL,
     source_ref TEXT NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('reply','mention')),
@@ -712,10 +881,54 @@ CREATE TABLE threads_poll_cursors (
 );
 CREATE TABLE threads_conversation_outcomes (
     outcome_id TEXT PRIMARY KEY,
+    correlation_id TEXT NOT NULL,
     inbound_event_id TEXT NOT NULL REFERENCES threads_inbound_events(event_id),
     outcome TEXT NOT NULL,
     reason TEXT NOT NULL,
     resume_condition TEXT,
     occurred_at TEXT NOT NULL
+);
+CREATE TABLE threads_operator_decisions (
+    operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
+    decision TEXT NOT NULL,
+    approval_reference TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY(operation_id, decision)
+);
+CREATE TABLE threads_unknown_effect_locks (
+    target_operation_id TEXT PRIMARY KEY REFERENCES threads_outbox(operation_id),
+    holder_operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
+    lock_kind TEXT NOT NULL CHECK(
+        lock_kind IN ('reconciliation','replacement_publication')
+    ),
+    created_at TEXT NOT NULL
+);
+"""
+
+
+_MIGRATION_1_TO_2 = """
+ALTER TABLE threads_inbound_events ADD COLUMN correlation_id TEXT;
+ALTER TABLE threads_conversation_outcomes ADD COLUMN correlation_id TEXT;
+UPDATE threads_inbound_events
+SET correlation_id='legacy-' || substr(event_id, 1, 121);
+UPDATE threads_conversation_outcomes
+SET correlation_id=(
+    SELECT correlation_id FROM threads_inbound_events
+    WHERE threads_inbound_events.event_id=threads_conversation_outcomes.inbound_event_id
+);
+CREATE TABLE threads_operator_decisions (
+    operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
+    decision TEXT NOT NULL,
+    approval_reference TEXT NOT NULL,
+    occurred_at TEXT NOT NULL,
+    PRIMARY KEY(operation_id, decision)
+);
+CREATE TABLE threads_unknown_effect_locks (
+    target_operation_id TEXT PRIMARY KEY REFERENCES threads_outbox(operation_id),
+    holder_operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
+    lock_kind TEXT NOT NULL CHECK(
+        lock_kind IN ('reconciliation','replacement_publication')
+    ),
+    created_at TEXT NOT NULL
 );
 """

@@ -10,6 +10,7 @@ from .domain import (
     REQUIRED_REPLY_READ_SCOPES,
     AccountPolicy,
     Approval,
+    ApprovalPurpose,
     CurrentAuthorizationProvider,
     InboundKind,
     OutboxItem,
@@ -220,6 +221,32 @@ class ThreadsService:
                     reconciliation_status="not_required",
                 )
                 raise
+            if item.replacement_of is not None:
+                try:
+                    self.store.reserve_replacement_publication(
+                        replacement_operation_id=item.operation_id,
+                        target_operation_id=item.replacement_of,
+                        account_ref=item.account_ref,
+                        now=now,
+                    )
+                except ThreadsStoreError as error:
+                    state = (
+                        OutboxState.READY
+                        if item.attempt_count < MAX_DISPATCH_ATTEMPTS
+                        else OutboxState.FAILED_TERMINAL
+                    )
+                    self.store.transition(
+                        operation_id,
+                        state,
+                        reason="replacement_target_not_reserved",
+                        now=now,
+                        provider_container_id=container_id,
+                        dispatch_evidence="publish_not_transmitted",
+                        reconciliation_status="not_required",
+                    )
+                    raise PolicyDeniedError(
+                        "replacement target is being reconciled or resolved"
+                    ) from error
             self.store.update_sending_evidence(
                 operation_id,
                 "publish_dispatch_started",
@@ -236,8 +263,10 @@ class ThreadsService:
             self.store.update_sending_evidence(operation_id, marker, now=now)
             raise
         except ProviderFailure as error:
-            return self._record_failure(item, error, now=now)
-        return self.store.transition(
+            result = self._record_failure(item, error, now=now)
+            self._release_replacement_reservation(item)
+            return result
+        result = self.store.transition(
             operation_id,
             OutboxState.CONFIRMED,
             reason="provider_confirmed_success",
@@ -247,6 +276,8 @@ class ThreadsService:
             dispatch_evidence=evidence.evidence,
             reconciliation_status="not_required",
         )
+        self._release_replacement_reservation(item)
+        return result
 
     def recover_sending(self, operation_id: str, *, now: datetime) -> OutboxItem:
         item = self._require_owned_item(operation_id)
@@ -262,63 +293,95 @@ class ThreadsService:
                 if item.attempt_count < MAX_DISPATCH_ATTEMPTS
                 else OutboxState.FAILED_TERMINAL
             )
-            return self.store.transition(
+            result = self.store.transition(
                 operation_id,
                 state,
                 reason="recovered_proven_pre_dispatch",
                 now=now,
                 dispatch_evidence="recovery_no_effect",
             )
-        return self.store.transition(
-            operation_id,
-            OutboxState.UNKNOWN,
-            reason="recovered_uncertain_dispatch",
-            now=now,
-            dispatch_evidence="recovery_effect_unknown",
-            reconciliation_status="required",
-        )
+        else:
+            result = self.store.transition(
+                operation_id,
+                OutboxState.UNKNOWN,
+                reason="recovered_uncertain_dispatch",
+                now=now,
+                dispatch_evidence="recovery_effect_unknown",
+                reconciliation_status="required",
+            )
+        self._release_replacement_reservation(item, required=False)
+        return result
 
     def reconcile(self, operation_id: str, *, now: datetime) -> OutboxItem:
         item = self._require_owned_item(operation_id)
         if item.state is not OutboxState.UNKNOWN:
             raise ThreadsStoreError("reconciliation requires unknown state")
+        self.store.claim_reconciliation(
+            operation_id=operation_id,
+            account_ref=item.account_ref,
+            now=now,
+        )
         try:
             result = self.simulator.reconcile(item)
-        except ProviderFailure:
-            return self.store.note_reconciliation(
+        except Exception:
+            reconciled = self.store.note_reconciliation(
                 operation_id, "attempt_failed", now=now
             )
-        if result is ReconciliationResult.UNRESOLVED:
-            return self.store.note_reconciliation(operation_id, "unresolved", now=now)
-        if result is ReconciliationResult.REJECTED:
-            return self.store.transition(
-                operation_id,
-                OutboxState.FAILED_TERMINAL,
-                reason="reconciliation_verified_rejection",
-                now=now,
-                reconciliation_status="verified_rejection",
-            )
-        if result is ReconciliationResult.CONFIRMED:
-            return self.store.transition(
-                operation_id,
-                OutboxState.CONFIRMED,
-                reason="reconciliation_verified_success",
-                now=now,
-                provider_publication_id=simulated_provider_id(
-                    "reconciled", operation_id
-                ),
-                reconciliation_status="verified_success",
-            )
-        return self.store.note_reconciliation(operation_id, "invalid_result", now=now)
+        else:
+            if result is ReconciliationResult.UNRESOLVED:
+                reconciled = self.store.note_reconciliation(
+                    operation_id, "unresolved", now=now
+                )
+            elif result is ReconciliationResult.REJECTED:
+                reconciled = self.store.transition(
+                    operation_id,
+                    OutboxState.FAILED_TERMINAL,
+                    reason="reconciliation_verified_rejection",
+                    now=now,
+                    reconciliation_status="verified_rejection",
+                )
+            elif result is ReconciliationResult.CONFIRMED:
+                reconciled = self.store.transition(
+                    operation_id,
+                    OutboxState.CONFIRMED,
+                    reason="reconciliation_verified_success",
+                    now=now,
+                    provider_publication_id=simulated_provider_id(
+                        "reconciled", operation_id
+                    ),
+                    reconciliation_status="verified_success",
+                )
+            else:
+                reconciled = self.store.note_reconciliation(
+                    operation_id, "invalid_result", now=now
+                )
+        self.store.release_unknown_effect_lock(
+            target_operation_id=operation_id,
+            holder_operation_id=operation_id,
+            lock_kind="reconciliation",
+            required=True,
+        )
+        return reconciled
 
-    def abandon_unknown(self, operation_id: str, *, now: datetime) -> OutboxItem:
-        self._require_owned_item(operation_id)
+    def abandon_unknown(
+        self, operation_id: str, approval: Approval, *, now: datetime
+    ) -> OutboxItem:
+        item = self._require_owned_item(operation_id)
+        current_approval = self._resolve_current_approval(
+            item,
+            approval,
+            now=now,
+            purpose=ApprovalPurpose.ABANDON_UNKNOWN,
+            require_duplicate_ack=False,
+        )
         return self.store.transition(
             operation_id,
             OutboxState.UNKNOWN_ABANDONED,
             reason="operator_ended_reconciliation_without_resolution",
             now=now,
             reconciliation_status="abandoned_unresolved",
+            operator_decision="abandon_unknown",
+            operator_approval_reference=current_approval.reference,
         )
 
     def poll(
@@ -401,39 +464,18 @@ class ThreadsService:
     ) -> Approval:
         if item.account_ref != self.policy.account_ref:
             raise PolicyDeniedError("outbound account mismatch")
-        validate_approval(
-            approval,
-            account_ref=item.account_ref,
-            operation_id=item.operation_id,
-            now=now,
-            require_duplicate_ack=item.replacement_of is not None,
-        )
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
-        provider = self.authorization_provider
-        if provider is None:
-            raise PolicyDeniedError("current authorization provider is unavailable")
-        try:
-            current_approval = provider.current_approval(
-                account_ref=item.account_ref,
-                operation_id=item.operation_id,
-                approval_reference=approval.reference,
-                now=now,
-            )
-        except Exception as error:
-            raise PolicyDeniedError("current approval is unavailable") from error
-        if current_approval is None:
-            raise PolicyDeniedError("current approval is unavailable")
-        validate_approval(
-            current_approval,
-            account_ref=item.account_ref,
-            operation_id=item.operation_id,
+        current_approval = self._resolve_current_approval(
+            item,
+            approval,
             now=now,
+            purpose=ApprovalPurpose.PUBLICATION,
             require_duplicate_ack=item.replacement_of is not None,
         )
-        if current_approval.reference != approval.reference:
-            raise ValueError("current approval reference mismatch")
+        provider = self.authorization_provider
+        assert provider is not None
         try:
             privacy_authorized = provider.current_privacy_authorized(item=item, now=now)
         except Exception as error:
@@ -456,6 +498,61 @@ class ThreadsService:
         elif unresolved_ids:
             raise PolicyDeniedError("account is paused by unresolved publication")
         return current_approval
+
+    def _resolve_current_approval(
+        self,
+        item: OutboxItem,
+        approval: Approval,
+        *,
+        now: datetime,
+        purpose: ApprovalPurpose,
+        require_duplicate_ack: bool,
+    ) -> Approval:
+        validate_approval(
+            approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=now,
+            require_duplicate_ack=require_duplicate_ack,
+            purpose=purpose,
+        )
+        provider = self.authorization_provider
+        if provider is None:
+            raise PolicyDeniedError("current authorization provider is unavailable")
+        try:
+            current_approval = provider.current_approval(
+                account_ref=item.account_ref,
+                operation_id=item.operation_id,
+                approval_reference=approval.reference,
+                now=now,
+            )
+        except Exception as error:
+            raise PolicyDeniedError("current approval is unavailable") from error
+        if current_approval is None:
+            raise PolicyDeniedError("current approval is unavailable")
+        validate_approval(
+            current_approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=now,
+            require_duplicate_ack=require_duplicate_ack,
+            purpose=purpose,
+        )
+        if current_approval.reference != approval.reference:
+            raise ValueError("current approval reference mismatch")
+        return current_approval
+
+    def _release_replacement_reservation(
+        self, item: OutboxItem, *, required: bool = True
+    ) -> None:
+        if item.replacement_of is None:
+            return
+        self.store.release_unknown_effect_lock(
+            target_operation_id=item.replacement_of,
+            holder_operation_id=item.operation_id,
+            lock_kind="replacement_publication",
+            required=required,
+        )
 
     def _recheck_immediately_before_effect(
         self, item: OutboxItem, approval: Approval, now: datetime

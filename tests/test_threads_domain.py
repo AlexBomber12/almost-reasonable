@@ -7,6 +7,7 @@ from app.threads.domain import (
     MAX_CONTENT_BYTES,
     MAX_INBOUND_CONTENT_BYTES,
     AccountPolicy,
+    ApprovalPurpose,
     PublicationType,
     SourceProvenance,
     Stage,
@@ -110,6 +111,7 @@ def test_policy_rejects_malformed_trusted_configuration(changes):
         {"expires_at": datetime(2026, 1, 1)},
         {"revoked": 1},
         {"duplicate_risk_acknowledged": 1},
+        {"purpose": "publication"},
     ],
 )
 def test_approval_issuer_rejects_malformed_control_plane_evidence(changes):
@@ -146,6 +148,14 @@ def test_approval_validation_rejects_forgery_target_status_expiry_and_missing_ac
             operation_id="operation-1",
             now=NOW,
             require_duplicate_ack=True,
+        )
+    with pytest.raises(ValueError, match="purpose"):
+        validate_approval(
+            valid,
+            account_ref="account-1",
+            operation_id="operation-1",
+            now=NOW,
+            purpose=ApprovalPurpose.ABANDON_UNKNOWN,
         )
     with pytest.raises(ValueError, match="current time"):
         validate_approval(

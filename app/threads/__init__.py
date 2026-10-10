@@ -3,6 +3,7 @@
 from .domain import (
     AccountPolicy,
     Approval,
+    ApprovalPurpose,
     ConversationOutcome,
     CurrentAuthorizationProvider,
     InboundKind,
@@ -25,6 +26,7 @@ from .store import ThreadsStore
 __all__ = (
     "AccountPolicy",
     "Approval",
+    "ApprovalPurpose",
     "ConversationOutcome",
     "CurrentAuthorizationProvider",
     "Fault",

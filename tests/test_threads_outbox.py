@@ -7,6 +7,7 @@ from app.threads import store as store_module
 from app.threads.domain import (
     AccountPolicy,
     Approval,
+    ApprovalPurpose,
     OutboxState,
     PublicationType,
     SourceProvenance,
@@ -149,6 +150,67 @@ def test_initial_schema_and_version_row_are_one_transaction(tmp_path, monkeypatc
     assert tables == []
 
 
+def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_path):
+    path = tmp_path / "threads.sqlite3"
+    ThreadsStore(path)
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "INSERT INTO threads_inbound_events VALUES "
+            "('event-legacy', 'correlation-old', 'account-1', "
+            "'meta-simulator-v1', 'reply', 'conversation-legacy', "
+            "'parent-legacy', ?, 'Публичное сообщение', ?)",
+            (NOW.isoformat(), NOW.isoformat()),
+        )
+        connection.execute(
+            "INSERT INTO threads_conversation_outcomes VALUES "
+            "('outcome-legacy', 'correlation-old', 'event-legacy', "
+            "'no_action', 'legacy-reason', NULL, ?)",
+            (NOW.isoformat(),),
+        )
+        connection.execute("DROP TABLE threads_unknown_effect_locks")
+        connection.execute("DROP TABLE threads_operator_decisions")
+        connection.execute(
+            "ALTER TABLE threads_inbound_events DROP COLUMN correlation_id"
+        )
+        connection.execute(
+            "ALTER TABLE threads_conversation_outcomes DROP COLUMN correlation_id"
+        )
+        connection.execute("UPDATE threads_schema_metadata SET version=1")
+    ThreadsStore(path)
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT version FROM threads_schema_metadata"
+        ).fetchone() == (2,)
+        assert connection.execute(
+            "SELECT correlation_id FROM threads_inbound_events "
+            "WHERE event_id='event-legacy'"
+        ).fetchone() == ("legacy-event-legacy",)
+        assert connection.execute(
+            "SELECT correlation_id FROM threads_conversation_outcomes "
+            "WHERE outcome_id='outcome-legacy'"
+        ).fetchone() == ("legacy-event-legacy",)
+        inbound_columns = {
+            row[1]
+            for row in connection.execute("PRAGMA table_info(threads_inbound_events)")
+        }
+        outcome_columns = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA table_info(threads_conversation_outcomes)"
+            )
+        }
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+    assert "correlation_id" in inbound_columns
+    assert "correlation_id" in outcome_columns
+    assert "threads_unknown_effect_locks" in tables
+    assert "threads_operator_decisions" in tables
+
+
 def test_existing_database_requires_version_metadata_row(tmp_path):
     path = tmp_path / "threads.sqlite3"
     ThreadsStore(path)
@@ -289,7 +351,7 @@ def test_shared_store_lifecycle_methods_reject_another_accounts_operation(tmp_pa
     with pytest.raises(PolicyDeniedError, match="account mismatch"):
         other.reconcile("operation-1", now=NOW)
     with pytest.raises(PolicyDeniedError, match="account mismatch"):
-        other.abandon_unknown("operation-1", now=NOW)
+        other.abandon_unknown("operation-1", approval, now=NOW)
     assert owner.store.get("operation-1").state is OutboxState.UNKNOWN
     assert other.simulator.trace == []
 
@@ -385,6 +447,7 @@ def test_happy_path_preserves_multistep_provider_evidence(tmp_path):
         ("publish_container", container_id),
     ]
     assert service.simulator.network_calls == 0
+    assert service.authorization_provider.network_calls == 0
     with pytest.raises(ThreadsStoreError):
         service.dispatch("operation-1", approval, now=NOW)
 
@@ -805,8 +868,32 @@ def test_reconciliation_failure_preserves_unknown_and_abandonment_is_permanent(
     service.dispatch("operation-1", approval, now=NOW)
     service.simulator.set_fault("operation-1", "reconcile", Fault.RECONCILIATION)
     assert service.reconcile("operation-1", now=NOW).state is OutboxState.UNKNOWN
-    abandoned = service.abandon_unknown("operation-1", now=NOW)
+    with pytest.raises(ValueError, match="purpose"):
+        service.abandon_unknown("operation-1", approval, now=NOW)
+    abandonment_approval = trust_approval(
+        service,
+        approve(
+            reference="approval-abandon-operation-1",
+            purpose=ApprovalPurpose.ABANDON_UNKNOWN,
+        ),
+    )
+    service.store.claim_reconciliation(
+        operation_id="operation-1", account_ref="account-1", now=NOW
+    )
+    with pytest.raises(ThreadsStoreError, match="active operation"):
+        service.abandon_unknown("operation-1", abandonment_approval, now=NOW)
+    service.store.release_unknown_effect_lock(
+        target_operation_id="operation-1",
+        holder_operation_id="operation-1",
+        lock_kind="reconciliation",
+        required=True,
+    )
+    abandoned = service.abandon_unknown("operation-1", abandonment_approval, now=NOW)
     assert abandoned.state is OutboxState.UNKNOWN_ABANDONED
+    assert (
+        service.store.operator_decision_reference("operation-1", "abandon_unknown")
+        == "approval-abandon-operation-1"
+    )
     assert service.store.unresolved_for_account("account-1") == (abandoned,)
     with pytest.raises(ThreadsStoreError):
         service.reconcile("operation-1", now=NOW)
@@ -880,6 +967,97 @@ def test_replacement_is_blocked_if_target_reconciles_before_dispatch(tmp_path):
     service.reconcile("operation-1", now=NOW)
     with pytest.raises(PolicyDeniedError, match="no longer unresolved"):
         service.dispatch("operation-2", risk_approval, now=NOW)
+
+
+def test_replacement_publication_serializes_target_reconciliation(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    risk_approval = trust_approval(
+        service, approve("operation-2", duplicate_risk_acknowledged=True)
+    )
+    propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=risk_approval,
+    )
+    service.submit_for_approval("operation-2", now=NOW)
+    service.authorize("operation-2", risk_approval, now=NOW)
+    publish = service.simulator.publish
+
+    def publish_while_target_reconciles(item, container_id):
+        with pytest.raises(ThreadsStoreError, match="reserved"):
+            service.reconcile("operation-1", now=NOW)
+        assert service.store.get("operation-1").state is OutboxState.UNKNOWN
+        return publish(item, container_id)
+
+    monkeypatch.setattr(service.simulator, "publish", publish_while_target_reconciles)
+    replacement = service.dispatch("operation-2", risk_approval, now=NOW)
+    assert replacement.state is OutboxState.CONFIRMED
+    assert service.reconcile("operation-1", now=NOW).state is OutboxState.UNKNOWN
+
+
+def test_replacement_waits_when_target_reconciliation_claim_exists(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    risk_approval = trust_approval(
+        service, approve("operation-2", duplicate_risk_acknowledged=True)
+    )
+    propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=risk_approval,
+    )
+    service.submit_for_approval("operation-2", now=NOW)
+    service.authorize("operation-2", risk_approval, now=NOW)
+    service.store.claim_reconciliation(
+        operation_id="operation-1", account_ref="account-1", now=NOW
+    )
+    with pytest.raises(PolicyDeniedError, match="being reconciled"):
+        service.dispatch("operation-2", risk_approval, now=NOW)
+    blocked = service.store.get("operation-2")
+    assert blocked.state is OutboxState.READY
+    assert blocked.dispatch_evidence == "publish_not_transmitted"
+    service.store.release_unknown_effect_lock(
+        target_operation_id="operation-1",
+        holder_operation_id="operation-1",
+        lock_kind="reconciliation",
+        required=True,
+    )
+
+
+def test_replacement_crash_recovery_releases_target_reservation(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    risk_approval = trust_approval(
+        service, approve("operation-2", duplicate_risk_acknowledged=True)
+    )
+    propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=risk_approval,
+    )
+    service.submit_for_approval("operation-2", now=NOW)
+    service.authorize("operation-2", risk_approval, now=NOW)
+    service.simulator.set_fault(
+        "operation-2", "publish", Fault.CRASH_AFTER_TRANSMISSION
+    )
+    with pytest.raises(SimulatedCrash):
+        service.dispatch("operation-2", risk_approval, now=NOW)
+    with pytest.raises(ThreadsStoreError, match="reserved"):
+        service.reconcile("operation-1", now=NOW)
+    assert service.recover_sending("operation-2", now=NOW).state is OutboxState.UNKNOWN
+    assert service.reconcile("operation-1", now=NOW).state is OutboxState.UNKNOWN
 
 
 def test_replacement_cannot_bypass_an_additional_unknown_publication(tmp_path):
@@ -981,6 +1159,23 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
             now=NOW,
             approval_status="forged",
         )
+    with pytest.raises(ValueError, match="supplied together"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            operator_decision="abandon_unknown",
+        )
+    with pytest.raises(ValueError, match="operator decision"):
+        service.store.transition(
+            "operation-1",
+            OutboxState.AWAITING_APPROVAL,
+            reason="review",
+            now=NOW,
+            operator_decision="invalid_decision",
+            operator_approval_reference="approval-operator",
+        )
     with pytest.raises(ThreadsStoreError, match="unknown operation"):
         service.store.transition(
             "missing",
@@ -996,6 +1191,47 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
         )
     with pytest.raises(ThreadsStoreError, match="unknown state"):
         service.store.note_reconciliation("operation-1", "unresolved", now=NOW)
+
+
+def test_unknown_effect_lock_validation_fails_closed(tmp_path):
+    service = make_service(tmp_path)
+    propose(service)
+    assert (
+        service.store.operator_decision_reference("operation-1", "abandon_unknown")
+        is None
+    )
+    with pytest.raises(ThreadsStoreError, match="no longer reservable"):
+        service.store.reserve_replacement_publication(
+            replacement_operation_id="operation-1",
+            target_operation_id="operation-1",
+            account_ref="account-1",
+            now=NOW,
+        )
+    with pytest.raises(ThreadsStoreError, match="target is unavailable"):
+        service.store.claim_reconciliation(
+            operation_id="operation-1", account_ref="account-1", now=NOW
+        )
+    with pytest.raises(ValueError, match="lock kind"):
+        service.store.release_unknown_effect_lock(
+            target_operation_id="operation-1",
+            holder_operation_id="operation-1",
+            lock_kind="invalid",
+            required=True,
+        )
+    with pytest.raises(ValueError, match="release requirement"):
+        service.store.release_unknown_effect_lock(
+            target_operation_id="operation-1",
+            holder_operation_id="operation-1",
+            lock_kind="reconciliation",
+            required=1,
+        )
+    with pytest.raises(ThreadsStoreError, match="reservation is missing"):
+        service.store.release_unknown_effect_lock(
+            target_operation_id="operation-1",
+            holder_operation_id="operation-1",
+            lock_kind="reconciliation",
+            required=True,
+        )
 
 
 def test_stage_three_readiness_explicitly_reports_missing_live_transport(tmp_path):

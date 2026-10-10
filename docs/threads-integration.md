@@ -77,7 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-1 SQLite database in WAL mode; it does not alter the main
+separate version-2 SQLite database in WAL mode, including an atomic version-1
+migration; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -133,7 +134,9 @@ The closed lifecycle is:
 5. `confirmed` retains verified provider success evidence.
 6. `unknown` means an effect may have occurred and requires reconciliation.
 7. `unknown_abandoned` means reconciliation ended without resolving the effect;
-   uncertainty and identity remain permanent.
+   uncertainty and identity remain permanent. This transition requires a
+   current, purpose-bound `abandon_unknown` operator approval, whose reference
+   is durably recorded without replacing publication approval attribution.
 8. `cancelled` is allowed only before dispatch.
 9. `failed_terminal` records a confirmed rejection or exhausted proven
    pre-dispatch attempts.
@@ -174,14 +177,24 @@ replacement must link the unresolved operation and carry a separate
 authenticated approval that explicitly acknowledges duplicate-publication risk;
 it never changes or retries the original item.
 
+Immediately before a replacement publication, the store atomically reserves
+its unresolved target. Reconciliation takes an exclusive claim on the same
+target. These durable claims serialize the two operations, closing the window
+where reconciliation could confirm the original after the last policy check but
+before replacement publication. A crash leaves the reservation fail-closed;
+dispatch recovery releases it only after the replacement is durably classified.
+
 ## Inbound replies, mentions, and conversation outcomes
 
 Polling is split into `reply` and `mention` streams and requires the configured
 account and stream-specific scopes. Each verified event records provider event
 identity, source reference, account, kind, conversation ID, optional parent,
 provider event time, and bounded public content. An event page and its cursor
-commit in one SQLite transaction. A crash before commit safely replays; a replay
-after commit is suppressed by event ID.
+commit in one SQLite transaction. Each inbound event and conversation outcome
+also persists a bounded application correlation ID so ingestion, deliberation,
+and a later reply operation can share an internal trace without treating a
+provider ID as authority. A crash before commit safely replays; a replay after
+commit is suppressed by event ID.
 
 The loop has hard page, event, and elapsed-time limits. It rejects account/source
 mismatches, invalid source evidence, stale cursor commits, repeated cursors, and
