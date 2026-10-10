@@ -98,6 +98,7 @@ def _valid_origin(value: object) -> bool:
         parsed.scheme in {"http", "https"}
         and port != default_port
         and _valid_host(parsed.netloc)
+        and value == f"{parsed.scheme}://{parsed.netloc}"
         and not parsed.path
         and not parsed.query
         and not parsed.fragment
