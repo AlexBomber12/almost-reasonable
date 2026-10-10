@@ -1,6 +1,7 @@
 from dataclasses import asdict, replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 import pickle
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -71,6 +72,31 @@ def test_closed_public_fixture_receives_brief_bound_short_lived_authorization():
         subject,
         provider_config_version="hosted-search-v1",
         now=NOW + timedelta(minutes=10),
+    )
+
+
+def test_authorization_ttl_uses_absolute_time_across_dst_fall_back():
+    new_york = ZoneInfo("America/New_York")
+    issued_at = datetime(2024, 11, 3, 1, 55, tzinfo=new_york, fold=0)
+    subject = brief()
+    value = authorize_synthetic_public_research(
+        SyntheticPublicResearchFixture.AURORAL_SUBSTORMS,
+        subject,
+        provider_config_version="hosted-search-v1",
+        issued_at=issued_at,
+    )
+
+    assert value.issued_at == datetime(2024, 11, 3, 5, 55, tzinfo=UTC)
+    assert value.expires_at == datetime(2024, 11, 3, 6, 5, tzinfo=UTC)
+    assert value.permits(
+        subject,
+        provider_config_version="hosted-search-v1",
+        now=datetime(2024, 11, 3, 1, 4, 59, tzinfo=new_york, fold=1),
+    )
+    assert not value.permits(
+        subject,
+        provider_config_version="hosted-search-v1",
+        now=datetime(2024, 11, 3, 1, 5, tzinfo=new_york, fold=1),
     )
 
 
@@ -156,6 +182,20 @@ def test_authorization_is_revoked_by_replacement_serialization_or_other_brief():
             None,
             "hosted-search-v1",
             BrokenOffsetDateTime(2026, 10, 10, tzinfo=UTC),
+            ValueError,
+        ),
+        (
+            SyntheticPublicResearchFixture.AURORAL_SUBSTORMS,
+            None,
+            "hosted-search-v1",
+            datetime.min.replace(tzinfo=timezone(timedelta(hours=14))),
+            ValueError,
+        ),
+        (
+            SyntheticPublicResearchFixture.AURORAL_SUBSTORMS,
+            None,
+            "hosted-search-v1",
+            datetime.max.replace(tzinfo=UTC),
             ValueError,
         ),
     ],

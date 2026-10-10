@@ -110,9 +110,11 @@ screening without thereby gaining execution authority.
 `ResearchAuthorization` is frozen, slot-backed, non-representational evidence
 sealed with a process-local integrity key. Its seal covers the issuer, digest of
 the exact canonical brief, brief configuration version, provider configuration
-version, issuance time, and expiry. Authorization is revalidated when a request
-is built and before every provider attempt. Direct construction, dataclass
-replacement, serialization round-trips, stale timestamps, or reuse with another
+version, issuance time, and expiry. Issuance and expiry are normalized to an
+absolute UTC timeline before the bounded TTL is applied, including across DST
+transitions. Authorization is revalidated when a request is built and before
+every provider attempt. Direct construction, dataclass replacement,
+serialization round-trips, stale timestamps, or reuse with another
 brief/configuration do not confer authority.
 
 `authorize_synthetic_public_research` is intentionally not a classifier. It can

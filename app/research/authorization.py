@@ -1,7 +1,7 @@
 """Fail-closed authorization for sending a research brief outside the process."""
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 import hashlib
 import hmac
@@ -43,12 +43,13 @@ class ResearchAuthorization:
         provider_config_version: str,
         now: datetime,
     ) -> bool:
+        now_utc = _as_utc(now)
         if (
             self._authority is not _AUTHORIZATION_AUTHORITY
             or not isinstance(self._integrity, bytes)
             or type(brief) is not ResearchBrief
             or not brief.built_by_screened_pipeline
-            or not _valid_timestamp(now)
+            or now_utc is None
         ):
             return False
         try:
@@ -73,7 +74,7 @@ class ResearchAuthorization:
             and hmac.compare_digest(self.subject_digest, subject_digest)
             and self.brief_config_version == brief.trusted_config_version
             and self.provider_config_version == provider_config_version
-            and self.issued_at <= now < self.expires_at
+            and self.issued_at <= now_utc < self.expires_at
         )
 
 
@@ -92,18 +93,23 @@ def authorize_synthetic_public_research(
         raise ValueError("brief did not pass the screened construction pipeline")
     if not isinstance(provider_config_version, str) or not provider_config_version:
         raise ValueError("invalid provider configuration version")
-    if not _valid_timestamp(issued_at):
+    issued_at_utc = _as_utc(issued_at)
+    if issued_at_utc is None:
         raise ValueError("invalid authorization timestamp")
     if brief.to_json() != _synthetic_fixture_json(fixture):
         raise ValueError("brief does not match the trusted synthetic fixture")
 
+    try:
+        expires_at = issued_at_utc + _SYNTHETIC_AUTHORIZATION_TTL
+    except OverflowError as error:
+        raise ValueError("invalid authorization timestamp") from error
     authorization = ResearchAuthorization(
         issuer=f"synthetic-fixture:{fixture.value}",
         subject_digest=_brief_digest(brief),
         brief_config_version=brief.trusted_config_version,
         provider_config_version=provider_config_version,
-        issued_at=issued_at,
-        expires_at=issued_at + _SYNTHETIC_AUTHORIZATION_TTL,
+        issued_at=issued_at_utc,
+        expires_at=expires_at,
         _authority=_AUTHORIZATION_AUTHORITY,
     )
     object.__setattr__(
@@ -160,6 +166,15 @@ def _valid_timestamp(value: object) -> bool:
         return value.utcoffset() is not None
     except (OverflowError, ValueError):
         return False
+
+
+def _as_utc(value: object) -> datetime | None:
+    if not _valid_timestamp(value):
+        return None
+    try:
+        return value.astimezone(UTC)
+    except (OverflowError, ValueError):
+        return None
 
 
 def _authorization_integrity(
