@@ -273,13 +273,13 @@ class TestScheduler:
             valid_decision = None
         else:
             finished_at = self._clock.now()
-            if not isinstance(decision, AgentDecision):
-                outcome = SchedulerOutcome.FAILED
-                valid_decision = None
-            elif _execution_limit_exceeded(
+            if _execution_limit_exceeded(
                 started_at, finished_at, self._policy.max_execution_seconds
             ):
                 outcome = SchedulerOutcome.EXECUTION_LIMIT
+                valid_decision = None
+            elif not isinstance(decision, AgentDecision):
+                outcome = SchedulerOutcome.FAILED
                 valid_decision = None
             elif self._rate_limited(state, decision, finished_at):
                 outcome = SchedulerOutcome.RATE_LIMITED

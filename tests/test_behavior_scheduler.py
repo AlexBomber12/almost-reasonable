@@ -167,6 +167,24 @@ def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
         is SchedulerOutcome.EXECUTION_LIMIT
     )
 
+    late_invalid_clock = MutableClock(NOW)
+
+    def late_invalid(*_: object) -> str:
+        late_invalid_clock.advance(timedelta(seconds=3))
+        return "not-a-decision"
+
+    assert (
+        TestScheduler(
+            policy(),
+            InMemorySchedulerStore(),
+            late_invalid_clock,
+            late_invalid,  # type: ignore[arg-type]
+        )
+        .run((event("late-invalid"),))
+        .outcome
+        is SchedulerOutcome.EXECUTION_LIMIT
+    )
+
     timeout_clock = MutableClock(NOW)
 
     def timed_out(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:

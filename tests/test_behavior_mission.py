@@ -934,6 +934,24 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     with pytest.raises(ValueError, match="superseded.*snapshot"):
         repository.load()
 
+    overlapping_snapshots = json.loads(json.dumps(resolved))
+    rejected_overlap = json.loads(json.dumps(resolved["proposals"][0]))
+    rejected_overlap["proposal"]["proposal_id"] = "mp-overlap"
+    rejected_overlap["proposal"]["version_identity"] = "proposal-overlap"
+    rejected_overlap["proposal"]["initiating_event_id"] = "event-overlap"
+    rejected_overlap["proposal"]["correlation_id"] = "corr-overlap"
+    rejected_overlap["proposal"]["invariants"]["deployment_stage"] = "production"
+    rejected_overlap["confirmation"]["proposal_id"] = "mp-overlap"
+    rejected_overlap["confirmation"]["event_id"] = "confirm-overlap"
+    rejected_overlap["confirmation"]["correlation_id"] = "confirm-corr-overlap"
+    rejected_overlap["confirmation"]["outcome"] = ConfirmationOutcome.REJECTED.value
+    rejected_overlap["confirmation"]["invariants"]["deployment_stage"] = "production"
+    rejected_overlap["status"] = MissionStatus.REJECTED.value
+    overlapping_snapshots["proposals"].append(rejected_overlap)
+    path.write_text(json.dumps(overlapping_snapshots), encoding="utf-8")
+    with pytest.raises(ValueError, match="overlapping invariant snapshots"):
+        repository.load()
+
     late_superseded = json.loads(json.dumps(resolved))
     late_sibling = json.loads(json.dumps(pending["proposals"][0]))
     late_sibling["proposal"]["proposal_id"] = "mp-late"

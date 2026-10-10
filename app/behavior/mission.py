@@ -753,6 +753,36 @@ def _validate_active_mission(
         for record in records
     ):
         raise ValueError("superseded proposal has a conflicting invariant snapshot")
+    parent_replaced_at = {
+        record.proposal.current_mission_version: record.confirmation.decided_at
+        for record in confirmed
+        if record.confirmation is not None
+    }
+    resolution_times = {
+        record.proposal.proposal_id: (
+            record.confirmation.decided_at
+            if record.confirmation is not None
+            else parent_replaced_at.get(record.proposal.current_mission_version)
+            if record.status is MissionStatus.SUPERSEDED
+            else None
+        )
+        for record in records
+    }
+    if any(
+        left.proposal.current_mission_version == right.proposal.current_mission_version
+        and left.proposal.invariants != right.proposal.invariants
+        and (
+            resolution_times[right.proposal.proposal_id] is None
+            or left.proposal.decided_at < resolution_times[right.proposal.proposal_id]
+        )
+        and (
+            resolution_times[left.proposal.proposal_id] is None
+            or right.proposal.decided_at < resolution_times[left.proposal.proposal_id]
+        )
+        for index, left in enumerate(records)
+        for right in records[index + 1 :]
+    ):
+        raise ValueError("mission history has overlapping invariant snapshots")
     if any(
         record.status is MissionStatus.PENDING
         and record.proposal.current_mission_version != current.version
@@ -775,11 +805,6 @@ def _validate_active_mission(
             if record.confirmation is not None
         }
     )
-    parent_replaced_at = {
-        record.proposal.current_mission_version: record.confirmation.decided_at
-        for record in confirmed
-        if record.confirmation is not None
-    }
     invalid_parent = any(
         record.proposal.current_mission_version not in parent_activation
         or record.proposal.decided_at
