@@ -95,7 +95,7 @@ class SelfStateStore:
         context: TrustedPrincipalContext,
         change: InterestCandidateChange,
         *,
-        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
         return self._apply(
             context,
@@ -110,7 +110,7 @@ class SelfStateStore:
         context: TrustedPrincipalContext,
         change: InterestCandidateChange,
         *,
-        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
         return self._apply(
             context,
@@ -125,7 +125,7 @@ class SelfStateStore:
         context: TrustedPrincipalContext,
         change: BeliefCandidateChange,
         *,
-        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
         return self._apply(
             context,
@@ -140,7 +140,7 @@ class SelfStateStore:
         context: TrustedPrincipalContext,
         change: BeliefCandidateChange,
         *,
-        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
         return self._apply(
             context,
@@ -155,7 +155,7 @@ class SelfStateStore:
         context: TrustedPrincipalContext,
         change: GoalCandidateChange,
         *,
-        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
         return self._apply(
             context,
@@ -170,7 +170,7 @@ class SelfStateStore:
         context: TrustedPrincipalContext,
         change: GoalCandidateChange,
         *,
-        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
         return self._apply(
             context,
@@ -465,7 +465,7 @@ class SelfStateStore:
         change: InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange,
         *,
         creating: bool,
-        expected_candidate_revisions: tuple[tuple[str, int], ...],
+        expected_candidate_revisions: tuple[tuple[str, int], ...] | None,
     ) -> StateTransitionResult:
         self._validate_context(context)
         self._validate_change(state_type, change, creating=creating)
@@ -637,29 +637,19 @@ class SelfStateStore:
     def _validate_candidate_snapshot(
         connection: sqlite3.Connection,
         principal_id: str,
-        expected: tuple[tuple[str, int], ...],
+        expected: tuple[tuple[str, int], ...] | None,
     ) -> None:
-        if not expected:
+        if expected is None:
             return
         expected_by_id = dict(expected)
-        placeholders = ", ".join("?" for _ in expected_by_id)
         rows = connection.execute(
-            f"""
+            """
             SELECT
                 item.item_id,
                 item.current_revision,
                 (SELECT MAX(candidate.revision_number)
                  FROM state_revisions AS candidate
-                 WHERE candidate.item_key = item.item_key),
-                head_payload.retention_status,
-                EXISTS (
-                    SELECT 1
-                    FROM state_revisions AS tainted_revision
-                    JOIN protected_state_provenance AS tainted_source
-                      ON tainted_source.revision_key = tainted_revision.revision_key
-                    WHERE tainted_revision.item_key = item.item_key
-                      AND tainted_source.retention_status = 'invalidated'
-                )
+                 WHERE candidate.item_key = item.item_key)
             FROM state_items AS item
             JOIN state_revisions AS head_revision
               ON head_revision.item_key = item.item_key
@@ -669,16 +659,24 @@ class SelfStateStore:
             WHERE item.scope = 'private_candidate'
               AND item.audience_type = 'private_participant'
               AND item.audience_principal_id = ?
-              AND item.item_id IN ({placeholders})
+              AND head_payload.retention_status = 'active'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM state_revisions AS tainted_revision
+                  JOIN protected_state_provenance AS tainted_source
+                    ON tainted_source.revision_key = tainted_revision.revision_key
+                  WHERE tainted_revision.item_key = item.item_key
+                    AND tainted_source.retention_status = 'invalidated'
+              )
+            ORDER BY head_revision.revision_key DESC, item.item_id DESC
+            LIMIT ?
             """,
-            (principal_id, *expected_by_id),
+            (principal_id, MAX_PRIVATE_STATE_ITEMS_PER_RETRIEVAL),
         ).fetchall()
         actual = {
             item_id: current_revision
-            for item_id, current_revision, latest_revision, retention, invalidated in rows
+            for item_id, current_revision, latest_revision in rows
             if current_revision == latest_revision
-            and retention == "active"
-            and invalidated == 0
         }
         if actual != expected_by_id:
             raise SelfStateConflictError("candidate snapshot conflict")

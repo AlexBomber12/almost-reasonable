@@ -125,7 +125,7 @@ def screen_abstract_candidate(
             )
         overlap = len(common_words)
         denominator = max(1, min(len(set(candidate_words)), len(set(source_words))))
-        if len(candidate_words) >= 4 and overlap / denominator > 0.6:
+        if overlap / denominator > 0.6:
             return PrivacyScreenResult(
                 PRIVACY_SCREEN_VERSION,
                 PrivacyScreenDecision.REJECT,
@@ -139,7 +139,7 @@ def screen_abstract_candidate(
 
 
 def _normalized_words(value: str) -> tuple[str, ...]:
-    normalized = _normalize_privacy_text(value).casefold()
+    normalized = _canonical_identifier_text(value).casefold()
     return tuple(_WORD.findall(normalized))
 
 

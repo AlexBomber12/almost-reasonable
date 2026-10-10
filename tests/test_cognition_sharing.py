@@ -220,6 +220,28 @@ def test_control_whitespace_preserves_copy_detection_word_boundaries(sharing_set
     assert result.reason is AbstractReason.EXCESSIVE_SOURCE_OVERLAP
 
 
+@pytest.mark.parametrize(
+    ("source", "candidate"),
+    [
+        ("Alice has leukemia", "Alice has leukemia"),
+        (
+            "alpha beta gamma delta",
+            "al\u0338pha be\u0338ta ga\u0338mma de\u0338lta",
+        ),
+    ],
+)
+def test_short_and_combining_mark_copies_are_rejected(sharing_setup, source, candidate):
+    events, _, context, _ = sharing_setup
+    event_id = append_event(events, context, "canonical-copy", source)
+
+    result = AbstractToSharedValidator(events).validate(
+        context, proposal(event_id, candidate)
+    )
+
+    assert result.status is AbstractDecisionStatus.REJECTED
+    assert result.reason is AbstractReason.EXCESSIVE_SOURCE_OVERLAP
+
+
 def test_missing_fake_cross_scope_and_exposed_provenance_fail_closed(sharing_setup):
     events, _, context_a, event_a = sharing_setup
     context_b = principal("b")

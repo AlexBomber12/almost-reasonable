@@ -1154,6 +1154,57 @@ def test_candidate_invalidation_before_atomic_persist_rejects_new_output(
     )
 
 
+def test_candidate_addition_before_atomic_persist_rejects_stale_snapshot(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    proposed = InterestMemoryProposal(
+        proposal_context(event_id, "snapshot-addition-proposed"),
+        "interest-snapshot-addition-proposed",
+        "Proposed from an empty snapshot",
+        40,
+        InterestStatus.ACTIVE,
+        "A concurrent candidate would change extractor context.",
+    )
+    concurrent = replace(
+        proposed,
+        context=proposal_context(event_id, "snapshot-addition-concurrent"),
+        item_id="interest-snapshot-addition-concurrent",
+        topic="Concurrent candidate",
+    )
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(proposed))
+    durable_persist = engine._persist
+
+    def add_candidate_then_persist(
+        request_context,
+        requested_proposal,
+        identity,
+        decided_at,
+        expected_candidate_revisions,
+    ):
+        inserted = CognitionEngine(
+            events, state, extractor=FakeExtractor(concurrent)
+        ).process(context, event_id)
+        assert inserted.status is CognitionOutcomeStatus.PERSISTED
+        return durable_persist(
+            request_context,
+            requested_proposal,
+            identity,
+            decided_at,
+            expected_candidate_revisions,
+        )
+
+    monkeypatch.setattr(engine, "_persist", add_candidate_then_persist)
+
+    outcome = engine.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STALE_REVISION
+    assert {item.item_id for item in state.retrieve_private_candidates(context)} == {
+        "interest-snapshot-addition-concurrent"
+    }
+
+
 @pytest.mark.parametrize(
     "kind",
     [
