@@ -108,6 +108,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. ```This is entirely English prose```",
         "Да. ```python\nThis is entirely English conversational prose\n```",
         "Да. ```python\nThis is entirely English conversational prose\nreturn value\n```",
+        "Да. ~~~python\nThis is entirely English conversational prose\n```",
         "Да. ```This\nEnglish```",
     )
     for bypass in bypasses:
@@ -149,6 +150,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     )
     assert long_fence.accepted
     assert long_fence.foreign_prose_word_count == 0
+
+    tilde_fence = RussianOutputGate().assess(
+        "Да:\n~~~python\nfor item in items:\n    print(item)\n~~~"
+    )
+    assert tilde_fence.accepted
+    assert tilde_fence.foreign_prose_word_count == 0
 
     sql_fence = RussianOutputGate().assess(
         "Запрос:\n```sql\nSELECT username FROM users WHERE active = 1;\n```"

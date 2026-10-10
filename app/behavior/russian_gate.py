@@ -57,8 +57,8 @@ _URL = re.compile(
     re.IGNORECASE,
 )
 _FENCED_CODE = re.compile(
-    r"(?P<fence>`{3,})(?:(?P<language>[A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?"
-    r"(?P<content>.*?)(?P=fence)(?!`)",
+    r"(?P<fence>`{3,}|~{3,})(?:(?P<language>[A-Za-z0-9_+#.-]+)[ \t]*\r?\n)?"
+    r"(?P<content>.*?)(?P=fence)(?![`~])",
     re.DOTALL,
 )
 _INLINE_CODE = re.compile(r"`([^`]*)`")
