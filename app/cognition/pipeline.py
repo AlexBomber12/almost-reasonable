@@ -1,0 +1,567 @@
+"""Deterministic authorization bridge from experience to private self-state."""
+
+from datetime import datetime
+import re
+
+from app.core.core_self import CORE_SELF_VERSION
+from app.core.events import (
+    PrivateConversationEvent,
+    TrustedPrincipalContext,
+    VerificationStatus,
+)
+from app.core.self_state import (
+    BeliefCandidate,
+    BeliefCandidateChange,
+    BeliefStance,
+    BeliefStatus,
+    DecisionOrigin,
+    GoalCandidate,
+    GoalCandidateChange,
+    GoalStatus,
+    InterestCandidate,
+    InterestCandidateChange,
+    InterestStatus,
+    RevisionContext,
+    RevisionKind,
+    StateType,
+)
+from app.core.self_state_store import (
+    MAX_EVIDENCE_PER_REVISION,
+    SelfStateConflictError,
+    SelfStateStore,
+    SelfStateValidationError,
+)
+from app.core.store import EventStore, MAX_STATE_TEXT_BYTES
+
+from .contracts import (
+    BeliefMemoryProposal,
+    CognitionCapabilities,
+    CognitionOutcome,
+    CognitionOutcomeStatus,
+    CognitionReason,
+    Experience,
+    ExtractionRequest,
+    ExtractorIdentity,
+    GenericMemoryProposal,
+    GoalMemoryProposal,
+    InterestMemoryProposal,
+    InvalidationPlan,
+    InvalidationStatus,
+    MemoryExtractor,
+    MemoryKind,
+    NoChangeProposal,
+    ProposalContext,
+)
+
+
+_TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+_GENERIC_KINDS = {
+    MemoryKind.UNRESOLVED_QUESTION,
+    MemoryKind.CANDIDATE_USEFUL_MEMORY,
+    MemoryKind.CONTRADICTION_COUNTEREVIDENCE,
+}
+
+
+class CognitionEngine:
+    """Runs an optional extractor, then authorizes its proposal deterministically."""
+
+    def __init__(
+        self,
+        event_store: EventStore,
+        state_store: SelfStateStore,
+        *,
+        extractor: MemoryExtractor | None = None,
+        capabilities: CognitionCapabilities = CognitionCapabilities(),
+    ):
+        self._events = event_store
+        self._state = state_store
+        self._extractor = extractor
+        self._capabilities = capabilities
+
+    def process(
+        self, context: TrustedPrincipalContext, source_event_id: str
+    ) -> CognitionOutcome:
+        """Explicitly extract from one authorized experience and validate the result."""
+
+        if not self._capabilities.memory_extraction:
+            return self._rejected(CognitionReason.CAPABILITY_DISABLED)
+        if self._extractor is None:
+            return self._rejected(CognitionReason.EXTRACTOR_NOT_CONFIGURED)
+        source, visible_events = self._source_event(context, source_event_id)
+        if source is None:
+            return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
+        try:
+            identity = self._extractor.identity
+        except Exception:
+            return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        if not self._valid_identity(identity):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        current = self._state.retrieve_private_candidates(context)
+        request = ExtractionRequest(
+            experience=Experience(
+                event_id=source.event_id,
+                occurred_at=source.occurred_at,
+                content=source.content,
+                provenance=source.provenance,
+            ),
+            current_candidates=current,
+            core_self_version=CORE_SELF_VERSION,
+        )
+        try:
+            proposal = self._extractor.extract(request)
+        except Exception:
+            return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        return self._authorize(
+            context,
+            source_event_id,
+            proposal,
+            identity,
+            visible_events,
+            current,
+        )
+
+    def plan_source_invalidation(
+        self, context: TrustedPrincipalContext, source_event_id: str
+    ) -> InvalidationPlan:
+        """Identify affected revisions without pretending deletion integration exists."""
+
+        source, _ = self._source_event(context, source_event_id)
+        if source is None:
+            return InvalidationPlan(InvalidationStatus.REJECTED, source_event_id, ())
+        affected: list[tuple[str, str, int]] = []
+        for candidate in self._state.retrieve_private_candidates(context):
+            state_type = self._state_type(candidate)
+            history = self._state.retrieve_private_revision_history(
+                context, state_type, candidate.item_id
+            )
+            for revision in history:
+                evidence = self._state.inspect_private_revision_evidence(
+                    context, state_type, candidate.item_id, revision.revision
+                )
+                if source_event_id in {item.event_id for item in evidence}:
+                    affected.append(
+                        (state_type.value, candidate.item_id, revision.revision)
+                    )
+        return InvalidationPlan(
+            InvalidationStatus.PENDING_INTEGRATION,
+            source_event_id,
+            tuple(affected),
+        )
+
+    def _authorize(
+        self,
+        context: TrustedPrincipalContext,
+        source_event_id: str,
+        proposal: object,
+        identity: ExtractorIdentity,
+        visible_events: tuple[PrivateConversationEvent, ...],
+        current: tuple[InterestCandidate | BeliefCandidate | GoalCandidate, ...],
+    ) -> CognitionOutcome:
+        if isinstance(proposal, NoChangeProposal):
+            return self._authorize_no_change(proposal, source_event_id, visible_events)
+        if not isinstance(
+            proposal,
+            (
+                InterestMemoryProposal,
+                BeliefMemoryProposal,
+                GoalMemoryProposal,
+                GenericMemoryProposal,
+            ),
+        ):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        expected_kind = {
+            InterestMemoryProposal: MemoryKind.DURABLE_INTEREST,
+            BeliefMemoryProposal: MemoryKind.BELIEF_OR_HYPOTHESIS,
+            GoalMemoryProposal: MemoryKind.GOAL_OR_INTENTION,
+        }.get(type(proposal))
+        if expected_kind is not None and proposal.memory_kind is not expected_kind:
+            return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
+        if isinstance(proposal, GenericMemoryProposal):
+            if (
+                not isinstance(proposal.memory_kind, MemoryKind)
+                or proposal.memory_kind not in _GENERIC_KINDS
+            ):
+                return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
+        reason = self._validate_common(
+            proposal.context, source_event_id, visible_events
+        )
+        if reason is not None:
+            return self._rejected(reason, self._safe_kind(proposal))
+        if isinstance(proposal, GenericMemoryProposal):
+            return self._authorize_generic(proposal)
+        if not self._valid_specific_types(proposal):
+            return self._rejected(
+                CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
+            )
+        if (
+            not isinstance(proposal, BeliefMemoryProposal)
+            and proposal.context.counterevidence_event_ids
+        ):
+            return self._rejected(
+                CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
+            )
+        if not self._capabilities.private_state_write:
+            return self._rejected(
+                CognitionReason.CAPABILITY_DISABLED, proposal.memory_kind
+            )
+        if isinstance(proposal, BeliefMemoryProposal):
+            if proposal.verification is not VerificationStatus.UNVERIFIED:
+                return self._rejected(
+                    CognitionReason.VERIFICATION_MISMATCH, proposal.memory_kind
+                )
+            if not self._consistent_confidence(proposal):
+                return self._rejected(
+                    CognitionReason.INCONSISTENT_CONFIDENCE, proposal.memory_kind
+                )
+        existing = next(
+            (item for item in current if item.item_id == proposal.item_id), None
+        )
+        reason = self._validate_revision_target(proposal, existing)
+        if reason is not None:
+            return self._rejected(reason, proposal.memory_kind)
+        try:
+            transition = self._persist(context, proposal, identity)
+        except SelfStateConflictError:
+            return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
+        except SelfStateValidationError:
+            return self._rejected(CognitionReason.STORE_REJECTED, proposal.memory_kind)
+        return CognitionOutcome(
+            CognitionOutcomeStatus.PERSISTED,
+            CognitionReason.AUTHORIZED,
+            proposal.memory_kind,
+            transition=transition,
+        )
+
+    @staticmethod
+    def _authorize_no_change(
+        proposal: NoChangeProposal,
+        source_event_id: str,
+        visible_events: tuple[PrivateConversationEvent, ...],
+    ) -> CognitionOutcome:
+        visible_ids = {item.event_id for item in visible_events}
+        if proposal.source_event_id != source_event_id:
+            return CognitionEngine._rejected(CognitionReason.SOURCE_MISMATCH)
+        if (
+            not CognitionEngine._valid_text(proposal.reason)
+            or type(proposal.considered_evidence_ids) is not tuple
+            or not proposal.considered_evidence_ids
+            or len(proposal.considered_evidence_ids) > MAX_EVIDENCE_PER_REVISION
+        ):
+            return CognitionEngine._rejected(CognitionReason.INVALID_PROPOSAL)
+        if any(
+            not CognitionEngine._valid_token(item)
+            for item in proposal.considered_evidence_ids
+        ) or len(set(proposal.considered_evidence_ids)) != len(
+            proposal.considered_evidence_ids
+        ):
+            return CognitionEngine._rejected(CognitionReason.INVALID_PROPOSAL)
+        if any(item not in visible_ids for item in proposal.considered_evidence_ids):
+            return CognitionEngine._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
+        return CognitionOutcome(
+            CognitionOutcomeStatus.NO_CHANGE,
+            CognitionReason.INSUFFICIENT_EVIDENCE,
+            no_change=proposal,
+        )
+
+    @staticmethod
+    def _validate_common(
+        proposal: ProposalContext,
+        source_event_id: str,
+        visible_events: tuple[PrivateConversationEvent, ...],
+    ) -> CognitionReason | None:
+        if not isinstance(proposal, ProposalContext):
+            return CognitionReason.INVALID_PROPOSAL
+        if proposal.source_event_id != source_event_id:
+            return CognitionReason.SOURCE_MISMATCH
+        if (
+            not CognitionEngine._valid_token(proposal.operation_id)
+            or not CognitionEngine._valid_text(proposal.reason)
+            or not CognitionEngine._valid_time(proposal.proposed_at)
+            or not CognitionEngine._valid_time(proposal.review_at)
+            or type(proposal.supporting_event_ids) is not tuple
+            or not proposal.supporting_event_ids
+            or type(proposal.counterevidence_event_ids) is not tuple
+            or proposal.source_event_id not in proposal.supporting_event_ids
+            or len(proposal.supporting_event_ids)
+            + len(proposal.counterevidence_event_ids)
+            + 1
+            > MAX_EVIDENCE_PER_REVISION
+        ):
+            return CognitionReason.INVALID_PROPOSAL
+        all_ids = (*proposal.supporting_event_ids, *proposal.counterevidence_event_ids)
+        if any(not CognitionEngine._valid_token(item) for item in all_ids):
+            return CognitionReason.INVALID_PROPOSAL
+        if len(set(all_ids)) != len(all_ids):
+            return CognitionReason.EVIDENCE_ROLE_CONFLICT
+        visible_ids = {item.event_id for item in visible_events}
+        if any(item not in visible_ids for item in all_ids):
+            return CognitionReason.EVIDENCE_NOT_FOUND
+        return None
+
+    @staticmethod
+    def _authorize_generic(proposal: GenericMemoryProposal) -> CognitionOutcome:
+        if (
+            not CognitionEngine._valid_text(proposal.statement)
+            or type(proposal.confidence) is not float
+            or not 0.0 <= proposal.confidence <= 1.0
+        ):
+            return CognitionEngine._rejected(
+                CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
+            )
+        if proposal.verification is not VerificationStatus.UNVERIFIED:
+            return CognitionEngine._rejected(
+                CognitionReason.VERIFICATION_MISMATCH, proposal.memory_kind
+            )
+        return CognitionOutcome(
+            CognitionOutcomeStatus.PENDING_NOT_PERSISTED,
+            CognitionReason.PERSISTENCE_NOT_AVAILABLE,
+            proposal.memory_kind,
+            pending_proposal=proposal,
+        )
+
+    @staticmethod
+    def _validate_revision_target(
+        proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
+        existing: InterestCandidate | BeliefCandidate | GoalCandidate | None,
+    ) -> CognitionReason | None:
+        expected = proposal.context.expected_revision
+        if expected is None:
+            if proposal.status in {
+                InterestStatus.ABANDONED,
+                BeliefStatus.ABANDONED,
+                GoalStatus.COMPLETED,
+                GoalStatus.ABANDONED,
+            }:
+                return CognitionReason.INVALID_STATUS_TRANSITION
+            return None
+        if (
+            type(expected) is not int
+            or existing is None
+            or expected != existing.revision
+        ):
+            return CognitionReason.STALE_REVISION
+        if not CognitionEngine._same_state_type(proposal, existing):
+            return CognitionReason.STALE_REVISION
+        if isinstance(existing, InterestCandidate):
+            allowed = {
+                InterestStatus.ACTIVE: {
+                    InterestStatus.ACTIVE,
+                    InterestStatus.SUSPENDED,
+                    InterestStatus.ABANDONED,
+                },
+                InterestStatus.SUSPENDED: {
+                    InterestStatus.ACTIVE,
+                    InterestStatus.SUSPENDED,
+                    InterestStatus.ABANDONED,
+                },
+                InterestStatus.ABANDONED: {InterestStatus.ABANDONED},
+            }
+        elif isinstance(existing, BeliefCandidate):
+            allowed = {
+                BeliefStatus.ACTIVE: {
+                    BeliefStatus.ACTIVE,
+                    BeliefStatus.SUSPENDED,
+                    BeliefStatus.ABANDONED,
+                },
+                BeliefStatus.SUSPENDED: {
+                    BeliefStatus.ACTIVE,
+                    BeliefStatus.SUSPENDED,
+                    BeliefStatus.ABANDONED,
+                },
+                BeliefStatus.ABANDONED: {BeliefStatus.ABANDONED},
+            }
+        else:
+            allowed = {
+                GoalStatus.ACTIVE: {
+                    GoalStatus.ACTIVE,
+                    GoalStatus.SUSPENDED,
+                    GoalStatus.COMPLETED,
+                    GoalStatus.ABANDONED,
+                },
+                GoalStatus.SUSPENDED: {
+                    GoalStatus.ACTIVE,
+                    GoalStatus.SUSPENDED,
+                    GoalStatus.COMPLETED,
+                    GoalStatus.ABANDONED,
+                },
+                GoalStatus.COMPLETED: {GoalStatus.COMPLETED},
+                GoalStatus.ABANDONED: {GoalStatus.ABANDONED},
+            }
+        if proposal.status not in allowed[existing.status]:
+            return CognitionReason.INVALID_STATUS_TRANSITION
+        return None
+
+    def _persist(
+        self,
+        context: TrustedPrincipalContext,
+        proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
+        identity: ExtractorIdentity,
+    ):
+        revision = RevisionContext(
+            operation_id=proposal.context.operation_id,
+            expected_revision=proposal.context.expected_revision,
+            reason=proposal.context.reason,
+            decided_at=proposal.context.proposed_at,
+            initiating_event_id=proposal.context.source_event_id,
+            kind=(
+                RevisionKind.OPERATIONAL_TRANSITION
+                if isinstance(proposal, GoalMemoryProposal)
+                else RevisionKind.TENTATIVE_INTERPRETATION
+            ),
+            decision_origin=DecisionOrigin.MODEL,
+            model_identifier=identity.model_identifier,
+            prompt_version=identity.prompt_version,
+        )
+        creating = proposal.context.expected_revision is None
+        if isinstance(proposal, InterestMemoryProposal):
+            change = InterestCandidateChange(
+                proposal.item_id,
+                proposal.topic,
+                proposal.strength,
+                proposal.status,
+                proposal.reason_for_interest,
+                proposal.context.supporting_event_ids,
+                proposal.context.review_at,
+                revision,
+            )
+            method = (
+                self._state.create_interest_candidate
+                if creating
+                else self._state.revise_interest_candidate
+            )
+        elif isinstance(proposal, BeliefMemoryProposal):
+            change = BeliefCandidateChange(
+                proposal.item_id,
+                proposal.proposition,
+                proposal.stance,
+                proposal.confidence,
+                proposal.status,
+                proposal.context.supporting_event_ids,
+                proposal.context.counterevidence_event_ids,
+                proposal.alternatives,
+                proposal.verification,
+                proposal.context.review_at,
+                revision,
+            )
+            method = (
+                self._state.create_belief_candidate
+                if creating
+                else self._state.revise_belief_candidate
+            )
+        else:
+            change = GoalCandidateChange(
+                proposal.item_id,
+                proposal.description,
+                proposal.rationale,
+                proposal.priority,
+                proposal.status,
+                proposal.constraints,
+                proposal.context.supporting_event_ids,
+                proposal.review_condition,
+                proposal.context.review_at,
+                revision,
+            )
+            method = (
+                self._state.create_goal_candidate
+                if creating
+                else self._state.revise_goal_candidate
+            )
+        return method(context, change)
+
+    def _source_event(
+        self, context: TrustedPrincipalContext, source_event_id: str
+    ) -> tuple[PrivateConversationEvent | None, tuple[PrivateConversationEvent, ...]]:
+        events = self._events.retrieve_private_events(context)
+        source = next(
+            (item for item in events if item.event_id == source_event_id), None
+        )
+        return source, events
+
+    @staticmethod
+    def _consistent_confidence(proposal: BeliefMemoryProposal) -> bool:
+        if type(proposal.confidence) is not float:
+            return False
+        if proposal.stance is BeliefStance.UNCERTAIN:
+            return 0.0 <= proposal.confidence <= 0.5
+        return 0.5 <= proposal.confidence <= 1.0
+
+    @staticmethod
+    def _valid_specific_types(proposal: object) -> bool:
+        if isinstance(proposal, InterestMemoryProposal):
+            return type(proposal.strength) is int and isinstance(
+                proposal.status, InterestStatus
+            )
+        if isinstance(proposal, BeliefMemoryProposal):
+            return isinstance(proposal.stance, BeliefStance) and isinstance(
+                proposal.status, BeliefStatus
+            )
+        return (
+            isinstance(proposal, GoalMemoryProposal)
+            and type(proposal.priority) is int
+            and isinstance(proposal.status, GoalStatus)
+        )
+
+    @staticmethod
+    def _same_state_type(proposal: object, existing: object) -> bool:
+        return (
+            (
+                isinstance(proposal, InterestMemoryProposal)
+                and isinstance(existing, InterestCandidate)
+            )
+            or (
+                isinstance(proposal, BeliefMemoryProposal)
+                and isinstance(existing, BeliefCandidate)
+            )
+            or (
+                isinstance(proposal, GoalMemoryProposal)
+                and isinstance(existing, GoalCandidate)
+            )
+        )
+
+    @staticmethod
+    def _state_type(candidate: object) -> StateType:
+        if isinstance(candidate, InterestCandidate):
+            return StateType.INTEREST
+        if isinstance(candidate, BeliefCandidate):
+            return StateType.BELIEF
+        return StateType.GOAL
+
+    @staticmethod
+    def _safe_kind(proposal: object) -> MemoryKind | None:
+        kind = getattr(proposal, "memory_kind", None)
+        return kind if isinstance(kind, MemoryKind) else None
+
+    @staticmethod
+    def _valid_identity(identity: object) -> bool:
+        return (
+            isinstance(identity, ExtractorIdentity)
+            and CognitionEngine._valid_token(identity.model_identifier)
+            and CognitionEngine._valid_token(identity.prompt_version)
+        )
+
+    @staticmethod
+    def _valid_token(value: object) -> bool:
+        return isinstance(value, str) and _TOKEN.fullmatch(value) is not None
+
+    @staticmethod
+    def _valid_text(value: object) -> bool:
+        if not isinstance(value, str) or not value.strip():
+            return False
+        try:
+            return len(value.encode("utf-8")) <= MAX_STATE_TEXT_BYTES
+        except UnicodeEncodeError:
+            return False
+
+    @staticmethod
+    def _valid_time(value: object) -> bool:
+        return (
+            isinstance(value, datetime)
+            and value.tzinfo is not None
+            and value.utcoffset() is not None
+        )
+
+    @staticmethod
+    def _rejected(
+        reason: CognitionReason, memory_kind: MemoryKind | None = None
+    ) -> CognitionOutcome:
+        return CognitionOutcome(CognitionOutcomeStatus.REJECTED, reason, memory_kind)
