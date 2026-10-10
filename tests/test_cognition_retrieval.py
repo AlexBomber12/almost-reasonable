@@ -210,6 +210,10 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
             (event_a1,),
         )
 
+    retry_plan = engine.plan_source_invalidation(context_a, event_a1)
+    assert retry_plan.status is InvalidationStatus.PENDING_INTEGRATION
+    assert retry_plan.affected_items == (("interest", "interest-a-space", 1),)
+
     selected = MemoryContextSelector(events, state).select(
         context_a,
         RetrievalRequest(

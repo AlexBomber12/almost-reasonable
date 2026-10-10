@@ -293,7 +293,7 @@ class CognitionReadStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND source.event_id = ?
-                      AND source.retention_status = 'active'
+                      AND source.retention_status IN ('active', 'invalidated')
                     ORDER BY item.state_type, item.item_id, revision.revision_number
                     """,
                     (context.principal_id.value, event_id),
