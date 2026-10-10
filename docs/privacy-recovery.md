@@ -1,0 +1,192 @@
+# Privacy consent, deletion, and recovery foundations
+
+Status: foundation only. This change does **not** enroll participants, activate a
+private-to-public path, or make Stage 2 privacy complete.
+
+## Security boundary and guarantees
+
+`app/privacy` accepts control operations only with a `TrustedPrivacyContext`
+whose origin is `authenticated_control`. Constructing that value is not
+authentication. The future Private Chat or Owner Control boundary must construct
+it only after server-side authentication and anti-replay/CSRF validation; chat
+text, model output, an asserted participant ID, and an owner claim cannot do so.
+
+Consent is an immutable, typed grant for one principal, exact content reference,
+audience, purpose (`identifiable_quotation` or `identifiable_disclosure`), grant
+time, expiry, trusted actor, authentication event, revision, operation ID, and
+correlation ID. Use is checked against the current ledger at the time of use.
+Missing, expired, revoked, wrong-principal, wrong-content, wrong-audience, and
+wrong-purpose grants fail closed. Revocation is a separate authenticated,
+idempotent operation. Neither purpose grants administrative or infrastructure
+privilege. Revocation prevents later use; it cannot recall an earlier
+publication or external transmission.
+
+Ordinary derivatives must retain every source audience. The only proposed
+cross-scope transition is `abstract_to_shared`. Its validator rejects explicit
+identifier, private-canary, personal-information, quotation, recognizable
+paraphrase, relationship, attribution, excessive-overlap, missing-provenance,
+and failed/uncertain semantic-screen flags. An accepted result is only eligible
+for later integrated policy evaluation: `activation_allowed` is always false in
+this branch. It never publishes or authorizes identifiable disclosure. Protected
+source references remain available to deletion/reassessment and must not be
+rendered to another participant. The screen reduces risk but cannot prove
+anonymity; with two participants, source inference remains possible. Safe
+general intellectual abstraction does not require a separate consent per change.
+
+## Protected privacy ledger
+
+`PrivacyLedger` is a separate, schema-versioned SQLite database with owner-only
+mode `0600`. Its records contain control metadata, not message payloads, prompts,
+provider responses, secrets, or an unkeyed hash of private content. It stores:
+
+- exact consent grants and revocations;
+- deletion operation identity, source reference/category, times, disposition,
+  reason code, authenticated actor, authentication event, and correlation;
+- payload-free technical audit records;
+- versioned enrollment-notice acknowledgements; and
+- sanitized restore outcomes.
+
+The privacy ledger and application database are independent SQLite files. Their
+commits are **not atomic**. Deletion therefore commits `pending` to the privacy
+ledger before calling the application erasure adapter. A crash at that boundary
+leaves a durable pending entry. Startup/restore integration must reconcile every
+`pending` or `incomplete_blocked` entry before participant reads. Adapter failure,
+missing provenance, an incomplete invalidation set, or an unwritten tombstone is
+`incomplete_blocked`, never `applied`.
+
+Deletion has five operator-visible dispositions: `pending`, `applied`,
+`incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use
+references, categories, and reason codes only; they do not display deleted
+content.
+
+## Application erasure adapter and migration specification
+
+EventStore schema v3 is the known source model, but it exposes no reviewed public
+API that can atomically remove a private payload and invalidate every dependent
+memory, summary, revision, index, abstraction, and duplicate key. This branch
+therefore does not mutate EventStore tables and does not present partial SQL as a
+complete deletion. `ErasureAdapter` is the strict integration boundary.
+
+For one `DeletionRequest`, an integrated adapter must make an idempotent
+transaction in the application database which:
+
+1. selects the exact authenticated principal-scoped eligible source;
+2. deletes or irreversibly anonymizes the private payload;
+3. preserves only a content-free event tombstone;
+4. follows protected provenance and invalidates derived private memory,
+   summaries, revision rationales, shared abstractions, and search/index rows;
+5. destroys bounded/keyed duplicate material where applicable; and
+6. returns all required `ContentCategory` values only after those effects commit.
+
+The adapter must return blockers, including missing source provenance, instead
+of guessing. Legal holds/public actions must be reported as not eligible by the
+authenticated integration layer. It must be safe to repeat after an uncertain
+process crash.
+
+If integration needs EventStore schema v4, its reviewed migration must add
+protected source-to-derived edges for every memory/summary/revision/index/shared
+abstraction, explicit retention/invalidation states, and references to
+destroyable duplicate-key material. It must preserve v3 event identities,
+principal audiences, and content-free tombstones; migrate in one application-DB
+transaction; reject orphaned or untyped provenance; support rollback before
+commit; and include v3-to-v4, interrupted-migration, cascade, concurrency, and
+restore tests. The privacy ledger remains separately versioned. No such shared
+schema migration is performed here.
+
+## WAL-consistent backup
+
+`create_sqlite_backup` uses the SQLite online backup API against a read-only
+source connection. It never copies only the main file, so committed WAL content
+is included in a consistent SQLite snapshot. Before returning, it verifies the
+expected `schema_metadata` version and `PRAGMA integrity_check`. A separate
+owner-only metadata file records only format version, database schema version,
+UTC creation time, and backup filename; it contains no participant content.
+
+Source, destination, and metadata paths must be absolute regular paths. Leaf
+symbolic links, symbolic-link destinations, unsafe parents, existing outputs,
+schema mismatch, integrity failure, interruption, and SQLite busy/locked faults
+fail closed. Outputs are created with `O_EXCL|O_NOFOLLOW` and mode `0600`.
+Failure removes only files created by that backup attempt. Existing production
+databases are never overwritten by default. This is a purpose-specific SQLite
+workflow, not a general file-copy capability.
+
+Deployment still must decide an encrypted backup location, encryption/key
+lifecycle, backup schedule, retention/expiry, restore drills, and which operating
+system account owns the directories.
+
+## Quarantined restore
+
+Restore always creates a new, non-existing quarantine database. Opening SQLite
+successfully is insufficient. The workflow:
+
+1. validates protected metadata, expected schema, and the backup database;
+2. makes a SQLite-consistent quarantine copy;
+3. loads the current external privacy ledger;
+4. idempotently applies every retained deletion entry, including entries later
+   than the snapshot, through `RestoreAdapter`;
+5. applies every current consent revocation;
+6. requires the adapter to rebuild or invalidate dependent state and indexes;
+7. confirms that no applicable pending deletion remains;
+8. records a payload-free restore outcome; and
+9. writes an owner-only `.ready.json` eligibility marker only after success.
+
+Any adapter exception, incomplete cascade, revocation failure, rebuild failure,
+unknown schema, malformed metadata, or pending deletion blocks activation. The
+quarantine file is never exposed through a participant retrieval API by this
+package. An operator/integration layer may activate only a database with a
+current successful outcome and matching readiness marker. There is still a
+non-atomic boundary between quarantine data, the privacy ledger, and the marker:
+crashes before the marker remain fail-closed, and all operations are idempotent
+for reconciliation.
+
+## Russian pre-enrollment notice
+
+The versioned `NOTICE_RU` template explains before first use that:
+
+- private conversation content may be processed by OpenAI;
+- Cloudflare processes tunnel traffic;
+- Meta processes published Threads material and replies;
+- the infrastructure owner/operator may technically access local storage;
+- private ideas may influence shared abstractions;
+- with two participants, another person may infer the likely source;
+- identifiable quotation/disclosure needs exact structured consent;
+- eligible local data can be deleted and consent can be revoked; and
+- local deletion cannot guarantee deletion by OpenAI, Cloudflare, Meta,
+  recipients, caches, or other external systems.
+
+The template deliberately invents no processor promise or final retention
+period. Before real enrollment, operator/legal review must confirm jurisdiction
+and legal basis, current processor terms and regions, local and provider
+retention, deletion SLA and legal holds, export/incident policy, encryption and
+key lifecycle, backup expiry, the final Russian wording, and the authentication,
+consent, revocation, and acknowledgement UX.
+
+## Integration contract
+
+| Consumer | Required integration |
+| --- | --- |
+| Private Chat | Authenticate before persistence; construct trusted control contexts server-side; render the versioned notice; obtain acknowledgment; expose exact grant, revoke, deletion, and payload-free status UI with CSRF/anti-replay protection. |
+| Cognition | Preserve protected source edges on every derivative; call ordinary-audience and abstraction validators; implement erasure/recovery adapters; invalidate/reassess all materially tainted state without exposing origin metadata. |
+| Research | Minimize briefs, exclude private payload/provenance and identifiers, and keep attribution/public-evidence gates independent of consent to quote. |
+| Threads | Check the exact current consent immediately before an identifiable outbound side effect; a passed abstraction result is not publication approval. |
+| Behavior | Filter by principal/audience/purpose before ranking or model exposure; use the fail-closed abstraction result and never interpret chat/model output as control authority. |
+| Owner Control | Protect the ledger/backup directories and keys; show payload-free audit/deletion/restore status; reconcile pending operations before reads; require human authorization for activation. |
+
+Stage 2 privacy remains blocked until these interfaces are implemented together,
+participant/admin authentication and recovery are finalized, EventStore has a
+reviewed complete erasure cascade, encryption/key management and retention are
+configured, the notice receives operator/legal approval, and the combined
+two-participant consent → revoke → delete → old-backup restore scenario passes.
+
+## Deterministic evidence in this branch
+
+The synthetic suite covers exact consent and idempotent revocation; wrong
+principal/audience/purpose/content and expiry; chat/model/owner forgery;
+cross-scope abstraction canaries and direct identifiers; deletion idempotency,
+incomplete status, missing provenance, adapter exceptions, crash after ledger
+commit, restart and retry; owner-only ledger persistence; concurrent WAL writes;
+backup interruption, schema, malformed/symlink path, busy/locked and sanitized
+failure cases; old-snapshot payload reconciliation before eligibility;
+revocation, tainted-category, and dependency rebuild failures; sanitized audit;
+and versioned Russian notice acknowledgement. Tests contain only synthetic data,
+make no provider call, and require no credential.

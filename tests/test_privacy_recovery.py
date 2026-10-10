@@ -1,0 +1,488 @@
+from datetime import UTC, datetime, timedelta
+import json
+from pathlib import Path
+import sqlite3
+import stat
+import threading
+
+import pytest
+
+from app.privacy import recovery as recovery_module
+
+from app.privacy import (
+    BackupBusyError,
+    BackupError,
+    ConsentGrant,
+    ConsentPurpose,
+    ConsentService,
+    ContentCategory,
+    DeletionCoordinator,
+    DeletionRequest,
+    ErasureReport,
+    NOTICE_RU,
+    NOTICE_VERSION,
+    NoticeService,
+    OperationOrigin,
+    PrivacyLedger,
+    QuarantinedRestore,
+    RestoreDisposition,
+    TrustedPrivacyContext,
+    create_sqlite_backup,
+)
+
+
+NOW = datetime(2026, 10, 10, 14, 0, tzinfo=UTC)
+
+
+def context():
+    return TrustedPrivacyContext(
+        "participant-a", "actor-a", "auth-a", OperationOrigin.CONTROL
+    )
+
+
+def make_source(path, message="synthetic deleted private message CANARY-RESTORE"):
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA journal_mode=WAL")
+    connection.execute(
+        "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
+    )
+    connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
+    connection.execute(
+        "CREATE TABLE synthetic_private(event_id TEXT PRIMARY KEY, content TEXT)"
+    )
+    connection.execute(
+        "INSERT INTO synthetic_private VALUES('event-001', ?)", (message,)
+    )
+    connection.commit()
+    return connection
+
+
+class RestoreAdapter:
+    def __init__(self, path, *, fail=False):
+        self.path = path
+        self.fail = fail
+        self.revocations = []
+
+    def apply_deletion(self, record):
+        if self.fail:
+            return ErasureReport(False, False, frozenset(), ("integration_blocked",))
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                "DELETE FROM synthetic_private WHERE event_id = ?",
+                (record.content_reference,),
+            )
+        return ErasureReport(
+            True,
+            True,
+            frozenset(ContentCategory.required_erasure_categories()),
+            (),
+        )
+
+    def apply_revocation(self, consent_id, revoked_at):
+        self.revocations.append((consent_id, revoked_at))
+        return not self.fail
+
+    def rebuild_dependencies(self):
+        return not self.fail
+
+
+def pending_deletion(ledger):
+    request = DeletionRequest(
+        "delete-operation-001",
+        "participant-a",
+        "event-001",
+        ContentCategory.PRIVATE_PAYLOAD,
+        NOW + timedelta(minutes=10),
+        "actor-a",
+        "delete-correlation-001",
+        "auth-a",
+    )
+
+    class Crash(BaseException):
+        pass
+
+    with pytest.raises(Crash):
+        DeletionCoordinator(ledger, object()).delete(
+            context(), request, after_pending=lambda _: (_ for _ in ()).throw(Crash())
+        )
+
+
+def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    writer = make_source(source, "synthetic baseline")
+    stop = threading.Event()
+
+    def write_rows():
+        index = 0
+        connection = sqlite3.connect(source)
+        while not stop.is_set():
+            connection.execute(
+                "INSERT OR REPLACE INTO synthetic_private VALUES(?, ?)",
+                (f"event-{index + 2}", f"synthetic-{index}"),
+            )
+            connection.commit()
+            index += 1
+        connection.close()
+
+    thread = threading.Thread(target=write_rows)
+    thread.start()
+    destination = tmp_path / "backup.sqlite3"
+    try:
+        metadata = create_sqlite_backup(source, destination, 3, NOW)
+    finally:
+        stop.set()
+        thread.join()
+        writer.close()
+
+    with sqlite3.connect(destination) as restored:
+        assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+        assert (
+            restored.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
+            >= 1
+        )
+    assert metadata.schema_version == 3
+    assert stat.S_IMODE(destination.stat().st_mode) == 0o600
+    assert stat.S_IMODE(metadata.path.stat().st_mode) == 0o600
+
+
+def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    with pytest.raises(BackupError, match="absolute"):
+        create_sqlite_backup(Path("relative.sqlite3"), tmp_path / "x.sqlite3", 3, NOW)
+    with pytest.raises(BackupError, match="absolute"):
+        create_sqlite_backup(source, Path("relative.sqlite3"), 3, NOW)
+    symlink = tmp_path / "source-link.sqlite3"
+    symlink.symlink_to(source)
+    with pytest.raises(BackupError, match="symbolic"):
+        create_sqlite_backup(symlink, tmp_path / "x.sqlite3", 3, NOW)
+    dangling = tmp_path / "dangling.sqlite3"
+    dangling.symlink_to(tmp_path / "missing-target")
+    with pytest.raises(BackupError, match="symbolic"):
+        create_sqlite_backup(source, dangling, 3, NOW)
+    directory = tmp_path / "directory.sqlite3"
+    directory.mkdir()
+    with pytest.raises(BackupError, match="regular"):
+        create_sqlite_backup(directory, tmp_path / "x.sqlite3", 3, NOW)
+    with pytest.raises(BackupError, match="parent"):
+        create_sqlite_backup(source, tmp_path / "missing" / "x.sqlite3", 3, NOW)
+    existing = tmp_path / "existing.sqlite3"
+    existing.touch()
+    with pytest.raises(BackupError, match="exists"):
+        create_sqlite_backup(source, existing, 3, NOW)
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(source, tmp_path / "wrong.sqlite3", 4, NOW)
+
+    interrupted = tmp_path / "interrupted.sqlite3"
+
+    def interrupt(_):
+        raise RuntimeError("private backup content")
+
+    with pytest.raises(BackupError, match="backup failed") as caught:
+        create_sqlite_backup(source, interrupted, 3, NOW, after_copy=interrupt)
+    assert "private backup content" not in str(caught.value)
+    assert not interrupted.exists()
+    assert not Path(f"{interrupted}.metadata.json").exists()
+
+
+def test_backup_rejects_malformed_database_and_verification_faults(
+    tmp_path, monkeypatch
+):
+    missing_schema = tmp_path / "missing-schema.sqlite3"
+    sqlite3.connect(missing_schema).close()
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(missing_schema, tmp_path / "missing-out.sqlite3", 3, NOW)
+
+    malformed_schema = tmp_path / "malformed-schema.sqlite3"
+    with sqlite3.connect(malformed_schema) as connection:
+        connection.execute(
+            "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version TEXT)"
+        )
+        connection.execute("INSERT INTO schema_metadata VALUES(1, 'three')")
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(
+            malformed_schema, tmp_path / "malformed-out.sqlite3", 3, NOW
+        )
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+
+    def alter_schema(destination):
+        with sqlite3.connect(destination) as connection:
+            connection.execute("UPDATE schema_metadata SET version=4")
+
+    with pytest.raises(BackupError, match="schema verification"):
+        create_sqlite_backup(
+            source, tmp_path / "changed.sqlite3", 3, NOW, after_copy=alter_schema
+        )
+
+    monkeypatch.setattr(recovery_module, "_integrity_ok", lambda _path: False)
+    with pytest.raises(BackupError, match="consistency"):
+        create_sqlite_backup(source, tmp_path / "bad-integrity.sqlite3", 3, NOW)
+
+
+@pytest.mark.parametrize("sqlite_code", [sqlite3.SQLITE_BUSY, sqlite3.SQLITE_LOCKED])
+def test_backup_classifies_busy_without_leaking_sqlite_details(
+    tmp_path, monkeypatch, sqlite_code
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+
+    class BusyConnection:
+        def backup(self, _destination, *, pages, progress, sleep):
+            assert pages == recovery_module.BACKUP_PAGE_BATCH
+            assert sleep == recovery_module.BACKUP_BUSY_SLEEP_SECONDS
+            for _ in range(recovery_module.MAX_BACKUP_BUSY_ATTEMPTS):
+                progress(sqlite_code, 1, 1)
+
+        def close(self):
+            pass
+
+    real_connect = sqlite3.connect
+
+    def connect(target, *args, **kwargs):
+        if str(target).startswith("file:"):
+            return BusyConnection()
+        return real_connect(target, *args, **kwargs)
+
+    monkeypatch.setattr("app.privacy.recovery.sqlite3.connect", connect)
+    with pytest.raises(BackupBusyError, match="busy") as caught:
+        create_sqlite_backup(source, tmp_path / "busy.sqlite3", 3, NOW)
+    assert "private-canary" not in str(caught.value)
+
+    def io_failure(_source, _destination):
+        error = sqlite3.OperationalError("I/O private-canary")
+        error.sqlite_errorcode = sqlite3.SQLITE_IOERR
+        raise error
+
+    if sqlite_code == sqlite3.SQLITE_BUSY:
+        monkeypatch.setattr(recovery_module, "_sqlite_copy", io_failure)
+        monkeypatch.setattr(recovery_module.sqlite3, "connect", real_connect)
+        with pytest.raises(BackupError, match="backup failed") as nonbusy:
+            create_sqlite_backup(source, tmp_path / "io-error.sqlite3", 3, NOW)
+        assert "private-canary" not in str(nonbusy.value)
+
+
+def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "old.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+    consent = ConsentService(ledger)
+    consent.grant(
+        context(),
+        ConsentGrant(
+            "consent-001",
+            "grant-operation-001",
+            "participant-a",
+            "event-001",
+            "public-threads",
+            ConsentPurpose.IDENTIFIABLE_QUOTATION,
+            NOW,
+            NOW + timedelta(hours=1),
+            "actor-a",
+            1,
+            "grant-correlation",
+            "auth-a",
+        ),
+    )
+    consent.revoke(
+        context(),
+        consent_id="consent-001",
+        operation_id="revoke-operation-001",
+        revoked_at=NOW + timedelta(minutes=11),
+        correlation_id="revoke-correlation",
+    )
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    adapters = []
+
+    def adapter_factory(path):
+        adapter = RestoreAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW + timedelta(minutes=20)
+    )
+    assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
+    assert result.activation_eligible is True
+    with sqlite3.connect(quarantine) as connection:
+        assert (
+            connection.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
+            == 0
+        )
+    assert adapters[0].revocations[0][0] == "consent-001"
+    marker = json.loads(Path(f"{quarantine}.ready.json").read_text())
+    assert marker["restore_id"] == result.restore_id
+
+
+def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "old.sqlite3"
+    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+
+    blocked_path = tmp_path / "blocked.sqlite3"
+    blocked = QuarantinedRestore(
+        ledger, 3, lambda path: RestoreAdapter(path, fail=True)
+    ).restore(backup, blocked_path, NOW + timedelta(minutes=20))
+    assert blocked.disposition is RestoreDisposition.BLOCKED
+    assert blocked.activation_eligible is False
+    assert not Path(f"{blocked_path}.ready.json").exists()
+
+    metadata.path.write_text("{}")
+    with pytest.raises(BackupError, match="metadata"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            backup, tmp_path / "bad-metadata.sqlite3", NOW
+        )
+
+
+def test_restore_schema_copy_and_reconciliation_failures_are_closed(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+
+    raw = json.loads(metadata.path.read_text())
+    raw["database_filename"] = "wrong.sqlite3"
+    metadata.path.write_text(json.dumps(raw))
+    with pytest.raises(BackupError, match="metadata"):
+        manager.restore(backup, tmp_path / "wrong-name.sqlite3", NOW)
+
+    raw["database_filename"] = backup.name
+    metadata.path.write_text(json.dumps(raw))
+    with sqlite3.connect(backup) as connection:
+        connection.execute("UPDATE schema_metadata SET version=4")
+    with pytest.raises(BackupError, match="unsupported backup schema"):
+        manager.restore(backup, tmp_path / "wrong-schema.sqlite3", NOW)
+
+    with sqlite3.connect(backup) as connection:
+        connection.execute("UPDATE schema_metadata SET version=3")
+
+    def copy_failure(_source, destination):
+        destination.touch()
+        raise sqlite3.OperationalError("private restore content")
+
+    monkeypatch.setattr(recovery_module, "_sqlite_copy", copy_failure)
+    failed_path = tmp_path / "copy-failed.sqlite3"
+    with pytest.raises(BackupError, match="quarantine copy failed"):
+        manager.restore(backup, failed_path, NOW)
+    assert not failed_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("method", "behavior", "reason"),
+    [
+        ("apply_deletion", "raise", "deletion_adapter_failure"),
+        ("apply_revocation", "false", "revocation_reconciliation_incomplete"),
+        ("apply_revocation", "raise", "revocation_adapter_failure"),
+        ("rebuild_dependencies", "false", "dependency_rebuild_incomplete"),
+        ("rebuild_dependencies", "raise", "dependency_rebuild_failure"),
+    ],
+)
+def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+    consent = ConsentService(ledger)
+    consent.grant(
+        context(),
+        ConsentGrant(
+            "consent-fault",
+            "grant-fault",
+            "participant-a",
+            "event-001",
+            "public-threads",
+            ConsentPurpose.IDENTIFIABLE_DISCLOSURE,
+            NOW,
+            NOW + timedelta(hours=1),
+            "actor-a",
+            1,
+            "grant-fault-correlation",
+            "auth-a",
+        ),
+    )
+    consent.revoke(
+        context(),
+        consent_id="consent-fault",
+        operation_id="revoke-fault",
+        revoked_at=NOW + timedelta(minutes=1),
+        correlation_id="revoke-fault-correlation",
+    )
+
+    class FaultAdapter(RestoreAdapter):
+        def apply_deletion(self, record):
+            if method == "apply_deletion":
+                raise RuntimeError("private fault")
+            return super().apply_deletion(record)
+
+        def apply_revocation(self, consent_id, revoked_at):
+            if method == "apply_revocation":
+                if behavior == "raise":
+                    raise RuntimeError("private fault")
+                return False
+            return super().apply_revocation(consent_id, revoked_at)
+
+        def rebuild_dependencies(self):
+            if method == "rebuild_dependencies":
+                if behavior == "raise":
+                    raise RuntimeError("private fault")
+                return False
+            return super().rebuild_dependencies()
+
+    result = QuarantinedRestore(ledger, 3, FaultAdapter).restore(
+        backup, tmp_path / f"quarantine-{method}-{behavior}.sqlite3", NOW
+    )
+    assert (result.disposition, result.reason) == (RestoreDisposition.BLOCKED, reason)
+
+
+def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):
+    for required in ("OpenAI", "Cloudflare", "Meta", "владелец", "удал", "вывод"):
+        assert required.lower() in NOTICE_RU.lower()
+    assert "гарант" not in NOTICE_RU.lower()
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    service = NoticeService(ledger)
+    first = service.acknowledge(context(), NOTICE_VERSION, NOW, "notice-correlation")
+    second = service.acknowledge(context(), NOTICE_VERSION, NOW, "notice-correlation")
+    assert (first.created, second.created) == (True, False)
+    assert service.has_acknowledged("participant-a", NOTICE_VERSION)
+    assert not service.acknowledge(
+        TrustedPrivacyContext(
+            "participant-a", "actor-a", "auth-a", OperationOrigin.CHAT
+        ),
+        NOTICE_VERSION,
+        NOW,
+        "notice-chat",
+    ).created
+    with pytest.raises(ValueError, match="notice version"):
+        service.acknowledge(context(), "unknown", NOW, "notice-bad-version")
+
+
+def test_restore_rejects_existing_or_symlink_quarantine(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "old.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    existing = tmp_path / "existing.sqlite3"
+    existing.touch()
+    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    with pytest.raises(BackupError, match="exists"):
+        manager.restore(backup, existing, NOW)
+    link = tmp_path / "link.sqlite3"
+    link.symlink_to(source)
+    with pytest.raises(BackupError, match="symbolic"):
+        manager.restore(backup, link, NOW)
