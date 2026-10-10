@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from contextlib import closing
 from datetime import UTC, datetime
+import fcntl
 import os
 from pathlib import Path
 import sqlite3
@@ -137,49 +138,54 @@ class PrivacyLedger:
         try:
             with closing(self._connect_descriptor(descriptor)) as connection:
                 self._require_file_identity(connection, descriptor)
+                fcntl.flock(descriptor, fcntl.LOCK_EX)
                 try:
-                    metadata = connection.execute(
-                        "SELECT name FROM sqlite_master WHERE type='table' "
-                        "AND name='privacy_schema_metadata'"
-                    ).fetchone()
-                    if metadata is None:
-                        unrelated = connection.execute(
-                            "SELECT name FROM sqlite_master WHERE type='table' "
-                            "AND name NOT LIKE 'sqlite_%' LIMIT 1"
-                        ).fetchone()
-                        if unrelated is not None:
-                            raise RuntimeError(
-                                "privacy ledger path contains unrelated tables"
+                    self._has_valid_schema(connection)
+                    os.fchmod(descriptor, 0o600)
+                    self._configure(connection)
+                    with connection:
+                        connection.execute("BEGIN IMMEDIATE")
+                        if not self._has_valid_schema(connection):
+                            for statement in _SCHEMA:
+                                connection.execute(statement)
+                            connection.execute(
+                                "INSERT INTO privacy_schema_metadata VALUES(1, ?)",
+                                (PRIVACY_LEDGER_SCHEMA_VERSION,),
                             )
-                    else:
-                        version = connection.execute(
-                            "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
-                        ).fetchone()
-                        if version != (PRIVACY_LEDGER_SCHEMA_VERSION,):
-                            raise RuntimeError("unsupported privacy ledger schema")
-                except sqlite3.Error as error:
-                    raise RuntimeError(
-                        "unable to validate existing privacy ledger"
-                    ) from error
-                os.fchmod(descriptor, 0o600)
-                self._configure(connection)
-                with connection:
-                    connection.execute("BEGIN IMMEDIATE")
-                    if metadata is None:
-                        for statement in _SCHEMA:
-                            connection.execute(statement)
-                        connection.execute(
-                            "INSERT INTO privacy_schema_metadata VALUES(1, ?)",
-                            (PRIVACY_LEDGER_SCHEMA_VERSION,),
-                        )
-                        connection.execute(
-                            "INSERT INTO privacy_control_generation VALUES(1, 0)"
-                        )
+                            connection.execute(
+                                "INSERT INTO privacy_control_generation VALUES(1, 0)"
+                            )
+                finally:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
         except BaseException:
             os.close(descriptor)
             raise
         self._descriptor = descriptor
         self._finalizer = finalize(self, os.close, descriptor)
+
+    @staticmethod
+    def _has_valid_schema(connection: sqlite3.Connection) -> bool:
+        try:
+            metadata = connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' "
+                "AND name='privacy_schema_metadata'"
+            ).fetchone()
+            if metadata is None:
+                unrelated = connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' "
+                    "AND name NOT LIKE 'sqlite_%' LIMIT 1"
+                ).fetchone()
+                if unrelated is not None:
+                    raise RuntimeError("privacy ledger path contains unrelated tables")
+                return False
+            version = connection.execute(
+                "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
+            ).fetchone()
+            if version != (PRIVACY_LEDGER_SCHEMA_VERSION,):
+                raise RuntimeError("unsupported privacy ledger schema")
+        except sqlite3.Error as error:
+            raise RuntimeError("unable to validate existing privacy ledger") from error
+        return True
 
     def _open(self) -> sqlite3.Connection:
         self._require_path_identity(self._descriptor)

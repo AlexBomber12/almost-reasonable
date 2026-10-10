@@ -775,6 +775,15 @@ def run_concurrently(operation):
     return results
 
 
+def test_concurrent_privacy_ledger_first_initialization_is_serialized(tmp_path):
+    path = tmp_path / "privacy.sqlite3"
+    assert run_concurrently(lambda: PrivacyLedger(path).control_generation()) == [0, 0]
+    with sqlite3.connect(path) as connection:
+        assert connection.execute(
+            "SELECT version FROM privacy_schema_metadata WHERE singleton=1"
+        ).fetchone() == (ledger_module.PRIVACY_LEDGER_SCHEMA_VERSION,)
+
+
 def test_concurrent_consent_revocation_and_notice_retries_are_idempotent(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     consent = ConsentService(ledger)
