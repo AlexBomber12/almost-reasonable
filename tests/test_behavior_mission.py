@@ -141,6 +141,20 @@ def test_rejection_retains_current_mission(tmp_path) -> None:
     assert machine.current_mission() == initial
 
 
+def test_trusted_root_round_trips_a_dst_fold_by_absolute_instant(tmp_path) -> None:
+    new_york = ZoneInfo("America/New_York")
+    activated_at = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=1)
+    initial = Mission("mission-v1", "Миссия", activated_at, None)
+    repository = JsonMissionRepository(tmp_path / "fold-root.json", initial)
+
+    reloaded = repository.load().current
+
+    assert reloaded.version == initial.version
+    assert reloaded.text == initial.text
+    assert reloaded.activated_at.astimezone(UTC) == activated_at.astimezone(UTC)
+    assert reloaded.parent_version is None
+
+
 def test_confirmation_cannot_predate_a_pending_sibling(tmp_path) -> None:
     path = tmp_path / "sibling-order.json"
     initial = Mission("mission-v1", "Миссия", NOW, None)

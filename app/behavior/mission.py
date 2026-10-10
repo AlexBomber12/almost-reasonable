@@ -787,7 +787,7 @@ def _validate_active_mission(
     ):
         raise ValueError("stale pending proposal does not target the active mission")
     if current.parent_version is None:
-        if current != trusted_root:
+        if not _same_mission(current, trusted_root):
             raise ValueError("stored root mission differs from trusted initial state")
         if confirmed:
             raise ValueError("root mission conflicts with confirmed history")
@@ -892,4 +892,14 @@ def _has_overlapping_invariant_snapshots(
         )
         for index, left in enumerate(records)
         for right in records[index + 1 :]
+    )
+
+
+def _same_mission(left: Mission, right: Mission) -> bool:
+    return (
+        left.version == right.version
+        and left.text == right.text
+        and _instant(left.activated_at) == _instant(right.activated_at)
+        and left.parent_version == right.parent_version
+        and left.purpose is right.purpose
     )

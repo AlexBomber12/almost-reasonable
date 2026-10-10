@@ -61,7 +61,9 @@ _FENCED_CODE = re.compile(
     r"(?P<content>.*?)(?P=fence)(?![`~])",
     re.DOTALL,
 )
-_INLINE_CODE = re.compile(r"`([^`]*)`")
+_INLINE_CODE = re.compile(
+    r"(?<!`)(?P<fence>`+)(?!`)(?P<content>[\s\S]*?)(?<!`)(?P=fence)(?!`)"
+)
 _SUPPORTED_FENCED_CODE_LANGUAGES = frozenset(
     (
         "json",
@@ -350,7 +352,7 @@ def _replace_fenced_code_span(match: re.Match[str]) -> str:
 
 
 def _replace_code_span(match: re.Match[str]) -> str:
-    content = match.group(1)
+    content = match.group("content")
     return " " if _has_complete_code_signal(content) else content
 
 

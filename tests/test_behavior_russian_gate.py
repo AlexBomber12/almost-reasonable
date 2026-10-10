@@ -101,6 +101,7 @@ def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
         "Да. `This class is entirely English prose`",
         "Да. `This is entirely English prose (really)`",
         "Да. `Please select a book from this entirely English passage`",
+        "Да. ``result = calculate_total(first_value, second_value)```",
         "Да. `The result = a complete English explanation about history and art`",
         "Да. `result = 1 this is entirely English prose about history and art`",
         "Да. `print('x') This is entirely English conversational prose about history and art`",
@@ -122,8 +123,10 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
         "SELECT * FROM users;",
         "result = compute_value()",
         '{"result": 1}',
+        "result = calculate_total(first_value, second_value)",
     ):
-        assessment = RussianOutputGate().assess(f"Да. `{code}`")
+        delimiter = "``" if code.startswith("result = calculate_total") else "`"
+        assessment = RussianOutputGate().assess(f"Да. {delimiter}{code}{delimiter}")
         assert assessment.accepted
         assert assessment.foreign_prose_word_count == 0
 
