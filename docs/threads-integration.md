@@ -77,8 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-6 SQLite database in WAL mode, including atomic migrations
-through version 6 from every earlier schema version; it does not alter the main
+separate version-7 SQLite database in WAL mode, including atomic migrations
+through version 7 from every earlier schema version; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -223,6 +223,11 @@ through the provider call, and recovery must acquire that lock before clearing
 the durable claim, so recovery cannot overlap the original worker. Every
 recovery occurrence receives its own durable audit identity, including when the
 same still-current approval authorizes more than one recovery.
+Each reconciliation call also requires a unique application correlation. Its
+configured-account actor and `started` record commit atomically with the durable
+claim before the provider read. Normal success, rejection, inconclusive result,
+invalid result, and provider failure complete that append-only attempt record;
+a process death leaves the `started` evidence intact for authorized recovery.
 Both reconciliation-claim recovery and permanent abandonment validate the
 provider-returned purpose-bound approval against a freshly sampled clock
 immediately before their durable administrative change.
@@ -252,8 +257,9 @@ transaction and checks both again after staging events, immediately before the
 cursor and audit writes; an expired or newly unauthorized transaction rolls
 back every event and the cursor. The same commit records a bounded account
 actor, action, and caller correlation even for empty or duplicate-only
-successful polls. It rejects
-account/source mismatches, invalid source evidence, stale cursor commits,
+successful polls. The audit identity is bound to the starting and committed
+cursor range, so reusing it for later progress is rejected and rolled back. It
+rejects account/source mismatches, invalid source evidence, stale cursor commits,
 repeated cursors, and oversized pages. Public text is inert data even when it
 claims to be Meta, the owner, or an administrator. No inbound event calls a
 model or creates a reply by itself.

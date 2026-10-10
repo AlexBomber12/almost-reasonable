@@ -441,30 +441,45 @@ class ThreadsService:
                 )
             return result
 
-    def reconcile(self, operation_id: str, *, now: datetime) -> OutboxItem:
+    def reconcile(
+        self, operation_id: str, *, correlation_id: str, now: datetime
+    ) -> OutboxItem:
+        require_reference("reconciliation correlation ID", correlation_id)
         item = self._require_owned_item(operation_id)
         with self.store.reconciliation_worker_guard(item.operation_id):
-            return self._reconcile_exclusively(operation_id, now=now)
+            return self._reconcile_exclusively(
+                operation_id, correlation_id=correlation_id, now=now
+            )
 
-    def _reconcile_exclusively(self, operation_id: str, *, now: datetime) -> OutboxItem:
+    def _reconcile_exclusively(
+        self, operation_id: str, *, correlation_id: str, now: datetime
+    ) -> OutboxItem:
         item = self._require_owned_item(operation_id)
         if item.state is not OutboxState.UNKNOWN:
             raise ThreadsStoreError("reconciliation requires unknown state")
         self.store.claim_reconciliation(
             operation_id=operation_id,
+            correlation_id=correlation_id,
             account_ref=item.account_ref,
+            actor_reference=(f"account-{content_fingerprint(item.account_ref)[:16]}"),
             now=now,
         )
         try:
             result = self.simulator.reconcile(item)
         except Exception:
             reconciled = self.store.note_reconciliation(
-                operation_id, "attempt_failed", now=now
+                operation_id,
+                "attempt_failed",
+                correlation_id=correlation_id,
+                now=now,
             )
         else:
             if result is ReconciliationResult.UNRESOLVED:
                 reconciled = self.store.note_reconciliation(
-                    operation_id, "unresolved", now=now
+                    operation_id,
+                    "unresolved",
+                    correlation_id=correlation_id,
+                    now=now,
                 )
             elif result is ReconciliationResult.REJECTED:
                 reconciled = self.store.transition(
@@ -473,6 +488,10 @@ class ThreadsService:
                     reason="reconciliation_verified_rejection",
                     now=now,
                     reconciliation_status="verified_rejection",
+                    reconciliation_correlation_id=correlation_id,
+                    release_lock_target_operation_id=operation_id,
+                    release_lock_kind="reconciliation",
+                    release_lock_required=True,
                 )
             elif result is ReconciliationResult.CONFIRMED:
                 reconciled = self.store.transition(
@@ -484,17 +503,18 @@ class ThreadsService:
                         "thread", operation_id
                     ),
                     reconciliation_status="verified_success",
+                    reconciliation_correlation_id=correlation_id,
+                    release_lock_target_operation_id=operation_id,
+                    release_lock_kind="reconciliation",
+                    release_lock_required=True,
                 )
             else:
                 reconciled = self.store.note_reconciliation(
-                    operation_id, "invalid_result", now=now
+                    operation_id,
+                    "invalid_result",
+                    correlation_id=correlation_id,
+                    now=now,
                 )
-        self.store.release_unknown_effect_lock(
-            target_operation_id=operation_id,
-            holder_operation_id=operation_id,
-            lock_kind="reconciliation",
-            required=True,
-        )
         return reconciled
 
     def abandon_unknown(

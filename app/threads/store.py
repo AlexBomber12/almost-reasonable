@@ -23,7 +23,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 MAX_PENDING_INBOUND_EVENTS = 100
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
@@ -154,6 +154,15 @@ class ThreadsStore:
                     version = 5
                 if version == 5:
                     for statement in _MIGRATION_5_TO_6.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (6,),
+                    )
+                    version = 6
+                if version == 6:
+                    for statement in _MIGRATION_6_TO_7.split(";"):
                         if statement.strip():
                             connection.execute(statement)
                     connection.execute(
@@ -416,6 +425,7 @@ class ThreadsStore:
         provider_publication_id: str | None = None,
         dispatch_evidence: str | None = None,
         reconciliation_status: str | None = None,
+        reconciliation_correlation_id: str | None = None,
         increment_attempt: bool = False,
         operator_decision: str | None = None,
         operator_approval_reference: str | None = None,
@@ -437,6 +447,7 @@ class ThreadsStore:
             ("provider publication ID", provider_publication_id),
             ("dispatch evidence", dispatch_evidence),
             ("reconciliation status", reconciliation_status),
+            ("reconciliation correlation ID", reconciliation_correlation_id),
             ("operator decision", operator_decision),
             ("operator approval reference", operator_approval_reference),
             ("release-lock target operation ID", release_lock_target_operation_id),
@@ -449,7 +460,11 @@ class ThreadsStore:
             raise ValueError("invalid operator decision")
         if (release_lock_target_operation_id is None) != (release_lock_kind is None):
             raise ValueError("release-lock target and kind must be supplied together")
-        if release_lock_kind not in {None, "replacement_publication"}:
+        if release_lock_kind not in {
+            None,
+            "reconciliation",
+            "replacement_publication",
+        }:
             raise ValueError("invalid transition release-lock kind")
         if type(release_lock_required) is not bool:
             raise ValueError("invalid transition release-lock requirement")
@@ -465,6 +480,11 @@ class ThreadsStore:
             raise ValueError("invalid transition pre-commit check")
         if operator_decision is not None and precommit_check is None:
             raise ValueError("operator decision requires an authorization fence")
+        if reconciliation_correlation_id is not None and (
+            reconciliation_status not in {"verified_rejection", "verified_success"}
+            or new_state not in {OutboxState.FAILED_TERMINAL, OutboxState.CONFIRMED}
+        ):
+            raise ValueError("invalid completed reconciliation transition")
         if approval_status is not None and approval_status not in {
             "pending",
             "approved",
@@ -546,6 +566,20 @@ class ThreadsStore:
                 reason,
                 now.isoformat(),
             )
+            if reconciliation_correlation_id is not None:
+                changed = connection.execute(
+                    "UPDATE threads_reconciliation_attempts "
+                    "SET status=?, completed_at=? WHERE correlation_id=? "
+                    "AND operation_id=? AND status='started'",
+                    (
+                        reconciliation_status,
+                        now.isoformat(),
+                        reconciliation_correlation_id,
+                        operation_id,
+                    ),
+                ).rowcount
+                if changed != 1:
+                    raise ThreadsStoreError("active reconciliation attempt is missing")
             if operator_decision is not None:
                 connection.execute(
                     "INSERT INTO threads_operator_decisions "
@@ -673,10 +707,18 @@ class ThreadsStore:
             connection.commit()
 
     def claim_reconciliation(
-        self, *, operation_id: str, account_ref: str, now: datetime
+        self,
+        *,
+        operation_id: str,
+        correlation_id: str,
+        account_ref: str,
+        actor_reference: str,
+        now: datetime,
     ) -> None:
         require_reference("operation ID", operation_id)
+        require_reference("reconciliation correlation ID", correlation_id)
         require_reference("account reference", account_ref)
+        require_reference("reconciliation actor reference", actor_reference)
         require_aware_time("reconciliation claim time", now)
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
@@ -689,13 +731,28 @@ class ThreadsStore:
                 raise ThreadsStoreError("reconciliation target is unavailable")
             try:
                 connection.execute(
+                    "INSERT INTO threads_reconciliation_attempts "
+                    "(correlation_id, operation_id, account_ref, actor_reference, "
+                    "status, started_at, completed_at) "
+                    "VALUES (?, ?, ?, ?, 'started', ?, NULL)",
+                    (
+                        correlation_id,
+                        operation_id,
+                        account_ref,
+                        actor_reference,
+                        now.isoformat(),
+                    ),
+                )
+                connection.execute(
                     "INSERT INTO threads_unknown_effect_locks "
                     "(target_operation_id, holder_operation_id, lock_kind, created_at) "
                     "VALUES (?, ?, 'reconciliation', ?)",
                     (operation_id, operation_id, now.isoformat()),
                 )
             except sqlite3.IntegrityError as error:
-                raise ThreadsStoreError("unknown effect is already reserved") from error
+                raise ThreadsStoreError(
+                    "reconciliation correlation or unknown effect is already reserved"
+                ) from error
             connection.commit()
 
     def release_unknown_effect_lock(
@@ -816,20 +873,49 @@ class ThreadsStore:
             raise ThreadsStoreError("dispatch evidence requires sending state")
 
     def note_reconciliation(
-        self, operation_id: str, status: str, *, now: datetime
+        self,
+        operation_id: str,
+        status: str,
+        *,
+        correlation_id: str,
+        now: datetime,
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         require_reference("reconciliation status", status)
+        require_reference("reconciliation correlation ID", correlation_id)
         require_aware_time("reconciliation time", now)
+        if status not in {"attempt_failed", "invalid_result", "unresolved"}:
+            raise ValueError("invalid unresolved reconciliation status")
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             changed = connection.execute(
                 "UPDATE threads_outbox SET reconciliation_status=?, updated_at=? "
                 "WHERE operation_id=? AND state=?",
                 (status, now.isoformat(), operation_id, OutboxState.UNKNOWN.value),
             ).rowcount
-        if changed != 1:
-            raise ThreadsStoreError("reconciliation requires unknown state")
-        return self.get(operation_id)
+            if changed != 1:
+                raise ThreadsStoreError("reconciliation requires unknown state")
+            changed = connection.execute(
+                "UPDATE threads_reconciliation_attempts "
+                "SET status=?, completed_at=? WHERE correlation_id=? "
+                "AND operation_id=? AND status='started'",
+                (status, now.isoformat(), correlation_id, operation_id),
+            ).rowcount
+            if changed != 1:
+                raise ThreadsStoreError("active reconciliation attempt is missing")
+            changed = connection.execute(
+                "DELETE FROM threads_unknown_effect_locks "
+                "WHERE target_operation_id=? AND holder_operation_id=? "
+                "AND lock_kind='reconciliation'",
+                (operation_id, operation_id),
+            ).rowcount
+            if changed != 1:
+                raise ThreadsStoreError("reconciliation claim is missing")
+            result = connection.execute(
+                "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            connection.commit()
+        return _outbox_item(result)
 
     def unresolved_for_account(self, account_ref: str) -> tuple[OutboxItem, ...]:
         require_reference("account reference", account_ref)
@@ -950,6 +1036,11 @@ class ThreadsStore:
         if not callable(precommit_check):
             raise ValueError("invalid poll commit authorization fence")
         page = tuple(events)
+        committed_cursor = next_cursor if next_cursor is not None else expected_cursor
+        cursor_identity = content_fingerprint(
+            f"{expected_cursor is not None}:{expected_cursor or ''}\0"
+            f"{committed_cursor is not None}:{committed_cursor or ''}"
+        )
         busy_timeout_ms = max(1, int(lock_wait_seconds * 1000))
         with self._open(busy_timeout_ms=busy_timeout_ms) as connection:
             try:
@@ -1036,7 +1127,7 @@ class ThreadsStore:
                 (
                     account_ref,
                     stream.value,
-                    next_cursor if next_cursor is not None else expected_cursor,
+                    committed_cursor,
                     now.isoformat(),
                 ),
             )
@@ -1044,18 +1135,21 @@ class ThreadsStore:
             changed = connection.execute(
                 "INSERT OR IGNORE INTO threads_poll_actions "
                 "(correlation_id, account_ref, stream, actor_reference, action, "
-                "occurred_at) VALUES (?, ?, ?, ?, 'poll_committed', ?)",
+                "cursor_identity, occurred_at) "
+                "VALUES (?, ?, ?, ?, 'poll_committed', ?, ?)",
                 (
                     correlation_id,
                     account_ref,
                     stream.value,
                     actor_reference,
+                    cursor_identity,
                     now.isoformat(),
                 ),
             ).rowcount
             if changed == 0:
                 existing = connection.execute(
-                    "SELECT account_ref, stream, actor_reference, action "
+                    "SELECT account_ref, stream, actor_reference, action, "
+                    "cursor_identity "
                     "FROM threads_poll_actions WHERE correlation_id=?",
                     (correlation_id,),
                 ).fetchone()
@@ -1064,6 +1158,7 @@ class ThreadsStore:
                     stream.value,
                     actor_reference,
                     "poll_committed",
+                    cursor_identity,
                 )
                 if existing is None or tuple(existing) != expected:
                     raise ThreadsStoreError("poll action correlation conflict")
@@ -1352,6 +1447,7 @@ CREATE TABLE threads_poll_actions (
     stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
     actor_reference TEXT NOT NULL,
     action TEXT NOT NULL CHECK(action='poll_committed'),
+    cursor_identity TEXT NOT NULL,
     occurred_at TEXT NOT NULL
 );
 CREATE TABLE threads_conversation_outcomes (
@@ -1373,6 +1469,18 @@ CREATE TABLE threads_operator_decisions (
     approval_reference TEXT NOT NULL,
     occurred_at TEXT NOT NULL,
     PRIMARY KEY(operation_id, decision)
+);
+CREATE TABLE threads_reconciliation_attempts (
+    correlation_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
+    account_ref TEXT NOT NULL,
+    actor_reference TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'started','attempt_failed','invalid_result','unresolved',
+        'verified_rejection','verified_success'
+    )),
+    started_at TEXT NOT NULL,
+    completed_at TEXT
 );
 CREATE TABLE threads_unknown_effect_locks (
     target_operation_id TEXT PRIMARY KEY REFERENCES threads_outbox(operation_id),
@@ -1507,5 +1615,22 @@ CREATE TABLE threads_poll_actions (
     actor_reference TEXT NOT NULL,
     action TEXT NOT NULL CHECK(action='poll_committed'),
     occurred_at TEXT NOT NULL
+);
+"""
+
+
+_MIGRATION_6_TO_7 = """
+ALTER TABLE threads_poll_actions ADD COLUMN cursor_identity TEXT;
+CREATE TABLE threads_reconciliation_attempts (
+    correlation_id TEXT PRIMARY KEY,
+    operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
+    account_ref TEXT NOT NULL,
+    actor_reference TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'started','attempt_failed','invalid_result','unresolved',
+        'verified_rejection','verified_success'
+    )),
+    started_at TEXT NOT NULL,
+    completed_at TEXT
 );
 """
