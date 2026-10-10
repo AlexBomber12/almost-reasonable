@@ -1,5 +1,6 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import sqlite3
 
 import pytest
 
@@ -201,6 +202,13 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
     denied = engine.plan_source_invalidation(context_b, event_a1)
     assert denied.status is InvalidationStatus.REJECTED
     assert denied.affected_items == ()
+
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE protected_state_provenance "
+            "SET retention_status = 'invalidated' WHERE event_id = ?",
+            (event_a1,),
+        )
 
     selected = MemoryContextSelector(events, state).select(
         context_a,

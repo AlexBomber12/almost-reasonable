@@ -30,7 +30,8 @@ from .read_store import retrieve_exact_private_event
 PRIVACY_SCREEN_VERSION = "abstract-privacy-screen-v1"
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 _IDENTIFIER = re.compile(
-    r"(?:\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b|"
+    r"(?:(?<![\w@])[\w.!#$%&'*+/=?^`{|}~-]+@"
+    r"[\w-]+(?:\.[\w-]+)+(?![\w@])|"
     r"(?<!\w)@[A-Za-z0-9_]{2,32}\b|"
     r"\b(?:https?://|www\.)\S+|"
     r"\b(?:\+?\d[\d ()-]{7,}\d)\b)",

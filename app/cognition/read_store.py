@@ -151,7 +151,7 @@ class CognitionReadStore:
                         JOIN protected_state_provenance AS source
                           ON source.revision_key = revision.revision_key
                         WHERE revision.item_key = ?
-                          AND source.retention_status = 'active'
+                          AND source.retention_status IN ('active', 'invalidated')
                         ORDER BY source.event_id
                         """,
                         (row[0],),
