@@ -297,9 +297,7 @@ class AuthStore:
         normalized_username = username if type(username) is str else ""
         normalized_client = client_key if type(client_key) is str else ""
         client_attempt_key = self._attempt_key("client", normalized_client)
-        identity_attempt_key = self._attempt_key(
-            "identity", normalized_client, normalized_username
-        )
+        account_attempt_key = self._attempt_key("account", normalized_username)
         now = self._now()
         connection = self._connect()
         try:
@@ -318,14 +316,14 @@ class AuthStore:
                     SELECT attempt_key, failure_count, window_started_at, blocked_until
                     FROM login_attempts WHERE attempt_key IN (?, ?)
                     """,
-                    (client_attempt_key, identity_attempt_key),
+                    (client_attempt_key, account_attempt_key),
                 ).fetchall()
                 attempts = {row[0]: row[1:] for row in attempt_rows}
                 if any(
                     attempt is not None and attempt[2] is not None and now < attempt[2]
                     for attempt in (
                         attempts.get(client_attempt_key),
-                        attempts.get(identity_attempt_key),
+                        attempts.get(account_attempt_key),
                     )
                 ):
                     return LoginResult(LoginStatus.LOCKED)
@@ -357,15 +355,15 @@ class AuthStore:
                     )
                     self._record_failure(
                         connection,
-                        identity_attempt_key,
-                        attempts.get(identity_attempt_key),
+                        account_attempt_key,
+                        attempts.get(account_attempt_key),
                         now,
                     )
                     return LoginResult(LoginStatus.INVALID)
 
                 connection.execute(
                     "DELETE FROM login_attempts WHERE attempt_key = ?",
-                    (identity_attempt_key,),
+                    (account_attempt_key,),
                 )
                 existing_digest = _secret_digest(existing_session_token)
                 if existing_digest is not None:

@@ -164,6 +164,20 @@ def test_rotating_usernames_cannot_bypass_per_client_limit_and_stale_rows_expire
         )
 
 
+def test_rotating_client_addresses_cannot_bypass_account_limit(store):
+    provision(store)
+    for client in ("client-a", "client-b", "client-c"):
+        assert (
+            store.login("alice", "incorrect password value", client).status
+            is LoginStatus.INVALID
+        )
+
+    assert (
+        store.login("alice", "correct horse battery", "client-d").status
+        is LoginStatus.LOCKED
+    )
+
+
 def test_expired_and_revoked_sessions_are_invalid(store, clock):
     provision(store)
     expired = store.login("alice", "correct horse battery", "browser")
