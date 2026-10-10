@@ -147,12 +147,13 @@ version, database schema version, UTC creation time, and backup filename; it
 contains no participant content.
 
 Source, destination, and metadata paths must be absolute regular paths. Leaf
-symbolic links, symbolic-link destinations, unsafe parents, existing outputs,
+symbolic links, symbolic links anywhere in a parent chain, unsafe parents, existing outputs,
 schema mismatch, integrity failure, interruption, and SQLite busy/locked faults
 fail closed. The source inode remains pinned while schema validation and the
 online copy run; SQLite opens the source through that descriptor, and the
-resulting connection is checked against the same inode. Outputs
-are created with `O_EXCL|O_NOFOLLOW` and mode `0600`; metadata and readiness
+resulting connection is checked against the same inode. Output parent directories
+are traversed with directory-relative no-follow opens, and outputs are created
+through the pinned parent with `O_EXCL|O_NOFOLLOW` and mode `0600`; metadata and readiness
 markers are written completely before `fsync`, including retrying short writes.
 Failure removes only files whose filesystem identity proves they were created by
 that backup attempt; a concurrently created or replaced path is preserved.

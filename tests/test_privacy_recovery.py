@@ -174,6 +174,19 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
     symlink.symlink_to(source)
     with pytest.raises(BackupError, match="symbolic"):
         create_sqlite_backup(symlink, tmp_path / "x.sqlite3", 3, NOW)
+    source_directory = tmp_path / "source-directory"
+    source_directory.mkdir()
+    nested_source = source_directory / "source.sqlite3"
+    make_source(nested_source).close()
+    source_parent_link = tmp_path / "source-parent-link"
+    source_parent_link.symlink_to(source_directory, target_is_directory=True)
+    with pytest.raises(BackupError, match="parent"):
+        create_sqlite_backup(
+            source_parent_link / nested_source.name,
+            tmp_path / "ancestor-source.sqlite3",
+            3,
+            NOW,
+        )
     dangling = tmp_path / "dangling.sqlite3"
     dangling.symlink_to(tmp_path / "missing-target")
     with pytest.raises(BackupError, match="symbolic"):
@@ -342,18 +355,33 @@ def test_backup_source_pin_rejects_path_races(tmp_path, monkeypatch, race):
     destination = tmp_path / "backup.sqlite3"
     real_open = recovery_module.os.open
 
-    def race_open(path, flags, *args):
-        if Path(path) == source and flags == os.O_RDONLY | os.O_NOFOLLOW:
+    def race_open(path, flags, *args, **kwargs):
+        if path == source.name and flags == os.O_RDONLY | os.O_NOFOLLOW:
             if race == "open":
                 source.unlink()
-                return real_open(path, flags, *args)
-            descriptor = real_open(path, flags, *args)
+                return real_open(path, flags, *args, **kwargs)
+            descriptor = real_open(path, flags, *args, **kwargs)
             source.unlink()
             source.write_text("replacement")
             return descriptor
-        return real_open(path, flags, *args)
+        return real_open(path, flags, *args, **kwargs)
 
     monkeypatch.setattr(recovery_module.os, "open", race_open)
+    with pytest.raises(BackupError, match="identity"):
+        create_sqlite_backup(source, destination, 3, NOW)
+    assert not destination.exists()
+
+
+def test_backup_source_pin_rejects_an_ancestor_race(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+
+    def race_parent(_directory):
+        raise OSError("ancestor replaced")
+
+    monkeypatch.setattr(recovery_module, "_validate_parent_chain", lambda *_: None)
+    monkeypatch.setattr(recovery_module, "_open_directory_chain", race_parent)
     with pytest.raises(BackupError, match="identity"):
         create_sqlite_backup(source, destination, 3, NOW)
     assert not destination.exists()
@@ -998,3 +1026,29 @@ def test_restore_rejects_existing_or_symlink_quarantine(tmp_path):
     link.symlink_to(source)
     with pytest.raises(BackupError, match="symbolic"):
         manager.restore(backup, link, NOW)
+
+
+@pytest.mark.parametrize("operation", ["backup", "restore"])
+def test_recovery_rejects_symlinked_output_ancestors(tmp_path, operation):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    if operation == "restore":
+        create_sqlite_backup(source, backup, 3, NOW)
+    target_directory = tmp_path / "redirected"
+    nested_target = target_directory / "nested"
+    nested_target.mkdir(parents=True)
+    parent_link = tmp_path / "parent-link"
+    parent_link.symlink_to(target_directory, target_is_directory=True)
+    redirected_output = parent_link / "nested" / f"{operation}.sqlite3"
+
+    with pytest.raises(BackupError, match="parent"):
+        if operation == "backup":
+            create_sqlite_backup(source, redirected_output, 3, NOW)
+        else:
+            ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+                backup, redirected_output, NOW
+            )
+
+    assert not (nested_target / f"{operation}.sqlite3").exists()

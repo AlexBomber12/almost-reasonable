@@ -47,9 +47,32 @@ class RestoreAdapter(Protocol):
     def rebuild_dependencies(self) -> bool: ...
 
 
+def _open_directory_chain(directory: Path) -> int:
+    flags = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+    descriptor = os.open("/", flags)
+    try:
+        for component in directory.parts[1:]:
+            next_descriptor = os.open(component, flags, dir_fd=descriptor)
+            os.close(descriptor)
+            descriptor = next_descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
+def _validate_parent_chain(path: Path, label: str) -> None:
+    try:
+        descriptor = _open_directory_chain(path.parent)
+    except OSError as error:
+        raise BackupError(f"{label} parent is unsafe") from error
+    os.close(descriptor)
+
+
 def _validate_existing_file(path: Path, label: str) -> None:
     if not path.is_absolute():
         raise BackupError(f"{label} path must be absolute")
+    _validate_parent_chain(path, label)
     if path.is_symlink():
         raise BackupError(f"{label} must not be a symbolic link")
     if not path.is_file() or not stat.S_ISREG(path.stat(follow_symlinks=False).st_mode):
@@ -59,12 +82,11 @@ def _validate_existing_file(path: Path, label: str) -> None:
 def _validate_new_file(path: Path, label: str) -> None:
     if not path.is_absolute():
         raise BackupError(f"{label} path must be absolute")
+    _validate_parent_chain(path, label)
     if path.is_symlink():
         raise BackupError(f"{label} must not be a symbolic link")
     if path.exists():
         raise BackupError(f"{label} already exists")
-    if not path.parent.is_dir() or path.parent.is_symlink():
-        raise BackupError(f"{label} parent is unsafe")
 
 
 def _database_target(path_or_descriptor: Path | int) -> tuple[str | Path, bool]:
@@ -88,7 +110,11 @@ def _schema_version(path_or_descriptor: Path | int) -> int:
     return row[0]
 
 
-_OwnedFile = tuple[Path, int]
+@dataclass(frozen=True, slots=True)
+class _OwnedFile:
+    path: Path
+    descriptor: int
+    parent_descriptor: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,31 +124,47 @@ class _PinnedDatabase:
 
 
 def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
-    descriptor = os.open(path, access | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    owned.append((path, descriptor))
+    parent_descriptor = _open_directory_chain(path.parent)
+    try:
+        descriptor = os.open(
+            path.name,
+            access | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            0o600,
+            dir_fd=parent_descriptor,
+        )
+    except BaseException:
+        os.close(parent_descriptor)
+        raise
+    owned.append(_OwnedFile(path, descriptor, parent_descriptor))
     os.fchmod(descriptor, 0o600)
     return descriptor
 
 
 def _cleanup_created(owned: list[_OwnedFile]) -> None:
-    for path, descriptor in owned:
+    for output in owned:
         try:
-            current = path.stat(follow_symlinks=False)
+            current = os.stat(
+                output.path.name,
+                dir_fd=output.parent_descriptor,
+                follow_symlinks=False,
+            )
         except FileNotFoundError:
             pass
         else:
-            identity = os.fstat(descriptor)
+            identity = os.fstat(output.descriptor)
             if (current.st_dev, current.st_ino) == (
                 identity.st_dev,
                 identity.st_ino,
             ):
-                path.unlink()
-        os.close(descriptor)
+                os.unlink(output.path.name, dir_fd=output.parent_descriptor)
+        os.close(output.descriptor)
+        os.close(output.parent_descriptor)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:
-    for _path, descriptor in owned:
-        os.close(descriptor)
+    for output in owned:
+        os.close(output.descriptor)
+        os.close(output.parent_descriptor)
 
 
 def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
@@ -136,9 +178,19 @@ def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
 
 def _pin_database(path: Path, label: str) -> _PinnedDatabase:
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        parent_descriptor = _open_directory_chain(path.parent)
     except OSError as error:
         raise BackupError(f"{label} identity changed") from error
+    try:
+        descriptor = os.open(
+            path.name,
+            os.O_RDONLY | os.O_NOFOLLOW,
+            dir_fd=parent_descriptor,
+        )
+    except OSError as error:
+        os.close(parent_descriptor)
+        raise BackupError(f"{label} identity changed") from error
+    os.close(parent_descriptor)
     if not stat.S_ISREG(os.fstat(descriptor).st_mode) or not _path_matches_descriptor(
         path, descriptor
     ):
@@ -270,8 +322,8 @@ def create_sqlite_backup(
             _write_all(descriptor, payload)
             os.fsync(descriptor)
             if not all(
-                _path_matches_descriptor(path, owned_descriptor)
-                for path, owned_descriptor in owned
+                _path_matches_descriptor(output.path, output.descriptor)
+                for output in owned
             ):
                 raise BackupError("backup output identity changed")
         except sqlite3.OperationalError as error:
