@@ -4,11 +4,7 @@ from datetime import datetime
 import re
 
 from app.core.core_self import CORE_SELF_VERSION
-from app.core.events import (
-    PrivateConversationEvent,
-    TrustedPrincipalContext,
-    VerificationStatus,
-)
+from app.core.events import TrustedPrincipalContext, VerificationStatus
 from app.core.self_state import (
     BeliefCandidate,
     BeliefCandidateChange,
@@ -28,6 +24,7 @@ from app.core.self_state import (
 from app.core.self_state_store import (
     MAX_EVIDENCE_PER_REVISION,
     SelfStateConflictError,
+    SelfStateIdentityConflictError,
     SelfStateStore,
     SelfStateValidationError,
 )
@@ -52,6 +49,7 @@ from .contracts import (
     NoChangeProposal,
     ProposalContext,
 )
+from .read_store import CognitionReadStore
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -75,6 +73,7 @@ class CognitionEngine:
     ):
         self._events = event_store
         self._state = state_store
+        self._read = CognitionReadStore(event_store, state_store)
         self._extractor = extractor
         self._capabilities = capabilities
 
@@ -87,7 +86,7 @@ class CognitionEngine:
             return self._rejected(CognitionReason.CAPABILITY_DISABLED)
         if self._extractor is None:
             return self._rejected(CognitionReason.EXTRACTOR_NOT_CONFIGURED)
-        source, visible_events = self._source_event(context, source_event_id)
+        source = self._read.retrieve_exact_private_event(context, source_event_id)
         if source is None:
             return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
         try:
@@ -116,8 +115,6 @@ class CognitionEngine:
             source_event_id,
             proposal,
             identity,
-            visible_events,
-            current,
         )
 
     def plan_source_invalidation(
@@ -125,11 +122,11 @@ class CognitionEngine:
     ) -> InvalidationPlan:
         """Identify affected revisions without pretending deletion integration exists."""
 
-        source, _ = self._source_event(context, source_event_id)
+        source = self._read.retrieve_exact_private_event(context, source_event_id)
         if source is None:
             return InvalidationPlan(InvalidationStatus.REJECTED, source_event_id, ())
         affected: list[tuple[str, str, int]] = []
-        for candidate in self._state.retrieve_private_candidates(context):
+        for candidate in self._read.retrieve_all_private_candidates(context):
             state_type = self._state_type(candidate)
             history = self._state.retrieve_private_revision_history(
                 context, state_type, candidate.item_id
@@ -154,11 +151,9 @@ class CognitionEngine:
         source_event_id: str,
         proposal: object,
         identity: ExtractorIdentity,
-        visible_events: tuple[PrivateConversationEvent, ...],
-        current: tuple[InterestCandidate | BeliefCandidate | GoalCandidate, ...],
     ) -> CognitionOutcome:
         if isinstance(proposal, NoChangeProposal):
-            return self._authorize_no_change(proposal, source_event_id, visible_events)
+            return self._authorize_no_change(context, proposal, source_event_id)
         if not isinstance(
             proposal,
             (
@@ -182,9 +177,7 @@ class CognitionEngine:
                 or proposal.memory_kind not in _GENERIC_KINDS
             ):
                 return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
-        reason = self._validate_common(
-            proposal.context, source_event_id, visible_events
-        )
+        reason = self._validate_common(context, proposal.context, source_event_id)
         if reason is not None:
             return self._rejected(reason, self._safe_kind(proposal))
         if isinstance(proposal, GenericMemoryProposal):
@@ -213,8 +206,22 @@ class CognitionEngine:
                 return self._rejected(
                     CognitionReason.INCONSISTENT_CONFIDENCE, proposal.memory_kind
                 )
-        existing = next(
-            (item for item in current if item.item_id == proposal.item_id), None
+        change = self._build_change(proposal, identity)
+        try:
+            duplicate = self._read.replay_private_operation(context, change)
+        except SelfStateIdentityConflictError:
+            return self._rejected(
+                CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
+            )
+        if duplicate is not None:
+            return CognitionOutcome(
+                CognitionOutcomeStatus.PERSISTED,
+                CognitionReason.AUTHORIZED,
+                proposal.memory_kind,
+                transition=duplicate,
+            )
+        existing = self._read.retrieve_exact_private_candidate(
+            context, proposal.item_id
         )
         reason = self._validate_revision_target(proposal, existing)
         if reason is not None:
@@ -223,6 +230,10 @@ class CognitionEngine:
             transition = self._persist(context, proposal, identity)
         except SelfStateConflictError:
             return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
+        except SelfStateIdentityConflictError:
+            return self._rejected(
+                CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
+            )
         except SelfStateValidationError:
             return self._rejected(CognitionReason.STORE_REJECTED, proposal.memory_kind)
         return CognitionOutcome(
@@ -232,42 +243,44 @@ class CognitionEngine:
             transition=transition,
         )
 
-    @staticmethod
     def _authorize_no_change(
+        self,
+        context: TrustedPrincipalContext,
         proposal: NoChangeProposal,
         source_event_id: str,
-        visible_events: tuple[PrivateConversationEvent, ...],
     ) -> CognitionOutcome:
-        visible_ids = {item.event_id for item in visible_events}
         if proposal.source_event_id != source_event_id:
-            return CognitionEngine._rejected(CognitionReason.SOURCE_MISMATCH)
+            return self._rejected(CognitionReason.SOURCE_MISMATCH)
         if (
             not CognitionEngine._valid_text(proposal.reason)
             or type(proposal.considered_evidence_ids) is not tuple
             or not proposal.considered_evidence_ids
             or len(proposal.considered_evidence_ids) > MAX_EVIDENCE_PER_REVISION
         ):
-            return CognitionEngine._rejected(CognitionReason.INVALID_PROPOSAL)
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
         if any(
             not CognitionEngine._valid_token(item)
             for item in proposal.considered_evidence_ids
         ) or len(set(proposal.considered_evidence_ids)) != len(
             proposal.considered_evidence_ids
         ):
-            return CognitionEngine._rejected(CognitionReason.INVALID_PROPOSAL)
-        if any(item not in visible_ids for item in proposal.considered_evidence_ids):
-            return CognitionEngine._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if any(
+            self._read.retrieve_exact_private_event(context, item) is None
+            for item in proposal.considered_evidence_ids
+        ):
+            return self._rejected(CognitionReason.EVIDENCE_NOT_FOUND)
         return CognitionOutcome(
             CognitionOutcomeStatus.NO_CHANGE,
             CognitionReason.INSUFFICIENT_EVIDENCE,
             no_change=proposal,
         )
 
-    @staticmethod
     def _validate_common(
+        self,
+        context: TrustedPrincipalContext,
         proposal: ProposalContext,
         source_event_id: str,
-        visible_events: tuple[PrivateConversationEvent, ...],
     ) -> CognitionReason | None:
         if not isinstance(proposal, ProposalContext):
             return CognitionReason.INVALID_PROPOSAL
@@ -293,8 +306,10 @@ class CognitionEngine:
             return CognitionReason.INVALID_PROPOSAL
         if len(set(all_ids)) != len(all_ids):
             return CognitionReason.EVIDENCE_ROLE_CONFLICT
-        visible_ids = {item.event_id for item in visible_events}
-        if any(item not in visible_ids for item in all_ids):
+        if any(
+            self._read.retrieve_exact_private_event(context, item) is None
+            for item in all_ids
+        ):
             return CognitionReason.EVIDENCE_NOT_FOUND
         return None
 
@@ -397,6 +412,33 @@ class CognitionEngine:
         proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
         identity: ExtractorIdentity,
     ):
+        change = self._build_change(proposal, identity)
+        creating = proposal.context.expected_revision is None
+        if isinstance(proposal, InterestMemoryProposal):
+            method = (
+                self._state.create_interest_candidate
+                if creating
+                else self._state.revise_interest_candidate
+            )
+        elif isinstance(proposal, BeliefMemoryProposal):
+            method = (
+                self._state.create_belief_candidate
+                if creating
+                else self._state.revise_belief_candidate
+            )
+        else:
+            method = (
+                self._state.create_goal_candidate
+                if creating
+                else self._state.revise_goal_candidate
+            )
+        return method(context, change)
+
+    @staticmethod
+    def _build_change(
+        proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
+        identity: ExtractorIdentity,
+    ) -> InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange:
         revision = RevisionContext(
             operation_id=proposal.context.operation_id,
             expected_revision=proposal.context.expected_revision,
@@ -412,9 +454,8 @@ class CognitionEngine:
             model_identifier=identity.model_identifier,
             prompt_version=identity.prompt_version,
         )
-        creating = proposal.context.expected_revision is None
         if isinstance(proposal, InterestMemoryProposal):
-            change = InterestCandidateChange(
+            return InterestCandidateChange(
                 proposal.item_id,
                 proposal.topic,
                 proposal.strength,
@@ -424,13 +465,8 @@ class CognitionEngine:
                 proposal.context.review_at,
                 revision,
             )
-            method = (
-                self._state.create_interest_candidate
-                if creating
-                else self._state.revise_interest_candidate
-            )
-        elif isinstance(proposal, BeliefMemoryProposal):
-            change = BeliefCandidateChange(
+        if isinstance(proposal, BeliefMemoryProposal):
+            return BeliefCandidateChange(
                 proposal.item_id,
                 proposal.proposition,
                 proposal.stance,
@@ -443,39 +479,18 @@ class CognitionEngine:
                 proposal.context.review_at,
                 revision,
             )
-            method = (
-                self._state.create_belief_candidate
-                if creating
-                else self._state.revise_belief_candidate
-            )
-        else:
-            change = GoalCandidateChange(
-                proposal.item_id,
-                proposal.description,
-                proposal.rationale,
-                proposal.priority,
-                proposal.status,
-                proposal.constraints,
-                proposal.context.supporting_event_ids,
-                proposal.review_condition,
-                proposal.context.review_at,
-                revision,
-            )
-            method = (
-                self._state.create_goal_candidate
-                if creating
-                else self._state.revise_goal_candidate
-            )
-        return method(context, change)
-
-    def _source_event(
-        self, context: TrustedPrincipalContext, source_event_id: str
-    ) -> tuple[PrivateConversationEvent | None, tuple[PrivateConversationEvent, ...]]:
-        events = self._events.retrieve_private_events(context)
-        source = next(
-            (item for item in events if item.event_id == source_event_id), None
+        return GoalCandidateChange(
+            proposal.item_id,
+            proposal.description,
+            proposal.rationale,
+            proposal.priority,
+            proposal.status,
+            proposal.constraints,
+            proposal.context.supporting_event_ids,
+            proposal.review_condition,
+            proposal.context.review_at,
+            revision,
         )
-        return source, events
 
     @staticmethod
     def _consistent_confidence(proposal: BeliefMemoryProposal) -> bool:

@@ -37,6 +37,14 @@ disabled capabilities. `SelfStateStore` remains the final transactional boundary
 for optimistic concurrency, operation idempotency, evidence integrity, text
 screening, and SQLite persistence.
 
+The core conversation/state retrieval methods deliberately cap model-facing
+results at 100 records. A cognition-owned read-only adapter performs exact
+participant-scoped identity and revision lookups so those presentation caps do
+not become authorization limits. It also checks durable operation identity
+before current-revision validation, preserving duplicate retry semantics after
+later revisions. The adapter uses only the existing versioned schema and has no
+write or migration path.
+
 No-change is a first-class result. Insufficient evidence does not force a new
 interest, belief, or goal revision. It currently has no durable audit record
 because the existing schema has no general cognition-decision table.
@@ -95,9 +103,11 @@ source inference remains possible even for a safe abstraction.
 
 `MemoryContextSelector` accepts an explicit purpose, participant context,
 relevant topic, maximum record count, and total UTF-8 byte budget. It obtains the
-participant-filtered candidate set from `SelfStateStore` before calculating any
-relevance score. Thus a highly relevant candidate owned by another participant
-never enters ranking.
+complete participant-filtered candidate set through the read-only cognition
+adapter before calculating any relevance score or applying a result cap. Thus an
+older exact-topic match remains eligible beyond the core 100-record presentation
+window, while a highly relevant candidate owned by another participant never
+enters ranking.
 
 Ranking is deterministic across topic overlap, active status, confidence or
 priority, recency, and item ID. The selector emits only whole records; a record

@@ -128,8 +128,8 @@ def retrieval_setup(tmp_path):
 
 
 def test_privacy_filter_precedes_ranking_and_records_are_untrusted(retrieval_setup):
-    _, state, context_a, _, _, _ = retrieval_setup
-    selector = MemoryContextSelector(state)
+    events, state, context_a, _, _, _ = retrieval_setup
+    selector = MemoryContextSelector(events, state)
 
     selection = selector.select(
         context_a,
@@ -156,8 +156,8 @@ def test_privacy_filter_precedes_ranking_and_records_are_untrusted(retrieval_set
 
 
 def test_budget_keeps_whole_records_and_reports_omission(retrieval_setup):
-    _, state, context_a, _, _, _ = retrieval_setup
-    selector = MemoryContextSelector(state)
+    events, state, context_a, _, _, _ = retrieval_setup
+    selector = MemoryContextSelector(events, state)
     generous = selector.select(
         context_a,
         RetrievalRequest(RetrievalPurpose.DELIBERATION, "", 4096, 5),
@@ -198,7 +198,7 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
     assert denied.status is InvalidationStatus.REJECTED
     assert denied.affected_items == ()
 
-    selected = MemoryContextSelector(state).select(
+    selected = MemoryContextSelector(events, state).select(
         context_a,
         RetrievalRequest(
             RetrievalPurpose.CONVERSATION,
@@ -249,12 +249,12 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
         is CognitionOutcomeStatus.PERSISTED
     )
 
-    ordinary = MemoryContextSelector(state).select(
+    ordinary = MemoryContextSelector(events, state).select(
         context,
         RetrievalRequest(RetrievalPurpose.CONVERSATION, "system", 4096, 5),
     )
     assert "interest-promptish" not in {record.item_id for record in ordinary.records}
-    inactive = MemoryContextSelector(state).select(
+    inactive = MemoryContextSelector(events, state).select(
         context,
         RetrievalRequest(
             RetrievalPurpose.REVISION,
@@ -296,9 +296,9 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
 def test_retrieval_limits_and_identifiers_are_validated(
     retrieval_setup, retrieval_request
 ):
-    _, state, context, _, _, _ = retrieval_setup
+    events, state, context, _, _, _ = retrieval_setup
     with pytest.raises(ValueError, match="invalid retrieval request"):
-        MemoryContextSelector(state).select(context, retrieval_request)
+        MemoryContextSelector(events, state).select(context, retrieval_request)
 
     with pytest.raises(ValueError, match="invalid retrieval limits"):
         MemoryRetrievalLimits(max_utf8_bytes=0, max_records=1)
@@ -306,7 +306,7 @@ def test_retrieval_limits_and_identifiers_are_validated(
         MemoryRetrievalLimits(max_utf8_bytes=100, max_records=101)
 
     with pytest.raises(ValueError, match="invalid retrieval request"):
-        MemoryContextSelector(state).select(context, object())
+        MemoryContextSelector(events, state).select(context, object())
 
 
 def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_setup):
@@ -357,7 +357,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
             is CognitionOutcomeStatus.PERSISTED
         )
 
-    selection = MemoryContextSelector(state).select(
+    selection = MemoryContextSelector(events, state).select(
         context,
         RetrievalRequest(RetrievalPurpose.REVISION, "feedback", 4096, 10),
     )
@@ -366,3 +366,31 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert by_id["belief-retrieval"].priority is None
     assert by_id["goal-retrieval"].confidence is None
     assert by_id["goal-retrieval"].priority == 65
+
+
+def test_ranking_considers_authorized_candidates_beyond_core_result_cap(
+    retrieval_setup,
+):
+    events, state, context, _, event_id, _ = retrieval_setup
+    for index in range(100):
+        create_interest(
+            events,
+            state,
+            context,
+            event_id,
+            f"recent-unrelated-{index:03d}",
+            f"Unrelated recent topic {index}",
+            100,
+            10 + index,
+        )
+    assert "interest-a-space" not in {
+        item.item_id for item in state.retrieve_private_candidates(context)
+    }
+
+    selection = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.CONVERSATION, "orbital mechanics", 4096, 1),
+    )
+
+    assert [record.item_id for record in selection.records] == ["interest-a-space"]
+    assert selection.records_omitted is True

@@ -339,6 +339,174 @@ def test_scope_fake_evidence_stale_revision_and_duplicate_operation_are_determin
     assert rejected.reason is CognitionReason.STALE_REVISION
 
 
+def test_operation_identity_collision_is_rejected_without_aborting(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    original = InterestMemoryProposal(
+        context=proposal_context(event_id, "identity-collision"),
+        item_id="interest-collision",
+        topic="Operation identity",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="Retries need stable identities.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(original))
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    changed_retry = replace(original, strength=80)
+
+    outcome = CognitionEngine(
+        events, state, extractor=FakeExtractor(changed_retry)
+    ).process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.OPERATION_ID_CONFLICT
+    assert state.retrieve_private_candidates(context)[0].strength == 50
+
+
+def test_operation_identity_race_is_rejected_without_aborting(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    original = InterestMemoryProposal(
+        proposal_context(event_id, "identity-race"),
+        "interest-identity-race",
+        "Operation races",
+        50,
+        InterestStatus.ACTIVE,
+        "Concurrent retries must fail closed.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(original))
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    changed_retry = replace(original, strength=80)
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(changed_retry))
+    monkeypatch.setattr(
+        engine._read,
+        "replay_private_operation",
+        lambda _context, _change: None,
+    )
+
+    outcome = engine.process(context, event_id)
+
+    assert outcome.reason is CognitionReason.OPERATION_ID_CONFLICT
+
+
+def test_delayed_retry_remains_duplicate_after_a_later_revision(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    created = InterestMemoryProposal(
+        proposal_context(event_id, "delayed-create"),
+        "interest-delayed",
+        "Reliable retry semantics",
+        40,
+        InterestStatus.ACTIVE,
+        "Retries should not depend on the latest revision.",
+    )
+    revision_one = replace(
+        created,
+        context=proposal_context(event_id, "delayed-first", expected_revision=1),
+        strength=60,
+    )
+    revision_two = replace(
+        created,
+        context=proposal_context(event_id, "delayed-second", expected_revision=2),
+        strength=80,
+    )
+    for item in (created, revision_one, revision_two):
+        assert (
+            CognitionEngine(events, state, extractor=FakeExtractor(item))
+            .process(context, event_id)
+            .status
+            is CognitionOutcomeStatus.PERSISTED
+        )
+
+    delayed = CognitionEngine(
+        events, state, extractor=FakeExtractor(revision_one)
+    ).process(context, event_id)
+
+    assert delayed.transition.status is TransitionStatus.DUPLICATE
+    assert delayed.transition.state.revision == 2
+    assert delayed.transition.state.strength == 60
+    assert state.retrieve_private_candidates(context)[0].revision == 3
+
+
+def test_explicit_old_source_event_is_not_lost_to_recent_event_limit(
+    cognition_setup,
+):
+    events, state, context, event_id = cognition_setup
+    for index in range(100):
+        append_event(events, context, f"new-{index:03d}")
+    assert event_id not in {
+        item.event_id for item in events.retrieve_private_events(context)
+    }
+    proposal = InterestMemoryProposal(
+        proposal_context(event_id, "old-source"),
+        "interest-old-source",
+        "Historical continuity",
+        50,
+        InterestStatus.ACTIVE,
+        "Explicit authorized sources remain addressable.",
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.status is CognitionOutcomeStatus.PERSISTED
+
+
+def test_explicit_old_candidate_revision_is_not_lost_to_recent_state_limit(
+    cognition_setup,
+):
+    events, state, context, event_id = cognition_setup
+    target = InterestMemoryProposal(
+        proposal_context(event_id, "old-candidate"),
+        "interest-old-candidate",
+        "Long-lived topic",
+        40,
+        InterestStatus.ACTIVE,
+        "Old state remains revision-addressable.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(target))
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    for index in range(100):
+        recent = replace(
+            target,
+            context=proposal_context(event_id, f"recent-{index:03d}"),
+            item_id=f"interest-recent-{index:03d}",
+        )
+        assert (
+            CognitionEngine(events, state, extractor=FakeExtractor(recent))
+            .process(context, event_id)
+            .status
+            is CognitionOutcomeStatus.PERSISTED
+        )
+    assert "interest-old-candidate" not in {
+        item.item_id for item in state.retrieve_private_candidates(context)
+    }
+    revision = replace(
+        target,
+        context=proposal_context(event_id, "old-candidate-revise", expected_revision=1),
+        strength=70,
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(revision)).process(
+        context, event_id
+    )
+
+    assert outcome.status is CognitionOutcomeStatus.PERSISTED
+    assert outcome.transition.state.revision == 2
+
+
 @pytest.mark.parametrize(
     "kind",
     [

@@ -12,6 +12,7 @@ from app.core.self_state import (
     StateType,
 )
 from app.core.self_state_store import SelfStateStore
+from app.core.store import EventStore
 
 from .contracts import (
     MemoryKind,
@@ -22,6 +23,7 @@ from .contracts import (
     RetrievalPurpose,
     RetrievalRequest,
 )
+from .read_store import CognitionReadStore
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -32,8 +34,9 @@ _TERMINAL_STATUSES = {"completed", "abandoned"}
 class MemoryContextSelector:
     """Selects authorized private state before any relevance ranking."""
 
-    def __init__(self, state_store: SelfStateStore):
+    def __init__(self, event_store: EventStore, state_store: SelfStateStore):
         self._state = state_store
+        self._read = CognitionReadStore(event_store, state_store)
 
     def select(
         self, context: TrustedPrincipalContext, request: RetrievalRequest
@@ -43,7 +46,7 @@ class MemoryContextSelector:
 
         # This store call is the privacy boundary. Only its authorized result is
         # transformed or ranked below.
-        authorized = self._state.retrieve_private_candidates(context)
+        authorized = self._read.retrieve_all_private_candidates(context)
         invalidated = set(request.invalidated_event_ids)
         ranked: list[tuple[tuple[object, ...], MemoryRecord]] = []
         query_words = set(self._words(request.relevant_topic))

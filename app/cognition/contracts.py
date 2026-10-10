@@ -54,6 +54,7 @@ class CognitionReason(StrEnum):
     INCONSISTENT_CONFIDENCE = "inconsistent_confidence"
     INVALID_STATUS_TRANSITION = "invalid_status_transition"
     STALE_REVISION = "stale_revision"
+    OPERATION_ID_CONFLICT = "operation_id_conflict"
     INSUFFICIENT_EVIDENCE = "insufficient_evidence"
     PERSISTENCE_NOT_AVAILABLE = "persistence_not_available"
     STORE_REJECTED = "store_rejected"
