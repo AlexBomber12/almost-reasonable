@@ -183,14 +183,17 @@ successfully is insufficient. The workflow:
    writes;
 7. confirms that every applicable ledger deletion was applied to this quarantine
    without changing the live database disposition;
-8. records a payload-free restore outcome; and
-9. writes an owner-only `.ready.json` eligibility marker only after success.
+8. durably records a payload-free restore outcome; and
+9. only then writes an owner-only `.ready.json` eligibility marker.
 
 The owned quarantine descriptor remains open through integrity checks,
 reconciliation, schema revalidation, and readiness publication. Restore adapters
 receive a descriptor-backed path valid for that callback lifetime, rather than
 the replaceable public pathname; the public path must still name the owned inode
 at every validation boundary and before eligibility is recorded.
+Backup metadata is likewise opened through a no-follow pinned descriptor and
+read with a strict size bound, so validation and parsing cannot be redirected to
+a replacement or unbounded special file.
 
 Any adapter exception, non-`ErasureReport` deletion response, incomplete cascade,
 revocation failure, rebuild failure, unknown schema, malformed metadata, or

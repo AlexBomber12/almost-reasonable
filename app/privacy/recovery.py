@@ -29,6 +29,7 @@ BACKUP_FORMAT_VERSION = 1
 BACKUP_PAGE_BATCH = 256
 MAX_BACKUP_BUSY_ATTEMPTS = 20
 BACKUP_BUSY_SLEEP_SECONDS = 0.01
+MAX_BACKUP_METADATA_BYTES = 4096
 
 
 class BackupError(RuntimeError):
@@ -188,7 +189,7 @@ def _pin_database(path: Path, label: str) -> _PinnedDatabase:
     try:
         descriptor = os.open(
             path.name,
-            os.O_RDONLY | os.O_NOFOLLOW,
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
             dir_fd=parent_descriptor,
         )
     except OSError as error:
@@ -350,8 +351,22 @@ def create_sqlite_backup(
 def _load_metadata(backup: Path, expected_schema_version: int) -> BackupMetadata:
     metadata_path = Path(f"{backup}.metadata.json")
     _validate_existing_file(metadata_path, "backup metadata")
+    pinned_metadata = _pin_database(metadata_path, "backup metadata")
     try:
-        raw = json.loads(metadata_path.read_text(encoding="utf-8"))
+        payload = bytearray()
+        while len(payload) <= MAX_BACKUP_METADATA_BYTES:
+            chunk = os.read(
+                pinned_metadata.descriptor,
+                MAX_BACKUP_METADATA_BYTES + 1 - len(payload),
+            )
+            if not chunk:
+                break
+            payload.extend(chunk)
+        if len(payload) > MAX_BACKUP_METADATA_BYTES:
+            raise BackupError("invalid backup metadata")
+        if not _path_matches_descriptor(metadata_path, pinned_metadata.descriptor):
+            raise BackupError("invalid backup metadata")
+        raw = json.loads(payload.decode("utf-8"))
         created_at = datetime.fromisoformat(raw["created_at"])
         valid = (
             raw["format_version"] == BACKUP_FORMAT_VERSION
@@ -359,8 +374,10 @@ def _load_metadata(backup: Path, expected_schema_version: int) -> BackupMetadata
             and raw["database_filename"] == backup.name
         )
         require_utc(created_at, "backup timestamp")
-    except (KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
+    except (KeyError, TypeError, ValueError, json.JSONDecodeError, OSError) as error:
         raise BackupError("invalid backup metadata") from error
+    finally:
+        os.close(pinned_metadata.descriptor)
     if not valid:
         raise BackupError("invalid backup metadata")
     return BackupMetadata(metadata_path, expected_schema_version, created_at)
@@ -423,7 +440,6 @@ class QuarantinedRestore:
         restored_at: datetime,
     ) -> RestoreResult:
         restore_id = f"restore-{uuid4()}"
-        marker_files: list[_OwnedFile] = []
         try:
             self._require_quarantine_identity(quarantine, quarantine_descriptor)
             if not _safe_integrity_ok(quarantine_descriptor):
@@ -469,43 +485,43 @@ class QuarantinedRestore:
                     "privacy_ledger_changed_during_restore",
                 )
             self._require_quarantine_identity(quarantine, quarantine_descriptor)
-            marker = json.dumps(
-                {
-                    "restore_id": restore_id,
-                    "disposition": "eligible_for_activation",
-                    "ledger_generation": snapshot.generation,
-                },
-                sort_keys=True,
-            ).encode("utf-8")
-            try:
-                descriptor = _open_owned_file(ready_path, os.O_WRONLY, marker_files)
-                _write_all(descriptor, marker)
-                os.fsync(descriptor)
-                if not _path_matches_descriptor(ready_path, descriptor):
-                    raise BackupError("readiness marker identity changed")
-            except Exception as error:
-                _cleanup_created(marker_files)
-                raise BackupError("readiness marker write failed") from error
-            self._require_quarantine_identity(quarantine, quarantine_descriptor)
-            _close_owned(marker_files)
-            self.ledger.record_restore(
-                restore_id,
-                restored_at,
-                RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
-                "reconciliation_complete",
-            )
-            return RestoreResult(
-                restore_id,
-                RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
-                True,
-                "reconciliation_complete",
-                snapshot.generation,
-            )
         except _QuarantineIdentityError:
-            _cleanup_created(marker_files)
             return self._blocked_restore(
                 restore_id, restored_at, "quarantine_identity_changed"
             )
+        self.ledger.record_restore(
+            restore_id,
+            restored_at,
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            "reconciliation_complete",
+        )
+        marker = json.dumps(
+            {
+                "restore_id": restore_id,
+                "disposition": "eligible_for_activation",
+                "ledger_generation": snapshot.generation,
+            },
+            sort_keys=True,
+        ).encode("utf-8")
+        marker_files: list[_OwnedFile] = []
+        try:
+            descriptor = _open_owned_file(ready_path, os.O_WRONLY, marker_files)
+            _write_all(descriptor, marker)
+            os.fsync(descriptor)
+            if not _path_matches_descriptor(ready_path, descriptor):
+                raise BackupError("readiness marker identity changed")
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+        except Exception as error:
+            _cleanup_created(marker_files)
+            raise BackupError("readiness marker write failed") from error
+        _close_owned(marker_files)
+        return RestoreResult(
+            restore_id,
+            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+            True,
+            "reconciliation_complete",
+            snapshot.generation,
+        )
 
     def _blocked_restore(
         self, restore_id: str, restored_at: datetime, reason: str

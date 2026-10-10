@@ -356,7 +356,9 @@ def test_backup_source_pin_rejects_path_races(tmp_path, monkeypatch, race):
     real_open = recovery_module.os.open
 
     def race_open(path, flags, *args, **kwargs):
-        if path == source.name and flags == os.O_RDONLY | os.O_NOFOLLOW:
+        if path == source.name and flags == (
+            os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK
+        ):
             if race == "open":
                 source.unlink()
                 return real_open(path, flags, *args, **kwargs)
@@ -740,11 +742,65 @@ def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):
     assert blocked.activation_eligible is False
     assert not Path(f"{blocked_path}.ready.json").exists()
 
+    valid_metadata = metadata.path.read_bytes()
+    metadata.path.write_bytes(b"x" * (recovery_module.MAX_BACKUP_METADATA_BYTES + 1))
+    with pytest.raises(BackupError, match="metadata"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            backup, tmp_path / "oversized-metadata.sqlite3", NOW
+        )
+
+    metadata.path.write_bytes(valid_metadata)
     metadata.path.write_text("{}")
     with pytest.raises(BackupError, match="metadata"):
         QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
             backup, tmp_path / "bad-metadata.sqlite3", NOW
         )
+
+
+def test_restore_metadata_read_rejects_a_replaced_path(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    replacement = tmp_path / "replacement.metadata.json"
+    replacement.write_bytes(metadata.path.read_bytes())
+    held_metadata = tmp_path / "held.metadata.json"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    real_read = os.read
+    replaced = False
+
+    def replace_before_read(descriptor, size):
+        nonlocal replaced
+        if not replaced:
+            replaced = True
+            metadata.path.rename(held_metadata)
+            replacement.rename(metadata.path)
+        return real_read(descriptor, size)
+
+    monkeypatch.setattr(recovery_module.os, "read", replace_before_read)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    with pytest.raises(BackupError, match="metadata"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+    assert not quarantine.exists()
+
+
+def test_restore_does_not_publish_readiness_when_outcome_recording_fails(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+
+    def fail_record(*_args):
+        raise RuntimeError("restore outcome unavailable")
+
+    monkeypatch.setattr(ledger, "record_restore", fail_record)
+    with pytest.raises(RuntimeError, match="outcome unavailable"):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+    assert not Path(f"{quarantine}.ready.json").exists()
 
 
 @pytest.mark.parametrize("integrity_outcome", [False, sqlite3.DatabaseError("corrupt")])
