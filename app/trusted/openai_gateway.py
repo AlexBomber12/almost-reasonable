@@ -512,6 +512,8 @@ def _parse_response(response: ProviderResponse) -> _ParsedResponse:
     }:
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
     decision = payload["decision"]
+    if not isinstance(decision, str):
+        return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
     fields = {
         "no_action": "reason_category",
         "reply": "content",

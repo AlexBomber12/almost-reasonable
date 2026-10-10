@@ -307,7 +307,7 @@ def test_fake_transport_rejects_nonresponse_schedule_value():
         ({"type": "invalid_request_error", "code": "bad"}, {}, "bad", None),
         ({}, {"retry-after": "nan"}, None, None),
         ({}, {"retry-after": "-1"}, None, None),
-        ({}, {"retry-after": "999999"}, None, None),
+        ({}, {"retry-after": "999999"}, None, 120.0),
     ],
 )
 def test_exception_metadata_extraction_is_bounded(

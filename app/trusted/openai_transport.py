@@ -277,12 +277,8 @@ def _sanitized_sdk_error(error: Exception) -> OpenAITransportError:
             candidate = float(headers.get("retry-after"))
         except (TypeError, ValueError, OverflowError):
             candidate = None
-        if (
-            candidate is not None
-            and math.isfinite(candidate)
-            and 0 < candidate <= MAX_RETRY_AFTER_SECONDS
-        ):
-            retry_after = candidate
+        if candidate is not None and math.isfinite(candidate) and candidate > 0:
+            retry_after = min(candidate, MAX_RETRY_AFTER_SECONDS)
     name = type(error).__name__
     return OpenAITransportError(
         status_code=status_code,

@@ -276,6 +276,24 @@ def test_default_stage_zero_and_environment_key_do_not_enable_transport(
             GatewayOutcome.INVALID_PROPOSAL,
         ),
         (
+            response(
+                text=(
+                    '{"decision":[],"reason_category":null,'
+                    '"content":null,"brief":null,"draft":null}'
+                )
+            ),
+            GatewayOutcome.INVALID_RESPONSE,
+        ),
+        (
+            response(
+                text=(
+                    '{"decision":{},"reason_category":null,'
+                    '"content":null,"brief":null,"draft":null}'
+                )
+            ),
+            GatewayOutcome.INVALID_RESPONSE,
+        ),
+        (
             response(text="я" * 9000),
             GatewayOutcome.OVERSIZED_OUTPUT,
         ),
