@@ -11,6 +11,11 @@ from app.research.provenance import (
 from app.research.synthesis import (
     ClaimKind,
     ClaimStatus,
+    MAX_EVIDENCE_REFERENCES_PER_CLAIM,
+    MAX_SYNTHESIS_CLAIMS,
+    MAX_SYNTHESIS_CONTRADICTIONS,
+    MAX_SYNTHESIS_UNVERIFIED_CLAIMS,
+    MAX_SYNTHESIS_UTF8_BYTES,
     ResearchClaimDraft,
     ResearchSynthesisDraft,
     build_russian_synthesis,
@@ -109,6 +114,7 @@ def test_semantic_support_is_never_inferred_from_syntax_or_a_url():
     "draft",
     [
         object(),
+        ResearchSynthesisDraft(object(), (), "Есть неопределённость.", (), ()),
         ResearchSynthesisDraft("", (), "Есть неопределённость.", (), ()),
         ResearchSynthesisDraft("Вывод.", (), "", (), ()),
         ResearchSynthesisDraft(
@@ -142,8 +148,13 @@ def test_synthesis_rejects_duplicate_source_references():
     ("draft", "sources"),
     [
         (ResearchSynthesisDraft("Вывод.", (), "Неопределённость.", (), ()), []),
+        (
+            ResearchSynthesisDraft("Вывод.", (), "Неопределённость.", (), ()),
+            (object(),),
+        ),
         (ResearchSynthesisDraft("Вывод.", [], "Неопределённость.", (), ()), ()),
         (ResearchSynthesisDraft("Вывод.", (), "Неопределённость.", [], ()), ()),
+        (ResearchSynthesisDraft("Вывод.", (), "Неопределённость.", (), []), ()),
         (
             ResearchSynthesisDraft("Вывод.", (object(),), "Неопределённость.", (), ()),
             (),
@@ -164,8 +175,161 @@ def test_synthesis_rejects_duplicate_source_references():
             ),
             (),
         ),
+        (
+            ResearchSynthesisDraft("invalid \ud800", (), "Неопределённость.", (), ()),
+            (),
+        ),
     ],
 )
 def test_synthesis_rejects_mutable_wrong_and_oversized_fields(draft, sources):
     with pytest.raises((TypeError, ValueError)):
         build_russian_synthesis(draft, sources)
+
+
+def test_maximum_synthesis_collection_sizes_are_accepted():
+    references = tuple(
+        f"missing-{index}" for index in range(MAX_EVIDENCE_REFERENCES_PER_CLAIM)
+    )
+    draft = ResearchSynthesisDraft(
+        "Вывод.",
+        tuple(
+            ResearchClaimDraft(
+                f"Утверждение {index}.", ClaimKind.OBSERVED_FACT, references
+            )
+            for index in range(MAX_SYNTHESIS_CLAIMS)
+        ),
+        "Неопределённость.",
+        tuple(
+            f"Противоречие {index}." for index in range(MAX_SYNTHESIS_CONTRADICTIONS)
+        ),
+        tuple(
+            f"Непроверенное {index}."
+            for index in range(MAX_SYNTHESIS_UNVERIFIED_CLAIMS)
+        ),
+    )
+
+    result = build_russian_synthesis(draft, ())
+
+    assert len(result.claims) == MAX_SYNTHESIS_CLAIMS
+    assert len(result.contradictions) == MAX_SYNTHESIS_CONTRADICTIONS
+    assert len(result.unverified_claims) == (
+        MAX_SYNTHESIS_UNVERIFIED_CLAIMS + MAX_SYNTHESIS_CLAIMS
+    )
+
+
+@pytest.mark.parametrize(
+    ("draft", "message"),
+    [
+        (
+            ResearchSynthesisDraft(
+                "Вывод.",
+                tuple(object() for _ in range(MAX_SYNTHESIS_CLAIMS + 1)),
+                "Неопределённость.",
+                (),
+                (),
+            ),
+            "claim count bound",
+        ),
+        (
+            ResearchSynthesisDraft(
+                "Вывод.",
+                (),
+                "Неопределённость.",
+                tuple(object() for _ in range(MAX_SYNTHESIS_CONTRADICTIONS + 1)),
+                (),
+            ),
+            "contradiction count bound",
+        ),
+        (
+            ResearchSynthesisDraft(
+                "Вывод.",
+                (),
+                "Неопределённость.",
+                (),
+                tuple(object() for _ in range(MAX_SYNTHESIS_UNVERIFIED_CLAIMS + 1)),
+            ),
+            "unverified claim count bound",
+        ),
+        (
+            ResearchSynthesisDraft(
+                "Вывод.",
+                (
+                    ResearchClaimDraft(
+                        "Факт.",
+                        ClaimKind.OBSERVED_FACT,
+                        tuple(
+                            object()
+                            for _ in range(MAX_EVIDENCE_REFERENCES_PER_CLAIM + 1)
+                        ),
+                    ),
+                ),
+                "Неопределённость.",
+                (),
+                (),
+            ),
+            "evidence reference count bound",
+        ),
+    ],
+)
+def test_oversized_synthesis_collections_fail_before_item_processing(draft, message):
+    with pytest.raises(ValueError, match=message):
+        build_russian_synthesis(draft, ())
+
+
+def test_aggregate_synthesis_payload_is_bounded():
+    per_claim = "я" * 2000
+    draft = ResearchSynthesisDraft(
+        "Вывод.",
+        tuple(
+            ResearchClaimDraft(f"{per_claim}{index}", ClaimKind.INTERPRETATION, ())
+            for index in range(MAX_SYNTHESIS_CLAIMS)
+        ),
+        "Неопределённость.",
+        (),
+        (),
+    )
+    assert sum(len(claim.text.encode("utf-8")) for claim in draft.claims) > (
+        MAX_SYNTHESIS_UTF8_BYTES
+    )
+
+    with pytest.raises(ValueError, match="aggregate byte bound"):
+        build_russian_synthesis(draft, ())
+
+
+def test_unverified_claim_deduplication_preserves_first_occurrence_order():
+    draft = ResearchSynthesisDraft(
+        "Вывод.",
+        (
+            ResearchClaimDraft("Второе.", ClaimKind.OBSERVED_FACT, ()),
+            ResearchClaimDraft("Третье.", ClaimKind.INTERPRETATION, ("missing",)),
+            ResearchClaimDraft("Второе.", ClaimKind.INTERPRETATION, ()),
+        ),
+        "Неопределённость.",
+        (),
+        ("Первое.", "Первое.", "Второе."),
+    )
+
+    result = build_russian_synthesis(draft, ())
+
+    assert result.unverified_claims == ("Первое.", "Второе.", "Третье.")
+
+
+@pytest.mark.parametrize(
+    "references",
+    [
+        ("",),
+        (3,),
+        ["source-1"],
+    ],
+)
+def test_invalid_evidence_reference_collections_are_rejected(references):
+    draft = ResearchSynthesisDraft(
+        "Вывод.",
+        (ResearchClaimDraft("Факт.", ClaimKind.OBSERVED_FACT, references),),
+        "Неопределённость.",
+        (),
+        (),
+    )
+
+    with pytest.raises(TypeError, match="evidence references"):
+        build_russian_synthesis(draft, ())

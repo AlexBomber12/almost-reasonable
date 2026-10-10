@@ -190,6 +190,15 @@ evidence references downgrade the associated claim to unverified rather than
 inventing support. Even a sourced link retains semantic support as
 `not_evaluated`.
 
+Untrusted synthesis drafts are validated before linking or copying. The closed
+bounds are 32 claims, 16 contradictions, 32 explicitly unverified claims, 10
+evidence references per claim, 16 KiB per synthesis text field, and 64 KiB for
+all draft text and evidence-reference bytes combined. The evidence-reference
+limit matches the maximum sourced-result budget, while the aggregate limit
+matches the provider response-text bound. Derived unverified claims are bounded
+by the claim and explicit-unverified limits. Deduplication uses set membership
+while retaining the first occurrence order in the returned tuple.
+
 The synthesis is untrusted data and explicitly declares that it still requires
 the shared Russian output gate. It is evidence for later cognition integration,
 not a command or a direct belief/goal update.
