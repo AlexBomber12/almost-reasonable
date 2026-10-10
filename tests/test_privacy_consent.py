@@ -773,6 +773,24 @@ def test_ledger_rejects_duck_typed_audit_records(tmp_path):
     assert ledger.audit_records() == ()
 
 
+def test_ledger_rejects_duck_typed_consent_grants(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    class ForgedGrant:
+        principal_id = "participant-a"
+        actor_reference = "actor-a"
+        authentication_event_id = "auth-event-a"
+        operation_id = "private grant payload"
+        revision = 0
+        expires_at = datetime(2026, 10, 10)
+
+    with pytest.raises(ValueError, match="consent grant"):
+        ledger.insert_consent(context(), ForgedGrant())
+
+    assert ledger.consent_principal("consent-001") is None
+    assert ledger.audit_records() == ()
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [

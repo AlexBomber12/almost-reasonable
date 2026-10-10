@@ -150,6 +150,30 @@ def test_ledger_rejects_unauthenticated_direct_deletion_insert(tmp_path):
     assert ledger.audit_records() == ()
 
 
+def test_ledger_rejects_duck_typed_deletion_requests(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    generation = ledger.control_generation()
+
+    class ForgedRequest:
+        principal_id = "participant-a"
+        actor_reference = "actor-a"
+        authentication_event_id = "auth-a"
+        operation_id = "private deletion payload"
+        content_reference = "private content payload"
+
+    with pytest.raises(ValueError, match="deletion request"):
+        ledger.insert_deletion(
+            context(),
+            ForgedRequest(),
+            DeletionDisposition.PENDING,
+            "awaiting_erasure",
+        )
+
+    assert ledger.control_generation() == generation
+    assert ledger.deletions_for_reconciliation() == ()
+    assert ledger.audit_records() == ()
+
+
 def test_partial_or_failed_erasure_is_never_completed(tmp_path):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     partial = ErasureReport(

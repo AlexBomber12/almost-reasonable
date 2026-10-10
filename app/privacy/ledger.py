@@ -352,6 +352,8 @@ class PrivacyLedger:
     def insert_consent(
         self, context: TrustedPrivacyContext, grant: ConsentGrant
     ) -> bool:
+        if type(grant) is not ConsentGrant:
+            raise ValueError("invalid consent grant")
         self._require_control_context(
             context,
             principal_id=grant.principal_id,
@@ -697,6 +699,8 @@ class PrivacyLedger:
         disposition: DeletionDisposition,
         reason: str,
     ) -> bool:
+        if type(request) is not DeletionRequest:
+            raise ValueError("invalid deletion request")
         self._require_control_context(
             context,
             principal_id=request.principal_id,
