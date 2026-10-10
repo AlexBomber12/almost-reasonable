@@ -330,3 +330,23 @@ def test_model_adapter_timeout_and_post_call_deadline_are_enforced() -> None:
         lambda: next(backwards),
     ).deliberate(behavior_input())
     assert failed_closed.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
+
+
+def test_deliberation_context_has_section_and_aggregate_byte_bounds() -> None:
+    base = behavior_input()
+    item = "a" * 4096
+    with pytest.raises(ValueError, match="authorized_context exceeds"):
+        engine(RecordedBehaviorModel(())).deliberate(
+            replace(base, authorized_context=(item,) * 7)
+        )
+
+    aggregate = (item,) * 6
+    with pytest.raises(ValueError, match="total byte bound"):
+        engine(RecordedBehaviorModel(())).deliberate(
+            replace(
+                base,
+                authorized_context=aggregate,
+                permitted_mutable_state=aggregate,
+                current_goals=aggregate,
+            )
+        )

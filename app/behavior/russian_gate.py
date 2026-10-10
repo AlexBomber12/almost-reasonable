@@ -48,7 +48,6 @@ class DeliveryResult:
 _URL = re.compile(r"https?://\S+", re.IGNORECASE)
 _FENCED_CODE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`[^`]*`")
-_QUOTED = re.compile(r"[«“\"](?:[^»”\"]|\"(?!\s))*[»”\"]")
 _CYRILLIC_WORD = re.compile(r"[А-Яа-яЁёІіЇїЄєҐґЎў]+")
 _LATIN_WORD = re.compile(r"[A-Za-z]{2,}")
 _UKRAINIAN_WORDS = frozenset(
@@ -85,7 +84,7 @@ class RussianOutputGate:
         if any(_is_disallowed_control(character) for character in normalized):
             return _assessment(False, GateReason.DISALLOWED_CONTROL, 0, 0)
 
-        prose = _strip_allowed_foreign_regions(normalized)
+        prose = _strip_non_prose_regions(normalized)
         cyrillic = [word.casefold() for word in _CYRILLIC_WORD.findall(prose)]
         latin = [word.casefold() for word in _LATIN_WORD.findall(prose)]
         nearby_score = sum(word in _UKRAINIAN_WORDS for word in cyrillic)
@@ -220,15 +219,10 @@ def corpus_cases() -> tuple[RussianCorpusCase, ...]:
     )
 
 
-def _strip_allowed_foreign_regions(text: str) -> str:
+def _strip_non_prose_regions(text: str) -> str:
     without_code = _FENCED_CODE.sub(" ", text)
     without_code = _INLINE_CODE.sub(" ", without_code)
-    without_urls = _URL.sub(" ", without_code)
-    without_quotes = _QUOTED.sub(" ", without_urls)
-    return "\n".join(
-        " " if line.lstrip().startswith(">") else line
-        for line in without_quotes.splitlines()
-    )
+    return _URL.sub(" ", without_code)
 
 
 def _is_disallowed_control(character: str) -> bool:

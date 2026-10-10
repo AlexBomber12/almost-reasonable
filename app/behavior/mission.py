@@ -263,6 +263,13 @@ def _validate_confirmation(
             raise ValueError(f"{name} is invalid")
     _validate_text_tuple(confirmation.reasons, "reasons")
     _validate_text_tuple(confirmation.counterevidence, "counterevidence")
+    if any(
+        _contains_forbidden_mission_content(value)
+        for value in (*confirmation.reasons, *confirmation.counterevidence)
+    ):
+        raise ValueError(
+            "closed confirmation text rejects instructions, links, and policy changes"
+        )
     _validate_text_tuple(confirmation.evidence_ids, "evidence_ids")
     if proposal.initiating_event_id in confirmation.evidence_ids:
         raise ValueError("confirmation requires independent evidence")

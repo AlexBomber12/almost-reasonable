@@ -243,7 +243,7 @@ class TestScheduler:
             valid_decision = decision
 
         history = state.action_history
-        if valid_decision is not None:
+        if outcome in (SchedulerOutcome.PROPOSED, SchedulerOutcome.NO_ACTION):
             history = (*history, (valid_decision, now))
         updated = replace(
             state,

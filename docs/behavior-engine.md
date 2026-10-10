@@ -31,6 +31,11 @@ typed `BehaviorIntent` values for `remember`, `revise_belief`, `revise_goal`,
 unknown fields, malformed values, oversized values, invalid goal states, and
 attempts to add administrative fields fail closed.
 
+Each of the authorized-context, mutable-state, and goals sections has both an
+item-count and UTF-8 byte bound. A smaller aggregate bound covers all three plus
+Core Self, preventing individually valid sections from combining into an
+oversized or unexpectedly expensive model request.
+
 The engine performs at most one injected model call and one parse step. It
 computes the smaller of the remaining deadline and configured execution budget
 and supplies that hard timeout to the application-owned model adapter. The
@@ -56,10 +61,11 @@ for future behavior intents.
 `app.behavior.russian_gate` provides `russian-h-gate-v1` and the frozen
 `russian-h-corpus-v1`. The gate normalizes text, rejects hidden control/format
 characters, removes URLs and code from conversational-language accounting,
-tolerates bounded Latin technical terminology and proper names, and discounts
-quoted or block-quoted foreign material before comparing Cyrillic and Latin
-prose. A small marker set rejects clear Ukrainian and Belarusian proximity
-cases.
+tolerates bounded Latin technical terminology and proper names, and excludes
+only URLs and code regions before comparing Cyrillic and Latin prose. Foreign
+quotations remain in the language accounting, so their Russian framing and
+explanation must be proportionate to their size. A small marker set rejects
+clear Ukrainian and Belarusian proximity cases.
 
 The corpus contains ten labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, English-only,
@@ -95,7 +101,9 @@ Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
 rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
 expired duplicate record or cooldown does not permanently starve a later
-worthwhile wake-up.
+worthwhile wake-up. Only admitted proposals and admitted `no_action` decisions
+enter action-rate history; a rate or execution rejection cannot refresh its own
+denial window indefinitely.
 
 The in-memory store and mutable clock exist for deterministic tests. Production
 wiring still needs an application-owned durable scheduler repository and actual
@@ -119,12 +127,14 @@ version as its parent. Resolved proposals cannot be resolved again.
 Mission text, reasons, and counterevidence use Unicode-normalized, fail-closed
 screening for hidden controls, links, instruction/prompt language, credentials,
 secrets, budgets, security/deployment controls, shell/Docker, and tool/command
-imperatives in Russian and English. Revision cannot alter Core Self, operational
-policy, credentials, provider budgets, deployment stage, tool permissions, or
-emergency-stop availability. It may, for example, replace a Threads-oriented
-behavioral mission while the separately managed Threads capability remains
-unchanged. The lexical screen is deliberately conservative; semantic adequacy
-still receives H/M evaluation, while exact capability invariance remains G.
+imperatives in Russian and English. The same screen covers the later
+confirmation's reasons and counterevidence before durable storage. Revision
+cannot alter Core Self, operational policy, credentials, provider budgets,
+deployment stage, tool permissions, or emergency-stop availability. It may, for
+example, replace a Threads-oriented behavioral mission while the separately
+managed Threads capability remains unchanged. The lexical screen is
+deliberately conservative; semantic adequacy still receives H/M evaluation,
+while exact capability invariance remains G.
 
 The repository writes a replacement file before atomically replacing the active
 document. Tests reopen it with a new state-machine instance and confirm

@@ -210,3 +210,23 @@ def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
     later = scheduler.run((due, future))
     assert later.selected_event_id == "future"
     assert calls == ["due", "future"]
+
+
+def test_rejected_decisions_do_not_refresh_rate_limit_window() -> None:
+    store = InMemorySchedulerStore()
+    clock = MutableClock(NOW)
+    scheduler = TestScheduler(policy(), store, clock, lambda _: AgentDecision.RESEARCH)
+
+    assert scheduler.run((event("accepted"),)).outcome is SchedulerOutcome.PROPOSED
+    clock.advance(timedelta(minutes=11))
+    assert (
+        scheduler.run((event("limited", clock.now()),)).outcome
+        is SchedulerOutcome.RATE_LIMITED
+    )
+    assert len(store.load().action_history) == 1
+
+    clock.advance(timedelta(minutes=50))
+    assert (
+        scheduler.run((event("eligible-again", clock.now()),)).outcome
+        is SchedulerOutcome.PROPOSED
+    )

@@ -61,6 +61,13 @@ def test_gate_accepts_russian_technical_context_quote_code_and_url() -> None:
     assert assessment.russian_word_count > assessment.foreign_prose_word_count
 
 
+def test_long_foreign_quote_needs_proportionate_russian_framing() -> None:
+    bypass = "«This response contains only English conversational prose.» Да."
+    assessment = RussianOutputGate().assess(bypass)
+    assert not assessment.accepted
+    assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
+
+
 def test_policy_regenerates_with_strict_limit_then_falls_back() -> None:
     drafts = iter(("Still English only.", "Теперь ответ полностью по-русски."))
     calls: list[str] = []

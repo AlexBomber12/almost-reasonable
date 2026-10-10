@@ -19,6 +19,8 @@ from app.core.self_state import GoalStatus
 BEHAVIOR_CONTRACT_VERSION = "behavior-deliberation-v1"
 MAX_BEHAVIOR_TEXT_UTF8_BYTES = 4096
 MAX_CONTEXT_ITEMS = 64
+MAX_CONTEXT_SECTION_UTF8_BYTES = 24 * 1024
+MAX_DELIBERATION_CONTEXT_UTF8_BYTES = 64 * 1024
 
 
 class TriggerType(StrEnum):
@@ -408,6 +410,7 @@ def _validate_input(value: DeliberationInput) -> None:
         raise ValueError("correlation_id is invalid")
     if value.core_self != initial_core_self():
         raise ValueError("core_self must be the approved immutable Core Self")
+    section_sizes: list[int] = []
     for name, items in (
         ("authorized_context", value.authorized_context),
         ("permitted_mutable_state", value.permitted_mutable_state),
@@ -419,6 +422,20 @@ def _validate_input(value: DeliberationInput) -> None:
             or any(not _valid_text(item) for item in items)
         ):
             raise ValueError(f"{name} is invalid")
+        section_size = sum(len(item.encode("utf-8")) for item in items)
+        if section_size > MAX_CONTEXT_SECTION_UTF8_BYTES:
+            raise ValueError(f"{name} exceeds its byte bound")
+        section_sizes.append(section_size)
+    core_self_size = sum(
+        len(item.encode("utf-8"))
+        for item in (
+            value.core_self.version,
+            value.core_self.identity,
+            *value.core_self.principles,
+        )
+    )
+    if core_self_size + sum(section_sizes) > MAX_DELIBERATION_CONTEXT_UTF8_BYTES:
+        raise ValueError("deliberation context exceeds its total byte bound")
     if not isinstance(value.capabilities, BehaviorCapabilities) or not _valid_text(
         value.capabilities.version
     ):
