@@ -168,7 +168,25 @@ class ThreadsService:
                     operation_id, "container_dispatch_started", now=now
                 )
                 container_id = self.simulator.create_container(item)
-            self._recheck_immediately_before_effect(item, approval, now)
+                self.store.update_sending_evidence(
+                    operation_id,
+                    "container_created_publish_not_started",
+                    now=now,
+                    provider_container_id=container_id,
+                )
+            try:
+                self._recheck_immediately_before_effect(item, approval, now)
+            except (PolicyDeniedError, ValueError):
+                self.store.transition(
+                    operation_id,
+                    OutboxState.READY,
+                    reason="pre_publish_policy_denial",
+                    now=now,
+                    provider_container_id=container_id,
+                    dispatch_evidence="publish_not_transmitted",
+                    reconciliation_status="not_required",
+                )
+                raise
             self.store.update_sending_evidence(
                 operation_id,
                 "publish_dispatch_started",
@@ -201,7 +219,11 @@ class ThreadsService:
         item = self.store.get(operation_id)
         if item.state is not OutboxState.SENDING:
             raise ThreadsStoreError("recovery requires sending state")
-        if item.dispatch_evidence in {"pre_dispatch_intent", "no_transmission"}:
+        if item.dispatch_evidence in {
+            "pre_dispatch_intent",
+            "no_transmission",
+            "container_created_publish_not_started",
+        }:
             state = (
                 OutboxState.READY
                 if item.attempt_count < MAX_DISPATCH_ATTEMPTS

@@ -396,6 +396,32 @@ def test_stop_before_send_blocks_and_stop_in_flight_cannot_revoke_success(tmp_pa
     assert service.policy.emergency_stop is True
 
 
+def test_policy_stop_after_container_persists_and_reuses_proven_safe_container(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    calls = 0
+
+    def create_then_stop(item):
+        nonlocal calls
+        calls += 1
+        service.policy.emergency_stop = True
+        return f"container-{item.operation_id}"
+
+    monkeypatch.setattr(service.simulator, "create_container", create_then_stop)
+    with pytest.raises(PolicyDeniedError, match="stop"):
+        service.dispatch("operation-1", approval, now=NOW)
+    blocked = service.store.get("operation-1")
+    assert blocked.state is OutboxState.READY
+    assert blocked.provider_container_id == "container-operation-1"
+    assert blocked.dispatch_evidence == "publish_not_transmitted"
+    service.policy.emergency_stop = False
+    confirmed = service.dispatch("operation-1", approval, now=NOW)
+    assert confirmed.state is OutboxState.CONFIRMED
+    assert calls == 1
+
+
 @pytest.mark.parametrize(
     "result, expected",
     [
