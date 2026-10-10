@@ -196,6 +196,11 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "direct_identifier",
         ),
         (
+            'Contact ""@example.com',
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
             "Find alice@[192.0.2.1]",
             ResearchScreeningContext(),
             "direct_identifier",
@@ -242,6 +247,11 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
         ),
         (
             "Call 09.123.456 about the study",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Call phone_612345678 now",
             ResearchScreeningContext(),
             "direct_identifier",
         ),
@@ -738,8 +748,37 @@ def test_folded_encoded_private_value_in_url_path_is_rejected():
     assert result.reason == "encoded_leakage"
 
 
+def test_encoded_private_value_after_alphabetic_url_path_is_rejected():
+    private_value = "alice@example.com"
+    result = build_safe_research_brief(
+        records(
+            ResearchQuestion(
+                f"Review https://example.org/user/{encoded(private_value)}"
+            )
+        ),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
 @pytest.mark.parametrize("question", ["What is AI?", "Go language", "Hi there"])
 def test_ordinary_two_letter_words_are_not_treated_as_opaque_encoding(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "question", ["Please explain photosynthesis.", "What else is known?"]
+)
+def test_ordinary_base64_shaped_words_are_not_treated_as_opaque_encoding(question):
     result = build_safe_research_brief(
         records(ResearchQuestion(question)),
         result_budget=2,

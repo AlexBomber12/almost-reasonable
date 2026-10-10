@@ -21,10 +21,10 @@ _PUBLIC_REFERENCE = re.compile(
 )
 _EMAIL = re.compile(
     r"(?i)(?<![\w.!#$%&'*+/=?^_`{|}~\"-])"
-    r"(?:\"(?:[^\"\\\r\n]|\\.)+\"|[\w.!#$%&'*+/=?^_`{|}~-]+)@"
+    r"(?:\"(?:[^\"\\\r\n]|\\.)*\"|[\w.!#$%&'*+/=?^_`{|}~-]+)@"
     r"(?:(?:[\w-]+\.)*[\w-]+|\[[^\]\s]+\])"
 )
-_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s()./–—-]{5,}\d)(?!\w)")
+_PHONE = re.compile(r"(?<![^\W_])(?:\+?\d[\d\s()./–—-]{5,}\d)(?![^\W_])")
 _YEAR_RANGE = re.compile(
     r"(?<!\d)(?:1[5-9]\d{2}|20\d{2}|21\d{2})\s*[-/–—]\s*"
     r"(?:1[5-9]\d{2}|20\d{2}|21\d{2})(?!\d)"
@@ -44,15 +44,15 @@ _GROUPED_QUANTITY = re.compile(
 _BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])[A-Za-z0-9+/_-]{2,}={0,2}(?![A-Za-z0-9+/_=-])"
 )
-_PATH_BASE64 = re.compile(r"(?<=/)[A-Za-z0-9+/_-]{2,}={0,2}(?![A-Za-z0-9+/_=-])")
+_PATH_BASE64 = re.compile(r"(?=/([A-Za-z0-9+/_-]{2,}={0,2}(?![A-Za-z0-9+/_=-])))")
 _FOLDED_BASE64 = re.compile(
     r"(?<![A-Za-z0-9+/_-])"
     r"(?:[A-Za-z0-9+/_-]+ +)+[A-Za-z0-9+/_-]+={0,2}"
     r"(?![A-Za-z0-9+/_=-])"
 )
 _PATH_FOLDED_BASE64 = re.compile(
-    r"(?<=/)(?:[A-Za-z0-9+/_-]+ +)+[A-Za-z0-9+/_-]+={0,2}"
-    r"(?![A-Za-z0-9+/_=-])"
+    r"(?=/((?:[A-Za-z0-9+/_-]+ +)+[A-Za-z0-9+/_-]+={0,2}"
+    r"(?![A-Za-z0-9+/_=-])))"
 )
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
@@ -508,19 +508,27 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
     views = (raw,) if normalized == raw else (raw, normalized)
-    contiguous = tuple(
-        (match.group(0), len(match.group(0).rstrip("=")) >= 4)
+    ordinary_contiguous = tuple(
+        (match.group(0), match.group(0).endswith("="))
         for view in views
-        for pattern in (_BASE64, _PATH_BASE64)
-        for match in pattern.finditer(view)
+        for match in _BASE64.finditer(view)
     )
-    folded = tuple(
+    path_contiguous = tuple(
+        (match.group(1), match.group(1).endswith("="))
+        for view in views
+        for match in _PATH_BASE64.finditer(view)
+    )
+    ordinary_folded = tuple(
         (match.group(0).replace(" ", ""), False)
         for view in views
-        for pattern in (_FOLDED_BASE64, _PATH_FOLDED_BASE64)
-        for match in pattern.finditer(view)
+        for match in _FOLDED_BASE64.finditer(view)
     )
-    return (*contiguous, *folded)
+    path_folded = tuple(
+        (match.group(1).replace(" ", ""), False)
+        for view in views
+        for match in _PATH_FOLDED_BASE64.finditer(view)
+    )
+    return (*ordinary_contiguous, *path_contiguous, *ordinary_folded, *path_folded)
 
 
 def _normalized_for_encoding(value: str) -> str:
