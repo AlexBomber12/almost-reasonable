@@ -9,6 +9,7 @@ import signal
 import socket
 import stat
 import struct
+import sys
 from threading import Thread
 from time import monotonic
 
@@ -33,7 +34,10 @@ from app.trusted.openai_worker_protocol import (
 
 
 SOCKET_MODE = 0o600
+GROUP_SOCKET_MODE = 0o660
+GROUP_SOCKET_DIRECTORY_MODE = 0o710
 MAX_LINUX_UID = 2**32 - 2
+MAX_LINUX_GID = 2**32 - 2
 _INVALID_REQUEST_RU = "Локальный запрос к модели отклонён."
 _TIMEOUT_RU = "Сервис модели временно недоступен. Попробуйте позже."
 
@@ -42,6 +46,8 @@ _TIMEOUT_RU = "Сервис модели временно недоступен. 
 class WorkerServerConfig:
     socket_path: Path
     permitted_peer_uids: frozenset[int]
+    trusted_ipc_gid: int | None = None
+    log_peer_uids: bool = False
     connection_lifetime_seconds: float = 320.0
     io_timeout_seconds: float = 5.0
     accept_timeout_seconds: float = 1.0
@@ -58,6 +64,13 @@ class WorkerServerConfig:
             )
         ):
             raise ValueError("permitted peer UIDs are invalid")
+        if self.trusted_ipc_gid is not None and (
+            type(self.trusted_ipc_gid) is not int
+            or not 0 <= self.trusted_ipc_gid <= MAX_LINUX_GID
+        ):
+            raise ValueError("trusted IPC GID is invalid")
+        if type(self.log_peer_uids) is not bool:
+            raise ValueError("peer UID logging flag is invalid")
         validate_timing(self.connection_lifetime_seconds, self.io_timeout_seconds)
         if (
             type(self.accept_timeout_seconds) not in {int, float}
@@ -84,7 +97,9 @@ class OpenAIWorkerServer:
     def start(self) -> None:
         if self._listener is not None:
             raise RuntimeError("worker server is already started")
-        _validate_socket_location(self._config.socket_path)
+        _validate_socket_location(
+            self._config.socket_path, trusted_ipc_gid=self._config.trusted_ipc_gid
+        )
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         previous_umask = os.umask(0o177)
         try:
@@ -99,7 +114,25 @@ class OpenAIWorkerServer:
             if not stat.S_ISSOCK(socket_stat.st_mode):
                 raise RuntimeError("worker socket creation failed")
             self._socket_identity = (socket_stat.st_dev, socket_stat.st_ino)
-            os.chmod(self._config.socket_path, SOCKET_MODE, follow_symlinks=False)
+            if self._config.trusted_ipc_gid is not None:
+                os.chown(
+                    self._config.socket_path,
+                    -1,
+                    self._config.trusted_ipc_gid,
+                    follow_symlinks=False,
+                )
+            socket_mode = (
+                GROUP_SOCKET_MODE
+                if self._config.trusted_ipc_gid is not None
+                else SOCKET_MODE
+            )
+            os.chmod(self._config.socket_path, socket_mode, follow_symlinks=False)
+            _validate_created_socket(
+                self._config.socket_path,
+                identity=self._socket_identity,
+                expected_mode=socket_mode,
+                expected_gid=self._config.trusted_ipc_gid,
+            )
             listener.listen(8)
             listener.settimeout(self._config.accept_timeout_seconds)
             self._listener = listener
@@ -130,7 +163,15 @@ class OpenAIWorkerServer:
                 peer_uid = _peer_uid(connection)
             except WorkerProtocolError:
                 return
-            if peer_uid not in self._config.permitted_peer_uids:
+            authorized = peer_uid in self._config.permitted_peer_uids
+            if self._config.log_peer_uids:
+                print(
+                    "openai-worker peer "
+                    f"uid={peer_uid} authorized={str(authorized).lower()}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if not authorized:
                 return
             deadline = monotonic() + self._config.connection_lifetime_seconds
             try:
@@ -230,7 +271,12 @@ class OpenAIWorkerServer:
 
 
 def build_offline_worker(
-    socket_path: Path, database_path: Path, permitted_peer_uids: frozenset[int]
+    socket_path: Path,
+    database_path: Path,
+    permitted_peer_uids: frozenset[int],
+    *,
+    trusted_ipc_gid: int | None = None,
+    log_peer_uids: bool = False,
 ) -> OpenAIWorkerServer:
     """Build the executable Stage 0 harness without loading provider credentials."""
 
@@ -241,7 +287,13 @@ def build_offline_worker(
         config=default_openai_provider_config(),
     )
     return OpenAIWorkerServer(
-        WorkerServerConfig(socket_path, permitted_peer_uids), gateway
+        WorkerServerConfig(
+            socket_path,
+            permitted_peer_uids,
+            trusted_ipc_gid=trusted_ipc_gid,
+            log_peer_uids=log_peer_uids,
+        ),
+        gateway,
     )
 
 
@@ -250,10 +302,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--socket", required=True, type=Path)
     parser.add_argument("--database", required=True, type=Path)
     parser.add_argument("--allow-uid", action="append", required=True, type=int)
+    parser.add_argument("--socket-group-gid", type=int)
+    parser.add_argument("--log-peer-uids", action="store_true")
     parser.add_argument("--max-connections", type=int)
     arguments = parser.parse_args(argv)
     server = build_offline_worker(
-        arguments.socket, arguments.database, frozenset(arguments.allow_uid)
+        arguments.socket,
+        arguments.database,
+        frozenset(arguments.allow_uid),
+        trusted_ipc_gid=arguments.socket_group_gid,
+        log_peer_uids=arguments.log_peer_uids,
     )
     stopping = False
 
@@ -301,7 +359,9 @@ def _peer_uid(connection: socket.socket) -> int:
     return uid
 
 
-def _validate_socket_location(path: Path) -> None:
+def _validate_socket_location(
+    path: Path, *, trusted_ipc_gid: int | None = None
+) -> None:
     if len(str(path).encode("utf-8")) > 107:
         raise ValueError("socket path is too long")
     parent = path.parent
@@ -311,17 +371,42 @@ def _validate_socket_location(path: Path) -> None:
             raise ValueError("socket directory uses a symbolic link")
     except OSError:
         raise ValueError("socket directory is invalid") from None
-    if (
+    unsafe = (
         not stat.S_ISDIR(parent_stat.st_mode)
         or parent_stat.st_uid != os.geteuid()
         or parent_stat.st_mode & 0o022
-    ):
+    )
+    if trusted_ipc_gid is not None:
+        unsafe = unsafe or (
+            parent_stat.st_gid != trusted_ipc_gid
+            or stat.S_IMODE(parent_stat.st_mode) != GROUP_SOCKET_DIRECTORY_MODE
+        )
+    if unsafe:
         raise ValueError("socket directory is unsafe")
     try:
         path.lstat()
     except FileNotFoundError:
         return
     raise ValueError("socket path already exists")
+
+
+def _validate_created_socket(
+    path: Path,
+    *,
+    identity: tuple[int, int],
+    expected_mode: int,
+    expected_gid: int | None,
+) -> None:
+    socket_stat = path.lstat()
+    if (
+        not stat.S_ISSOCK(socket_stat.st_mode)
+        or (socket_stat.st_dev, socket_stat.st_ino) != identity
+        or socket_stat.st_uid != os.geteuid()
+        or stat.S_IMODE(socket_stat.st_mode) != expected_mode
+        or socket_stat.st_mode & 0o007
+        or (expected_gid is not None and socket_stat.st_gid != expected_gid)
+    ):
+        raise RuntimeError("worker socket creation failed")
 
 
 if __name__ == "__main__":

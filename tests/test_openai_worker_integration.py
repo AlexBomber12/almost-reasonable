@@ -617,6 +617,7 @@ def test_executable_harness_handles_one_request_and_restores_signal_handlers(tmp
 
 def test_main_signal_callback_stops_loop_and_always_closes(monkeypatch, tmp_path):
     handlers = {}
+    built = {}
 
     class FakeServer:
         def __init__(self):
@@ -634,9 +635,15 @@ def test_main_signal_callback_stops_loop_and_always_closes(monkeypatch, tmp_path
             self.closed = True
 
     fake = FakeServer()
+
+    def build(*args, **kwargs):
+        built["args"] = args
+        built["kwargs"] = kwargs
+        return fake
+
     monkeypatch.setattr(
         "app.trusted.openai_worker_server.build_offline_worker",
-        lambda *_args: fake,
+        build,
     )
 
     def capture(which, handler):
@@ -654,11 +661,19 @@ def test_main_signal_callback_stops_loop_and_always_closes(monkeypatch, tmp_path
                 str(tmp_path / "provider.sqlite3"),
                 "--allow-uid",
                 str(os.getuid()),
+                "--socket-group-gid",
+                str(os.getgid()),
+                "--log-peer-uids",
             ]
         )
         == 0
     )
     assert fake.closed is True
+    assert built["args"][2] == frozenset((os.getuid(),))
+    assert built["kwargs"] == {
+        "trusted_ipc_gid": os.getgid(),
+        "log_peer_uids": True,
+    }
 
 
 def test_module_entrypoint_is_executable(monkeypatch, tmp_path):
