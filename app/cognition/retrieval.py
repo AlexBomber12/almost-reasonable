@@ -45,17 +45,30 @@ class MemoryContextSelector:
 
         # This store call is the privacy boundary. Only its authorized result is
         # transformed or ranked below.
-        authorized = self._read.retrieve_all_private_candidate_reads(context)
+        authorized = self._read.retrieve_all_private_candidate_reads(
+            context,
+            include_belief_history=request.purpose is RetrievalPurpose.REVISION,
+        )
         invalidated = set(request.invalidated_event_ids)
         ranked: list[tuple[tuple[object, ...], MemoryRecord]] = []
         query_words = set(self._words(request.relevant_topic))
+        latest_by_item: dict[str, PrivateCandidate] = {}
+        for candidate_read in authorized:
+            candidate = candidate_read.candidate
+            latest_by_item[candidate.item_id] = max(
+                candidate,
+                latest_by_item.get(candidate.item_id, candidate),
+                key=lambda item: item.revision,
+            )
+        terminal_items = {
+            item_id
+            for item_id, candidate in latest_by_item.items()
+            if candidate.status.value in _TERMINAL_STATUSES
+        }
         omitted = False
         for candidate_read in authorized:
             candidate = candidate_read.candidate
-            if (
-                not request.include_terminal
-                and candidate.status.value in _TERMINAL_STATUSES
-            ):
+            if not request.include_terminal and candidate.item_id in terminal_items:
                 omitted = True
                 continue
             if invalidated & set(candidate_read.evidence_event_ids):
@@ -65,9 +78,11 @@ class MemoryContextSelector:
                 candidate,
                 candidate_read.decided_at,
                 candidate_read.decision_origin,
+                candidate_read.revision_reason,
             )
             searchable_values = (
                 record.text,
+                record.revision_reason,
                 record.reason_for_interest or "",
                 *record.alternatives,
                 record.rationale or "",
@@ -89,6 +104,7 @@ class MemoryContextSelector:
                 strength,
                 record.recency,
                 record.item_id,
+                record.revision,
             )
             ranked.append((rank, record))
 
@@ -117,6 +133,7 @@ class MemoryContextSelector:
         candidate: PrivateCandidate,
         recency: datetime,
         decision_origin: DecisionOrigin,
+        revision_reason: str,
     ) -> MemoryRecord:
         if isinstance(candidate, InterestCandidate):
             kind = MemoryKind.DURABLE_INTEREST
@@ -164,12 +181,15 @@ class MemoryContextSelector:
         values = (
             candidate.item_id,
             kind.value,
+            str(candidate.revision),
+            revision_reason,
             text,
             candidate.status.value,
             candidate.scope.value,
             "" if confidence is None else str(confidence),
             "" if priority is None else str(priority),
             "" if stance is None else stance.value,
+            str(candidate.supporting_evidence_count),
             str(counterevidence_count),
             "" if reason_for_interest is None else reason_for_interest,
             *alternatives,
@@ -187,12 +207,15 @@ class MemoryContextSelector:
         return MemoryRecord(
             item_id=candidate.item_id,
             memory_kind=kind,
+            revision=candidate.revision,
+            revision_reason=revision_reason,
             text=text,
             status=candidate.status.value,
             scope=candidate.scope.value,
             confidence=confidence,
             priority=priority,
             stance=stance,
+            supporting_evidence_count=candidate.supporting_evidence_count,
             counterevidence_count=counterevidence_count,
             reason_for_interest=reason_for_interest,
             alternatives=alternatives,

@@ -35,6 +35,7 @@ class PrivateCandidateRead:
     candidate: PrivateCandidate
     decided_at: datetime
     decision_origin: DecisionOrigin
+    revision_reason: str
     evidence_event_ids: tuple[str, ...]
 
 
@@ -152,9 +153,12 @@ class CognitionReadStore:
         return self._retrieve_candidate_rows(context)
 
     def retrieve_all_private_candidate_reads(
-        self, context: TrustedPrincipalContext
+        self,
+        context: TrustedPrincipalContext,
+        *,
+        include_belief_history: bool = False,
     ) -> tuple[PrivateCandidateRead, ...]:
-        """Read candidate, current recency, and all provenance in one snapshot."""
+        """Read current candidates and optionally every active belief revision."""
 
         self._state._validate_context(context)
         connection = self._events._open()
@@ -163,7 +167,16 @@ class CognitionReadStore:
                 connection.execute("BEGIN")
                 self._events._verify_current_schema(connection)
                 rows = self._query_candidate_rows(
-                    connection, context.principal_id.value, None
+                    connection,
+                    context.principal_id.value,
+                    None,
+                    include_belief_history=include_belief_history,
+                )
+                revision_filter = (
+                    "AND (revision.revision_number = item.current_revision "
+                    "OR item.state_type = 'belief')"
+                    if include_belief_history
+                    else "AND revision.revision_number = item.current_revision"
                 )
                 evidence_rows = connection.execute(
                     """
@@ -182,19 +195,19 @@ class CognitionReadStore:
                     (context.principal_id.value,),
                 ).fetchall()
                 payload_rows = connection.execute(
-                    """
+                    f"""
                     SELECT
                         'state_payload_alternatives', alternative.revision_key,
                         alternative.ordinal, alternative.alternative
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
-                     AND revision.revision_number = item.current_revision
                     JOIN state_payload_alternatives AS alternative
                       ON alternative.revision_key = revision.revision_key
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
+                      {revision_filter}
                     UNION ALL
                     SELECT
                         'state_payload_constraints', constraint_value.revision_key,
@@ -202,12 +215,12 @@ class CognitionReadStore:
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
-                     AND revision.revision_number = item.current_revision
                     JOIN state_payload_constraints AS constraint_value
                       ON constraint_value.revision_key = revision.revision_key
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
+                      {revision_filter}
                     ORDER BY 2, 1, 3
                     """,
                     (context.principal_id.value, context.principal_id.value),
@@ -223,11 +236,24 @@ class CognitionReadStore:
                 )
                 records: list[PrivateCandidateRead] = []
                 for row in rows:
+                    self._state._validate_text("stored revision reason", row[29])
+                    if include_belief_history and row[2] == "belief":
+                        candidate = self._state._snapshot_from_row(
+                            payload_reader, row[:24]
+                        )
+                        self._state._validate_snapshot_header(
+                            candidate, row[24], row[25]
+                        )
+                    else:
+                        candidate = self._state._current_snapshot_from_row(
+                            payload_reader, row
+                        )
                     records.append(
                         PrivateCandidateRead(
-                            self._state._current_snapshot_from_row(payload_reader, row),
+                            candidate,
                             self._state._parse_time(row[27]),
                             DecisionOrigin(row[28]),
+                            row[29],
                             tuple(evidence_by_item.get(row[0], ())),
                         )
                     )
@@ -352,8 +378,16 @@ class CognitionReadStore:
         connection: sqlite3.Connection,
         principal_id: str,
         item_id: str | None,
+        *,
+        include_belief_history: bool = False,
     ) -> list[tuple[object, ...]]:
         item_filter = "" if item_id is None else "AND item.item_id = ?"
+        revision_filter = (
+            "AND (revision.revision_number = item.current_revision "
+            "OR item.state_type = 'belief')"
+            if include_belief_history
+            else "AND revision.revision_number = item.current_revision"
+        )
         parameters: tuple[object, ...] = (principal_id,)
         if item_id is not None:
             parameters += (item_id,)
@@ -365,7 +399,7 @@ class CognitionReadStore:
                         item.state_type,
                         item.scope,
                         item.created_at,
-                        item.current_revision,
+                        revision.revision_number,
                         revision.revision_key,
                         payload.review_at,
                         payload.topic,
@@ -396,17 +430,18 @@ class CognitionReadStore:
                          FROM state_revisions AS candidate
                          WHERE candidate.item_key = item.item_key),
                         revision.decided_at,
-                        revision.decision_origin
+                        revision.decision_origin,
+                        payload.revision_reason
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key
-                     AND revision.revision_number = item.current_revision
                     JOIN state_revision_payloads AS payload
                       ON payload.revision_key = revision.revision_key
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND payload.retention_status = 'active'
+                      {revision_filter}
                       {item_filter}
                     ORDER BY revision.revision_key, item.item_id
                     """,

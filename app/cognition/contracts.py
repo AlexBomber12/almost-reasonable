@@ -320,12 +320,15 @@ class MemoryRetrievalLimits:
 class MemoryRecord:
     item_id: str
     memory_kind: MemoryKind
+    revision: int
+    revision_reason: str
     text: str
     status: str
     scope: str
     confidence: float | None
     priority: int | None
     stance: BeliefStance | None
+    supporting_evidence_count: int
     counterevidence_count: int
     reason_for_interest: str | None
     alternatives: tuple[str, ...]

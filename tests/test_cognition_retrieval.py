@@ -453,6 +453,9 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert belief_record.priority is None
     assert belief_record.stance is BeliefStance.OPPOSES
     assert belief_record.provenance is ProvenanceType.MODEL_INFERENCE
+    assert belief_record.revision == 1
+    assert belief_record.revision_reason == "A synthetic belief rationale."
+    assert belief_record.supporting_evidence_count == 1
     assert belief_record.counterevidence_count == 1
     assert belief_record.review_at == NOW + timedelta(days=7)
     assert belief_record.alternatives == (
@@ -465,12 +468,15 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     serialized_values = (
         belief_record.item_id,
         belief_record.memory_kind.value,
+        str(belief_record.revision),
+        belief_record.revision_reason,
         belief_record.text,
         belief_record.status,
         belief_record.scope,
         str(belief_record.confidence),
         "",
         belief_record.stance.value,
+        str(belief_record.supporting_evidence_count),
         str(belief_record.counterevidence_count),
         "",
         *belief_record.alternatives,
@@ -516,6 +522,151 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert [record.item_id for record in alternative_match.records] == [
         "belief-retrieval"
     ]
+
+
+def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
+    events, state, context, _, supporting_event, counter_event = retrieval_setup
+    created = BeliefMemoryProposal(
+        ProposalContext(
+            "operation-belief-history-create",
+            supporting_event,
+            (supporting_event,),
+            (),
+            None,
+            "Initial uncertainty from limited evidence.",
+            NOW + timedelta(minutes=8),
+            NOW + timedelta(days=7),
+        ),
+        "belief-history",
+        "Ocean circulation may amplify regional warming.",
+        BeliefStance.UNCERTAIN,
+        0.35,
+        BeliefStatus.ACTIVE,
+        ("Atmospheric circulation may dominate instead.",),
+        VerificationStatus.UNVERIFIED,
+    )
+    revised = replace(
+        created,
+        context=ProposalContext(
+            "operation-belief-history-revise",
+            counter_event,
+            (counter_event,),
+            (supporting_event,),
+            1,
+            "New evidence supports the claim but retains a conflict.",
+            NOW + timedelta(minutes=9),
+            NOW + timedelta(days=14),
+        ),
+        stance=BeliefStance.SUPPORTS,
+        confidence=0.7,
+        alternatives=("The observed warming may be a short-lived anomaly.",),
+    )
+    for item, event_id in ((created, supporting_event), (revised, counter_event)):
+        assert (
+            CognitionEngine(events, state, extractor=FakeExtractor(item))
+            .process(context, event_id)
+            .status
+            is CognitionOutcomeStatus.PERSISTED
+        )
+
+    ordinary = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.CONVERSATION, "ocean warming", 8192, 10),
+    )
+    revision = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.REVISION, "ocean warming", 8192, 10),
+    )
+
+    ordinary_beliefs = [
+        record for record in ordinary.records if record.item_id == "belief-history"
+    ]
+    revision_beliefs = [
+        record for record in revision.records if record.item_id == "belief-history"
+    ]
+    assert len(ordinary_beliefs) == 1
+    assert ordinary_beliefs[0].revision == 2
+    assert [record.revision for record in revision_beliefs] == [2, 1]
+    assert [record.stance for record in revision_beliefs] == [
+        BeliefStance.SUPPORTS,
+        BeliefStance.UNCERTAIN,
+    ]
+    assert [record.confidence for record in revision_beliefs] == [0.7, 0.35]
+    assert [record.counterevidence_count for record in revision_beliefs] == [1, 0]
+    assert [record.supporting_evidence_count for record in revision_beliefs] == [1, 1]
+    assert [record.revision_reason for record in revision_beliefs] == [
+        "New evidence supports the claim but retains a conflict.",
+        "Initial uncertainty from limited evidence.",
+    ]
+    assert [record.alternatives for record in revision_beliefs] == [
+        ("The observed warming may be a short-lived anomaly.",),
+        ("Atmospheric circulation may dominate instead.",),
+    ]
+
+
+def test_terminal_belief_history_requires_explicit_inclusion(retrieval_setup):
+    events, state, context, _, event_id, _ = retrieval_setup
+    created = BeliefMemoryProposal(
+        ProposalContext(
+            "operation-terminal-belief-create",
+            event_id,
+            (event_id,),
+            (),
+            None,
+            "Create a belief that may later be abandoned.",
+            NOW + timedelta(minutes=10),
+            NOW + timedelta(days=7),
+        ),
+        "belief-terminal-history",
+        "A temporary explanation may fit the observation.",
+        BeliefStance.UNCERTAIN,
+        0.35,
+        BeliefStatus.ACTIVE,
+        ("A different explanation may fit better.",),
+        VerificationStatus.UNVERIFIED,
+    )
+    abandoned = replace(
+        created,
+        context=replace(
+            created.context,
+            operation_id="operation-terminal-belief-abandon",
+            expected_revision=1,
+            reason="The explanation is no longer credible.",
+            proposed_at=NOW + timedelta(minutes=11),
+        ),
+        status=BeliefStatus.ABANDONED,
+    )
+    for item in (created, abandoned):
+        assert (
+            CognitionEngine(events, state, extractor=FakeExtractor(item))
+            .process(context, event_id)
+            .status
+            is CognitionOutcomeStatus.PERSISTED
+        )
+
+    excluded = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.REVISION, "temporary explanation", 8192, 10),
+    )
+    included = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(
+            RetrievalPurpose.REVISION,
+            "temporary explanation",
+            8192,
+            10,
+            include_terminal=True,
+        ),
+    )
+
+    assert "belief-terminal-history" not in {
+        record.item_id for record in excluded.records
+    }
+    assert sorted(
+        record.revision
+        for record in included.records
+        if record.item_id == "belief-terminal-history"
+    ) == [1, 2]
 
 
 def test_ranking_considers_authorized_candidates_beyond_core_result_cap(
