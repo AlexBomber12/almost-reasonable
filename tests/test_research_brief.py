@@ -150,6 +150,11 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "direct_identifier",
         ),
         (
+            "Call 212.555.0199 about the study",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
             "Research participant-b-771",
             ResearchScreeningContext(participant_identifiers=("participant-b-771",)),
             "participant_identifier",
@@ -243,6 +248,18 @@ def test_short_participant_names_match_only_at_text_boundaries():
 
     assert allowed.disposition is BriefDisposition.READY
     assert declined.reason == "participant_identifier"
+
+
+def test_participant_names_in_non_segmented_scripts_match_without_spaces():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("研究张三的论文")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("张三",)),
+    )
+
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "participant_identifier"
 
 
 @pytest.mark.parametrize(

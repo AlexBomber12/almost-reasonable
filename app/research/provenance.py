@@ -17,6 +17,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 MAX_RESPONSE_TEXT_UTF8_BYTES = 64 * 1024
+MAX_PROVIDER_RESPONSE_UTF8_BYTES = 512 * 1024
 MAX_SOURCE_RESULTS = 10
 MAX_PROVIDER_OUTPUT_ITEMS = 16
 MAX_CONSULTED_SOURCES = 100
@@ -190,6 +191,17 @@ def parse_hosted_search_response(
         raise ValueError("provider response is not completed")
     if type(response.output) is not tuple:
         raise ValueError("provider output must be a tuple")
+    try:
+        serialized_output = json.dumps(
+            response.output,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+    except (TypeError, ValueError) as error:
+        raise ValueError("provider output is not serializable") from error
+    if len(serialized_output.encode("utf-8")) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
+        raise ValueError("provider response exceeds response byte bound")
     if len(response.output) > MAX_PROVIDER_OUTPUT_ITEMS:
         raise ValueError("provider response exceeded output item bound")
     _require_timestamp(retrieved_at)
@@ -426,18 +438,21 @@ def _parse_annotation(
     publisher = annotation.get("publisher")
     language = annotation.get("source_language")
     publication_date = annotation.get("publication_date")
+    safe_url = url if _valid_https_url(url) else None
+    safe_title = title if _valid_optional_metadata(title) else None
+    safe_publisher = publisher if _valid_optional_metadata(publisher) else None
+    safe_language = language if _valid_language(language) else None
+    safe_publication_date = publication_date if _valid_date(publication_date) else None
     common = {
         "reference": reference,
         "kind": SourceKind.PROVIDER_ANNOTATION,
         "provider_source_reference": reference,
-        "url": url if isinstance(url, str) else None,
-        "title": title if isinstance(title, str) else None,
-        "publisher": publisher if isinstance(publisher, str) else None,
-        "source_language": language if isinstance(language, str) else None,
+        "url": safe_url,
+        "title": safe_title,
+        "publisher": safe_publisher,
+        "source_language": safe_language,
         "retrieval_time": retrieved_at,
-        "publication_date": (
-            publication_date if isinstance(publication_date, str) else None
-        ),
+        "publication_date": safe_publication_date,
         "annotation_exists": True,
         "evidence_support": EvidenceSupport.NOT_EVALUATED,
         "independently_verified": False,

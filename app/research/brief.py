@@ -20,11 +20,12 @@ _PUBLIC_REFERENCE = re.compile(
     r"(?i)(?:doi|arxiv|pmid|isbn):[A-Za-z0-9][A-Za-z0-9./_()-]{0,255}\Z"
 )
 _EMAIL = re.compile(r"(?i)(?<![\w.+-])[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
-_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d ()-]{7,}\d)(?!\w)")
+_PHONE = re.compile(r"(?<!\w)(?:\+?\d[\d\s()./–—-]{5,}\d)(?!\w)")
 _YEAR_RANGE = re.compile(
-    r"(?<!\d)(?:1[5-9]\d{2}|20\d{2}|21\d{2})\s*[-–—]\s*"
+    r"(?<!\d)(?:1[5-9]\d{2}|20\d{2}|21\d{2})\s*[-/–—]\s*"
     r"(?:1[5-9]\d{2}|20\d{2}|21\d{2})(?!\d)"
 )
+_ISO_DATE = re.compile(r"(?<!\d)\d{4}-\d{2}-\d{2}(?!\d)")
 _BASE64 = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{16,}={0,2}(?![A-Za-z0-9+/=])")
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
@@ -61,6 +62,16 @@ _INJECTION_PATTERNS = (
 _BRIEF_AUTHORITY = object()
 _BRIEF_INTEGRITY_KEY = secrets.token_bytes(32)
 _MAX_ENCODED_SCREEN_DEPTH = 4
+_NON_SEGMENTED_SCRIPT_PREFIXES = (
+    "CJK ",
+    "HIRAGANA ",
+    "KATAKANA ",
+    "HANGUL ",
+    "THAI ",
+    "LAO ",
+    "KHMER ",
+    "MYANMAR ",
+)
 
 
 class BriefDisposition(StrEnum):
@@ -340,10 +351,19 @@ def _contains(values: list[str], needles: tuple[str, ...]) -> bool:
 def _contains_at_boundaries(values: list[str], needles: tuple[str, ...]) -> bool:
     normalized_values = tuple(_normalized(value) for value in values)
     return any(
-        re.search(rf"(?<!\w){re.escape(_normalized(needle))}(?!\w)", value) is not None
+        _participant_identifier_matches(value, _normalized(needle))
         for needle in needles
         for value in normalized_values
     )
+
+
+def _participant_identifier_matches(value: str, needle: str) -> bool:
+    if any(
+        unicodedata.name(character, "").startswith(_NON_SEGMENTED_SCRIPT_PREFIXES)
+        for character in needle
+    ):
+        return needle in value
+    return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", value) is not None
 
 
 def _screen(
@@ -397,7 +417,8 @@ def _privacy_reason(
     )
     normalized_identifiers = _normalized(identifier_text)
     without_year_ranges = _YEAR_RANGE.sub(" ", normalized_identifiers)
-    if _EMAIL.search(normalized_identifiers) or _PHONE.search(without_year_ranges):
+    without_dates = _ISO_DATE.sub(" ", without_year_ranges)
+    if _EMAIL.search(normalized_identifiers) or _has_phone_number(without_dates):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):
         return "recognizable_private_overlap"
@@ -405,6 +426,13 @@ def _privacy_reason(
     if any(pattern in normalized for pattern in _INJECTION_PATTERNS):
         return "prompt_injection"
     return None
+
+
+def _has_phone_number(value: str) -> bool:
+    return any(
+        7 <= sum(character.isdigit() for character in match.group(0)) <= 15
+        for match in _PHONE.finditer(value)
+    )
 
 
 def _brief_integrity(serialized: str) -> bytes:

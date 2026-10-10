@@ -128,6 +128,27 @@ def test_provider_claimed_optional_metadata_is_recorded_but_not_independently_ve
     assert source.independently_verified is False
 
 
+def test_malformed_annotation_metadata_is_removed_from_downgraded_record():
+    malicious = "bad\nmetadata" + "x" * 2000
+    parsed = parse_hosted_search_response(
+        response(
+            title="bad\nmetadata",
+            publisher=malicious,
+            source_language="invalid language",
+            publication_date="yesterday",
+        ),
+        retrieved_at=NOW,
+    )
+    source = parsed.sources[0]
+
+    assert source.status is SourceStatus.MALFORMED_ANNOTATION
+    assert source.title is None
+    assert source.publisher is None
+    assert source.source_language is None
+    assert source.publication_date is None
+    assert malicious not in repr(source)
+
+
 @pytest.mark.parametrize(
     "mutator",
     [
@@ -136,6 +157,7 @@ def test_provider_claimed_optional_metadata_is_recorded_but_not_independently_ve
         lambda value: HostedSearchResponse(
             value.response_id, value.status, (object(),)
         ),
+        lambda value: HostedSearchResponse(value.response_id, value.status, (None,)),
         lambda value: HostedSearchResponse(
             value.response_id,
             value.status,
@@ -325,6 +347,14 @@ def test_provider_output_item_count_is_bounded():
     assert len(oversized.output) > provenance_module.MAX_PROVIDER_OUTPUT_ITEMS
     with pytest.raises(ValueError, match="output item bound"):
         parse_hosted_search_response(oversized, retrieved_at=NOW)
+
+
+def test_total_provider_response_bytes_are_bounded(monkeypatch):
+    import app.research.provenance as provenance_module
+
+    monkeypatch.setattr(provenance_module, "MAX_PROVIDER_RESPONSE_UTF8_BYTES", 1)
+    with pytest.raises(ValueError, match="response byte bound"):
+        parse_hosted_search_response(response(), retrieved_at=NOW)
 
 
 @pytest.mark.parametrize(
