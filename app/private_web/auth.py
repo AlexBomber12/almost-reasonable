@@ -137,6 +137,13 @@ def _secret_digest(value: object) -> bytes | None:
     return hashlib.sha256(value.encode("utf-8")).digest()
 
 
+def _account_source_reference(participant_id: str) -> str:
+    digest = hashlib.sha256(
+        b"almost-reasonable/private-web/account\0" + participant_id.encode("utf-8")
+    ).hexdigest()
+    return f"web-account:{digest}"
+
+
 class AuthStore:
     """Versioned SQLite authentication store, separate from the EventStore."""
 
@@ -379,7 +386,7 @@ class AuthStore:
                 session_token = secrets.token_urlsafe(32)
                 csrf_token = secrets.token_urlsafe(32)
                 expires_at = now + self._session_ttl_seconds
-                source_reference = f"web-session:{secrets.token_urlsafe(18)}"
+                source_reference = _account_source_reference(row[1])
                 connection.execute(
                     """
                     INSERT INTO sessions(

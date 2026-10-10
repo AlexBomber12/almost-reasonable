@@ -267,6 +267,32 @@ def test_duplicate_message_is_idempotent(web):
     assert json.loads(body)["message_status"] == "duplicate"
 
 
+def test_message_retry_is_idempotent_after_session_rotation(web):
+    _, _, _, inference, app = web
+    first_session = Browser(app)
+    replacement_session = Browser(app)
+    assert first_session.login("alice", "correct horse battery")[0] == "303 See Other"
+    assert (
+        first_session.submit("retry-across-login", "persist once")[0] == "201 Created"
+    )
+
+    assert (
+        replacement_session.login("alice", "correct horse battery")[0]
+        == "303 See Other"
+    )
+    status, _, body = replacement_session.submit(
+        "retry-across-login", "ignored retry payload"
+    )
+
+    assert status == "200 OK"
+    assert json.loads(body)["message_status"] == "duplicate"
+    history = json.loads(
+        replacement_session.request("GET", "/api/history", origin=False)[2]
+    )["messages"]
+    assert [item["content"] for item in history] == ["persist once"]
+    assert len(inference.contexts) == 1
+
+
 def test_retry_after_post_persistence_failure_reuses_id_without_duplicate(web):
     _, auth, events, _, _ = web
 

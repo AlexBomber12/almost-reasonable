@@ -102,7 +102,10 @@ SHA-256 token digests are stored. Sessions have an absolute expiry, can be
 revoked, are invalid after account disablement, survive a process restart, and
 are rotated rather than accepting a pre-login session identifier. A successful
 login removes expired/revoked records and invalidates any earlier session for
-that account, bounding storage and leaving one active session per account.
+that account, bounding storage and leaving one active session per account. The
+trusted event-source reference is a domain-separated hash of the account's
+unique participant identity, so an uncertain message retry remains idempotent
+after session expiry or rotation without persisting a session bearer token.
 Logout revokes the server-side record before clearing cookies, and the browser
 only navigates to the login page after that response succeeds. Session bearer
 tokens must therefore be protected like credentials.
