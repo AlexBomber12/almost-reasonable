@@ -616,7 +616,7 @@ class CognitionEngine:
     @staticmethod
     def _valid_identity(identity: object) -> bool:
         return (
-            isinstance(identity, ExtractorIdentity)
+            type(identity) is ExtractorIdentity
             and CognitionEngine._valid_token(identity.model_identifier)
             and CognitionEngine._valid_token(identity.prompt_version)
         )
@@ -646,9 +646,12 @@ class CognitionEngine:
 
     @staticmethod
     def _canonical_time(value: object) -> datetime | None:
-        if not isinstance(value, datetime) or value.tzinfo is None:
+        if not isinstance(value, datetime):
             return None
         try:
+            timezone = value.tzinfo
+            if timezone is None:
+                return None
             plain = datetime(
                 value.year,
                 value.month,
@@ -657,7 +660,7 @@ class CognitionEngine:
                 value.minute,
                 value.second,
                 value.microsecond,
-                tzinfo=value.tzinfo,
+                tzinfo=timezone,
                 fold=value.fold,
             )
             return plain.astimezone(UTC)

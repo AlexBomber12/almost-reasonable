@@ -52,6 +52,12 @@ class RaisingTimezone(tzinfo):
         return "raising"
 
 
+class HostileTimezoneAccessDatetime(datetime):
+    @property
+    def tzinfo(self):
+        raise RuntimeError("synthetic hostile timezone access")
+
+
 def principal(name: str) -> TrustedPrincipalContext:
     return TrustedPrincipalContext(
         ParticipantId(f"participant-{name}"),
@@ -511,6 +517,7 @@ def test_rejecting_h_screen_and_invalid_screen_result_fail_closed(sharing_setup)
             proposal("event-a"),
             proposed_at=datetime(2026, 3, 2, 10, 0),
         ),
+        replace(proposal("event-a"), proposed_at=object()),
     ],
 )
 def test_invalid_abstraction_values_fail_closed(sharing_setup, candidate_proposal):
@@ -522,6 +529,18 @@ def test_invalid_abstraction_values_fail_closed(sharing_setup, candidate_proposa
 def test_hostile_abstraction_timezone_fails_closed(sharing_setup):
     events, _, context, event_id = sharing_setup
     hostile_time = datetime(2026, 3, 2, 10, 0, tzinfo=RaisingTimezone())
+
+    result = AbstractToSharedValidator(events).validate(
+        context,
+        replace(proposal(event_id), proposed_at=hostile_time),
+    )
+
+    assert result.reason is AbstractReason.INVALID_VALUE
+
+
+def test_hostile_abstraction_timezone_access_fails_closed(sharing_setup):
+    events, _, context, event_id = sharing_setup
+    hostile_time = HostileTimezoneAccessDatetime(2026, 3, 2, 10, 0, tzinfo=UTC)
 
     result = AbstractToSharedValidator(events).validate(
         context,

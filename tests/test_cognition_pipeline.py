@@ -84,6 +84,19 @@ class HostileDatetime(datetime):
         raise RuntimeError("synthetic hostile datetime adapter")
 
 
+class HostileTimezoneAccessDatetime(datetime):
+    @property
+    def tzinfo(self):
+        raise RuntimeError("synthetic hostile timezone access")
+
+
+class HostileExtractorIdentity(ExtractorIdentity):
+    def __getattribute__(self, name):
+        if name in {"model_identifier", "prompt_version"}:
+            raise RuntimeError("synthetic hostile extractor identity")
+        return super().__getattribute__(name)
+
+
 class HostileString(str):
     def __ne__(self, _other):
         raise RuntimeError("synthetic hostile string adapter")
@@ -1540,6 +1553,15 @@ def test_malformed_model_metadata_and_closed_proposal_kinds_are_rejected(
         is CognitionReason.INVALID_PROPOSAL
     )
 
+    hostile_identity = FakeExtractor(base)
+    hostile_identity.identity = HostileExtractorIdentity("model-v1", "prompt-v1")
+    assert (
+        CognitionEngine(events, state, extractor=hostile_identity)
+        .process(context, event_id)
+        .reason
+        is CognitionReason.INVALID_PROPOSAL
+    )
+
     object.__setattr__(base, "memory_kind", MemoryKind.GOAL_OR_INTENTION)
     assert (
         CognitionEngine(events, state, extractor=FakeExtractor(base))
@@ -1667,6 +1689,7 @@ def test_no_change_rejects_valid_but_unexposed_evidence(cognition_setup):
     [
         object(),
         replace(proposal_context("event-a", "bad-shape"), operation_id="bad id"),
+        replace(proposal_context("event-a", "bad-time"), proposed_at=object()),
         replace(
             proposal_context("event-a", "bad-evidence-id"),
             supporting_event_ids=("event-a", "bad id"),
@@ -1809,6 +1832,29 @@ def test_hostile_proposal_timezone_is_rejected(cognition_setup, field):
             **{field: hostile_time},
         ),
         item_id=f"interest-hostile-{field}",
+        topic="Timezone validation",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="Untrusted adapters must fail closed.",
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
+
+
+def test_hostile_proposal_timezone_access_is_rejected(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    hostile_time = HostileTimezoneAccessDatetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+    proposal = InterestMemoryProposal(
+        context=replace(
+            proposal_context(event_id, "hostile-timezone-access"),
+            proposed_at=hostile_time,
+        ),
+        item_id="interest-hostile-timezone-access",
         topic="Timezone validation",
         strength=50,
         status=InterestStatus.ACTIVE,
