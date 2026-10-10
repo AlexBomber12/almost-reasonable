@@ -808,6 +808,7 @@ class ThreadsService:
             raise PolicyDeniedError(
                 "current publication authorization is unavailable"
             ) from error
+        self._require_account_binding()
         if type(snapshot) is not PublicationAuthorizationSnapshot:
             raise PolicyDeniedError("current publication authorization is unavailable")
         if snapshot.approval is None:

@@ -1412,6 +1412,51 @@ def test_mutable_policy_is_rechecked_after_authorization_lookup(
     assert service.simulator.trace == []
 
 
+@pytest.mark.parametrize(
+    "phase, expected_state",
+    [
+        ("authorize", OutboxState.AWAITING_APPROVAL),
+        ("dispatch", OutboxState.READY),
+    ],
+)
+def test_account_binding_is_rechecked_after_final_authorization_snapshot(
+    tmp_path, monkeypatch, phase, expected_state
+):
+    service = make_service(tmp_path)
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    approval = trust_approval(service, approve())
+    if phase == "dispatch":
+        service.authorize("operation-1", approval, now=NOW)
+    current_snapshot = service.authorization_provider.current_publication_authorization
+    snapshot_checks = 0
+
+    def snapshot_then_rebind(**kwargs):
+        nonlocal snapshot_checks
+        snapshot_checks += 1
+        result = current_snapshot(**kwargs)
+        if snapshot_checks == 2:
+            service.simulator.account_ref = "account-2"
+        return result
+
+    monkeypatch.setattr(
+        service.authorization_provider,
+        "current_publication_authorization",
+        snapshot_then_rebind,
+    )
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        if phase == "authorize":
+            service.authorize("operation-1", approval, now=NOW)
+        else:
+            service.dispatch("operation-1", approval, now=NOW)
+
+    blocked = service.store.get("operation-1")
+    assert blocked.state is expected_state
+    assert blocked.attempt_count == 0
+    assert snapshot_checks == 2
+    assert service.simulator.trace == []
+
+
 def test_approval_expiry_is_rechecked_after_final_authorization_lookup(
     tmp_path, monkeypatch
 ):

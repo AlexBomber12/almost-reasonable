@@ -154,7 +154,9 @@ dispatch-marker write, so no intervening store update creates an authorization
 gap before the provider call. After all potentially blocking authorization
 and unresolved-publication store lookups, the service obtains a fresh atomic
 approval/privacy snapshot and validates the accepted approval against a freshly
-sampled clock before readiness and before each external effect. Revocation, expiry,
+sampled clock before readiness and before each external effect. The pinned
+policy/transport account binding is rechecked after every potentially blocking
+snapshot lookup as well as inside durable transitions. Revocation, expiry,
 consent withdrawal, or control-plane unavailability after proposal or approval
 therefore blocks the next effect. The approval actually accepted for dispatch
 replaces the stored
