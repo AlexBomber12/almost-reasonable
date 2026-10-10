@@ -884,6 +884,78 @@ def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     assert not failed_path.exists()
 
 
+def test_restore_rejects_a_replaced_quarantine_before_reconciliation(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source, "intended-backup").close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    substitute = tmp_path / "substitute.sqlite3"
+    make_source(substitute, "substitute-quarantine").close()
+    quarantine = tmp_path / "quarantine.sqlite3"
+    held_quarantine = tmp_path / "held-quarantine.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    real_copy = recovery_module._sqlite_copy
+
+    def replace_after_copy(pinned_source, destination_descriptor):
+        real_copy(pinned_source, destination_descriptor)
+        quarantine.rename(held_quarantine)
+        substitute.rename(quarantine)
+
+    monkeypatch.setattr(recovery_module, "_sqlite_copy", replace_after_copy)
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "quarantine_identity_changed",
+    )
+    assert not Path(f"{quarantine}.ready.json").exists()
+    with sqlite3.connect(quarantine) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("substitute-quarantine",)
+
+
+def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source, "intended-backup").close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    substitute = tmp_path / "substitute.sqlite3"
+    make_source(substitute, "substitute-quarantine").close()
+    quarantine = tmp_path / "quarantine.sqlite3"
+    held_quarantine = tmp_path / "held-quarantine.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    class SwappingAdapter(RestoreAdapter):
+        def rebuild_dependencies(self):
+            quarantine.rename(held_quarantine)
+            substitute.rename(quarantine)
+            try:
+                with sqlite3.connect(self.path) as connection:
+                    content = connection.execute(
+                        "SELECT content FROM synthetic_private "
+                        "WHERE event_id='event-001'"
+                    ).fetchone()
+            finally:
+                quarantine.rename(substitute)
+                held_quarantine.rename(quarantine)
+            return content == ("intended-backup",)
+
+    result = QuarantinedRestore(ledger, 3, SwappingAdapter).restore(
+        backup, quarantine, NOW
+    )
+
+    assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
+    with sqlite3.connect(substitute) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("substitute-quarantine",)
+
+
 def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()

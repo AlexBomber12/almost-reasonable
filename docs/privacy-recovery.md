@@ -186,6 +186,12 @@ successfully is insufficient. The workflow:
 8. records a payload-free restore outcome; and
 9. writes an owner-only `.ready.json` eligibility marker only after success.
 
+The owned quarantine descriptor remains open through integrity checks,
+reconciliation, schema revalidation, and readiness publication. Restore adapters
+receive a descriptor-backed path valid for that callback lifetime, rather than
+the replaceable public pathname; the public path must still name the owned inode
+at every validation boundary and before eligibility is recorded.
+
 Any adapter exception, non-`ErasureReport` deletion response, incomplete cascade,
 revocation failure, rebuild failure, unknown schema, malformed metadata, or
 pending deletion blocks activation. The quarantine file is never exposed through

@@ -39,6 +39,10 @@ class BackupBusyError(BackupError):
     """The database did not become available within the configured wait."""
 
 
+class _QuarantineIdentityError(RuntimeError):
+    """The public quarantine path no longer names the owned database."""
+
+
 class RestoreAdapter(Protocol):
     def apply_deletion(self, record: DeletionRecord) -> ErasureReport: ...
 
@@ -270,9 +274,9 @@ def _integrity_ok(path_or_descriptor: Path | int) -> bool:
         return connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
 
 
-def _safe_integrity_ok(path: Path) -> bool:
+def _safe_integrity_ok(path_or_descriptor: Path | int) -> bool:
     try:
-        return _integrity_ok(path)
+        return _integrity_ok(path_or_descriptor)
     except sqlite3.Error:
         return False
 
@@ -387,125 +391,140 @@ class QuarantinedRestore:
         ready_path = Path(f"{quarantine}.ready.json")
         _validate_new_file(ready_path, "readiness marker")
         pinned_backup = _pin_database(backup, "backup")
+        owned: list[_OwnedFile] = []
         try:
             _load_metadata(backup, self.expected_schema_version)
             if _schema_version(backup) != self.expected_schema_version:
                 raise BackupError("unsupported backup schema")
             _require_database_identity(pinned_backup)
-            owned: list[_OwnedFile] = []
             try:
                 quarantine_descriptor = _open_owned_file(quarantine, os.O_RDWR, owned)
                 _sqlite_copy(pinned_backup, quarantine_descriptor)
             except (OSError, sqlite3.Error, BackupError) as error:
                 _cleanup_created(owned)
                 raise BackupError("quarantine copy failed") from error
-            _close_owned(owned)
         finally:
             os.close(pinned_backup.descriptor)
+        try:
+            return self._finish_restore(
+                quarantine,
+                quarantine_descriptor,
+                ready_path,
+                restored_at,
+            )
+        finally:
+            _close_owned(owned)
+
+    def _finish_restore(
+        self,
+        quarantine: Path,
+        quarantine_descriptor: int,
+        ready_path: Path,
+        restored_at: datetime,
+    ) -> RestoreResult:
         restore_id = f"restore-{uuid4()}"
-        if not _safe_integrity_ok(quarantine):
-            result = RestoreResult(
-                restore_id,
-                RestoreDisposition.BLOCKED,
-                False,
-                "quarantine_integrity_failed",
-            )
-            self.ledger.record_restore(
-                restore_id, restored_at, result.disposition, result.reason
-            )
-            return result
-        snapshot = self.ledger.reconciliation_snapshot()
-        try:
-            adapter = self.adapter_factory(quarantine)
-        except Exception:
-            result = RestoreResult(
-                restore_id,
-                RestoreDisposition.BLOCKED,
-                False,
-                "adapter_initialization_failure",
-            )
-            self.ledger.record_restore(
-                restore_id, restored_at, result.disposition, result.reason
-            )
-            return result
-        reason = self._reconcile(adapter, snapshot)
-        if reason is not None:
-            result = RestoreResult(
-                restore_id, RestoreDisposition.BLOCKED, False, reason
-            )
-            self.ledger.record_restore(
-                restore_id, restored_at, result.disposition, reason
-            )
-            return result
-        try:
-            schema_matches = _schema_version(quarantine) == self.expected_schema_version
-        except BackupError:
-            schema_matches = False
-        if not schema_matches:
-            result = RestoreResult(
-                restore_id,
-                RestoreDisposition.BLOCKED,
-                False,
-                "post_reconciliation_schema_invalid",
-            )
-            self.ledger.record_restore(
-                restore_id, restored_at, result.disposition, result.reason
-            )
-            return result
-        if not _safe_integrity_ok(quarantine):
-            result = RestoreResult(
-                restore_id,
-                RestoreDisposition.BLOCKED,
-                False,
-                "post_reconciliation_integrity_failed",
-            )
-            self.ledger.record_restore(
-                restore_id, restored_at, result.disposition, result.reason
-            )
-            return result
-        if self.ledger.control_generation() != snapshot.generation:
-            result = RestoreResult(
-                restore_id,
-                RestoreDisposition.BLOCKED,
-                False,
-                "privacy_ledger_changed_during_restore",
-            )
-            self.ledger.record_restore(
-                restore_id, restored_at, result.disposition, result.reason
-            )
-            return result
-        self.ledger.record_restore(
-            restore_id,
-            restored_at,
-            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
-            "reconciliation_complete",
-        )
-        marker = json.dumps(
-            {
-                "restore_id": restore_id,
-                "disposition": "eligible_for_activation",
-                "ledger_generation": snapshot.generation,
-            },
-            sort_keys=True,
-        ).encode("utf-8")
         marker_files: list[_OwnedFile] = []
         try:
-            descriptor = _open_owned_file(ready_path, os.O_WRONLY, marker_files)
-            _write_all(descriptor, marker)
-            os.fsync(descriptor)
-            if not _path_matches_descriptor(ready_path, descriptor):
-                raise BackupError("readiness marker identity changed")
-        except Exception as error:
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            if not _safe_integrity_ok(quarantine_descriptor):
+                return self._blocked_restore(
+                    restore_id, restored_at, "quarantine_integrity_failed"
+                )
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            snapshot = self.ledger.reconciliation_snapshot()
+            try:
+                adapter = self.adapter_factory(
+                    Path(f"/proc/self/fd/{quarantine_descriptor}")
+                )
+            except Exception:
+                return self._blocked_restore(
+                    restore_id, restored_at, "adapter_initialization_failure"
+                )
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            reason = self._reconcile(adapter, snapshot)
+            if reason is not None:
+                return self._blocked_restore(restore_id, restored_at, reason)
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            try:
+                schema_matches = (
+                    _schema_version(quarantine_descriptor)
+                    == self.expected_schema_version
+                )
+            except BackupError:
+                schema_matches = False
+            if not schema_matches:
+                return self._blocked_restore(
+                    restore_id, restored_at, "post_reconciliation_schema_invalid"
+                )
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            if not _safe_integrity_ok(quarantine_descriptor):
+                return self._blocked_restore(
+                    restore_id, restored_at, "post_reconciliation_integrity_failed"
+                )
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            if self.ledger.control_generation() != snapshot.generation:
+                return self._blocked_restore(
+                    restore_id,
+                    restored_at,
+                    "privacy_ledger_changed_during_restore",
+                )
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            marker = json.dumps(
+                {
+                    "restore_id": restore_id,
+                    "disposition": "eligible_for_activation",
+                    "ledger_generation": snapshot.generation,
+                },
+                sort_keys=True,
+            ).encode("utf-8")
+            try:
+                descriptor = _open_owned_file(ready_path, os.O_WRONLY, marker_files)
+                _write_all(descriptor, marker)
+                os.fsync(descriptor)
+                if not _path_matches_descriptor(ready_path, descriptor):
+                    raise BackupError("readiness marker identity changed")
+            except Exception as error:
+                _cleanup_created(marker_files)
+                raise BackupError("readiness marker write failed") from error
+            self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            _close_owned(marker_files)
+            self.ledger.record_restore(
+                restore_id,
+                restored_at,
+                RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+                "reconciliation_complete",
+            )
+            return RestoreResult(
+                restore_id,
+                RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
+                True,
+                "reconciliation_complete",
+                snapshot.generation,
+            )
+        except _QuarantineIdentityError:
             _cleanup_created(marker_files)
-            raise BackupError("readiness marker write failed") from error
-        _close_owned(marker_files)
-        return RestoreResult(
+            return self._blocked_restore(
+                restore_id, restored_at, "quarantine_identity_changed"
+            )
+
+    def _blocked_restore(
+        self, restore_id: str, restored_at: datetime, reason: str
+    ) -> RestoreResult:
+        result = RestoreResult(
             restore_id,
-            RestoreDisposition.ELIGIBLE_FOR_ACTIVATION,
-            True,
-            "reconciliation_complete",
-            snapshot.generation,
+            RestoreDisposition.BLOCKED,
+            False,
+            reason,
         )
+        self.ledger.record_restore(
+            restore_id, restored_at, result.disposition, result.reason
+        )
+        return result
+
+    @staticmethod
+    def _require_quarantine_identity(quarantine: Path, descriptor: int) -> None:
+        if not _path_matches_descriptor(quarantine, descriptor):
+            raise _QuarantineIdentityError
 
     def _reconcile(
         self, adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
