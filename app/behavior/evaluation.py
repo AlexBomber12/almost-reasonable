@@ -272,8 +272,12 @@ class BehavioralEvaluationHarness:
                         raise ValueError("assessor score must be between zero and one")
                     if rule.assurance is AssuranceClass.G and score not in (0, 1):
                         raise ValueError("G-class assessor score must be binary")
-                    if type(failures) is not tuple or any(
-                        not isinstance(item, FailureCategory) for item in failures
+                    if (
+                        type(failures) is not tuple
+                        or any(
+                            not isinstance(item, FailureCategory) for item in failures
+                        )
+                        or len(failures) != len(set(failures))
                     ):
                         raise ValueError("assessor failure category is invalid")
                     passed = score >= rule.threshold

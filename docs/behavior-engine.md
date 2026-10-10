@@ -116,7 +116,8 @@ A run filters out future events, coalesces only currently due unprocessed
 wake-ups to the newest event, records their IDs, and deliberates at most once.
 Future events remain eligible when their time arrives, and a duplicate newest
 event cannot starve an older unprocessed due event. The input batch itself is
-bounded to 1,024 wake-ups, and there is no catch-up loop. The application-owned
+bounded to 1,024 wake-ups, retained processed-event history keeps only the most
+recent 4,096 entries, and there is no catch-up loop. The application-owned
 deliberation callback receives the hard elapsed-time limit and must enforce it;
 `TimeoutError` and a late return both produce `execution_limit`. Expected
 adapter/provider failures (`OSError` and malformed-output `ValueError`) produce
@@ -239,7 +240,8 @@ categorized failures, observations, rubric/harness versions, and explicit
 limitations.
 Recorded outputs must be a non-empty tuple (never a string implicitly treated as
 characters/trials). Every below-threshold observation requires at least one
-typed failure category, while passing observations cannot carry failure labels.
+unique typed failure category, while passing observations cannot carry failure
+labels.
 Case, generation, assessor, rubric, adjudication, and recorded-output strings
 must all be non-empty UTF-8-encodable text before hashing or serialization.
 Optional human calibration receives every observation and records a non-empty

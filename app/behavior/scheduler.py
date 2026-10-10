@@ -12,6 +12,7 @@ from app.core.agent_proposals import AgentDecision
 
 SCHEDULER_VERSION = "behavior-scheduler-v1"
 MAX_PENDING_WAKEUPS = 1024
+MAX_PROCESSED_EVENTS = 4096
 
 
 class SchedulerOutcome(StrEnum):
@@ -301,11 +302,12 @@ class TestScheduler:
     def _pruned_state(self, state: SchedulerState, now: datetime) -> SchedulerState:
         duplicate_cutoff = now - self._policy.duplicate_window
         action_cutoff = now - self._policy.cadence
+        processed_events = tuple(
+            item for item in state.processed_events if item[1] >= duplicate_cutoff
+        )[-MAX_PROCESSED_EVENTS:]
         return replace(
             state,
-            processed_events=tuple(
-                item for item in state.processed_events if item[1] >= duplicate_cutoff
-            ),
+            processed_events=processed_events,
             action_history=tuple(
                 item for item in state.action_history if item[1] >= action_cutoff
             ),
@@ -332,7 +334,7 @@ def _append_processed(
     additions = tuple(
         (item.event_id, now) for item in pending if item.event_id not in known
     )
-    return (*state.processed_events, *additions)
+    return (*state.processed_events, *additions)[-MAX_PROCESSED_EVENTS:]
 
 
 def _inside_active_hours(current: time, policy: WakeupPolicy) -> bool:

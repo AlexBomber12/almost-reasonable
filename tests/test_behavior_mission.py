@@ -764,6 +764,14 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
     with pytest.raises(ValueError, match="allowed purpose"):
         repository.load()
 
+    predating_root = json.loads(json.dumps(pending))
+    predating_root["proposals"][0]["proposal"]["decided_at"] = (
+        NOW - timedelta(seconds=1)
+    ).isoformat()
+    path.write_text(json.dumps(predating_root), encoding="utf-8")
+    with pytest.raises(ValueError, match="predates"):
+        repository.load()
+
     inconsistent = json.loads(json.dumps(pending))
     inconsistent["proposals"][0]["status"] = MissionStatus.CONFIRMED.value
     path.write_text(json.dumps(inconsistent), encoding="utf-8")

@@ -4,6 +4,7 @@ import pytest
 
 from app.behavior.deliberation import AgentDecision
 from app.behavior.scheduler import (
+    MAX_PROCESSED_EVENTS,
     SCHEDULER_VERSION,
     InMemorySchedulerStore,
     MutableClock,
@@ -324,3 +325,26 @@ def test_rejected_decisions_do_not_refresh_rate_limit_window() -> None:
         scheduler.run((event("eligible-again", clock.now()),)).outcome
         is SchedulerOutcome.PROPOSED
     )
+
+
+def test_processed_event_history_remains_bounded_across_cooldown_runs() -> None:
+    store = InMemorySchedulerStore(
+        SchedulerState(last_deliberation_at=NOW - timedelta(minutes=1))
+    )
+    scheduler = TestScheduler(
+        policy(),
+        store,
+        MutableClock(NOW),
+        lambda *_: pytest.fail("cooldown must not deliberate"),
+    )
+
+    for batch in range(MAX_PROCESSED_EVENTS // 1024 + 1):
+        result = scheduler.run(
+            tuple(event(f"batch-{batch}-{index}") for index in range(1024))
+        )
+        assert result.outcome is SchedulerOutcome.COOLDOWN
+
+    retained = store.load().processed_event_ids
+    assert len(retained) == MAX_PROCESSED_EVENTS
+    assert "batch-0-0" not in retained
+    assert retained[-1] == "batch-4-1023"

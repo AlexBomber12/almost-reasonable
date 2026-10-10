@@ -242,6 +242,14 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         custom_harness((rule,), lambda *_: (1.0, ("bad",))).run(  # type: ignore[arg-type]
             (evaluation_case("case", "prompt", ("output",), ()),)
         )
+    with pytest.raises(ValueError, match="failure category"):
+        custom_harness(
+            (rule,),
+            lambda *_: (
+                0.0,
+                (FailureCategory.IRRELEVANT, FailureCategory.IRRELEVANT),
+            ),
+        ).run((evaluation_case("duplicates", "prompt", ("output",), ()),))
     for score, failures in (
         (0.0, ()),
         (1.0, (FailureCategory.UNSUPPORTED_CLAIM,)),

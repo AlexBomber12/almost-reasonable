@@ -708,7 +708,15 @@ def _validate_active_mission(
             if record.confirmation is not None
         }
     )
+    invalid_parent = any(
+        record.proposal.current_mission_version not in parent_activation
+        or record.proposal.decided_at
+        < parent_activation[record.proposal.current_mission_version]
+        for record in records
+    )
     if current.parent_version is None:
+        if invalid_parent:
+            raise ValueError("mission proposal predates or lacks its parent")
         return
 
     current_record = confirmed_by_version.get(current.version)
@@ -731,10 +739,5 @@ def _validate_active_mission(
         cursor = confirmed_by_version[cursor].proposal.current_mission_version
     if chain_versions != set(confirmed_by_version):
         raise ValueError("confirmed mission history contains a branch")
-    if any(
-        record.proposal.current_mission_version not in parent_activation
-        or record.proposal.decided_at
-        < parent_activation[record.proposal.current_mission_version]
-        for record in records
-    ):
+    if invalid_parent:
         raise ValueError("mission proposal predates or lacks its parent")
