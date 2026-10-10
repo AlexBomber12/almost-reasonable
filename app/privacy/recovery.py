@@ -172,6 +172,11 @@ def _close_owned(owned: list[_OwnedFile]) -> None:
         os.close(output.parent_descriptor)
 
 
+def _fsync_owned_parents(owned: list[_OwnedFile]) -> None:
+    for output in owned:
+        os.fsync(output.parent_descriptor)
+
+
 def _path_matches_descriptor(path: Path, descriptor: int) -> bool:
     try:
         current = path.stat(follow_symlinks=False)
@@ -331,6 +336,7 @@ def create_sqlite_backup(
                 for output in owned
             ):
                 raise BackupError("backup output identity changed")
+            _fsync_owned_parents(owned)
         except sqlite3.OperationalError as error:
             _cleanup_created(owned)
             if _is_busy(error):
@@ -417,6 +423,7 @@ class QuarantinedRestore:
             try:
                 quarantine_descriptor = _open_owned_file(quarantine, os.O_RDWR, owned)
                 _sqlite_copy(pinned_backup, quarantine_descriptor)
+                _fsync_owned_parents(owned)
             except (OSError, sqlite3.Error, BackupError) as error:
                 _cleanup_created(owned)
                 raise BackupError("quarantine copy failed") from error
@@ -511,6 +518,7 @@ class QuarantinedRestore:
             if not _path_matches_descriptor(ready_path, descriptor):
                 raise BackupError("readiness marker identity changed")
             self._require_quarantine_identity(quarantine, quarantine_descriptor)
+            _fsync_owned_parents(marker_files)
         except Exception as error:
             _cleanup_created(marker_files)
             raise BackupError("readiness marker write failed") from error

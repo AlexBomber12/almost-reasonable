@@ -23,7 +23,10 @@ held. Before invoking the callback, the ledger durably commits a payload-free
 to `completed`; a callback error changes it to `dispatch_uncertain`, while a
 process interruption leaves `dispatch_pending`. Neither uncertain state can be
 retried automatically, so a send followed by a lost acknowledgement cannot
-cause a duplicate disclosure. Dispatch code must not re-enter the privacy ledger.
+cause a duplicate disclosure. A caught failure proven to occur before callback
+entry is recorded as `pre_dispatch_failure` and may be retried with the same
+operation identity; it does not falsely imply possible disclosure. Dispatch code
+must not re-enter the privacy ledger.
 Missing, expired, revoked, wrong-principal, wrong-content, wrong-audience, and
 wrong-purpose grants fail closed. Revocation is a separate authenticated,
 idempotent operation and takes effect at its recorded UTC timestamp. Neither
@@ -150,14 +153,16 @@ version, database schema version, UTC creation time, and backup filename; it
 contains no participant content.
 
 Source, destination, and metadata paths must be absolute regular paths. Leaf
-symbolic links, symbolic links anywhere in a parent chain, unsafe parents, existing outputs,
-schema mismatch, integrity failure, interruption, and SQLite busy/locked faults
-fail closed. The source inode remains pinned while schema validation and the
-online copy run; SQLite opens the source through that descriptor, and the
-resulting connection is checked against the same inode. Output parent directories
-are traversed with directory-relative no-follow opens, and outputs are created
-through the pinned parent with `O_EXCL|O_NOFOLLOW` and mode `0600`; metadata and readiness
-markers are written completely before `fsync`, including retrying short writes.
+symbolic links, symbolic links anywhere in a parent chain, unsafe parents,
+existing outputs, schema mismatch, integrity failure, interruption, and SQLite
+busy/locked faults fail closed. The source inode remains pinned while schema
+validation and the online copy run; SQLite opens the source through that
+descriptor, and the resulting connection is checked against the same inode.
+Output parent directories are traversed with directory-relative no-follow opens,
+and outputs are created through the pinned parent with `O_EXCL|O_NOFOLLOW` and
+mode `0600`; metadata and readiness markers are written completely before
+`fsync`, including retrying short writes. Pinned parent directories are fsynced
+after their output entries are complete and before success is reported.
 Failure removes only files whose filesystem identity proves they were created by
 that backup attempt; a concurrently created or replaced path is preserved.
 Existing production databases are never overwritten by default. This is a

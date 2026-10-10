@@ -258,6 +258,46 @@ def test_interrupted_consent_dispatch_remains_pending_and_cannot_be_retried(serv
     assert (result.allowed, result.reason) == (False, "dispatch_uncertain")
 
 
+def test_failure_before_consent_dispatch_is_audited_and_can_be_retried(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    times = iter(
+        (
+            NOW + timedelta(minutes=1),
+            datetime(2026, 10, 10),
+            NOW + timedelta(minutes=2),
+            NOW + timedelta(minutes=3),
+            NOW + timedelta(minutes=4),
+        )
+    )
+    consent = ConsentService(ledger, clock=lambda: next(times))
+    consent.grant(context(), grant())
+    effects = []
+    request = {
+        "principal_id": "participant-a",
+        "content_reference": "event-001",
+        "audience": "public-threads",
+        "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        "correlation_id": "pre-dispatch-failure",
+        "dispatch": lambda: effects.append("sent"),
+    }
+
+    with pytest.raises(ValueError, match="consent use timestamp"):
+        consent.authorize(context(), **request)
+    assert effects == []
+    assert [row.result_code for row in ledger.audit_records()[-2:]] == [
+        "dispatch_pending",
+        "pre_dispatch_failure",
+    ]
+
+    result = consent.authorize(context(), **request)
+    assert (result.allowed, result.reason) == (True, "authorized")
+    assert effects == ["sent"]
+    assert [row.result_code for row in ledger.audit_records()[-2:]] == [
+        "dispatch_pending",
+        "authorized",
+    ]
+
+
 @pytest.mark.parametrize(
     ("overrides", "authorized_at", "reason"),
     [

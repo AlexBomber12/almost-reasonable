@@ -465,6 +465,29 @@ def test_backup_and_readiness_marker_retry_short_writes(tmp_path, monkeypatch):
     assert len(writes) > 2
 
 
+def test_backup_restore_and_readiness_fsync_parent_directories(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    real_fsync = os.fsync
+    directory_syncs = []
+
+    def track_fsync(descriptor):
+        if stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            directory_syncs.append(os.fstat(descriptor).st_ino)
+        real_fsync(descriptor)
+
+    monkeypatch.setattr(recovery_module.os, "fsync", track_fsync)
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, tmp_path / "quarantine.sqlite3", NOW
+    )
+
+    assert result.activation_eligible is True
+    assert len(directory_syncs) >= 4
+
+
 def test_zero_length_writes_fail_closed_and_remove_partial_outputs(
     tmp_path, monkeypatch
 ):
@@ -500,8 +523,9 @@ def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkey
 
     def replace_marker(descriptor):
         real_fsync(descriptor)
-        marker.unlink()
-        marker.write_text("concurrent-marker")
+        if marker.exists() and not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+            marker.unlink()
+            marker.write_text("concurrent-marker")
 
     monkeypatch.setattr(recovery_module.os, "fsync", replace_marker)
     with pytest.raises(BackupError, match="readiness marker write failed"):

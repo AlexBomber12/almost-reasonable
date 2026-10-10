@@ -318,13 +318,27 @@ class PrivacyLedger:
                     return ConsentUseResult(False, "already_dispatched", existing[7])
                 if existing[6] in {"dispatch_pending", "dispatch_uncertain"}:
                     return ConsentUseResult(False, "dispatch_uncertain", existing[7])
-                return ConsentUseResult(False, existing[6], existing[7])
+                if existing[6] != "pre_dispatch_failure":
+                    return ConsentUseResult(False, existing[6], existing[7])
             attempted_at = clock()
             require_utc(attempted_at, "consent use attempt timestamp")
-            connection.execute(
-                "INSERT INTO consent_use_attempts VALUES(?,?,?,?,?,?,?,?,?,NULL)",
-                (correlation_id, *identity, _stamp(attempted_at), "dispatch_pending"),
-            )
+            if existing is None:
+                connection.execute(
+                    "INSERT INTO consent_use_attempts VALUES(?,?,?,?,?,?,?,?,?,NULL)",
+                    (
+                        correlation_id,
+                        *identity,
+                        _stamp(attempted_at),
+                        "dispatch_pending",
+                    ),
+                )
+            else:
+                connection.execute(
+                    "UPDATE consent_use_attempts SET attempted_at=?, "
+                    "result_code='dispatch_pending', consent_id=NULL "
+                    "WHERE correlation_id=?",
+                    (_stamp(attempted_at), correlation_id),
+                )
             self._insert_audit(
                 connection,
                 AuditRecord(
@@ -338,6 +352,7 @@ class PrivacyLedger:
                 ),
             )
 
+        dispatch_started = False
         try:
             with self._open() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -367,6 +382,7 @@ class PrivacyLedger:
                     else:
                         result = ConsentUseResult(True, "authorized", consent_id)
                 if result.allowed:
+                    dispatch_started = True
                     dispatch()
                 connection.execute(
                     "UPDATE consent_use_attempts SET result_code=?, consent_id=? "
@@ -391,14 +407,16 @@ class PrivacyLedger:
                 )
             return result
         except Exception:
+            failure_reason = (
+                "dispatch_uncertain" if dispatch_started else "pre_dispatch_failure"
+            )
             with self._open() as connection:
                 connection.execute("BEGIN IMMEDIATE")
                 failed_at = clock()
                 require_utc(failed_at, "consent use failure timestamp")
                 connection.execute(
-                    "UPDATE consent_use_attempts SET result_code='dispatch_uncertain' "
-                    "WHERE correlation_id=?",
-                    (correlation_id,),
+                    "UPDATE consent_use_attempts SET result_code=? WHERE correlation_id=?",
+                    (failure_reason, correlation_id),
                 )
                 self._insert_audit(
                     connection,
@@ -408,7 +426,7 @@ class PrivacyLedger:
                         "consent_use",
                         "consent",
                         failed_at,
-                        "dispatch_uncertain",
+                        failure_reason,
                         "payload_free",
                     ),
                 )
