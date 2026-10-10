@@ -1,4 +1,5 @@
 import os
+import builtins
 from pathlib import Path
 import sys
 from types import SimpleNamespace
@@ -126,7 +127,14 @@ def test_factory_fails_closed_when_sdk_is_unavailable(tmp_path, monkeypatch):
     monkeypatch.setattr(
         files, "OPENAI_CREDENTIAL_PATH", protected_file(tmp_path / "secret")
     )
-    monkeypatch.delitem(__import__("sys").modules, "openai", raising=False)
+    real_import = builtins.__import__
+
+    def unavailable(name, *args, **kwargs):
+        if name == "openai":
+            raise ImportError
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", unavailable)
 
     with pytest.raises(TrustedTransportConfigurationError, match="SDK"):
         files.build_worker_openai_transport(

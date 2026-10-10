@@ -189,6 +189,44 @@ def test_server_rejects_invalid_guard_configuration_and_return(tmp_path):
     assert transport.calls == []
 
 
+def test_serve_joins_handler_that_finishes_while_next_accept_completes(
+    tmp_path, monkeypatch
+):
+    directory = secure_directory(tmp_path)
+    instance, _transport = gateway(directory)
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(directory / "worker.sock", frozenset((os.getuid(),))),
+        instance,
+    )
+    connections = iter((object(), object()))
+    monkeypatch.setattr(server, "_accept_connection", lambda: next(connections))
+    threads = []
+
+    class ControlledThread:
+        def __init__(self, *, target, args):
+            self.target = target
+            self.args = args
+            self.alive_checks = iter((True, False))
+            self.joined = False
+            threads.append(self)
+
+        def start(self):
+            pass
+
+        def is_alive(self):
+            return next(self.alive_checks)
+
+        def join(self):
+            self.joined = True
+
+    monkeypatch.setattr(server_module, "Thread", ControlledThread)
+
+    server.serve(max_connections=2)
+
+    assert len(threads) == 2
+    assert all(thread.joined for thread in threads)
+
+
 def test_restricted_group_mode_sets_and_verifies_socket_permissions(tmp_path):
     directory = secure_directory(tmp_path)
     directory.chmod(0o710)
