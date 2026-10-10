@@ -387,7 +387,12 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         for character in needle
     ):
         return needle in value
-    return re.search(rf"(?<!\w){re.escape(needle)}(?!\w)", value) is not None
+    left_boundary = r"(?<!\w)" if re.match(r"\w", needle[0]) else ""
+    right_boundary = r"(?!\w)" if re.match(r"\w", needle[-1]) else ""
+    return (
+        re.search(rf"{left_boundary}{re.escape(needle)}{right_boundary}", value)
+        is not None
+    )
 
 
 def _screen(

@@ -354,6 +354,22 @@ def test_participant_names_in_non_segmented_scripts_match_without_spaces():
 
 
 @pytest.mark.parametrize(
+    ("question", "identifier"),
+    [("Research user#Alice", "#Alice"), ("Research Alice#user", "Alice#")],
+)
+def test_punctuation_edged_participant_identifiers_are_matched(question, identifier):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
+    )
+
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize(
     "changes",
     [
         {"result_budget": 0},
