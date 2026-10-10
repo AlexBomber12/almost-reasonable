@@ -111,12 +111,18 @@ def _close_owned(owned: list[_OwnedFile]) -> None:
         os.close(descriptor)
 
 
-def _sqlite_copy(source: Path, destination: Path) -> None:
+def _sqlite_copy(source: Path, destination_descriptor: int) -> None:
     with (
         closing(
             sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=0.1)
         ) as source_connection,
-        closing(sqlite3.connect(destination, timeout=0.1)) as destination_connection,
+        closing(
+            sqlite3.connect(
+                f"file:/proc/self/fd/{destination_descriptor}?mode=rw",
+                uri=True,
+                timeout=0.1,
+            )
+        ) as destination_connection,
     ):
         busy_attempts = 0
 
@@ -178,8 +184,8 @@ def create_sqlite_backup(
         raise BackupError("unsupported source schema")
     owned: list[_OwnedFile] = []
     try:
-        _open_owned_file(destination, os.O_RDWR, owned)
-        _sqlite_copy(source, destination)
+        destination_descriptor = _open_owned_file(destination, os.O_RDWR, owned)
+        _sqlite_copy(source, destination_descriptor)
         if after_copy is not None:
             after_copy(destination)
         if _schema_version(destination) != expected_schema_version:
@@ -261,8 +267,8 @@ class QuarantinedRestore:
             raise BackupError("unsupported backup schema")
         owned: list[_OwnedFile] = []
         try:
-            _open_owned_file(quarantine, os.O_RDWR, owned)
-            _sqlite_copy(backup, quarantine)
+            quarantine_descriptor = _open_owned_file(quarantine, os.O_RDWR, owned)
+            _sqlite_copy(backup, quarantine_descriptor)
         except (OSError, sqlite3.Error) as error:
             _cleanup_created(owned)
             raise BackupError("quarantine copy failed") from error
@@ -369,11 +375,19 @@ class QuarantinedRestore:
             snapshot.generation,
         )
 
-    def is_activation_current(self, result: RestoreResult) -> bool:
-        return (
-            result.activation_eligible is True
-            and isinstance(result.ledger_generation, int)
-            and self.ledger.control_generation() == result.ledger_generation
+    def activate_if_current(
+        self, result: RestoreResult, activation_switch: Callable[[], None]
+    ) -> bool:
+        """Run the database switch while holding the privacy generation fence."""
+
+        if (
+            result.disposition is not RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
+            or result.activation_eligible is not True
+            or type(result.ledger_generation) is not int
+        ):
+            return False
+        return self.ledger.run_with_generation_fence(
+            result.ledger_generation, activation_switch
         )
 
     def _reconcile(

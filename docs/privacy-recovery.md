@@ -72,9 +72,12 @@ Every committed deletion or revocation advances a monotonic privacy-control
 generation. Restore reconciles one transactionally consistent snapshot, blocks
 if that generation changes during its work, and writes the reconciled generation
 into both its typed result and readiness marker. Immediately before an eventual
-database switch, activation integration must call `is_activation_current` (or
-atomically enforce the same comparison) and abort/reconcile again if the current
-generation differs. The readiness file alone is not activation authority.
+database switch, activation integration must pass the switch callback to
+`activate_if_current`; it runs only while a privacy-ledger `BEGIN IMMEDIATE`
+transaction holds the generation stable and excludes deletion/revocation writers.
+The callback must complete the switch without re-entering the privacy ledger. A
+generation mismatch aborts activation and requires reconciliation again. The
+readiness file alone is not activation authority.
 
 Deletion has five operator-visible dispositions: `pending`, `applied`,
 `incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use

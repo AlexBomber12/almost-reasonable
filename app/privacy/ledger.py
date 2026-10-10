@@ -1,5 +1,6 @@
 """Minimal, payload-free SQLite privacy ledger."""
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 import os
 from pathlib import Path
@@ -419,6 +420,21 @@ class PrivacyLedger:
         if row is None:
             raise RuntimeError("privacy control generation is unavailable")
         return row[0]
+
+    def run_with_generation_fence(
+        self, expected_generation: int, operation: Callable[[], None]
+    ) -> bool:
+        """Run an activation switch while privacy-control writers are excluded."""
+
+        with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            generation = connection.execute(
+                "SELECT generation FROM privacy_control_generation WHERE singleton=1"
+            ).fetchone()[0]
+            if generation != expected_generation:
+                return False
+            operation()
+        return True
 
     def reconciliation_snapshot(self) -> PrivacyReconciliationSnapshot:
         with self._open() as connection:
