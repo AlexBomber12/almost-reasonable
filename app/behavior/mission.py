@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime
 from enum import StrEnum
 import json
+import os
 from pathlib import Path
 import re
 from typing import Protocol
@@ -17,6 +18,7 @@ MAX_MISSION_COLLECTION_UTF8_BYTES = 16 * 1024
 MAX_MISSION_IDENTIFIER_COLLECTION_UTF8_BYTES = 2 * 1024
 MAX_MISSION_RECORD_TEXT_UTF8_BYTES = 32 * 1024
 MAX_MISSION_HISTORY_RECORDS = 256
+MAX_MISSION_DOCUMENT_BYTES = 64 * 1024 * 1024
 _FORBIDDEN_MISSION_PATTERNS = tuple(
     re.compile(pattern, re.IGNORECASE)
     for pattern in (
@@ -187,7 +189,18 @@ class JsonMissionRepository:
             self.save(MissionDocument(initial_mission, (), None))
 
     def load(self) -> MissionDocument:
-        raw = json.loads(self._path.read_text(encoding="utf-8"))
+        with self._path.open("rb") as stream:
+            if os.fstat(stream.fileno()).st_size > MAX_MISSION_DOCUMENT_BYTES:
+                raise ValueError("mission repository exceeds its byte limit")
+            encoded = stream.read(MAX_MISSION_DOCUMENT_BYTES + 1)
+        if len(encoded) > MAX_MISSION_DOCUMENT_BYTES:
+            raise ValueError("mission repository exceeds its byte limit")
+        try:
+            raw = json.loads(encoded.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise ValueError("mission repository must be valid UTF-8 JSON") from error
+        if not isinstance(raw, dict):
+            raise ValueError("mission repository root must be an object")
         if raw.get("schema_version") != MISSION_SCHEMA_VERSION:
             raise ValueError("unsupported mission repository schema")
         return _document_from_dict(raw, self._initial_mission)
@@ -195,12 +208,12 @@ class JsonMissionRepository:
     def save(self, document: MissionDocument) -> None:
         payload = _document_to_dict(document)
         temporary = self._path.with_suffix(f"{self._path.suffix}.tmp")
-        temporary.write_text(
-            json.dumps(
-                payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            ),
-            encoding="utf-8",
-        )
+        encoded = json.dumps(
+            payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        if len(encoded) > MAX_MISSION_DOCUMENT_BYTES:
+            raise ValueError("mission repository exceeds its byte limit")
+        temporary.write_bytes(encoded)
         temporary.replace(self._path)
 
 

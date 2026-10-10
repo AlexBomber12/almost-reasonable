@@ -4,6 +4,7 @@ import pytest
 
 from app.behavior.deliberation import AgentDecision
 from app.behavior.scheduler import (
+    MAX_ACTION_HISTORY,
     MAX_PROCESSED_EVENTS,
     SCHEDULER_VERSION,
     InMemorySchedulerStore,
@@ -223,6 +224,7 @@ def test_scheduler_rejects_invalid_policy_event_clock_and_pending() -> None:
         {"cadence": timedelta(0)},
         {"duplicate_window": timedelta(0)},
         {"per_action_limits": (("research", 1),)},
+        {"per_action_limits": ((AgentDecision.RESEARCH, MAX_ACTION_HISTORY + 1),)},
         {"active_start": time(8, tzinfo=UTC)},
         {"active_end": time(20, tzinfo=UTC)},
     )
@@ -348,3 +350,37 @@ def test_processed_event_history_remains_bounded_across_cooldown_runs() -> None:
     assert len(retained) == MAX_PROCESSED_EVENTS
     assert "batch-0-0" not in retained
     assert retained[-1] == "batch-4-1023"
+
+
+def test_action_history_retains_only_bounded_rate_limit_state() -> None:
+    unlimited_store = InMemorySchedulerStore()
+    unlimited = TestScheduler(
+        policy(cooldown=timedelta(0), per_action_limits=()),
+        unlimited_store,
+        MutableClock(NOW),
+        lambda *_: AgentDecision.NO_ACTION,
+    )
+    for index in range(MAX_ACTION_HISTORY + 1):
+        assert (
+            unlimited.run((event(f"unlimited-{index}"),)).outcome
+            is SchedulerOutcome.NO_ACTION
+        )
+    assert unlimited_store.load().action_history == ()
+
+    oversized_history = tuple(
+        (AgentDecision.RESEARCH, NOW) for _ in range(MAX_ACTION_HISTORY + 1)
+    )
+    limited_store = InMemorySchedulerStore(
+        SchedulerState(action_history=oversized_history)
+    )
+    limited = TestScheduler(
+        policy(
+            cooldown=timedelta(0),
+            per_action_limits=((AgentDecision.RESEARCH, MAX_ACTION_HISTORY),),
+        ),
+        limited_store,
+        MutableClock(NOW),
+        lambda *_: AgentDecision.RESEARCH,
+    )
+    assert limited.run((event("limited"),)).outcome is SchedulerOutcome.RATE_LIMITED
+    assert len(limited_store.load().action_history) == MAX_ACTION_HISTORY

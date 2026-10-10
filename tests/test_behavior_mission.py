@@ -1,9 +1,11 @@
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
+from types import SimpleNamespace
 
 import pytest
 
+import app.behavior.mission as mission_module
 from app.behavior.mission import (
     MISSION_SCHEMA_VERSION,
     MAX_MISSION_HISTORY_RECORDS,
@@ -384,6 +386,40 @@ def test_repository_and_state_conflicts_fail_closed(tmp_path) -> None:
                 MissionPurpose.GENERAL_INQUIRY,
             ),
         )
+
+
+def test_repository_rejects_oversized_or_non_utf8_documents(
+    tmp_path, monkeypatch
+) -> None:
+    path = tmp_path / "bounded.json"
+    initial = Mission("mission-v1", "Миссия", NOW, None)
+    repository = JsonMissionRepository(path, initial)
+    document = repository.load()
+    monkeypatch.setattr(mission_module, "MAX_MISSION_DOCUMENT_BYTES", 8)
+
+    with pytest.raises(ValueError, match="byte limit"):
+        repository.save(document)
+    with pytest.raises(ValueError, match="byte limit"):
+        repository.load()
+
+    monkeypatch.setattr(
+        mission_module.os, "fstat", lambda _: SimpleNamespace(st_size=0)
+    )
+    with pytest.raises(ValueError, match="byte limit"):
+        repository.load()
+
+    monkeypatch.setattr(mission_module, "MAX_MISSION_DOCUMENT_BYTES", 64)
+    path.write_bytes(b"\xff")
+    with pytest.raises(ValueError, match="UTF-8 JSON"):
+        repository.load()
+
+    path.write_bytes(b"not-json")
+    with pytest.raises(ValueError, match="UTF-8 JSON"):
+        repository.load()
+
+    path.write_bytes(b"[]")
+    with pytest.raises(ValueError, match="root must be an object"):
+        repository.load()
 
 
 def test_mission_additional_validation_and_corrupt_store_paths(tmp_path) -> None:

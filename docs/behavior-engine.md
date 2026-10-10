@@ -133,8 +133,9 @@ rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
 expired duplicate record or cooldown does not permanently starve a later
 worthwhile wake-up. Only admitted proposals and admitted `no_action` decisions
-enter action-rate history; a rate or execution rejection cannot refresh its own
-denial window indefinitely.
+subject to an explicit per-action limit enter action-rate history; the sum of
+configured limits and retained history are each capped at 4,096 entries. A rate
+or execution rejection cannot refresh its own denial window indefinitely.
 
 The in-memory store and mutable clock exist for deterministic tests. Production
 wiring still needs an application-owned durable scheduler repository and actual
@@ -184,12 +185,13 @@ capability remains unchanged. The lexical screen is deliberately conservative;
 semantic adequacy still receives H/M evaluation, while exact capability
 invariance remains G.
 
-The active mission document is capped at 256 proposal records. The state
-machine refuses a 257th proposal, and repository save/load enforce the same cap,
-so valid proposal/rejection cycles cannot make every future parse and atomic
-rewrite grow without bound. Existing attributed history is retained; reaching
-the cap requires an explicit future retention/archive integration rather than
-silent deletion.
+The active mission document is capped at 256 proposal records and 64 MiB of
+encoded JSON. The repository rejects the byte bound before parsing and uses a
+bounded binary read, while the state machine refuses a 257th proposal and
+repository save/load enforce the record cap. Valid proposal/rejection cycles
+therefore cannot make every future parse and atomic rewrite grow without bound.
+Existing attributed history is retained; reaching the cap requires an explicit
+future retention/archive integration rather than silent deletion.
 
 The repository writes a replacement file before atomically replacing the active
 document. Tests reopen it with a new state-machine instance and confirm

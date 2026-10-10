@@ -13,6 +13,7 @@ from app.core.agent_proposals import AgentDecision
 SCHEDULER_VERSION = "behavior-scheduler-v1"
 MAX_PENDING_WAKEUPS = 1024
 MAX_PROCESSED_EVENTS = 4096
+MAX_ACTION_HISTORY = 4096
 
 
 class SchedulerOutcome(StrEnum):
@@ -61,12 +62,16 @@ class WakeupPolicy:
         if self.duplicate_window <= timedelta(0):
             raise ValueError("duplicate_window must be positive")
         decisions = [item[0] for item in self.per_action_limits]
-        if any(
-            not isinstance(decision, AgentDecision)
-            or type(limit) is not int
-            or limit < 1
-            for decision, limit in self.per_action_limits
-        ) or len(decisions) != len(set(decisions)):
+        if (
+            any(
+                not isinstance(decision, AgentDecision)
+                or type(limit) is not int
+                or limit < 1
+                for decision, limit in self.per_action_limits
+            )
+            or len(decisions) != len(set(decisions))
+            or sum(limit for _, limit in self.per_action_limits) > MAX_ACTION_HISTORY
+        ):
             raise ValueError("per_action_limits are invalid")
 
 
@@ -274,7 +279,10 @@ class TestScheduler:
                 valid_decision = decision
 
         history = state.action_history
-        if outcome in (SchedulerOutcome.PROPOSED, SchedulerOutcome.NO_ACTION):
+        if outcome in (
+            SchedulerOutcome.PROPOSED,
+            SchedulerOutcome.NO_ACTION,
+        ) and valid_decision in dict(self._policy.per_action_limits):
             history = (*history, (valid_decision, now))
         updated = replace(
             state,
@@ -302,6 +310,7 @@ class TestScheduler:
     def _pruned_state(self, state: SchedulerState, now: datetime) -> SchedulerState:
         duplicate_cutoff = now - self._policy.duplicate_window
         action_cutoff = now - self._policy.cadence
+        limited_decisions = dict(self._policy.per_action_limits)
         processed_events = tuple(
             item for item in state.processed_events if item[1] >= duplicate_cutoff
         )[-MAX_PROCESSED_EVENTS:]
@@ -309,8 +318,10 @@ class TestScheduler:
             state,
             processed_events=processed_events,
             action_history=tuple(
-                item for item in state.action_history if item[1] >= action_cutoff
-            ),
+                item
+                for item in state.action_history
+                if item[0] in limited_decisions and item[1] >= action_cutoff
+            )[-MAX_ACTION_HISTORY:],
         )
 
     def _rate_limited(
