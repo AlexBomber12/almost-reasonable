@@ -383,7 +383,7 @@ def _has_code_signal(content: str) -> bool:
 
 
 def _has_complete_code_signal(content: str) -> bool:
-    if _CODE_SIGNAL.fullmatch(content) or _is_json_object(content):
+    if _CODE_SIGNAL.fullmatch(content) or _is_json_data(content):
         return True
     try:
         parsed = ast.parse(content, mode="exec")
@@ -406,12 +406,12 @@ def _has_complete_code_signal(content: str) -> bool:
     )
 
 
-def _is_json_object(content: str) -> bool:
+def _is_json_data(content: str) -> bool:
     try:
         value = json.loads(content)
     except json.JSONDecodeError:
         return False
-    return type(value) is dict
+    return type(value) in (dict, list)
 
 
 def _foreign_script_units(text: str) -> int:

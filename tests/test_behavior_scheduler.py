@@ -379,6 +379,40 @@ def test_rate_limit_window_starts_when_deliberation_finishes() -> None:
     )
 
 
+def test_completed_run_state_uses_deliberation_finish_time() -> None:
+    store = InMemorySchedulerStore()
+    clock = MutableClock(NOW)
+    calls = 0
+
+    def deliberate_slowly(*_: object) -> AgentDecision:
+        nonlocal calls
+        calls += 1
+        clock.advance(timedelta(seconds=2))
+        return AgentDecision.NO_ACTION
+
+    scheduler = TestScheduler(
+        policy(
+            cadence=timedelta(seconds=1),
+            cooldown=timedelta(seconds=1),
+            duplicate_window=timedelta(seconds=1),
+            max_execution_seconds=3,
+        ),
+        store,
+        clock,
+        deliberate_slowly,
+    )
+
+    assert scheduler.run((event("first"),)).outcome is SchedulerOutcome.NO_ACTION
+    assert store.load().processed_events == (("first", clock.now()),)
+    assert store.load().last_deliberation_at == clock.now()
+    assert scheduler.run((event("first"),)).outcome is SchedulerOutcome.DUPLICATE
+    assert (
+        scheduler.run((event("next", clock.now()),)).outcome
+        is SchedulerOutcome.COOLDOWN
+    )
+    assert calls == 1
+
+
 def test_retention_expires_at_boundary_and_clamps_datetime_underflow() -> None:
     clock = MutableClock(NOW)
     store = InMemorySchedulerStore()

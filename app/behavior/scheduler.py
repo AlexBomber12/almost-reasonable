@@ -258,9 +258,11 @@ class TestScheduler:
         try:
             decision = self._deliberate(selected, self._policy.max_execution_seconds)
         except TimeoutError:
+            finished_at = self._clock.now()
             outcome = SchedulerOutcome.EXECUTION_LIMIT
             valid_decision = None
         except (OSError, ValueError):
+            finished_at = self._clock.now()
             outcome = SchedulerOutcome.FAILED
             valid_decision = None
         else:
@@ -294,8 +296,8 @@ class TestScheduler:
             history = (*history, (valid_decision, finished_at))
         updated = replace(
             state,
-            processed_events=_append_processed(state, unprocessed_due, now),
-            last_deliberation_at=now,
+            processed_events=_append_processed(state, unprocessed_due, finished_at),
+            last_deliberation_at=finished_at,
             action_history=history,
         )
         self._store.save(updated)
