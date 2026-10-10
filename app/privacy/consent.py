@@ -69,28 +69,29 @@ class ConsentService:
         correlation_id: str,
         dispatch: Callable[[], None],
     ) -> ConsentUseResult:
-        require_token(principal_id, "principal id")
-        require_token(content_reference, "content reference")
-        require_token(audience, "audience")
         require_token(correlation_id, "correlation id")
-        if not isinstance(purpose, ConsentPurpose):
-            raise ValueError("invalid consent purpose")
         if context.origin is not OperationOrigin.CONTROL:
             result = ConsentUseResult(False, "invalid_authentication")
-        elif context.principal_id != principal_id:
-            result = ConsentUseResult(False, "invalid_authorization")
         else:
-            return self.ledger.authorize_consent_use(
-                principal_id=principal_id,
-                content_reference=content_reference,
-                audience=audience,
-                purpose=purpose,
-                correlation_id=correlation_id,
-                actor_reference=context.actor_reference,
-                authentication_event_id=context.authentication_event_id,
-                clock=self._clock,
-                dispatch=dispatch,
-            )
+            require_token(principal_id, "principal id")
+            require_token(content_reference, "content reference")
+            require_token(audience, "audience")
+            if not isinstance(purpose, ConsentPurpose):
+                raise ValueError("invalid consent purpose")
+            if context.principal_id != principal_id:
+                result = ConsentUseResult(False, "invalid_authorization")
+            else:
+                return self.ledger.authorize_consent_use(
+                    principal_id=principal_id,
+                    content_reference=content_reference,
+                    audience=audience,
+                    purpose=purpose,
+                    correlation_id=correlation_id,
+                    actor_reference=context.actor_reference,
+                    authentication_event_id=context.authentication_event_id,
+                    clock=self._clock,
+                    dispatch=dispatch,
+                )
         used_at = self._trusted_time()
         self.ledger.record_audit(
             AuditRecord(
@@ -114,30 +115,28 @@ class ConsentService:
         revoked_at: datetime,
         correlation_id: str,
     ) -> OperationResult:
-        for value, name in (
-            (consent_id, "consent id"),
-            (operation_id, "operation id"),
-            (correlation_id, "correlation id"),
-        ):
-            require_token(value, name)
-        require_utc(revoked_at, "revocation timestamp")
-        principal = self.ledger.consent_principal(consent_id)
+        require_token(correlation_id, "correlation id")
         if context.origin is not OperationOrigin.CONTROL:
             reason = "invalid_authentication"
-        elif principal != context.principal_id:
-            reason = "invalid_authorization"
         else:
-            created = self.ledger.insert_revocation(
-                consent_id=consent_id,
-                operation_id=operation_id,
-                principal_id=context.principal_id,
-                actor_reference=context.actor_reference,
-                authentication_event_id=context.authentication_event_id,
-                revoked_at=revoked_at,
-                correlation_id=correlation_id,
-            )
-            reason = "revoked" if created else "already_revoked"
-            return OperationResult(created, reason)
+            require_token(consent_id, "consent id")
+            require_token(operation_id, "operation id")
+            require_utc(revoked_at, "revocation timestamp")
+            principal = self.ledger.consent_principal(consent_id)
+            if principal != context.principal_id:
+                reason = "invalid_authorization"
+            else:
+                created = self.ledger.insert_revocation(
+                    consent_id=consent_id,
+                    operation_id=operation_id,
+                    principal_id=context.principal_id,
+                    actor_reference=context.actor_reference,
+                    authentication_event_id=context.authentication_event_id,
+                    revoked_at=revoked_at,
+                    correlation_id=correlation_id,
+                )
+                reason = "revoked" if created else "already_revoked"
+                return OperationResult(created, reason)
         self.ledger.record_audit(
             AuditRecord(
                 correlation_id,

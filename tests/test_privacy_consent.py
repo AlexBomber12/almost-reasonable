@@ -401,6 +401,44 @@ def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
     )
 
 
+def test_unauthenticated_consent_operations_reject_before_validation_or_reads(
+    service, monkeypatch
+):
+    consent, ledger = service
+
+    def unexpected_ledger_access(*_args, **_kwargs):
+        raise AssertionError("unauthenticated request accessed consent state")
+
+    monkeypatch.setattr(ledger, "authorize_consent_use", unexpected_ledger_access)
+    use = consent.authorize(
+        context(origin=OperationOrigin.MODEL),
+        principal_id="bad principal",
+        content_reference="bad content",
+        audience="bad audience",
+        purpose="bad purpose",
+        correlation_id="unauthenticated-use",
+        dispatch=unexpected_ledger_access,
+    )
+
+    assert (use.allowed, use.reason) == (False, "invalid_authentication")
+    assert ledger.audit_records()[-1].result_code == "invalid_authentication"
+
+    monkeypatch.setattr(ledger, "consent_principal", unexpected_ledger_access)
+    revocation = consent.revoke(
+        context(origin=OperationOrigin.CHAT),
+        consent_id="bad consent",
+        operation_id="bad operation",
+        revoked_at=datetime(2026, 10, 10),
+        correlation_id="unauthenticated-revocation",
+    )
+
+    assert (revocation.created, revocation.reason) == (
+        False,
+        "invalid_authentication",
+    )
+    assert ledger.audit_records()[-1].result_code == "invalid_authentication"
+
+
 def test_consent_use_cannot_borrow_another_principals_grant(service):
     consent, _ = service
     consent.grant(
