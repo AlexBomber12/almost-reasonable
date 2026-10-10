@@ -211,9 +211,11 @@ cannot be recreated under a new ID. Any unresolved `unknown` or
 replacement must link the unresolved operation and carry a separate
 authenticated approval that explicitly acknowledges duplicate-publication risk;
 it never changes or retries the original item. Proposal insertion revalidates
-the replacement target's account and unresolved state inside the same SQLite
-transaction, so a concurrent reconciliation cannot consume the replacement's
-immutable operation ID with a stale target.
+the pinned policy/transport account binding inside the SQLite transaction.
+Replacement proposals also revalidate the authenticated approval and the
+target's account and unresolved state there, so account rebinding or a
+concurrent reconciliation cannot consume an immutable operation ID with stale
+authority.
 
 Before any replacement provider request, the same transaction also reserves
 its unresolved target. Reconciliation takes an exclusive claim on that target.

@@ -2101,6 +2101,43 @@ def test_replacement_target_is_revalidated_in_proposal_transaction(
         service.store.get("operation-2")
 
 
+@pytest.mark.parametrize("replacement", [False, True])
+def test_proposal_rechecks_account_binding_inside_transaction(
+    tmp_path, monkeypatch, replacement
+):
+    service = make_service(tmp_path)
+    operation_id = "operation-1"
+    proposal_changes = {}
+    if replacement:
+        _, approval = ready(service)
+        service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+        service.dispatch("operation-1", approval, now=NOW)
+        operation_id = "operation-2"
+        proposal_changes = {
+            "replacement_of": "operation-1",
+            "replacement_approval": approve(
+                operation_id, duplicate_risk_acknowledged=True
+            ),
+        }
+    create_proposal = service.store.create_proposal
+
+    def create_with_rebinding_fence(**kwargs):
+        account_fence = kwargs["precreate_check"]
+
+        def rebound_account_fence():
+            service.simulator.account_ref = "account-2"
+            account_fence()
+
+        return create_proposal(**(kwargs | {"precreate_check": rebound_account_fence}))
+
+    monkeypatch.setattr(service.store, "create_proposal", create_with_rebinding_fence)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        propose(service, operation_id, **proposal_changes)
+
+    with pytest.raises(ThreadsStoreError, match="unknown operation"):
+        service.store.get(operation_id)
+
+
 def test_replacement_publication_serializes_target_reconciliation(
     tmp_path, monkeypatch
 ):

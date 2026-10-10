@@ -112,6 +112,18 @@ class ThreadsService:
             )
             if duplicate_ref is None:
                 raise PolicyDeniedError("replacement requires authenticated approval")
+
+        def precreate_check() -> None:
+            if replacement_approval is not None:
+                validate_approval(
+                    replacement_approval,
+                    account_ref=self._account_ref,
+                    operation_id=operation_id,
+                    now=self.utc_now(),
+                    require_duplicate_ack=True,
+                )
+            self._require_account_binding()
+
         try:
             return self.store.create_proposal(
                 operation_id=operation_id,
@@ -127,17 +139,7 @@ class ThreadsService:
                 parent_message_id=parent_message_id,
                 replacement_of=replacement_of,
                 duplicate_risk_approval_ref=duplicate_ref,
-                precreate_check=(
-                    None
-                    if replacement_approval is None
-                    else lambda: validate_approval(
-                        replacement_approval,
-                        account_ref=self._account_ref,
-                        operation_id=operation_id,
-                        now=self.utc_now(),
-                        require_duplicate_ack=True,
-                    )
-                ),
+                precreate_check=precreate_check,
             )
         except UnknownPublicationRiskError as error:
             if replacement_of is not None:
