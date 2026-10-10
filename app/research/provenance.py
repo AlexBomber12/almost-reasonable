@@ -545,7 +545,7 @@ def _valid_https_url(value: object) -> bool:
     try:
         parsed = urlsplit(value)
         hostname = parsed.hostname
-        parsed.port
+        port = parsed.port
     except ValueError:
         return False
     return (
@@ -553,6 +553,7 @@ def _valid_https_url(value: object) -> bool:
         and parsed.scheme == "https"
         and parsed.username is None
         and parsed.password is None
+        and (port is None or port >= 1)
         and not any(character.isspace() for character in value)
         and not _has_control_characters(value)
     )

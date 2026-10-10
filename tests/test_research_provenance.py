@@ -114,6 +114,7 @@ def test_ipv6_literal_source_hostname_is_accepted():
         (response(url="file:///etc/passwd"), SourceStatus.UNSUPPORTED_URL),
         (response(url="javascript:alert(1)"), SourceStatus.UNSUPPORTED_URL),
         (response(url="https://example.org:99999/paper"), SourceStatus.UNSUPPORTED_URL),
+        (response(url="https://example.org:0/paper"), SourceStatus.UNSUPPORTED_URL),
         (
             response(url="https://example.org:notaport/paper"),
             SourceStatus.UNSUPPORTED_URL,
@@ -530,6 +531,16 @@ def test_naive_timestamps_invalid_calendar_dates_and_long_urls_are_rejected():
         register_independently_verified_source(
             reference="source-1",
             url="https://example.org:99999/paper",
+            title="Title",
+            publisher=None,
+            source_language=None,
+            publication_date=None,
+            evidence=evidence,
+        )
+    with pytest.raises(ValueError, match="URL"):
+        register_independently_verified_source(
+            reference="source-1",
+            url="https://example.org:0/paper",
             title="Title",
             publisher=None,
             source_language=None,
