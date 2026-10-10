@@ -18,6 +18,7 @@ _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,255}\Z")
 _LANGUAGE_TAG = re.compile(r"[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*\Z")
 _HOST_LABEL = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?\Z")
 _INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
+_INVALID_RAW_URL_CHARACTER = re.compile(r"""[\\<>"{}|^`]""")
 _DATE = re.compile(r"\d{4}-\d{2}-\d{2}\Z")
 MAX_RESPONSE_TEXT_UTF8_BYTES = 64 * 1024
 MAX_PROVIDER_RESPONSE_UTF8_BYTES = 512 * 1024
@@ -557,6 +558,7 @@ def _valid_https_url(value: object) -> bool:
         and parsed.password is None
         and (port is None or port >= 1)
         and _INVALID_PERCENT_ESCAPE.search(value) is None
+        and _INVALID_RAW_URL_CHARACTER.search(value) is None
         and not any(character.isspace() for character in value)
         and not _has_control_characters(value)
     )

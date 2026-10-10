@@ -36,9 +36,10 @@ _CALENDAR_DATE = re.compile(
     r"|(?:0?[1-9]|1[0-2])[-./](?:0?[1-9]|[12]\d|3[01])[-./]\d{4}"
     r")(?!\d)"
 )
-_GROUPED_QUANTITY = re.compile(
-    r"(?<![\d+])(?<!\d[ .\u00a0\u202f])"
-    r"[1-9]\d?(?:[ .\u00a0\u202f]\d{3})+"
+_PUBLIC_GROUPED_QUANTITY = re.compile(
+    r"(?i)(?:populations?|quantit(?:y|ies)|amounts?|totals?)\s+"
+    r"(?:(?:over|under|above|below|of)\s+)?"
+    r"[1-9]\d{0,2}(?:[ .\u00a0\u202f]\d{3})+"
     r"(?!\d)(?![ .\u00a0\u202f]\d)"
 )
 _BASE64 = re.compile(
@@ -468,7 +469,7 @@ def _privacy_reason(
     normalized_identifiers = _normalized(identifier_text)
     without_year_ranges = _YEAR_RANGE.sub(" ", normalized_identifiers)
     without_dates = _CALENDAR_DATE.sub(" ", without_year_ranges)
-    without_quantities = _GROUPED_QUANTITY.sub(" ", without_dates)
+    without_quantities = _PUBLIC_GROUPED_QUANTITY.sub(" ", without_dates)
     if _EMAIL.search(normalized_identifiers) or _has_phone_number(without_quantities):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):

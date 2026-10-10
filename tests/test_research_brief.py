@@ -251,6 +251,16 @@ def test_raw_history_and_unknown_record_types_fail_closed(record, reason):
             "direct_identifier",
         ),
         (
+            "Call 12 345 678 about the study",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
+            "Call 12.345.678 about the study",
+            ResearchScreeningContext(),
+            "direct_identifier",
+        ),
+        (
             "Call phone_612345678 now",
             ResearchScreeningContext(),
             "direct_identifier",
