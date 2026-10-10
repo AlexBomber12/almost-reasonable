@@ -121,6 +121,8 @@ revision therefore cannot combine old candidate text with new recency or taint.
 Ranking is deterministic across topic overlap, active status, confidence or
 priority, recency, and item ID. The selector emits only whole records; a record
 that does not fit is omitted rather than truncated into an ambiguous fragment.
+Belief records retain their explicit `supports`, `opposes`, or `uncertain`
+stance, and that field is included in byte-budget accounting.
 Every record carries its kind, private scope, status, confidence or priority,
 verification state, participant-assertion provenance class, recency, and the
 fixed `untrusted_memory_data` trust label. `can_instruct` is always false. No

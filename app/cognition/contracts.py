@@ -325,6 +325,7 @@ class MemoryRecord:
     scope: str
     confidence: float | None
     priority: int | None
+    stance: BeliefStance | None
     verification: VerificationStatus
     provenance: ProvenanceType
     recency: datetime

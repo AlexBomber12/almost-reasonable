@@ -392,7 +392,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         ),
         "belief-retrieval",
         "Complex systems often contain feedback loops.",
-        BeliefStance.SUPPORTS,
+        BeliefStance.OPPOSES,
         0.7,
         BeliefStatus.ACTIVE,
         (),
@@ -430,10 +430,31 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         RetrievalRequest(RetrievalPurpose.REVISION, "feedback", 4096, 10),
     )
     by_id = {record.item_id: record for record in selection.records}
-    assert by_id["belief-retrieval"].confidence == 0.7
-    assert by_id["belief-retrieval"].priority is None
+    belief_record = by_id["belief-retrieval"]
+    assert belief_record.confidence == 0.7
+    assert belief_record.priority is None
+    assert belief_record.stance is BeliefStance.OPPOSES
+    serialized_values = (
+        belief_record.item_id,
+        belief_record.memory_kind.value,
+        belief_record.text,
+        belief_record.status,
+        belief_record.scope,
+        str(belief_record.confidence),
+        "",
+        belief_record.stance.value,
+        belief_record.verification.value,
+        belief_record.provenance.value,
+        belief_record.recency.isoformat(),
+        belief_record.trust.value,
+        "false",
+    )
+    assert belief_record.utf8_bytes == sum(
+        len(value.encode("utf-8")) for value in serialized_values
+    )
     assert by_id["goal-retrieval"].confidence is None
     assert by_id["goal-retrieval"].priority == 65
+    assert by_id["goal-retrieval"].stance is None
 
 
 def test_ranking_considers_authorized_candidates_beyond_core_result_cap(

@@ -148,17 +148,14 @@ class CognitionEngine:
         identity: ExtractorIdentity,
         decided_at: datetime,
     ) -> CognitionOutcome:
-        if isinstance(proposal, NoChangeProposal):
+        if type(proposal) is NoChangeProposal:
             return self._authorize_no_change(context, proposal, source_event_id)
-        if not isinstance(
-            proposal,
-            (
-                InterestMemoryProposal,
-                BeliefMemoryProposal,
-                GoalMemoryProposal,
-                GenericMemoryProposal,
-            ),
-        ):
+        if type(proposal) not in {
+            InterestMemoryProposal,
+            BeliefMemoryProposal,
+            GoalMemoryProposal,
+            GenericMemoryProposal,
+        }:
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
         expected_kind = {
             InterestMemoryProposal: MemoryKind.DURABLE_INTEREST,

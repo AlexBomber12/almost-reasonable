@@ -688,6 +688,30 @@ def test_malformed_unsupported_and_poisoning_proposals_never_gain_authority(
     assert state.retrieve_private_candidates(context)[0].revision == 1
 
 
+def test_subclassed_proposal_cannot_bypass_closed_kind_validation(cognition_setup):
+    events, state, context, event_id = cognition_setup
+
+    class ForgedInterestProposal(InterestMemoryProposal):
+        pass
+
+    proposal = ForgedInterestProposal(
+        context=proposal_context(event_id, "subclass-kind"),
+        item_id="interest-subclass-kind",
+        topic="Closed proposal types",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="A subtype must not change the authorized memory kind.",
+        memory_kind=MemoryKind.GOAL_OR_INTENTION,
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
+
+
 def test_source_mismatch_conflicting_roles_and_invalid_create_status_are_rejected(
     cognition_setup,
 ):

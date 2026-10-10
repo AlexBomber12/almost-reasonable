@@ -103,18 +103,21 @@ class MemoryContextSelector:
             text = candidate.topic
             confidence = None
             priority = candidate.strength
+            stance = None
             verification = VerificationStatus.UNVERIFIED
         elif isinstance(candidate, BeliefCandidate):
             kind = MemoryKind.BELIEF_OR_HYPOTHESIS
             text = candidate.proposition
             confidence = candidate.confidence
             priority = None
+            stance = candidate.stance
             verification = candidate.verification
         else:
             kind = MemoryKind.GOAL_OR_INTENTION
             text = candidate.description
             confidence = None
             priority = candidate.priority
+            stance = None
             verification = VerificationStatus.UNVERIFIED
         values = (
             candidate.item_id,
@@ -124,6 +127,7 @@ class MemoryContextSelector:
             candidate.scope.value,
             "" if confidence is None else str(confidence),
             "" if priority is None else str(priority),
+            "" if stance is None else stance.value,
             verification.value,
             ProvenanceType.PARTICIPANT_ASSERTION.value,
             recency.isoformat(),
@@ -139,6 +143,7 @@ class MemoryContextSelector:
             scope=candidate.scope.value,
             confidence=confidence,
             priority=priority,
+            stance=stance,
             verification=verification,
             provenance=ProvenanceType.PARTICIPANT_ASSERTION,
             recency=recency,
