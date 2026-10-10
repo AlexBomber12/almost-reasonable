@@ -91,7 +91,7 @@ class SimulationAuthorizationProvider:
     """Mutable, credential-free current-authorization fixture for simulation."""
 
     def __init__(self):
-        self.approvals: dict[str, Approval] = {}
+        self.approvals: dict[tuple[str, str, str], Approval] = {}
         self.privacy: dict[str, bool] = {}
         self.approval_available = True
         self.privacy_available = True
@@ -100,7 +100,9 @@ class SimulationAuthorizationProvider:
     def set_approval(self, approval: Approval) -> None:
         if type(approval) is not Approval:
             raise ValueError("invalid simulated approval")
-        self.approvals[approval.reference] = approval
+        self.approvals[
+            (approval.account_ref, approval.operation_id, approval.reference)
+        ] = approval
 
     def set_privacy(self, operation_id: str, authorized: bool) -> None:
         require_reference("operation ID", operation_id)
@@ -118,14 +120,7 @@ class SimulationAuthorizationProvider:
     ) -> Approval | None:
         if not self.approval_available:
             raise RuntimeError("simulated approval provider unavailable")
-        approval = self.approvals.get(approval_reference)
-        if (
-            approval is None
-            or approval.account_ref != account_ref
-            or approval.operation_id != operation_id
-        ):
-            return None
-        return approval
+        return self.approvals.get((account_ref, operation_id, approval_reference))
 
     def current_privacy_authorized(self, *, item: OutboxItem, now: datetime) -> bool:
         if not self.privacy_available:

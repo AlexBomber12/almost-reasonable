@@ -22,6 +22,7 @@ from .domain import (
     authenticated_approval_reference,
     content_fingerprint,
     require_aware_time,
+    require_reference,
     validate_approval,
 )
 from .simulator import (
@@ -538,13 +539,17 @@ class ThreadsService:
         stream: InboundKind,
         *,
         now: datetime,
+        correlation_id: str,
         max_pages: int = MAX_POLL_PAGES,
         max_events: int = MAX_POLL_EVENTS,
         timeout_seconds: float = MAX_POLL_SECONDS,
         interrupt_after_fetch: bool = False,
     ) -> PollResult:
-        self._check_poll_policy(stream)
+        require_reference("poll correlation ID", correlation_id)
         require_aware_time("poll time", now)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
+        self._check_poll_policy_with_audit(stream, correlation_id, now)
         if type(max_pages) is not int or not 1 <= max_pages <= MAX_POLL_PAGES:
             raise ValueError("invalid poll page limit")
         if type(max_events) is not int or not 1 <= max_events <= MAX_POLL_EVENTS:
@@ -563,7 +568,7 @@ class ThreadsService:
         while pages < max_pages:
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
-            self._check_poll_policy(stream)
+            self._check_poll_policy_with_audit(stream, correlation_id, now)
             page = self.simulator.poll(stream, cursor)
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
@@ -810,8 +815,6 @@ class ThreadsService:
         )
 
     def _check_poll_policy(self, stream: InboundKind) -> None:
-        if type(stream) is not InboundKind:
-            raise ValueError("invalid inbound stream")
         self.policy.validate()
         required = (
             REQUIRED_REPLY_READ_SCOPES
@@ -826,3 +829,21 @@ class ThreadsService:
             or self.policy.emergency_stop
         ):
             raise PolicyDeniedError("inbound polling capability is unavailable")
+
+    def _check_poll_policy_with_audit(
+        self, stream: InboundKind, correlation_id: str, now: datetime
+    ) -> None:
+        try:
+            self._check_poll_policy(stream)
+        except PolicyDeniedError:
+            self.store.record_poll_policy_denial(
+                correlation_id=correlation_id,
+                account_ref=self.policy.account_ref,
+                stream=stream,
+                actor_reference=(
+                    f"account-{content_fingerprint(self.policy.account_ref)[:16]}"
+                ),
+                reason="inbound_polling_capability_unavailable",
+                now=now,
+            )
+            raise

@@ -23,7 +23,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
     OutboxState.PROPOSED: {
@@ -126,6 +126,15 @@ class ThreadsStore:
                     version = 2
                 if version == 2:
                     for statement in _MIGRATION_2_TO_3.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (3,),
+                    )
+                    version = 3
+                if version == 3:
+                    for statement in _MIGRATION_3_TO_4.split(";"):
                         if statement.strip():
                             connection.execute(statement)
                     connection.execute(
@@ -826,6 +835,46 @@ class ThreadsStore:
             ).fetchone()
         return None if row is None else row[0]
 
+    def record_poll_policy_denial(
+        self,
+        *,
+        correlation_id: str,
+        account_ref: str,
+        stream: InboundKind,
+        actor_reference: str,
+        reason: str,
+        now: datetime,
+    ) -> None:
+        for field, value in (
+            ("correlation ID", correlation_id),
+            ("account reference", account_ref),
+            ("actor reference", actor_reference),
+            ("poll denial reason", reason),
+        ):
+            require_reference(field, value)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
+        require_aware_time("poll denial time", now)
+        with self._open() as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO threads_poll_policy_denials "
+                    "(correlation_id, account_ref, stream, actor_reference, reason, "
+                    "occurred_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    (
+                        correlation_id,
+                        account_ref,
+                        stream.value,
+                        actor_reference,
+                        reason,
+                        now.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ThreadsStoreError(
+                    "poll denial correlation is not unique"
+                ) from error
+
     def commit_poll_page(
         self,
         *,
@@ -1154,6 +1203,14 @@ CREATE TABLE threads_poll_cursors (
     updated_at TEXT NOT NULL,
     PRIMARY KEY(account_ref, stream)
 );
+CREATE TABLE threads_poll_policy_denials (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
+);
 CREATE TABLE threads_conversation_outcomes (
     outcome_id TEXT PRIMARY KEY,
     correlation_id TEXT NOT NULL,
@@ -1264,5 +1321,17 @@ CREATE TABLE threads_account_effect_locks (
     account_ref TEXT PRIMARY KEY,
     holder_operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
     created_at TEXT NOT NULL
+);
+"""
+
+
+_MIGRATION_3_TO_4 = """
+CREATE TABLE threads_poll_policy_denials (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    occurred_at TEXT NOT NULL
 );
 """

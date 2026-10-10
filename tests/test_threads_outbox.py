@@ -171,6 +171,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
         connection.execute("DROP TABLE threads_account_effect_locks")
         connection.execute("DROP TABLE threads_unknown_effect_locks")
         connection.execute("DROP TABLE threads_operator_decisions")
+        connection.execute("DROP TABLE threads_poll_policy_denials")
         connection.execute(
             "ALTER TABLE threads_inbound_events DROP COLUMN correlation_id"
         )
@@ -182,7 +183,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (3,)
+        ).fetchone() == (4,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -212,6 +213,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert "threads_unknown_effect_locks" in tables
     assert "threads_account_effect_locks" in tables
     assert "threads_operator_decisions" in tables
+    assert "threads_poll_policy_denials" in tables
 
 
 def test_existing_database_requires_version_metadata_row(tmp_path):
@@ -405,6 +407,27 @@ def test_unregistered_or_unavailable_current_approval_fails_closed(tmp_path):
         service.dispatch("operation-1", approval, now=NOW)
     assert service.store.get("operation-1").state is OutboxState.READY
     assert service.simulator.trace == []
+
+
+def test_simulated_approvals_are_scoped_by_account_operation_and_reference():
+    provider = SimulationAuthorizationProvider()
+    approvals = (
+        approve(reference="approval-shared"),
+        approve("operation-2", reference="approval-shared"),
+        approve("operation-3", account_ref="account-2", reference="approval-shared"),
+    )
+    for approval in approvals:
+        provider.set_approval(approval)
+    for approval in approvals:
+        assert (
+            provider.current_approval(
+                account_ref=approval.account_ref,
+                operation_id=approval.operation_id,
+                approval_reference=approval.reference,
+                now=NOW,
+            )
+            is approval
+        )
 
 
 def test_revocation_or_privacy_change_before_dispatch_blocks_all_effects(tmp_path):

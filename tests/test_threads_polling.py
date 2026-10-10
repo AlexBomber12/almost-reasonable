@@ -10,6 +10,7 @@ from app.threads.domain import (
     InboundEvent,
     InboundKind,
     Stage,
+    content_fingerprint,
 )
 from app.threads.service import PolicyDeniedError, PollingError, ThreadsService
 from app.threads.simulator import (
@@ -89,7 +90,9 @@ def test_verified_pages_persist_events_and_stable_cursor_across_restart(tmp_path
         next_cursor="cursor-1",
         events=(event("1"), event("2")),
     )
-    result = first.poll(InboundKind.REPLY, now=NOW, max_pages=1)
+    result = first.poll(
+        InboundKind.REPLY, now=NOW, correlation_id="poll-initial", max_pages=1
+    )
     assert [item.event_id for item in result.new_events] == ["event-1", "event-2"]
     assert result.final_cursor == "cursor-1"
     with sqlite3.connect(first.store.database) as connection:
@@ -105,7 +108,7 @@ def test_verified_pages_persist_events_and_stable_cursor_across_restart(tmp_path
         next_cursor=None,
         events=(event("2"), event("3")),
     )
-    result = restarted.poll(InboundKind.REPLY, now=NOW)
+    result = restarted.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-restarted")
     assert [item.event_id for item in result.new_events] == ["event-3"]
     assert result.duplicate_count == 1
     assert result.final_cursor == "cursor-1"
@@ -121,9 +124,19 @@ def test_interruption_before_atomic_commit_replays_page_without_loss(tmp_path):
         events=(event("mention", kind=InboundKind.MENTION),),
     )
     with pytest.raises(SimulatedCrash):
-        threads.poll(InboundKind.MENTION, now=NOW, interrupt_after_fetch=True)
+        threads.poll(
+            InboundKind.MENTION,
+            now=NOW,
+            correlation_id="poll-interrupted",
+            interrupt_after_fetch=True,
+        )
     assert threads.store.cursor("account-1", InboundKind.MENTION) is None
-    recovered = threads.poll(InboundKind.MENTION, now=NOW, max_pages=1)
+    recovered = threads.poll(
+        InboundKind.MENTION,
+        now=NOW,
+        correlation_id="poll-recovered",
+        max_pages=1,
+    )
     assert [item.event_id for item in recovered.new_events] == ["event-mention"]
     assert recovered.final_cursor == "mention-cursor-1"
 
@@ -143,7 +156,7 @@ def test_unverified_or_mismatched_provider_pages_are_rejected_before_persistence
     forged = replace(original, events=(event("attack"),), **changes)
     monkeypatch.setattr(threads.simulator, "poll", lambda _stream, _cursor: forged)
     with pytest.raises(PollingError, match="not verified"):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-forged-page")
     assert threads.store.cursor("account-1", InboundKind.REPLY) is None
 
 
@@ -155,7 +168,9 @@ def test_pagination_loop_is_detected_before_cursor_or_event_commit(tmp_path):
         next_cursor="cursor-1",
         events=(event("first"),),
     )
-    threads.poll(InboundKind.REPLY, now=NOW, max_pages=1)
+    threads.poll(
+        InboundKind.REPLY, now=NOW, correlation_id="poll-first-page", max_pages=1
+    )
     threads.simulator.add_poll_page(
         stream=InboundKind.REPLY,
         cursor="cursor-1",
@@ -163,7 +178,7 @@ def test_pagination_loop_is_detected_before_cursor_or_event_commit(tmp_path):
         events=(event("loop"),),
     )
     with pytest.raises(PollingError, match="loop"):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-loop")
     assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
 
 
@@ -289,7 +304,7 @@ def test_poll_maps_commit_deadline_to_bounded_polling_error(tmp_path, monkeypatc
 
     monkeypatch.setattr(threads.store, "commit_poll_page", exceed_deadline)
     with pytest.raises(PollingError, match="time limit"):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-deadline")
 
 
 def test_flood_page_and_time_step_limits_fail_closed(tmp_path):
@@ -301,11 +316,16 @@ def test_flood_page_and_time_step_limits_fail_closed(tmp_path):
         events=(event("1"), event("2")),
     )
     with pytest.raises(PollingError, match="event limit"):
-        threads.poll(InboundKind.REPLY, now=NOW, max_events=1)
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW,
+            correlation_id="poll-flood",
+            max_events=1,
+        )
     times = iter((0.0, 31.0))
     timed = service(tmp_path / "timed", clock=lambda: next(times))
     with pytest.raises(PollingError, match="time limit"):
-        timed.poll(InboundKind.REPLY, now=NOW)
+        timed.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-timeout")
 
 
 def test_slow_terminal_page_exceeding_deadline_is_not_committed(tmp_path):
@@ -318,7 +338,7 @@ def test_slow_terminal_page_exceeding_deadline_is_not_committed(tmp_path):
         events=(event("slow"),),
     )
     with pytest.raises(PollingError, match="time limit"):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-slow-page")
     assert threads.store.cursor("account-1", InboundKind.REPLY) is None
 
 
@@ -332,7 +352,7 @@ def test_deadline_expiry_before_commit_budget_is_computed(tmp_path):
         events=(event("late-budget"),),
     )
     with pytest.raises(PollingError, match="time limit"):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-late-budget")
     assert threads.store.cursor("account-1", InboundKind.REPLY) is None
 
 
@@ -345,7 +365,12 @@ def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
         next_cursor="cursor-1",
         events=duplicates,
     )
-    threads.poll(InboundKind.REPLY, now=NOW, max_pages=1)
+    threads.poll(
+        InboundKind.REPLY,
+        now=NOW,
+        correlation_id="poll-duplicates-first",
+        max_pages=1,
+    )
     threads.simulator.add_poll_page(
         stream=InboundKind.REPLY,
         cursor="cursor-1",
@@ -359,7 +384,12 @@ def test_duplicate_events_count_toward_total_poll_work_limit(tmp_path):
         events=duplicates,
     )
     with pytest.raises(PollingError, match="event limit"):
-        threads.poll(InboundKind.REPLY, now=NOW, max_events=3)
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW,
+            correlation_id="poll-duplicates-limit",
+            max_events=3,
+        )
     assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-2"
 
 
@@ -451,9 +481,18 @@ def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
 
     monkeypatch.setattr(threads.simulator, "poll", stop_after_first_page)
     with pytest.raises(PolicyDeniedError):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(
+            InboundKind.REPLY, now=NOW, correlation_id="poll-stop-between-pages"
+        )
     assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
     assert threads.simulator.trace == [("poll_reply", "start")]
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT correlation_id, reason FROM threads_poll_policy_denials"
+        ).fetchone() == (
+            "poll-stop-between-pages",
+            "inbound_polling_capability_unavailable",
+        )
 
 
 @pytest.mark.parametrize(
@@ -475,7 +514,9 @@ def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
 )
 def test_poll_bounds_cannot_be_expanded_or_disabled(tmp_path, kwargs):
     with pytest.raises(ValueError):
-        service(tmp_path).poll(InboundKind.REPLY, now=NOW, **kwargs)
+        service(tmp_path).poll(
+            InboundKind.REPLY, now=NOW, correlation_id="poll-invalid-bounds", **kwargs
+        )
 
 
 @pytest.mark.parametrize(
@@ -496,19 +537,66 @@ def test_poll_bounds_cannot_be_expanded_or_disabled(tmp_path, kwargs):
 def test_polling_requires_configured_account_capability_and_scopes(
     tmp_path, runtime_policy, stream
 ):
+    threads = service(tmp_path, runtime_policy=runtime_policy)
     with pytest.raises(PolicyDeniedError):
-        service(tmp_path, runtime_policy=runtime_policy).poll(stream, now=NOW)
+        threads.poll(stream, now=NOW, correlation_id="poll-policy-denied")
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT correlation_id, account_ref, stream, actor_reference, reason, "
+            "occurred_at FROM threads_poll_policy_denials"
+        ).fetchone() == (
+            "poll-policy-denied",
+            "account-1",
+            stream.value,
+            f"account-{content_fingerprint('account-1')[:16]}",
+            "inbound_polling_capability_unavailable",
+            NOW.isoformat(),
+        )
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"correlation_id": "bad value"},
+        {"account_ref": "bad value"},
+        {"stream": "reply"},
+        {"actor_reference": "bad value"},
+        {"reason": "bad value"},
+        {"now": datetime(2026, 1, 1)},
+    ],
+)
+def test_poll_policy_denial_audit_validation_and_duplicate_protection(
+    tmp_path, changes
+):
+    store = service(tmp_path).store
+    values = {
+        "correlation_id": "poll-denial-1",
+        "account_ref": "account-1",
+        "stream": InboundKind.REPLY,
+        "actor_reference": "account-actor-1",
+        "reason": "policy_denied",
+        "now": NOW,
+    }
+    with pytest.raises(ValueError):
+        store.record_poll_policy_denial(**(values | changes))
+    store.record_poll_policy_denial(**values)
+    with pytest.raises(ThreadsStoreError, match="not unique"):
+        store.record_poll_policy_denial(**values)
 
 
 def test_polling_rejects_invalid_stream_time_and_provider_failure(tmp_path):
     threads = service(tmp_path)
     with pytest.raises(ValueError, match="stream"):
-        threads.poll("reply", now=NOW)
+        threads.poll("reply", now=NOW, correlation_id="poll-invalid-stream")
     with pytest.raises(ValueError, match="poll time"):
-        threads.poll(InboundKind.REPLY, now=datetime(2026, 1, 1))
+        threads.poll(
+            InboundKind.REPLY,
+            now=datetime(2026, 1, 1),
+            correlation_id="poll-invalid-time",
+        )
     threads.simulator.set_fault("reply", "start", Fault.POLL)
     with pytest.raises(ProviderFailure, match="poll_failed"):
-        threads.poll(InboundKind.REPLY, now=NOW)
+        threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-provider-failure")
 
 
 @pytest.mark.parametrize(
@@ -582,7 +670,9 @@ def test_malicious_public_text_is_bounded_data_not_authority_or_global_stop(tmp_
         next_cursor=None,
         events=(malicious,),
     )
-    result = threads.poll(InboundKind.REPLY, now=NOW)
+    result = threads.poll(
+        InboundKind.REPLY, now=NOW, correlation_id="poll-malicious-content"
+    )
     assert result.new_events == (malicious,)
     assert threads.policy.emergency_stop is False
 

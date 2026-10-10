@@ -216,6 +216,8 @@ Public posting requires all of the following: production capability enabled by a
 
 Threads publishing is a side-effecting, provider-specific multi-step operation. Its exact container/creation/publication sequence and available reconciliation evidence MUST be verified against current official documentation and smoke tests. Provider idempotency-key support MUST NOT be assumed. The durable outbox uses the closed outcomes `proposed`, `awaiting_policy_or_operator_approval`, `ready`, `sending`, `confirmed`, `unknown`, `unknown_abandoned`, `cancelled`, and `failed_terminal`.
 
+Every inbound polling action requires an explicit correlation ID. A policy denial is recorded before returning with the configured account's pseudonymous authenticated actor reference, stream, sanitized reason, and timestamp; it contains no inbound payload or credential material.
+
 Failure classification depends on the external-dispatch boundary:
 
 - **proven pre-dispatch failure:** no external request was transmitted and no side effect occurred; keep or return the item to `ready` for a bounded safe retry, or use `cancelled`/`failed_terminal` as appropriate;
