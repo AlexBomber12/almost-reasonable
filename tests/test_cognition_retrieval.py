@@ -441,6 +441,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert belief_record.confidence == 0.7
     assert belief_record.priority is None
     assert belief_record.stance is BeliefStance.OPPOSES
+    assert belief_record.provenance is ProvenanceType.MODEL_INFERENCE
     serialized_values = (
         belief_record.item_id,
         belief_record.memory_kind.value,

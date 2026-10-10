@@ -13,6 +13,7 @@ import sqlite3
 from app.core.events import PrivateConversationEvent, TrustedPrincipalContext
 from app.core.self_state import (
     BeliefCandidateChange,
+    DecisionOrigin,
     GoalCandidateChange,
     InterestCandidateChange,
     PrivateCandidate,
@@ -33,6 +34,7 @@ StateChange = InterestCandidateChange | BeliefCandidateChange | GoalCandidateCha
 class PrivateCandidateRead:
     candidate: PrivateCandidate
     decided_at: datetime
+    decision_origin: DecisionOrigin
     evidence_event_ids: tuple[str, ...]
 
 
@@ -158,6 +160,7 @@ class CognitionReadStore:
                         PrivateCandidateRead(
                             self._state._current_snapshot_from_row(connection, row),
                             self._state._parse_time(row[27]),
+                            DecisionOrigin(row[28]),
                             tuple(item[0] for item in evidence),
                         )
                     )
@@ -325,7 +328,8 @@ class CognitionReadStore:
                         (SELECT MAX(candidate.revision_number)
                          FROM state_revisions AS candidate
                          WHERE candidate.item_key = item.item_key),
-                        revision.decided_at
+                        revision.decided_at,
+                        revision.decision_origin
                     FROM state_items AS item
                     JOIN state_revisions AS revision
                       ON revision.item_key = item.item_key

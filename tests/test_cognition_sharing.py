@@ -143,7 +143,10 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
     [
         ("Contact ada@example.test about uncertainty.", AbstractReason.IDENTIFIER),
         ("Read https://private.example.test/profile.", AbstractReason.IDENTIFIER),
+        ("Contact ada＠example．test privately.", AbstractReason.IDENTIFIER),
+        ("Read https：／／private．example．test/profile.", AbstractReason.IDENTIFIER),
         ('A participant said "keep this exact sentence".', AbstractReason.QUOTATION),
+        ("A participant said ＂keep this private＂.", AbstractReason.QUOTATION),
         (
             "I keep returning to questions about uncertainty in complex systems.",
             AbstractReason.EXCESSIVE_SOURCE_OVERLAP,

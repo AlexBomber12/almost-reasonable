@@ -7,6 +7,7 @@ import unicodedata
 from app.core.events import ProvenanceType, TrustedPrincipalContext, VerificationStatus
 from app.core.self_state import (
     BeliefCandidate,
+    DecisionOrigin,
     InterestCandidate,
     PrivateCandidate,
 )
@@ -60,7 +61,11 @@ class MemoryContextSelector:
             if invalidated & set(candidate_read.evidence_event_ids):
                 omitted = True
                 continue
-            record = self._record(candidate, candidate_read.decided_at)
+            record = self._record(
+                candidate,
+                candidate_read.decided_at,
+                candidate_read.decision_origin,
+            )
             relevance = len(query_words & set(self._words(record.text)))
             strength = (
                 record.confidence
@@ -97,7 +102,11 @@ class MemoryContextSelector:
         )
 
     @staticmethod
-    def _record(candidate: PrivateCandidate, recency: datetime) -> MemoryRecord:
+    def _record(
+        candidate: PrivateCandidate,
+        recency: datetime,
+        decision_origin: DecisionOrigin,
+    ) -> MemoryRecord:
         if isinstance(candidate, InterestCandidate):
             kind = MemoryKind.DURABLE_INTEREST
             text = candidate.topic
@@ -119,6 +128,10 @@ class MemoryContextSelector:
             priority = candidate.priority
             stance = None
             verification = VerificationStatus.UNVERIFIED
+        provenance = {
+            DecisionOrigin.MODEL: ProvenanceType.MODEL_INFERENCE,
+            DecisionOrigin.DETERMINISTIC: ProvenanceType.PARTICIPANT_ASSERTION,
+        }[decision_origin]
         values = (
             candidate.item_id,
             kind.value,
@@ -129,7 +142,7 @@ class MemoryContextSelector:
             "" if priority is None else str(priority),
             "" if stance is None else stance.value,
             verification.value,
-            ProvenanceType.PARTICIPANT_ASSERTION.value,
+            provenance.value,
             recency.isoformat(),
             MemoryTrust.UNTRUSTED_MEMORY_DATA.value,
             "false",
@@ -145,7 +158,7 @@ class MemoryContextSelector:
             priority=priority,
             stance=stance,
             verification=verification,
-            provenance=ProvenanceType.PARTICIPANT_ASSERTION,
+            provenance=provenance,
             recency=recency,
             trust=MemoryTrust.UNTRUSTED_MEMORY_DATA,
             can_instruct=False,

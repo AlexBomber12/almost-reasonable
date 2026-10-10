@@ -53,19 +53,20 @@ def screen_abstract_candidate(
 ) -> PrivacyScreenResult:
     """Conservative H screen for obvious identity, quotation, and copy leakage."""
 
-    if _IDENTIFIER.search(candidate.value) is not None:
+    normalized_candidate = unicodedata.normalize("NFKC", candidate.value)
+    if _IDENTIFIER.search(normalized_candidate) is not None:
         return PrivacyScreenResult(
             PRIVACY_SCREEN_VERSION,
             PrivacyScreenDecision.REJECT,
             AbstractReason.IDENTIFIER.value,
         )
-    if _QUOTATION.search(candidate.value) is not None:
+    if _QUOTATION.search(normalized_candidate) is not None:
         return PrivacyScreenResult(
             PRIVACY_SCREEN_VERSION,
             PrivacyScreenDecision.REJECT,
             AbstractReason.QUOTATION.value,
         )
-    candidate_words = _normalized_words(candidate.value)
+    candidate_words = _normalized_words(normalized_candidate)
     for source in sources:
         source_words = _normalized_words(source.content)
         common_words = set(candidate_words) & set(source_words)
