@@ -37,16 +37,21 @@ not broaden conversational retrieval.
 
 ### C. Credential-holding adapters
 
-No credential-holding adapter is implemented in this change. Future OpenAI,
-Threads, and other provider adapters must expose narrow application-owned
-requests and bounded responses rather than generic URL, header, function, or
-tool execution.
+The OpenAI adapter now has an executable local process boundary. The application
+sends only an already-authorized, secretless `ModelRequest` through the single
+versioned `infer` operation on an authenticated Unix-domain socket. The worker
+owns the existing gateway, credential-capable transport, provider persistence,
+and normalized response handling. It returns only a sanitized outcome or a
+validated untrusted proposal; it cannot execute an action. See
+`docs/openai-worker-isolation.md` for protocol and deployment assumptions.
 
 Keeping application credentials out of model input is an application data-flow
 guarantee implemented here. It is not an operating-system isolation guarantee.
-Arbitrary Python code in the same process could read process environment or
-mounted files according to that process's OS permissions. Preventing that
-requires separately deployed process or container boundaries.
+Arbitrary Python code running with the worker's OS permissions could still read
+its environment or mounted files. The Stage 0 harness may run planner and worker
+under the same UID, so it proves process and protocol separation but not complete
+filesystem/process credential isolation. Production requires distinct identities,
+worker-only secret mounts, and restricted egress.
 
 ## Secretless model-facing contract
 
@@ -174,7 +179,7 @@ never stand in for any of them.
 
 ## Future runtime isolation
 
-Production deployment must add a separately reviewed physical boundary:
+Production deployment must finish the separately reviewed physical boundary:
 
 - an AI planning component with no mounted application credential files;
 - credential-holding adapters that receive only their own required secrets;
@@ -186,6 +191,7 @@ Production deployment must add a separately reviewed physical boundary:
 - no generic destination, header, or credential parameters; and
 - a separate protected owner control plane.
 
-The current Compose services were inspected but not changed. This document does
-not claim that the future isolation, network restrictions, adapters, or control
+The AF_UNIX worker is implemented but not added to Compose or deployed. The current
+Compose services were inspected but not changed. This document does not claim that
+distinct identities, secret mounts, network restrictions, or an owner control
 plane already exist.

@@ -1,0 +1,418 @@
+"""Versioned, bounded JSON protocol for the local OpenAI worker."""
+
+from dataclasses import dataclass, field
+import json
+import math
+import socket
+import struct
+import time
+
+from app.core.agent_proposals import (
+    AgentDecision,
+    NoActionProposal,
+    ProposalValidation,
+    PublicationProposal,
+    ReplyProposal,
+    ResearchProposal,
+    parse_agent_proposal,
+)
+from app.core.context import ContextRole, ContextTrust, ConversationSegment
+from app.core.model_contract import (
+    MAX_MODEL_REQUEST_UTF8_BYTES,
+    ModelRequest,
+    ModelTask,
+    serialize_model_request,
+)
+from app.core.provider_contract import MAX_ATTEMPTS, require_identifier
+
+
+PROTOCOL_VERSION = "openai-worker-v1"
+OPERATION_INFER = "infer"
+FRAME_PREFIX_BYTES = 4
+MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
+MAX_SAFE_MESSAGE_UTF8_BYTES = 512
+MAX_WORKER_OPERATION_ID_LENGTH = 126
+MAX_JSON_NESTING_DEPTH = 16
+MAX_CONNECTION_LIFETIME_SECONDS = 30.0
+MAX_IO_TIMEOUT_SECONDS = 10.0
+
+IPC_REJECTED = "invalid_ipc_request"
+_GATEWAY_OUTCOMES = frozenset(
+    (
+        "completed",
+        "disabled",
+        "emergency_stop",
+        "spend_suspended",
+        "duplicate_operation",
+        "refused",
+        "incomplete",
+        "missing_output",
+        "oversized_output",
+        "unsupported_output",
+        "invalid_response",
+        "invalid_proposal",
+        "rate_limit",
+        "spend_limit_confirmed",
+        "billing_quota",
+        "ambiguous_quota",
+        "authentication_error",
+        "invalid_request",
+        "permission_error",
+        "server_error",
+        "timeout",
+        "connection_error",
+        "unknown_error",
+        "persistence_failure",
+    )
+)
+REMOTE_OUTCOMES = _GATEWAY_OUTCOMES | frozenset((IPC_REJECTED,))
+
+
+class WorkerProtocolError(ValueError):
+    """A sanitized rejection that never includes peer-controlled payload data."""
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceRequest:
+    operation_id: str
+    correlation_id: str
+    model_request: ModelRequest = field(repr=False)
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerResponse:
+    outcome: str
+    attempts: int
+    safe_russian_message: str | None
+    validation: ProposalValidation | None = field(default=None, repr=False)
+
+
+def encode_request(request: InferenceRequest) -> bytes:
+    """Serialize the exact request allowlist after revalidating its model input."""
+
+    if type(request) is not InferenceRequest:
+        raise TypeError("request must be an InferenceRequest")
+    require_identifier("operation id", request.operation_id)
+    if len(request.operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
+        raise ValueError("invalid operation id")
+    require_identifier("correlation id", request.correlation_id)
+    model_json = serialize_model_request(request.model_request)
+    payload = {
+        "protocol_version": PROTOCOL_VERSION,
+        "operation_type": OPERATION_INFER,
+        "operation_id": request.operation_id,
+        "correlation_id": request.correlation_id,
+        "model_request": json.loads(model_json),
+    }
+    return _encode_json(payload)
+
+
+def decode_request(payload: bytes) -> InferenceRequest:
+    """Parse untrusted bytes into narrow typed values and rerun model validation."""
+
+    value = _decode_json(payload)
+    _require_exact_dict(
+        value,
+        {
+            "protocol_version",
+            "operation_type",
+            "operation_id",
+            "correlation_id",
+            "model_request",
+        },
+    )
+    if value["protocol_version"] != PROTOCOL_VERSION:
+        raise WorkerProtocolError("unsupported protocol version")
+    if value["operation_type"] != OPERATION_INFER:
+        raise WorkerProtocolError("unsupported operation")
+    try:
+        operation_id = require_identifier("operation id", value["operation_id"])
+        if len(operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
+            raise ValueError("invalid operation id")
+        correlation_id = require_identifier("correlation id", value["correlation_id"])
+        model_request = _parse_model_request(value["model_request"])
+        serialize_model_request(model_request)
+    except (TypeError, ValueError):
+        raise WorkerProtocolError("invalid inference request") from None
+    return InferenceRequest(operation_id, correlation_id, model_request)
+
+
+def encode_response(response: WorkerResponse) -> bytes:
+    """Serialize only the bounded worker response allowlist."""
+
+    if type(response) is not WorkerResponse:
+        raise TypeError("response must be a WorkerResponse")
+    _validate_response_fields(response)
+    payload = {
+        "protocol_version": PROTOCOL_VERSION,
+        "outcome": response.outcome,
+        "attempts": response.attempts,
+        "safe_russian_message": response.safe_russian_message,
+        "agent_proposal": _proposal_data(response.validation),
+    }
+    return _encode_json(payload)
+
+
+def decode_response(payload: bytes) -> WorkerResponse:
+    value = _decode_json(payload)
+    _require_exact_dict(
+        value,
+        {
+            "protocol_version",
+            "outcome",
+            "attempts",
+            "safe_russian_message",
+            "agent_proposal",
+        },
+    )
+    if value["protocol_version"] != PROTOCOL_VERSION:
+        raise WorkerProtocolError("unsupported protocol version")
+    proposal = value["agent_proposal"]
+    validation = None if proposal is None else parse_agent_proposal(proposal)
+    if validation is not None and not validation.valid:
+        raise WorkerProtocolError("invalid worker proposal")
+    response = WorkerResponse(
+        value["outcome"],
+        value["attempts"],
+        value["safe_russian_message"],
+        validation,
+    )
+    try:
+        _validate_response_fields(response)
+    except (TypeError, ValueError):
+        raise WorkerProtocolError("invalid worker response") from None
+    return response
+
+
+def frame_payload(payload: bytes) -> bytes:
+    if type(payload) is not bytes or not payload:
+        raise WorkerProtocolError("invalid frame payload")
+    if len(payload) > MAX_IPC_FRAME_BYTES:
+        raise WorkerProtocolError("frame is too large")
+    return struct.pack("!I", len(payload)) + payload
+
+
+def send_frame(
+    connection: socket.socket,
+    payload: bytes,
+    *,
+    deadline: float,
+    io_timeout: float,
+) -> None:
+    framed = frame_payload(payload)
+    _set_bounded_timeout(connection, deadline, io_timeout)
+    try:
+        connection.sendall(framed)
+    except (OSError, TimeoutError):
+        raise WorkerProtocolError("frame write failed") from None
+
+
+def receive_frame(
+    connection: socket.socket,
+    *,
+    deadline: float,
+    io_timeout: float,
+) -> bytes:
+    header = _receive_exact(
+        connection, FRAME_PREFIX_BYTES, deadline=deadline, io_timeout=io_timeout
+    )
+    size = struct.unpack("!I", header)[0]
+    if size == 0:
+        raise WorkerProtocolError("empty frame")
+    if size > MAX_IPC_FRAME_BYTES:
+        raise WorkerProtocolError("frame is too large")
+    payload = _receive_exact(connection, size, deadline=deadline, io_timeout=io_timeout)
+    _set_bounded_timeout(connection, deadline, io_timeout)
+    try:
+        trailing = connection.recv(1)
+    except (OSError, TimeoutError):
+        raise WorkerProtocolError("frame termination failed") from None
+    if trailing:
+        raise WorkerProtocolError("unexpected trailing data")
+    return payload
+
+
+def validate_timing(connection_lifetime: object, io_timeout: object) -> None:
+    _bounded_seconds(
+        "connection lifetime", connection_lifetime, MAX_CONNECTION_LIFETIME_SECONDS
+    )
+    _bounded_seconds("I/O timeout", io_timeout, MAX_IO_TIMEOUT_SECONDS)
+    if io_timeout > connection_lifetime:
+        raise ValueError("I/O timeout exceeds connection lifetime")
+
+
+def _parse_model_request(value: object) -> ModelRequest:
+    _require_exact_dict(
+        value,
+        {
+            "contract_version",
+            "task",
+            "core_self",
+            "conversation",
+            "history_omitted",
+            "allowed_decisions",
+        },
+    )
+    core_self = value["core_self"]
+    _require_exact_dict(core_self, {"version", "identity", "principles"})
+    principles = core_self["principles"]
+    conversation = value["conversation"]
+    decisions = value["allowed_decisions"]
+    if type(principles) is not list or type(conversation) is not list:
+        raise WorkerProtocolError("invalid model request")
+    if type(decisions) is not list:
+        raise WorkerProtocolError("invalid model request")
+    segments = []
+    for item in conversation:
+        _require_exact_dict(item, {"role", "trust", "content"})
+        try:
+            segment = ConversationSegment(
+                ContextRole(item["role"]),
+                ContextTrust(item["trust"]),
+                item["content"],
+            )
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid model request") from None
+        segments.append(segment)
+    try:
+        return ModelRequest(
+            contract_version=value["contract_version"],
+            task=ModelTask(value["task"]),
+            core_self_version=core_self["version"],
+            core_self_identity=core_self["identity"],
+            core_self_principles=tuple(principles),
+            conversation=tuple(segments),
+            history_omitted=value["history_omitted"],
+            allowed_decisions=tuple(AgentDecision(item) for item in decisions),
+        )
+    except (TypeError, ValueError):
+        raise WorkerProtocolError("invalid model request") from None
+
+
+def _proposal_data(validation: ProposalValidation | None) -> dict[str, str] | None:
+    if validation is None:
+        return None
+    if type(validation) is not ProposalValidation or not validation.valid:
+        raise ValueError("response proposal is not valid")
+    proposal = validation.proposal
+    if type(proposal) is NoActionProposal:
+        return {
+            "decision": proposal.decision.value,
+            "reason_category": proposal.reason_category.value,
+        }
+    if type(proposal) is ReplyProposal:
+        return {"decision": proposal.decision.value, "content": proposal.content}
+    if type(proposal) is ResearchProposal:
+        return {"decision": proposal.decision.value, "brief": proposal.brief}
+    if type(proposal) is PublicationProposal:
+        return {"decision": proposal.decision.value, "draft": proposal.draft}
+    raise ValueError("response proposal is not supported")
+
+
+def _validate_response_fields(response: WorkerResponse) -> None:
+    if response.outcome not in REMOTE_OUTCOMES:
+        raise ValueError("response outcome is invalid")
+    if type(response.attempts) is not int or not 0 <= response.attempts <= MAX_ATTEMPTS:
+        raise ValueError("response attempts are invalid")
+    message = response.safe_russian_message
+    if message is not None:
+        if type(message) is not str or not message:
+            raise ValueError("response message is invalid")
+        try:
+            size = len(message.encode("utf-8"))
+        except UnicodeEncodeError:
+            raise ValueError("response message is invalid") from None
+        if size > MAX_SAFE_MESSAGE_UTF8_BYTES:
+            raise ValueError("response message is too large")
+    if response.validation is not None:
+        _proposal_data(response.validation)
+        if response.outcome != "completed":
+            raise ValueError("only completed responses may contain a proposal")
+
+
+def _encode_json(value: object) -> bytes:
+    try:
+        payload = json.dumps(
+            value, ensure_ascii=False, separators=(",", ":"), sort_keys=True
+        ).encode("utf-8")
+    except (TypeError, UnicodeEncodeError, ValueError):
+        raise WorkerProtocolError("JSON serialization failed") from None
+    if len(payload) > MAX_IPC_FRAME_BYTES:
+        raise WorkerProtocolError("frame is too large")
+    return payload
+
+
+def _decode_json(payload: bytes) -> object:
+    if type(payload) is not bytes or not payload or len(payload) > MAX_IPC_FRAME_BYTES:
+        raise WorkerProtocolError("invalid JSON payload")
+    try:
+        text = payload.decode("utf-8")
+        value = json.loads(text, object_pairs_hook=_unique_object)
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
+        raise WorkerProtocolError("invalid JSON payload") from None
+    _validate_json_depth(value)
+    return value
+
+
+def _unique_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise WorkerProtocolError("duplicate JSON field")
+        result[key] = value
+    return result
+
+
+def _validate_json_depth(value: object) -> None:
+    pending = [(value, 0)]
+    while pending:
+        item, depth = pending.pop()
+        if depth > MAX_JSON_NESTING_DEPTH:
+            raise WorkerProtocolError("invalid JSON payload")
+        if type(item) is dict:
+            pending.extend((child, depth + 1) for child in item.values())
+        elif type(item) is list:
+            pending.extend((child, depth + 1) for child in item)
+
+
+def _require_exact_dict(value: object, fields: set[str]) -> None:
+    if type(value) is not dict or set(value) != fields:
+        raise WorkerProtocolError("unexpected object fields")
+
+
+def _receive_exact(
+    connection: socket.socket,
+    size: int,
+    *,
+    deadline: float,
+    io_timeout: float,
+) -> bytes:
+    chunks = bytearray()
+    while len(chunks) < size:
+        _set_bounded_timeout(connection, deadline, io_timeout)
+        try:
+            chunk = connection.recv(size - len(chunks))
+        except (OSError, TimeoutError):
+            raise WorkerProtocolError("frame read failed") from None
+        if not chunk:
+            raise WorkerProtocolError("truncated frame")
+        chunks.extend(chunk)
+    return bytes(chunks)
+
+
+def _set_bounded_timeout(
+    connection: socket.socket, deadline: float, io_timeout: float
+) -> None:
+    remaining = deadline - time.monotonic()
+    if not math.isfinite(remaining) or remaining <= 0:
+        raise WorkerProtocolError("connection lifetime exceeded")
+    connection.settimeout(min(remaining, io_timeout))
+
+
+def _bounded_seconds(name: str, value: object, maximum: float) -> None:
+    if (
+        type(value) not in {int, float}
+        or not math.isfinite(value)
+        or not 0 < value <= maximum
+    ):
+        raise ValueError(f"{name} is invalid")
