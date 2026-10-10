@@ -83,6 +83,10 @@ through version 7 from every earlier schema version; it does not alter the main
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
 credential-owning transport.
+The service pins the configured account at construction and revalidates both
+the mutable policy object and transport/simulator binding at proposal,
+authorization, dispatch, recovery, and polling boundaries. A changed binding
+fails closed and cannot retarget a durable operation.
 
 Outbound readiness and dispatch also require an explicit
 `CurrentAuthorizationProvider`. Its contract resolves the current authenticated

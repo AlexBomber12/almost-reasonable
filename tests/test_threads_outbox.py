@@ -373,6 +373,31 @@ def test_outbound_account_mismatch_fails_closed(tmp_path):
         service.authorize("operation-1", approve(), now=NOW)
 
 
+@pytest.mark.parametrize("mutable_binding", ["policy", "simulator"])
+def test_changed_account_binding_cannot_persist_a_proposal(tmp_path, mutable_binding):
+    service = make_service(tmp_path)
+    target = service.policy if mutable_binding == "policy" else service.simulator
+    target.account_ref = "account-2"
+
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        propose(service)
+    with pytest.raises(ThreadsStoreError, match="unknown operation"):
+        service.store.get("operation-1")
+
+
+@pytest.mark.parametrize("mutable_binding", ["policy", "simulator"])
+def test_changed_account_binding_cannot_dispatch(tmp_path, mutable_binding):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    target = service.policy if mutable_binding == "policy" else service.simulator
+    target.account_ref = "account-2"
+
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.READY
+    assert service.simulator.trace == []
+
+
 def test_shared_store_lifecycle_methods_reject_another_accounts_operation(tmp_path):
     owner = make_service(tmp_path, account_ref="account-2")
     other = make_service(tmp_path, account_ref="account-1")

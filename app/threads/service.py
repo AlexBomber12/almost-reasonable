@@ -74,6 +74,7 @@ class ThreadsService:
         self.store = store
         self.simulator = simulator
         self.policy = policy
+        self._account_ref = policy.account_ref
         self.clock = clock
         self.utc_now = utc_now
         self.authorization_provider = authorization_provider
@@ -94,6 +95,7 @@ class ThreadsService:
         replacement_of: str | None = None,
         replacement_approval: Approval | None = None,
     ) -> tuple[OutboxItem, bool]:
+        self._require_account_binding()
         duplicate_ref = None
         if replacement_of is not None:
             if (
@@ -105,7 +107,7 @@ class ThreadsService:
                 raise ValueError("duplicate risk was not acknowledged")
             duplicate_ref = authenticated_approval_reference(
                 replacement_approval,
-                account_ref=self.policy.account_ref,
+                account_ref=self._account_ref,
                 operation_id=operation_id,
             )
             if duplicate_ref is None:
@@ -113,7 +115,7 @@ class ThreadsService:
         try:
             return self.store.create_proposal(
                 operation_id=operation_id,
-                account_ref=self.policy.account_ref,
+                account_ref=self._account_ref,
                 publication_type=publication_type,
                 draft_id=draft_id,
                 content=content,
@@ -130,7 +132,7 @@ class ThreadsService:
                     if replacement_approval is None
                     else lambda: validate_approval(
                         replacement_approval,
-                        account_ref=self.policy.account_ref,
+                        account_ref=self._account_ref,
                         operation_id=operation_id,
                         now=self.utc_now(),
                         require_duplicate_ack=True,
@@ -602,7 +604,7 @@ class ThreadsService:
         ):
             raise ValueError("invalid poll timeout")
         started = self.clock()
-        cursor = self.store.cursor(self.policy.account_ref, stream)
+        cursor = self.store.cursor(self._account_ref, stream)
         initial_cursor = cursor
         seen_cursors = {cursor}
         pending_events = []
@@ -620,7 +622,7 @@ class ThreadsService:
                 raise SimulatedCrash(transmission_possible=False)
             if (
                 not page.is_verified()
-                or page.account_ref != self.policy.account_ref
+                or page.account_ref != self._account_ref
                 or page.source_ref != self.simulator.source_ref
                 or page.requested_cursor != cursor
             ):
@@ -644,7 +646,7 @@ class ThreadsService:
         try:
             inserted, duplicates = self.store.commit_poll_page(
                 correlation_id=correlation_id,
-                account_ref=self.policy.account_ref,
+                account_ref=self._account_ref,
                 stream=stream,
                 verified_source_ref=self.simulator.source_ref,
                 expected_cursor=initial_cursor,
@@ -667,10 +669,20 @@ class ThreadsService:
         return stage_3_policy.publication_blockers(PublicationType.POST)
 
     def _require_owned_item(self, operation_id: str) -> OutboxItem:
+        self._require_account_binding()
         item = self.store.get(operation_id)
-        if item.account_ref != self.policy.account_ref:
+        if item.account_ref != self._account_ref:
             raise PolicyDeniedError("outbound account mismatch")
         return item
+
+    def _require_account_binding(self) -> None:
+        if (
+            self.policy.account_ref != self._account_ref
+            or self.simulator.account_ref != self._account_ref
+        ):
+            raise PolicyDeniedError(
+                "configured Threads account mismatch or binding changed"
+            )
 
     def _audit_policy_denial(
         self,
@@ -700,8 +712,7 @@ class ThreadsService:
     def _check_ready_policy(
         self, item: OutboxItem, approval: Approval, *, now: datetime
     ) -> Approval:
-        if item.account_ref != self.policy.account_ref:
-            raise PolicyDeniedError("outbound account mismatch")
+        self._require_account_binding()
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
@@ -898,6 +909,7 @@ class ThreadsService:
         )
 
     def _check_poll_policy(self, stream: InboundKind) -> None:
+        self._require_account_binding()
         self.policy.validate()
         required = (
             REQUIRED_REPLY_READ_SCOPES
@@ -927,11 +939,9 @@ class ThreadsService:
     ) -> None:
         self.store.record_poll_policy_denial(
             correlation_id=correlation_id,
-            account_ref=self.policy.account_ref,
+            account_ref=self._account_ref,
             stream=stream,
-            actor_reference=(
-                f"account-{content_fingerprint(self.policy.account_ref)[:16]}"
-            ),
+            actor_reference=(f"account-{content_fingerprint(self._account_ref)[:16]}"),
             reason="inbound_polling_capability_unavailable",
             now=now,
         )

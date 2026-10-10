@@ -827,6 +827,28 @@ def test_polling_requires_configured_account_capability_and_scopes(
         )
 
 
+@pytest.mark.parametrize("mutable_binding", ["policy", "simulator"])
+def test_polling_rejects_changed_account_binding(tmp_path, mutable_binding):
+    threads = service(tmp_path)
+    target = threads.policy if mutable_binding == "policy" else threads.simulator
+    target.account_ref = "account-2"
+
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW,
+            correlation_id=f"poll-binding-{mutable_binding}",
+        )
+    assert threads.simulator.trace == []
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT account_ref, actor_reference FROM threads_poll_policy_denials"
+        ).fetchone() == (
+            "account-1",
+            f"account-{content_fingerprint('account-1')[:16]}",
+        )
+
+
 @pytest.mark.parametrize(
     "changes",
     [
