@@ -35,7 +35,14 @@ _CALENDAR_DATE = re.compile(
     r"|(?:0?[1-9]|1[0-2])[-./](?:0?[1-9]|[12]\d|3[01])[-./]\d{4}"
     r")(?!\d)"
 )
-_BASE64 = re.compile(r"(?<![A-Za-z0-9+/=])[A-Za-z0-9+/]{4,}={0,2}(?![A-Za-z0-9+/=])")
+_GROUPED_QUANTITY = re.compile(
+    r"(?<![\d+])(?<!\d[ .\u00a0\u202f])"
+    r"\d{1,3}(?:[ .\u00a0\u202f]\d{3})+"
+    r"(?!\d)(?![ .\u00a0\u202f]\d)"
+)
+_BASE64 = re.compile(
+    r"(?<![A-Za-z0-9+/_=-])[A-Za-z0-9+/_-]{4,}={0,2}(?![A-Za-z0-9+/_=-])"
+)
 _WORDS = re.compile(r"[^\W_]+", re.UNICODE)
 _CONFUSABLES = str.maketrans(
     {
@@ -434,7 +441,8 @@ def _privacy_reason(
     normalized_identifiers = _normalized(identifier_text)
     without_year_ranges = _YEAR_RANGE.sub(" ", normalized_identifiers)
     without_dates = _CALENDAR_DATE.sub(" ", without_year_ranges)
-    if _EMAIL.search(normalized_identifiers) or _has_phone_number(without_dates):
+    without_quantities = _GROUPED_QUANTITY.sub(" ", without_dates)
+    if _EMAIL.search(normalized_identifiers) or _has_phone_number(without_quantities):
         return "direct_identifier"
     if _recognizable_overlap(values, screening.private_texts):
         return "recognizable_private_overlap"
@@ -462,7 +470,7 @@ def _decode_base64(value: str) -> str | None:
             return None
         value += "=" * missing_padding
     try:
-        raw = base64.b64decode(value, validate=True)
+        raw = base64.b64decode(value, altchars=b"-_", validate=True)
         decoded = raw.decode("utf-8")
     except (binascii.Error, UnicodeDecodeError):
         return None

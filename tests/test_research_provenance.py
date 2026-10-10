@@ -88,6 +88,11 @@ def test_valid_provider_annotation_records_provenance_without_semantic_claim():
         (response(source=False), SourceStatus.UNSUPPORTED_ANNOTATION),
         (response(url="file:///etc/passwd"), SourceStatus.UNSUPPORTED_URL),
         (response(url="javascript:alert(1)"), SourceStatus.UNSUPPORTED_URL),
+        (response(url="https://example.org:99999/paper"), SourceStatus.UNSUPPORTED_URL),
+        (
+            response(url="https://example.org:notaport/paper"),
+            SourceStatus.UNSUPPORTED_URL,
+        ),
         (response(title=""), SourceStatus.MALFORMED_ANNOTATION),
         (response(title="bad\nmetadata"), SourceStatus.MALFORMED_ANNOTATION),
         (response(start_index=9, end_index=2), SourceStatus.MALFORMED_ANNOTATION),
@@ -487,6 +492,16 @@ def test_naive_timestamps_invalid_calendar_dates_and_long_urls_are_rejected():
         register_independently_verified_source(
             reference="source-1",
             url="https://" + "x" * 5000,
+            title="Title",
+            publisher=None,
+            source_language=None,
+            publication_date=None,
+            evidence=evidence,
+        )
+    with pytest.raises(ValueError, match="URL"):
+        register_independently_verified_source(
+            reference="source-1",
+            url="https://example.org:99999/paper",
             title="Title",
             publisher=None,
             source_language=None,

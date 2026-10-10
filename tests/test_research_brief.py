@@ -111,6 +111,17 @@ def test_calendar_dates_are_allowed_as_public_recency_requirements(date):
     assert result.disposition is BriefDisposition.READY
 
 
+@pytest.mark.parametrize("quantity", ["1 000 000", "1.000.000", "1\u202f000\u202f000"])
+def test_grouped_public_quantities_are_not_treated_as_phone_numbers(quantity):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(f"What cities have populations over {quantity}?")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
 @pytest.mark.parametrize(
     ("record", "reason"),
     [
@@ -488,6 +499,19 @@ def test_unpadded_encoded_private_value_is_rejected():
     private_value = "alice@example.com"
     result = build_safe_research_brief(
         records(ResearchQuestion(encoded(private_value).rstrip("="))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(private_value,)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_urlsafe_encoded_private_value_is_rejected():
+    private_value = "Пётр"
+    encoded_value = base64.urlsafe_b64encode(private_value.encode("utf-8")).decode()
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded_value)),
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(participant_identifiers=(private_value,)),

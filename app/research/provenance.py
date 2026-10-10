@@ -540,10 +540,15 @@ def _valid_identifier(value: object) -> bool:
 def _valid_https_url(value: object) -> bool:
     if not isinstance(value, str) or len(value) > 4096:
         return False
-    parsed = urlsplit(value)
+    try:
+        parsed = urlsplit(value)
+        hostname = parsed.hostname
+        parsed.port
+    except ValueError:
+        return False
     return (
         parsed.scheme == "https"
-        and parsed.hostname is not None
+        and hostname is not None
         and parsed.username is None
         and parsed.password is None
         and not any(character.isspace() for character in value)
