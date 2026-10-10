@@ -117,6 +117,8 @@ enters ranking.
 Each selection reads the candidate snapshot, current decision time, and complete
 revision-chain provenance inside one SQLite read transaction. A concurrent
 revision therefore cannot combine old candidate text with new recency or taint.
+The cognition adapter also rejects event and state stores backed by different
+database paths, preventing cross-shard reads and writes.
 
 Ranking is deterministic across topic overlap, active status, confidence or
 priority, recency, and item ID. The selector emits only whole records; a record

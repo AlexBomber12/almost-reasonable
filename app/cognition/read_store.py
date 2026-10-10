@@ -105,6 +105,8 @@ class CognitionReadStore:
     """Narrow read-only adapter used only by deterministic cognition code."""
 
     def __init__(self, event_store: EventStore, state_store: SelfStateStore):
+        if event_store.database_path != state_store._events.database_path:
+            raise ValueError("event and state stores must use the same database")
         self._events = event_store
         self._state = state_store
 

@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, tzinfo
 
 import pytest
 
@@ -31,6 +31,17 @@ from app.core.store import EventStore
 
 
 NOW = datetime(2026, 3, 2, 10, 0, tzinfo=UTC)
+
+
+class RaisingTimezone(tzinfo):
+    def utcoffset(self, _value):
+        raise RuntimeError("synthetic hostile timezone")
+
+    def dst(self, _value):
+        return None
+
+    def tzname(self, _value):
+        return "raising"
 
 
 def principal(name: str) -> TrustedPrincipalContext:
@@ -314,11 +325,27 @@ def test_rejecting_h_screen_and_invalid_screen_result_fail_closed(sharing_setup)
             proposal("event-a"),
             candidate=replace(proposal("event-a").candidate, value="\ud800"),
         ),
+        replace(
+            proposal("event-a"),
+            proposed_at=datetime(2026, 3, 2, 10, 0),
+        ),
     ],
 )
 def test_invalid_abstraction_values_fail_closed(sharing_setup, candidate_proposal):
     events, _, context, _ = sharing_setup
     result = AbstractToSharedValidator(events).validate(context, candidate_proposal)
+    assert result.reason is AbstractReason.INVALID_VALUE
+
+
+def test_hostile_abstraction_timezone_fails_closed(sharing_setup):
+    events, _, context, event_id = sharing_setup
+    hostile_time = datetime(2026, 3, 2, 10, 0, tzinfo=RaisingTimezone())
+
+    result = AbstractToSharedValidator(events).validate(
+        context,
+        replace(proposal(event_id), proposed_at=hostile_time),
+    )
+
     assert result.reason is AbstractReason.INVALID_VALUE
 
 

@@ -259,11 +259,12 @@ class AbstractToSharedValidator:
 
     @staticmethod
     def _valid_time(value: object) -> bool:
-        return (
-            isinstance(value, datetime)
-            and value.tzinfo is not None
-            and value.utcoffset() is not None
-        )
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            return False
+        try:
+            return value.utcoffset() is not None
+        except Exception:
+            return False
 
     @staticmethod
     def _result(

@@ -176,11 +176,11 @@ class MemoryContextSelector:
             )
             or type(request.invalidated_event_ids) is not tuple
             or len(request.invalidated_event_ids) > 100
-            or len(set(request.invalidated_event_ids))
-            != len(request.invalidated_event_ids)
             or any(
                 not isinstance(item, str) or _TOKEN.fullmatch(item) is None
                 for item in request.invalidated_event_ids
             )
+            or len(set(request.invalidated_event_ids))
+            != len(request.invalidated_event_ids)
         ):
             raise ValueError("invalid retrieval request")

@@ -94,6 +94,14 @@ def read_setup(tmp_path):
     return events, state, context
 
 
+def test_mismatched_event_and_state_databases_are_rejected(tmp_path):
+    events = EventStore(tmp_path / "events-a.sqlite3")
+    other_events = EventStore(tmp_path / "events-b.sqlite3")
+
+    with pytest.raises(ValueError, match="same database"):
+        CognitionReadStore(events, SelfStateStore(other_events))
+
+
 def test_malformed_exact_event_is_translated(read_setup):
     events, state, context = read_setup
     connection = sqlite3.connect(events.database_path)

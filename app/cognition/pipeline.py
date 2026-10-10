@@ -503,6 +503,8 @@ class CognitionEngine:
 
     @staticmethod
     def _valid_specific_types(proposal: object) -> bool:
+        if not CognitionEngine._valid_token(getattr(proposal, "item_id", None)):
+            return False
         if isinstance(proposal, InterestMemoryProposal):
             return type(proposal.strength) is int and isinstance(
                 proposal.status, InterestStatus
@@ -562,11 +564,12 @@ class CognitionEngine:
 
     @staticmethod
     def _valid_time(value: object) -> bool:
-        return (
-            isinstance(value, datetime)
-            and value.tzinfo is not None
-            and value.utcoffset() is not None
-        )
+        if not isinstance(value, datetime) or value.tzinfo is None:
+            return False
+        try:
+            return value.utcoffset() is not None
+        except Exception:
+            return False
 
     @staticmethod
     def _rejected(

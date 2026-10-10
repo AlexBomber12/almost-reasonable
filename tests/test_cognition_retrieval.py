@@ -350,6 +350,13 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
             "topic",
             100,
             1,
+            invalidated_event_ids=([],),
+        ),
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            "topic",
+            100,
+            1,
             invalidated_event_ids=tuple(f"event-{index}" for index in range(101)),
         ),
         RetrievalRequest(

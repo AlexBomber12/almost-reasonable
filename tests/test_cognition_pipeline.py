@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 import pytest
 
@@ -42,6 +42,17 @@ from app.core.store import EventStore
 
 
 NOW = datetime(2026, 3, 1, 10, 0, tzinfo=UTC)
+
+
+class RaisingTimezone(tzinfo):
+    def utcoffset(self, _value):
+        raise RuntimeError("synthetic hostile timezone")
+
+    def dst(self, _value):
+        return None
+
+    def tzname(self, _value):
+        return "raising"
 
 
 def principal(name: str, *, owner: bool = False) -> TrustedPrincipalContext:
@@ -979,6 +990,50 @@ def test_invalid_common_proposal_context_is_rejected(cognition_setup, context_ch
         context, event_id
     )
     assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+
+
+@pytest.mark.parametrize("field", ["proposed_at", "review_at"])
+def test_hostile_proposal_timezone_is_rejected(cognition_setup, field):
+    events, state, context, event_id = cognition_setup
+    hostile_time = datetime(2026, 3, 1, 10, 0, tzinfo=RaisingTimezone())
+    proposal = InterestMemoryProposal(
+        context=replace(
+            proposal_context(event_id, f"hostile-{field}"),
+            **{field: hostile_time},
+        ),
+        item_id=f"interest-hostile-{field}",
+        topic="Timezone validation",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="Untrusted adapters must fail closed.",
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
+
+
+def test_unbindable_item_id_is_rejected_before_store_lookup(cognition_setup):
+    events, state, context, event_id = cognition_setup
+    proposal = InterestMemoryProposal(
+        context=proposal_context(event_id, "invalid-item-id"),
+        item_id="interest-valid-before-mutation",
+        topic="Identifier validation",
+        strength=50,
+        status=InterestStatus.ACTIVE,
+        reason_for_interest="SQL inputs must be validated first.",
+    )
+    object.__setattr__(proposal, "item_id", [])
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
 
 
 def test_proposal_evidence_count_is_bounded(cognition_setup):
