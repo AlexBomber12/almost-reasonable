@@ -69,11 +69,11 @@ class ConsentService:
         )
         if match is None:
             return ConsentUseResult(False, "no_matching_consent")
-        consent_id, granted_at, expires_at, revoked = match
-        if revoked:
-            return ConsentUseResult(False, "revoked", consent_id)
+        consent_id, granted_at, expires_at, revoked_at = match
         if used_at < granted_at:
             return ConsentUseResult(False, "not_yet_valid", consent_id)
+        if revoked_at is not None and used_at >= revoked_at:
+            return ConsentUseResult(False, "revoked", consent_id)
         if used_at >= expires_at:
             return ConsentUseResult(False, "expired", consent_id)
         return ConsentUseResult(True, "authorized", consent_id)

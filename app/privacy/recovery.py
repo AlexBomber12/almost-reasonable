@@ -258,7 +258,19 @@ class QuarantinedRestore:
                 restore_id, restored_at, result.disposition, result.reason
             )
             return result
-        adapter = self.adapter_factory(quarantine)
+        try:
+            adapter = self.adapter_factory(quarantine)
+        except Exception:
+            result = RestoreResult(
+                restore_id,
+                RestoreDisposition.BLOCKED,
+                False,
+                "adapter_initialization_failure",
+            )
+            self.ledger.record_restore(
+                restore_id, restored_at, result.disposition, result.reason
+            )
+            return result
         reason = self._reconcile(adapter)
         if reason is not None:
             result = RestoreResult(

@@ -463,6 +463,27 @@ def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     assert not failed_path.exists()
 
 
+def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    def failed_factory(_path):
+        raise RuntimeError("synthetic private adapter detail")
+
+    result = QuarantinedRestore(ledger, 3, failed_factory).restore(
+        backup, tmp_path / "quarantine.sqlite3", NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "adapter_initialization_failure",
+    )
+    assert "synthetic private adapter detail" not in repr(result)
+
+
 @pytest.mark.parametrize(
     ("method", "behavior", "reason"),
     [

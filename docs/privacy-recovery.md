@@ -17,7 +17,8 @@ time, expiry, trusted actor, authentication event, revision, operation ID, and
 correlation ID. Use is checked against the current ledger at the time of use.
 Missing, expired, revoked, wrong-principal, wrong-content, wrong-audience, and
 wrong-purpose grants fail closed. Revocation is a separate authenticated,
-idempotent operation. Neither purpose grants administrative or infrastructure
+idempotent operation and takes effect at its recorded UTC timestamp. Neither
+purpose grants administrative or infrastructure
 privilege. Revocation prevents later use; it cannot recall an earlier
 publication or external transmission.
 
@@ -57,7 +58,9 @@ missing provenance, an incomplete invalidation set, or an unwritten tombstone is
 Deletion has five operator-visible dispositions: `pending`, `applied`,
 `incomplete_blocked`, `invalid_authorization`, and `not_eligible`. Reports use
 references, categories, and reason codes only; they do not display deleted
-content.
+content. Invalid-authentication attempts are payload-free audited outcomes but
+are not persisted as authoritative deletion operations, so they cannot reserve
+an operation ID and suppress a later authenticated request.
 
 ## Application erasure adapter and migration specification
 

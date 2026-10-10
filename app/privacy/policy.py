@@ -1,9 +1,25 @@
 """Deterministic privacy-policy boundaries."""
 
-from .models import AbstractionCandidate, AbstractionKind, BoundaryDecision
+from .models import (
+    AbstractionCandidate,
+    AbstractionKind,
+    BoundaryDecision,
+    require_token,
+)
 
 
 MAX_ABSTRACTION_OVERLAP = 0.35
+
+
+def _valid_source_references(value: object) -> bool:
+    if not isinstance(value, tuple) or not value:
+        return False
+    try:
+        for reference in value:
+            require_token(reference, "protected source reference")
+    except ValueError:
+        return False
+    return True
 
 
 def validate_ordinary_derivation(
@@ -54,7 +70,10 @@ def validate_abstract_to_shared(candidate: AbstractionCandidate) -> BoundaryDeci
             candidate.semantic_screen_passed is not True,
             "semantic_screen_failed_or_uncertain",
         ),
-        (not candidate.protected_source_references, "missing_source_provenance"),
+        (
+            not _valid_source_references(candidate.protected_source_references),
+            "missing_or_invalid_source_provenance",
+        ),
         (
             candidate.max_source_overlap > MAX_ABSTRACTION_OVERLAP,
             "excessive_source_overlap",

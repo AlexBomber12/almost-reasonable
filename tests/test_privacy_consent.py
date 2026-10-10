@@ -99,6 +99,30 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
     )
 
 
+def test_future_revocation_does_not_take_effect_early(service):
+    consent, _ = service
+    consent.grant(context(), grant())
+    consent.revoke(
+        context(),
+        consent_id="consent-001",
+        operation_id="revoke-future",
+        revoked_at=NOW + timedelta(minutes=30),
+        correlation_id="revoke-future-correlation",
+    )
+    request = {
+        "principal_id": "participant-a",
+        "content_reference": "event-001",
+        "audience": "public-threads",
+        "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        "correlation_id": "future-revocation-use",
+    }
+    assert consent.authorize(used_at=NOW + timedelta(minutes=29), **request).allowed
+    assert (
+        consent.authorize(used_at=NOW + timedelta(minutes=30), **request).reason
+        == "revoked"
+    )
+
+
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
@@ -243,7 +267,15 @@ def test_abstraction_boundary_is_closed_and_preserves_hidden_provenance():
         ({"contains_attribution": True}, "attribution"),
         ({"semantic_screen_passed": False}, "semantic_screen_failed_or_uncertain"),
         ({"semantic_screen_passed": "false"}, "semantic_screen_failed_or_uncertain"),
-        ({"protected_source_references": ()}, "missing_source_provenance"),
+        ({"protected_source_references": ()}, "missing_or_invalid_source_provenance"),
+        (
+            {"protected_source_references": True},
+            "missing_or_invalid_source_provenance",
+        ),
+        (
+            {"protected_source_references": ("bad reference",)},
+            "missing_or_invalid_source_provenance",
+        ),
         ({"max_source_overlap": 0.5}, "excessive_source_overlap"),
     ],
 )

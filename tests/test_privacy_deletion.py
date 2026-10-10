@@ -95,13 +95,19 @@ def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):
     )
     assert wrong.disposition is DeletionDisposition.INVALID_AUTHORIZATION
     assert coordinator.delete(context("participant-b"), request()) == wrong
+    assert ledger.deletions_for_reconciliation() == ()
+    recovered = coordinator.delete(context(), request())
+    assert recovered.disposition is DeletionDisposition.APPLIED
     assert (
         coordinator._terminal(
-            request(),
-            DeletionDisposition.INVALID_AUTHORIZATION,
-            "wrong_principal",
+            request(
+                operation_id="delete-operation-public",
+                content_category=ContentCategory.PUBLIC_ACTION,
+            ),
+            DeletionDisposition.NOT_ELIGIBLE,
+            "public_action_not_erasable",
         )
-        == wrong
+        == ineligible
     )
     assert chat.disposition is DeletionDisposition.INVALID_AUTHORIZATION
     assert ineligible.disposition is DeletionDisposition.NOT_ELIGIBLE

@@ -44,7 +44,6 @@ class DeletionCoordinator:
                 raise ValueError("deletion operation identity conflict")
             if existing.disposition in {
                 DeletionDisposition.APPLIED,
-                DeletionDisposition.INVALID_AUTHORIZATION,
                 DeletionDisposition.NOT_ELIGIBLE,
             }:
                 return DeletionOutcome(
@@ -55,15 +54,9 @@ class DeletionCoordinator:
             context.actor_reference != request.actor_reference
             or context.authentication_event_id != request.authentication_event_id
         ):
-            return self._terminal(
-                request,
-                DeletionDisposition.INVALID_AUTHORIZATION,
-                "invalid_authentication",
-            )
+            return self._reject(context, request, "invalid_authentication")
         if context.principal_id != request.principal_id:
-            return self._terminal(
-                request, DeletionDisposition.INVALID_AUTHORIZATION, "wrong_principal"
-            )
+            return self._reject(context, request, "wrong_principal")
         if request.content_category is ContentCategory.PUBLIC_ACTION:
             return self._terminal(
                 request, DeletionDisposition.NOT_ELIGIBLE, "public_action_not_erasable"
@@ -120,6 +113,27 @@ class DeletionCoordinator:
             )
         self._audit(request, disposition, reason)
         return DeletionOutcome(request.operation_id, disposition, reason)
+
+    def _reject(
+        self,
+        context: TrustedPrivacyContext,
+        request: DeletionRequest,
+        reason: str,
+    ) -> DeletionOutcome:
+        self.ledger.record_audit(
+            AuditRecord(
+                request.correlation_id,
+                context.actor_reference,
+                "deletion_rejected",
+                request.content_category.value,
+                request.requested_at,
+                f"{DeletionDisposition.INVALID_AUTHORIZATION.value}:{reason}",
+                "payload_free",
+            )
+        )
+        return DeletionOutcome(
+            request.operation_id, DeletionDisposition.INVALID_AUTHORIZATION, reason
+        )
 
     def _finish(
         self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
