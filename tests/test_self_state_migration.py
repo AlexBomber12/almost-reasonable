@@ -76,12 +76,12 @@ def test_v1_migrates_atomically_and_preserves_event_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == 2
-    assert reopened.diagnostics().schema_version == 2
+    assert store.diagnostics().schema_version == 3
+    assert reopened.diagnostics().schema_version == 3
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (2,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
         assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
-            2,
+            3,
         )
         assert connection.execute(
             "SELECT content, audience_principal_id FROM private_payloads"
@@ -125,22 +125,53 @@ def test_failed_v1_migration_leaves_recoverable_v1_database(tmp_path):
         assert "state_items" not in tables
 
     recovered = EventStore(database)
-    assert recovered.diagnostics().schema_version == 2
+    assert recovered.diagnostics().schema_version == 3
+
+
+def test_failed_v3_step_rolls_back_the_combined_v1_migration(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    create_v1_database(database)
+
+    def fail(point):
+        if point in {
+            FaultPoint.BEFORE_INITIALIZATION_LOCK,
+            FaultPoint.BEFORE_V2_MIGRATION_COMMIT,
+        }:
+            return
+        assert point is FaultPoint.BEFORE_V3_MIGRATION_COMMIT
+        raise RuntimeError("synthetic v3 step failure")
+
+    with pytest.raises(RuntimeError, match="synthetic v3 step failure"):
+        EventStore(database, fault_injector=fail)
+
+    with sqlite3.connect(database) as connection:
+        assert connection.execute("PRAGMA user_version").fetchone() == (1,)
+        assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
+            1,
+        )
+        tables = {
+            row[0]
+            for row in connection.execute(
+                "SELECT name FROM sqlite_master WHERE type = 'table'"
+            )
+        }
+        assert "state_items" not in tables
+        assert "provider_usage_attempts" not in tables
 
 
 def test_migration_rejects_future_versions(tmp_path):
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 3")
+        connection.execute("PRAGMA user_version = 4")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 3",
+        match="unsupported event store schema version: 4",
     ):
         EventStore(database)
 
 
-def test_new_database_contains_v2_schema_without_seed_state(tmp_path):
+def test_new_database_contains_state_schema_without_seed_state(tmp_path):
     database = tmp_path / "new.sqlite3"
     EventStore(database)
 
@@ -199,9 +230,9 @@ def test_concurrent_v1_initialization_serializes_one_migration(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [2, 2]
+    assert outcomes == [3, 3]
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
-            2,
+            3,
         )
         assert connection.execute("SELECT COUNT(*) FROM state_items").fetchone() == (0,)
