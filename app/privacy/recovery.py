@@ -430,16 +430,26 @@ def _safe_integrity_ok(
         return False
 
 
-def _finalize_sqlite_snapshot(path: Path, descriptor: int) -> bool:
+def _finalize_sqlite_snapshot(
+    path: Path,
+    descriptor: int,
+    connection: sqlite3.Connection | None = None,
+) -> bool:
     try:
         parent_descriptor = _open_directory_chain(path.parent)
     except OSError:
         return False
+    owned_connection: sqlite3.Connection | None = None
     try:
-        target = f"file:/proc/self/fd/{descriptor}?mode=rw"
-        with closing(sqlite3.connect(target, uri=True, timeout=0.1)) as connection:
-            connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
-            _use_rollback_journal(connection)
+        if connection is None:
+            target = f"file:/proc/self/fd/{descriptor}?mode=rw"
+            owned_connection = sqlite3.connect(
+                target, uri=True, timeout=0.1, isolation_level=None
+            )
+            connection = owned_connection
+        connection.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        _use_rollback_journal(connection)
+        connection.execute("BEGIN EXCLUSIVE")
         os.fsync(descriptor)
         if not _sqlite_sidecars_absent(path, parent_descriptor):
             return False
@@ -449,6 +459,9 @@ def _finalize_sqlite_snapshot(path: Path, descriptor: int) -> bool:
     except (OSError, sqlite3.Error):
         return False
     finally:
+        if owned_connection is not None:
+            owned_connection.rollback()
+            owned_connection.close()
         os.close(parent_descriptor)
     return True
 
@@ -467,9 +480,8 @@ def _seal_fresh_snapshot(
     sealed: list[_OwnedFile] = []
     try:
         _require_connection_identity(fence, source)
-        if not _finalize_sqlite_snapshot(source_path, source_descriptor):
+        if not _finalize_sqlite_snapshot(source_path, source_descriptor, fence):
             return None
-        fence.execute("BEGIN EXCLUSIVE")
         _require_database_identity(source)
         destination_descriptor = _open_owned_file(destination_path, os.O_RDWR, sealed)
         with (
@@ -890,6 +902,16 @@ class QuarantinedRestore:
     def _reconcile(
         self, adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
     ) -> str | None:
+        try:
+            reason = self._reconcile_operations(adapter, snapshot)
+        finally:
+            release_reason = self._release_adapter_writers(adapter)
+        return release_reason or reason
+
+    @staticmethod
+    def _reconcile_operations(
+        adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
+    ) -> str | None:
         required = frozenset(ContentCategory.required_erasure_categories())
         for record in snapshot.deletions:
             try:
@@ -916,6 +938,11 @@ class QuarantinedRestore:
                 return "dependency_rebuild_incomplete"
         except Exception:
             return "dependency_rebuild_failure"
+
+        return None
+
+    @staticmethod
+    def _release_adapter_writers(adapter: RestoreAdapter) -> str | None:
         try:
             if adapter.release_writers() is not True:
                 return "adapter_writer_release_incomplete"

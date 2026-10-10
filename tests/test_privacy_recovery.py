@@ -1434,6 +1434,56 @@ def test_restore_blocks_a_long_lived_wal_adapter_before_readiness(tmp_path):
     adapters[0].connection.close()
 
 
+def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+    adapters = []
+
+    class IncompleteWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.released = False
+
+        def apply_deletion(self, record):
+            self.connection.execute(
+                "DELETE FROM synthetic_private WHERE event_id=?",
+                (record.content_reference,),
+            )
+            self.connection.commit()
+            return ErasureReport(False, False, frozenset(), ("incomplete",))
+
+        def release_writers(self):
+            self.connection.close()
+            self.released = True
+            return True
+
+    def adapter_factory(path):
+        adapter = IncompleteWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "deletion_reconciliation_incomplete",
+    )
+    assert adapters[0].released is True
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
+    with sqlite3.connect(quarantine) as connection:
+        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+
+
 def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -1558,6 +1608,78 @@ def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
     )
 
 
+def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    pending_deletion(ledger)
+    adapters = []
+
+    class RetainedRollbackAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path, timeout=0.01)
+
+        def apply_deletion(self, record):
+            self.connection.execute(
+                "DELETE FROM synthetic_private WHERE event_id=?",
+                (record.content_reference,),
+            )
+            self.connection.commit()
+            return ErasureReport(
+                True,
+                True,
+                frozenset(ContentCategory.required_erasure_categories()),
+                (),
+            )
+
+        def release_writers(self):
+            return True
+
+    def adapter_factory(path):
+        adapter = RetainedRollbackAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    real_finalize = recovery_module._finalize_sqlite_snapshot
+    retained_write_blocked = False
+
+    def attempt_write_after_finalization(path, descriptor, connection=None):
+        nonlocal retained_write_blocked
+        finalized = real_finalize(path, descriptor, connection)
+        try:
+            adapters[0].connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-001', 'late write')"
+            )
+            adapters[0].connection.commit()
+        except sqlite3.Error:
+            retained_write_blocked = True
+            adapters[0].connection.rollback()
+        return finalized
+
+    monkeypatch.setattr(
+        recovery_module,
+        "_finalize_sqlite_snapshot",
+        attempt_write_after_finalization,
+    )
+    quarantine = tmp_path / "quarantine.sqlite3"
+    try:
+        result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+            backup, quarantine, NOW
+        )
+    finally:
+        adapters[0].connection.close()
+
+    assert result.activation_eligible is True
+    assert retained_write_blocked is True
+    with sqlite3.connect(quarantine) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == (0,)
+
+
 def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -1587,9 +1709,8 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
         RestoreDisposition.BLOCKED,
         "quarantine_finalization_failed",
     )
-    sidecars = list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
-    assert len(sidecars) == 1
-    assert sidecars[0].read_text() == "concurrent-sidecar"
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
+    assert quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
@@ -1606,6 +1727,20 @@ def test_snapshot_finalization_rejects_an_unpinnable_parent(tmp_path, monkeypatc
         assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is False
     finally:
         os.close(descriptor)
+
+
+def test_snapshot_finalization_owns_its_exclusive_connection(tmp_path):
+    database = tmp_path / "snapshot.sqlite3"
+    make_source(database).close()
+    descriptor = os.open(database, os.O_RDWR)
+    try:
+        assert recovery_module._finalize_sqlite_snapshot(database, descriptor) is True
+    finally:
+        os.close(descriptor)
+
+    assert stat.S_IMODE(database.stat().st_mode) == 0o400
+    assert not Path(f"{database}-wal").exists()
+    assert not Path(f"{database}-shm").exists()
 
 
 def test_fresh_snapshot_seal_rejects_a_fence_connection_failure(tmp_path, monkeypatch):
@@ -1723,9 +1858,9 @@ def test_restore_never_blesses_a_public_path_created_before_publication(
     quarantine = tmp_path / "quarantine.sqlite3"
     real_finalize = recovery_module._finalize_sqlite_snapshot
 
-    def create_public_path_before_publish(staging, descriptor):
+    def create_public_path_before_publish(staging, descriptor, connection=None):
         assert not quarantine.exists()
-        finalized = real_finalize(staging, descriptor)
+        finalized = real_finalize(staging, descriptor, connection)
         quarantine.write_text("concurrent-public-file")
         return finalized
 
