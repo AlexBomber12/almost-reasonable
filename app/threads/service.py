@@ -424,6 +424,7 @@ class ThreadsService:
                         else None
                     ),
                     release_account_effect_lock=True,
+                    precommit_check=self._require_account_binding,
                 )
             else:
                 result = self.store.transition(
@@ -440,6 +441,7 @@ class ThreadsService:
                         else None
                     ),
                     release_account_effect_lock=True,
+                    precommit_check=self._require_account_binding,
                 )
             return result
 

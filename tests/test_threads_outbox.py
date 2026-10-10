@@ -325,7 +325,7 @@ def test_version_four_migration_keeps_deferred_event_resumable(tmp_path):
         connection.execute("UPDATE threads_schema_metadata SET version=4")
 
     migrated = ThreadsStore(path)
-    assert migrated.pending_inbound_events("account-1", InboundKind.REPLY) == (inbound,)
+    assert migrated.pending_inbound_events("account-1", InboundKind.REPLY) == ()
     deferred = migrated.deferred_inbound_events("account-1", InboundKind.REPLY)
     assert len(deferred) == 1
     assert deferred[0].event == inbound
@@ -895,6 +895,42 @@ def test_restart_recovery_uses_durable_dispatch_evidence(
     assert recovered.state is expected
     with pytest.raises(ThreadsStoreError):
         reopened.recover_sending("operation-1", now=NOW)
+
+
+@pytest.mark.parametrize(
+    "fault", [Fault.CRASH_BEFORE_TRANSMISSION, Fault.CRASH_AFTER_TRANSMISSION]
+)
+def test_sending_recovery_rechecks_account_binding_inside_transition(
+    tmp_path, monkeypatch, fault
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    service.simulator.set_fault("operation-1", "container", fault)
+    with pytest.raises(SimulatedCrash):
+        service.dispatch("operation-1", approval, now=NOW)
+    transition = service.store.transition
+
+    def transition_with_rebinding_fence(*args, **kwargs):
+        account_fence = kwargs["precommit_check"]
+
+        def rebound_account_fence():
+            service.simulator.account_ref = "account-2"
+            account_fence()
+
+        return transition(
+            *args, **(kwargs | {"precommit_check": rebound_account_fence})
+        )
+
+    monkeypatch.setattr(service.store, "transition", transition_with_rebinding_fence)
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        service.recover_sending("operation-1", now=NOW)
+
+    assert service.store.get("operation-1").state is OutboxState.SENDING
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT holder_operation_id FROM threads_account_effect_locks "
+            "WHERE account_ref='account-1'"
+        ).fetchone() == ("operation-1",)
 
 
 def test_recovered_pre_dispatch_failures_obey_attempt_cap(tmp_path):

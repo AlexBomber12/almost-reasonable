@@ -199,7 +199,9 @@ multi-host transport is considered.
 
 A crash in `sending` is recovered from durable dispatch evidence. A proven
 pre-transmission crash returns the same operation to `ready`; possible
-transmission enters `unknown`. Restart never creates a new identity.
+transmission enters `unknown`. The pinned account binding is rechecked inside
+the recovery transition before classification or reservation release. Restart
+never creates a new identity.
 
 Exact operation IDs and provider IDs are unique across restart. A normalized,
 bounded SHA-256 fingerprint produces a likely-duplicate warning; it does not
@@ -288,8 +290,12 @@ Conversation handling records `no_action`, supported `defer` with a resumption
 condition, `terminate_conversation`, or `cooldown` separately from delivery
 outcomes. `defer` leaves the inbound event unprocessed, and the durable
 `deferred_inbound_events` query returns the event, reason, resume condition, and
-defer timestamp after restart. Recording a later non-deferred outcome is the
-explicit acknowledgement that removes it from both pending and deferred work.
+defer timestamp after restart. Deferred work is excluded from the ordinary
+bounded pending window so unresolved deferrals cannot starve newer events.
+Deferral timestamps are stored in UTC and latest-outcome selection compares
+instants, including migrated values with other valid UTC offsets. Recording a
+later non-deferred outcome is the explicit acknowledgement that removes it from
+deferred work.
 Migration backfills `processed_at` only from non-deferred outcomes, and a stale
 worker cannot append a defer outcome after another worker has acknowledged the
 event.

@@ -1144,8 +1144,8 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
             (f"outcome-{outcome.value}",),
         ).fetchone() == ("correlation-decision",)
     if outcome is ConversationOutcome.DEFER:
-        assert threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == (
-            event("decision"),
+        assert (
+            threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
         )
         deferred = threads.store.deferred_inbound_events("account-1", InboundKind.REPLY)
         assert len(deferred) == 1
@@ -1158,6 +1158,97 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
         assert (
             threads.store.deferred_inbound_events("account-1", InboundKind.REPLY) == ()
         )
+
+
+def test_deferred_event_does_not_block_new_pending_event(tmp_path):
+    store = service(tmp_path).store
+    deferred_event = event("deferred-window")
+    pending_event = event("pending-window")
+    store.commit_poll_page(
+        correlation_id="poll-pending-window",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(deferred_event, pending_event),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-deferred-window",
+        correlation_id=deferred_event.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=deferred_event.event_id,
+        outcome=ConversationOutcome.DEFER,
+        reason="waiting",
+        resume_condition="condition",
+        now=NOW,
+    )
+
+    assert store.pending_inbound_events("account-1", InboundKind.REPLY, limit=1) == (
+        pending_event,
+    )
+    assert tuple(
+        item.event
+        for item in store.deferred_inbound_events("account-1", InboundKind.REPLY)
+    ) == (deferred_event,)
+
+
+def test_latest_deferral_is_selected_by_instant_across_utc_offsets(tmp_path):
+    store = service(tmp_path).store
+    inbound = event("deferred-offset")
+    store.commit_poll_page(
+        correlation_id="poll-deferred-offset",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(inbound,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    earlier = datetime(2026, 10, 10, 16, tzinfo=UTC)
+    later = datetime(2026, 10, 10, 12, tzinfo=timezone(-timedelta(hours=5)))
+    for outcome_id, reason, occurred_at in (
+        ("outcome-deferred-earlier", "earlier", earlier),
+        ("outcome-deferred-later", "later", later),
+    ):
+        store.record_conversation_outcome(
+            outcome_id=outcome_id,
+            correlation_id=inbound.correlation_id,
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            inbound_event_id=inbound.event_id,
+            outcome=ConversationOutcome.DEFER,
+            reason=reason,
+            resume_condition=f"resume-{reason}",
+            now=occurred_at,
+        )
+
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT occurred_at FROM threads_conversation_outcomes "
+            "WHERE outcome_id='outcome-deferred-later'"
+        ).fetchone() == (later.astimezone(UTC).isoformat(),)
+        connection.execute(
+            "UPDATE threads_conversation_outcomes SET occurred_at=? "
+            "WHERE outcome_id='outcome-deferred-earlier'",
+            (earlier.isoformat(),),
+        )
+        connection.execute(
+            "UPDATE threads_conversation_outcomes SET occurred_at=? "
+            "WHERE outcome_id='outcome-deferred-later'",
+            (later.isoformat(),),
+        )
+
+    deferred = store.deferred_inbound_events("account-1", InboundKind.REPLY)
+    assert len(deferred) == 1
+    assert deferred[0].outcome_id == "outcome-deferred-later"
+    assert deferred[0].reason == "later"
+    assert deferred[0].deferred_at == later
 
 
 def test_deferred_event_survives_restart_and_can_be_resumed(tmp_path):

@@ -1314,7 +1314,7 @@ class ThreadsStore:
                         outcome.value,
                         reason,
                         resume_condition,
-                        now.isoformat(),
+                        now.astimezone(UTC).isoformat(),
                         account_ref,
                         stream.value,
                         inbound_event_id,
@@ -1362,8 +1362,15 @@ class ThreadsStore:
         self._validate_inbound_query(account_ref, stream, limit)
         with self._open() as connection:
             rows = connection.execute(
-                "SELECT * FROM threads_inbound_events WHERE account_ref=? AND kind=? "
-                "AND processed_at IS NULL ORDER BY received_at, event_id LIMIT ?",
+                "SELECT event.* FROM threads_inbound_events AS event "
+                "WHERE event.account_ref=? AND event.kind=? "
+                "AND event.processed_at IS NULL AND NOT EXISTS ("
+                "SELECT 1 FROM threads_conversation_outcomes AS outcome "
+                "WHERE outcome.inbound_account_ref=event.account_ref "
+                "AND outcome.inbound_kind=event.kind "
+                "AND outcome.inbound_event_id=event.event_id "
+                "AND outcome.outcome='defer') "
+                "ORDER BY event.received_at, event.event_id LIMIT ?",
                 (account_ref, stream.value, limit),
             ).fetchall()
         return tuple(_inbound_event(row) for row in rows)
@@ -1391,10 +1398,10 @@ class ThreadsStore:
                 "WHERE later.inbound_account_ref=outcome.inbound_account_ref "
                 "AND later.inbound_kind=outcome.inbound_kind "
                 "AND later.inbound_event_id=outcome.inbound_event_id "
-                "AND (later.occurred_at>outcome.occurred_at OR "
-                "(later.occurred_at=outcome.occurred_at "
+                "AND (julianday(later.occurred_at)>julianday(outcome.occurred_at) OR "
+                "(julianday(later.occurred_at)=julianday(outcome.occurred_at) "
                 "AND later.outcome_id>outcome.outcome_id))) "
-                "ORDER BY outcome.occurred_at, outcome.outcome_id LIMIT ?",
+                "ORDER BY julianday(outcome.occurred_at), outcome.outcome_id LIMIT ?",
                 (account_ref, stream.value, limit),
             ).fetchall()
         return tuple(
