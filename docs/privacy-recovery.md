@@ -37,7 +37,9 @@ general intellectual abstraction does not require a separate consent per change.
 ## Protected privacy ledger
 
 `PrivacyLedger` is a separate, schema-versioned SQLite database with owner-only
-mode `0600`. Its records contain control metadata, not message payloads, prompts,
+mode `0600`. First-time schema creation is one explicit SQLite transaction, and
+idempotent control inserts serialize their identity check with `BEGIN IMMEDIATE`.
+Its records contain control metadata, not message payloads, prompts,
 provider responses, secrets, or an unkeyed hash of private content. It stores:
 
 - exact consent grants and revocations;

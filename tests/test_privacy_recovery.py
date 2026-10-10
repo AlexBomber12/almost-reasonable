@@ -489,8 +489,10 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     [
         ("apply_deletion", "raise", "deletion_adapter_failure"),
         ("apply_revocation", "false", "revocation_reconciliation_incomplete"),
+        ("apply_revocation", "string_false", "revocation_reconciliation_incomplete"),
         ("apply_revocation", "raise", "revocation_adapter_failure"),
         ("rebuild_dependencies", "false", "dependency_rebuild_incomplete"),
+        ("rebuild_dependencies", "string_false", "dependency_rebuild_incomplete"),
         ("rebuild_dependencies", "raise", "dependency_rebuild_failure"),
     ],
 )
@@ -537,14 +539,14 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
             if method == "apply_revocation":
                 if behavior == "raise":
                     raise RuntimeError("private fault")
-                return False
+                return "false" if behavior == "string_false" else False
             return super().apply_revocation(consent_id, revoked_at)
 
         def rebuild_dependencies(self):
             if method == "rebuild_dependencies":
                 if behavior == "raise":
                     raise RuntimeError("private fault")
-                return False
+                return "false" if behavior == "string_false" else False
             return super().rebuild_dependencies()
 
     result = QuarantinedRestore(ledger, 3, FaultAdapter).restore(

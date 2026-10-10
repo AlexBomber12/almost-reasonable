@@ -114,6 +114,7 @@ class PrivacyLedger:
         os.fchmod(descriptor, 0o600)
         os.close(descriptor)
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             tables = connection.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' "
                 "AND name='privacy_schema_metadata'"
@@ -157,6 +158,7 @@ class PrivacyLedger:
             grant.authentication_event_id,
         )
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT consent_id, operation_id, principal_id, content_reference, audience, "
                 "purpose, granted_at, expires_at, actor_reference, revision, correlation_id, "
@@ -224,6 +226,7 @@ class PrivacyLedger:
             correlation_id,
         )
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT consent_id, operation_id, principal_id, actor_reference, "
                 "authentication_event_id, revoked_at, correlation_id "
@@ -263,6 +266,7 @@ class PrivacyLedger:
             _stamp(request.requested_at),
         )
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT operation_id, principal_id, content_reference, content_category, "
                 "requested_at, actor_reference, correlation_id, authentication_event_id "
@@ -379,6 +383,7 @@ class PrivacyLedger:
             correlation_id,
         )
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             existing = connection.execute(
                 "SELECT principal_id, notice_version, actor_reference, authentication_event_id, "
                 "acknowledged_at, correlation_id FROM notice_acknowledgements "

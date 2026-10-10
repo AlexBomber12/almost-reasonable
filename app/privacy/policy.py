@@ -59,13 +59,33 @@ def validate_abstract_to_shared(candidate: AbstractionCandidate) -> BoundaryDeci
             or not 0.0 <= candidate.max_source_overlap <= 1.0,
             "invalid_source_overlap",
         ),
-        (bool(candidate.direct_identifiers), "direct_identifier"),
-        (bool(candidate.private_canaries), "private_canary"),
-        (candidate.contains_personal_information, "personal_information"),
-        (candidate.contains_quotation, "exact_or_attributable_quotation"),
-        (candidate.recognizable_paraphrase, "recognizable_paraphrase"),
-        (candidate.contains_relationship_detail, "relationship_detail"),
-        (candidate.contains_attribution, "attribution"),
+        (
+            not isinstance(candidate.direct_identifiers, tuple)
+            or candidate.direct_identifiers != (),
+            "direct_identifier",
+        ),
+        (
+            not isinstance(candidate.private_canaries, tuple)
+            or candidate.private_canaries != (),
+            "private_canary",
+        ),
+        (
+            candidate.contains_personal_information is not False,
+            "personal_information",
+        ),
+        (
+            candidate.contains_quotation is not False,
+            "exact_or_attributable_quotation",
+        ),
+        (
+            candidate.recognizable_paraphrase is not False,
+            "recognizable_paraphrase",
+        ),
+        (
+            candidate.contains_relationship_detail is not False,
+            "relationship_detail",
+        ),
+        (candidate.contains_attribution is not False, "attribution"),
         (
             candidate.semantic_screen_passed is not True,
             "semantic_screen_failed_or_uncertain",

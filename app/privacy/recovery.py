@@ -332,12 +332,12 @@ class QuarantinedRestore:
                 return "deletion_reconciliation_incomplete"
         for consent_id, revoked_at in self.ledger.revocations():
             try:
-                if not adapter.apply_revocation(consent_id, revoked_at):
+                if adapter.apply_revocation(consent_id, revoked_at) is not True:
                     return "revocation_reconciliation_incomplete"
             except Exception:
                 return "revocation_adapter_failure"
         try:
-            if not adapter.rebuild_dependencies():
+            if adapter.rebuild_dependencies() is not True:
                 return "dependency_rebuild_incomplete"
         except Exception:
             return "dependency_rebuild_failure"

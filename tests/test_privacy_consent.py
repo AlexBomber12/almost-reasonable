@@ -2,8 +2,11 @@ from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
 import os
 import sqlite3
+import threading
 
 import pytest
+
+from app.privacy import ledger as ledger_module
 
 from app.privacy import (
     AbstractionCandidate,
@@ -12,6 +15,8 @@ from app.privacy import (
     ConsentPurpose,
     ConsentService,
     DeletionRequest,
+    NOTICE_VERSION,
+    NoticeService,
     OperationOrigin,
     PrivacyLedger,
     TrustedPrivacyContext,
@@ -259,12 +264,19 @@ def test_abstraction_boundary_is_closed_and_preserves_hidden_provenance():
         ({"source_audience": "shared"}, "invalid_source_audience"),
         ({"max_source_overlap": 1.5}, "invalid_source_overlap"),
         ({"direct_identifiers": ("alice@example.invalid",)}, "direct_identifier"),
+        ({"direct_identifiers": []}, "direct_identifier"),
         ({"private_canaries": ("CANARY-A-77",)}, "private_canary"),
+        ({"private_canaries": None}, "private_canary"),
         ({"contains_personal_information": True}, "personal_information"),
+        ({"contains_personal_information": None}, "personal_information"),
         ({"contains_quotation": True}, "exact_or_attributable_quotation"),
+        ({"contains_quotation": 0}, "exact_or_attributable_quotation"),
         ({"recognizable_paraphrase": True}, "recognizable_paraphrase"),
+        ({"recognizable_paraphrase": "false"}, "recognizable_paraphrase"),
         ({"contains_relationship_detail": True}, "relationship_detail"),
+        ({"contains_relationship_detail": None}, "relationship_detail"),
         ({"contains_attribution": True}, "attribution"),
+        ({"contains_attribution": 0}, "attribution"),
         ({"semantic_screen_passed": False}, "semantic_screen_failed_or_uncertain"),
         ({"semantic_screen_passed": "false"}, "semantic_screen_failed_or_uncertain"),
         ({"protected_source_references": ()}, "missing_or_invalid_source_provenance"),
@@ -360,3 +372,77 @@ def test_timestamps_must_be_utc_and_ledger_path_is_protected(tmp_path):
     path.touch(mode=0o644)
     PrivacyLedger(path)
     assert os.stat(path).st_mode & 0o777 == 0o600
+
+
+def run_concurrently(operation):
+    barrier = threading.Barrier(3)
+    results = []
+    errors = []
+
+    def run():
+        barrier.wait()
+        try:
+            results.append(operation())
+        except Exception as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+    assert errors == []
+    return results
+
+
+def test_concurrent_consent_revocation_and_notice_retries_are_idempotent(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    consent = ConsentService(ledger)
+    assert sorted(
+        result.created
+        for result in run_concurrently(lambda: consent.grant(context(), grant()))
+    ) == [False, True]
+    assert sorted(
+        result.created
+        for result in run_concurrently(
+            lambda: consent.revoke(
+                context(),
+                consent_id="consent-001",
+                operation_id="revoke-concurrent",
+                revoked_at=NOW,
+                correlation_id="revoke-concurrent-correlation",
+            )
+        )
+    ) == [False, True]
+    notices = NoticeService(ledger)
+    assert sorted(
+        result.created
+        for result in run_concurrently(
+            lambda: notices.acknowledge(
+                context(), NOTICE_VERSION, NOW, "notice-concurrent"
+            )
+        )
+    ) == [False, True]
+
+
+def test_interrupted_first_initialization_rolls_back_complete_schema(
+    tmp_path, monkeypatch
+):
+    path = tmp_path / "privacy.sqlite3"
+    schema = ledger_module._SCHEMA
+    monkeypatch.setattr(
+        ledger_module, "_SCHEMA", (schema[0], "THIS IS NOT VALID SQLITE")
+    )
+    with pytest.raises(sqlite3.OperationalError):
+        PrivacyLedger(path)
+    with sqlite3.connect(path) as connection:
+        assert (
+            connection.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+            == []
+        )
+
+    monkeypatch.setattr(ledger_module, "_SCHEMA", schema)
+    assert PrivacyLedger(path).path == path

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+import threading
 
 import pytest
 
@@ -211,3 +212,31 @@ def test_erasure_report_rejects_deserialized_or_malformed_types(changes):
     values.update(changes)
     with pytest.raises(ValueError, match="erasure report"):
         ErasureReport(**values)
+
+
+def test_concurrent_deletion_ledger_insertion_is_idempotent(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    barrier = threading.Barrier(3)
+    results = []
+    errors = []
+
+    def insert():
+        barrier.wait()
+        try:
+            results.append(
+                ledger.insert_deletion(
+                    request(), DeletionDisposition.PENDING, "awaiting_erasure"
+                )
+            )
+        except Exception as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=insert) for _ in range(2)]
+    for thread in threads:
+        thread.start()
+    barrier.wait()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    assert sorted(results) == [False, True]
