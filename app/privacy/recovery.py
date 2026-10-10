@@ -705,9 +705,9 @@ class QuarantinedRestore:
                 return self._blocked_restore(
                     restore_id, restored_at, "quarantine_finalization_failed"
                 )
-            _cleanup_created([owned_quarantine])
-            owned.clear()
             owned.append(sealed_quarantine)
+            owned.remove(owned_quarantine)
+            _cleanup_created([owned_quarantine])
             staging = sealed_staging
             quarantine_descriptor = sealed_quarantine.descriptor
             owned_quarantine = sealed_quarantine

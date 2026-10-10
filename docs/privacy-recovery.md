@@ -70,7 +70,9 @@ mode `0600`. First-time schema creation is one explicit SQLite transaction, and
 idempotent control inserts serialize their identity check with `BEGIN IMMEDIATE`.
 Before an existing ledger or sidecar is inspected or reused, its pinned inode
 must be owned by root or the service account and must not be group- or
-world-writable; unsafe files are rejected rather than repaired in place.
+world-writable; unsafe files are rejected rather than repaired in place. A
+long-lived ledger repeats sidecar validation before every SQLite connection, so
+permission or ownership drift cannot be consumed before rejection.
 Initialization rejects a nonempty database without privacy-ledger metadata, so an
 application/EventStore file cannot silently become the independent ledger. An
 existing file is inspected through an inode-matched connection before its mode

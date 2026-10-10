@@ -1206,6 +1206,30 @@ def test_privacy_ledger_rejects_unsafe_sidecars_before_connecting(
         assert sidecar.is_symlink()
 
 
+def test_privacy_ledger_revalidates_sidecars_before_every_connection(
+    tmp_path, monkeypatch
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    sidecar = Path(f"{ledger.path}-wal")
+    sidecar.touch()
+    sidecar.chmod(0o666)
+    connection_attempted = False
+
+    def reject_connection(_descriptor):
+        nonlocal connection_attempted
+        connection_attempted = True
+        raise AssertionError("connected before revalidating sidecars")
+
+    monkeypatch.setattr(ledger, "_connect_descriptor", reject_connection)
+
+    with pytest.raises(RuntimeError, match="sidecar is unsafe"):
+        ledger.control_generation()
+
+    assert connection_attempted is False
+    assert sidecar.exists()
+    assert stat.S_IMODE(sidecar.stat().st_mode) == 0o666
+
+
 def run_concurrently(operation):
     barrier = threading.Barrier(3)
     results = []

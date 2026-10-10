@@ -1476,6 +1476,45 @@ def test_fresh_snapshot_seal_cleans_an_interruption(tmp_path, monkeypatch):
     assert not sealed.exists()
 
 
+def test_restore_tracks_sealed_inode_before_releasing_adapter_staging(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    real_cleanup = recovery_module._cleanup_created
+    interrupted = False
+
+    def interrupt_adapter_staging_cleanup(outputs):
+        nonlocal interrupted
+        if (
+            not interrupted
+            and len(outputs) == 1
+            and outputs[0].path.name.startswith(".privacy-restore-")
+            and list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
+        ):
+            interrupted = True
+            raise SimulatedInterrupt()
+        real_cleanup(outputs)
+
+    monkeypatch.setattr(
+        recovery_module, "_cleanup_created", interrupt_adapter_staging_cleanup
+    )
+
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert interrupted is True
+    assert not quarantine.exists()
+    assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
+
+
 def test_restore_never_blesses_a_public_path_created_before_publication(
     tmp_path, monkeypatch
 ):

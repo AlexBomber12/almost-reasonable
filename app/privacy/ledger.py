@@ -235,6 +235,7 @@ class PrivacyLedger:
 
     def _open(self) -> sqlite3.Connection:
         self._require_path_identity(self._descriptor)
+        self._require_trusted_sidecars()
         connection = self._connect_descriptor(self._descriptor)
         try:
             self._require_file_identity(connection, self._descriptor)
