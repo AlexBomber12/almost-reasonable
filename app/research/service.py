@@ -134,9 +134,14 @@ class ResearchService:
                     _retry_delay(self._config.initial_backoff_seconds, attempts),
                     self._config.maximum_backoff_seconds,
                 )
-                if error.retry_after_seconds is not None:
+                retry_after = error.retry_after_seconds
+                if (
+                    not isinstance(retry_after, bool)
+                    and isinstance(retry_after, (int, float))
+                    and math.isfinite(retry_after)
+                ):
                     delay = min(
-                        max(0.0, error.retry_after_seconds),
+                        max(0.0, retry_after),
                         self._config.maximum_backoff_seconds,
                     )
                 if ended + delay >= deadline:

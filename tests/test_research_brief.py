@@ -369,6 +369,19 @@ def test_punctuation_edged_participant_identifiers_are_matched(question, identif
     assert result.reason == "participant_identifier"
 
 
+@pytest.mark.parametrize("question", ["Research user_Alice", "Research Alice_2026"])
+def test_underscores_delimit_participant_identifiers(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice",)),
+    )
+
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "participant_identifier"
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -417,6 +430,10 @@ def test_record_and_screening_containers_require_exact_immutable_inputs():
         ResearchScreeningContext(private_canaries=["not-a-tuple"])
     with pytest.raises(ValueError):
         ResearchScreeningContext(private_canaries=("",))
+    with pytest.raises(ValueError):
+        ResearchScreeningContext(participant_identifiers=("\u200b",))
+    with pytest.raises(ValueError):
+        ResearchScreeningContext(private_canaries=("\u0301",))
     with pytest.raises(ValueError):
         ResearchQuestion("")
     with pytest.raises(ValueError):

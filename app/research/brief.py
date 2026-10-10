@@ -203,7 +203,10 @@ class ResearchScreeningContext:
         ):
             if type(value) is not tuple:
                 raise TypeError("screening collections must be tuples")
-            if any(not isinstance(item, str) or not item for item in value):
+            if any(
+                not isinstance(item, str) or not item or not _normalized(item)
+                for item in value
+            ):
                 raise ValueError("screening entries must be non-empty strings")
 
 
@@ -387,8 +390,8 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         for character in needle
     ):
         return needle in value
-    left_boundary = r"(?<!\w)" if re.match(r"\w", needle[0]) else ""
-    right_boundary = r"(?!\w)" if re.match(r"\w", needle[-1]) else ""
+    left_boundary = r"(?<![^\W_])" if re.match(r"[^\W_]", needle[0]) else ""
+    right_boundary = r"(?![^\W_])" if re.match(r"[^\W_]", needle[-1]) else ""
     return (
         re.search(rf"{left_boundary}{re.escape(needle)}{right_boundary}", value)
         is not None

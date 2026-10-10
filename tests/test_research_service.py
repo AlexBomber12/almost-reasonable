@@ -236,6 +236,21 @@ def test_retry_after_is_bounded_by_trusted_backoff_limit():
     assert sleeps == [4.0]
 
 
+@pytest.mark.parametrize("retry_after", ["later", float("nan"), float("inf"), True])
+def test_malformed_retry_after_is_ignored(retry_after):
+    instance, _transport, sleeps, _marks = service(
+        [
+            HostedSearchTransportError("rate_limit", retry_after_seconds=retry_after),
+            success_response(),
+        ]
+    )
+
+    result = instance.run(brief())
+
+    assert result.outcome is ResearchOutcome.COMPLETED
+    assert sleeps == [1.0]
+
+
 def test_stop_and_spend_are_rechecked_before_each_retry():
     stop_states = iter((False, True))
     instance, transport, sleeps, _marks = service(
