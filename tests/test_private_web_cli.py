@@ -204,6 +204,40 @@ def test_secure_mode_requires_https_browser_origin(tmp_path, origin):
     assert not (tmp_path / "auth.sqlite3").exists()
 
 
+def test_ipv6_loopback_insecure_mode_is_accepted(tmp_path):
+    observed = {}
+
+    class Server:
+        def serve_forever(self):
+            observed["served"] = True
+
+    def server_factory(host, _port, _application):
+        observed["host"] = host
+        return Server()
+
+    assert (
+        main(
+            [
+                "serve",
+                "--auth-db",
+                str(tmp_path / "auth.sqlite3"),
+                "--event-db",
+                str(tmp_path / "events.sqlite3"),
+                "--listen-host",
+                "::1",
+                "--allowed-host",
+                "[::1]:8000",
+                "--allowed-origin",
+                "http://[::1]:8000",
+                "--insecure-http",
+            ],
+            server_factory=server_factory,
+        )
+        == 0
+    )
+    assert observed == {"host": "::1", "served": True}
+
+
 def test_invalid_trusted_proxy_is_rejected_before_database_creation(tmp_path):
     database = tmp_path / "auth.sqlite3"
     with pytest.raises(ValueError, match="canonical IP"):

@@ -17,7 +17,7 @@ from .conversation import ConversationService
 SESSION_COOKIE = "ar_session"
 CSRF_COOKIE = "ar_csrf"
 LOGIN_CSRF_COOKIE = "ar_login_csrf"
-_HOST = re.compile(r"[a-z0-9.-]+(?::[0-9]{1,5})?\Z")
+_DNS_HOST = re.compile(r"[a-z0-9.-]+\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,8 +30,7 @@ class PrivateWebConfig:
 
     def __post_init__(self) -> None:
         if not self.allowed_hosts or any(
-            type(host) is not str or _HOST.fullmatch(host) is None
-            for host in self.allowed_hosts
+            not _valid_host(host) for host in self.allowed_hosts
         ):
             raise ValueError("allowed_hosts must contain valid exact host values")
         if not self.allowed_origins or any(
@@ -45,6 +44,36 @@ class PrivateWebConfig:
             for address in self.trusted_proxy_addresses
         ):
             raise ValueError("trusted_proxy_addresses must contain canonical IP values")
+
+
+def _valid_host(value: object) -> bool:
+    if type(value) is not str or value != value.lower():
+        return False
+    try:
+        parsed = urlsplit(f"//{value}")
+        port = parsed.port
+    except ValueError:
+        return False
+    if (
+        not parsed.netloc
+        or parsed.path
+        or parsed.query
+        or parsed.fragment
+        or parsed.username is not None
+        or (port is not None and port == 0)
+    ):
+        return False
+    hostname = parsed.hostname or ""
+    if ":" in hostname:
+        address = ip_address(hostname)
+        normalized = f"[{address}]"
+    else:
+        if _DNS_HOST.fullmatch(hostname) is None:
+            return False
+        normalized = hostname
+    if port is not None:
+        normalized += f":{port}"
+    return value == normalized
 
 
 def _valid_origin(value: object) -> bool:
@@ -427,25 +456,32 @@ class PrivateWebApplication:
         body = b"""'use strict';
 const form = document.getElementById('message-form');
 const modelStatus = document.getElementById('model-status');
-let pendingMessageId = null;
+let pendingMessage = null;
+let requestInFlight = false;
 if (form) form.addEventListener('submit', async (event) => {
   event.preventDefault();
+  if (requestInFlight) return;
   const content = new FormData(form).get('content');
-  pendingMessageId ||= crypto.randomUUID();
+  if (!pendingMessage || pendingMessage.content !== content) {
+    pendingMessage = {id: crypto.randomUUID(), content};
+  }
+  requestInFlight = true;
   try {
     const response = await fetch('/api/messages', {
       method: 'POST', credentials: 'same-origin',
       headers: {'Content-Type': 'application/json', 'X-CSRF-Token': form.dataset.csrf},
-      body: JSON.stringify({message_id: pendingMessageId, content})
+      body: JSON.stringify({message_id: pendingMessage.id, content: pendingMessage.content})
     });
     if (response.ok) {
-      pendingMessageId = null;
+      pendingMessage = null;
       window.location.reload();
       return;
     }
     modelStatus.textContent = 'Message was not accepted. Retry or sign in again.';
   } catch (error) {
     modelStatus.textContent = 'Delivery is uncertain. Retrying will reuse this message.';
+  } finally {
+    requestInFlight = false;
   }
 });
 const logout = document.getElementById('logout-form');

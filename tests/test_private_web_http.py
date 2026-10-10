@@ -540,8 +540,25 @@ def test_missing_routes_methods_cookie_tampering_and_static_asset(web):
     assert status == "200 OK"
     assert header_values(headers, "Content-Type") == ["text/javascript; charset=utf-8"]
     assert b"crypto.randomUUID" in body
-    assert b"let pendingMessageId = null" in body
-    assert b"pendingMessageId ||= crypto.randomUUID()" in body
+    assert b"let pendingMessage = null" in body
+    assert b"pendingMessage.content !== content" in body
+    assert b"pendingMessage = {id: crypto.randomUUID(), content}" in body
+    assert b"if (requestInFlight) return" in body
+
+
+def test_bracketed_ipv6_host_is_accepted(web):
+    _, auth, _, _, _ = web
+    app = PrivateWebApplication(
+        auth,
+        type("NoopService", (), {})(),
+        PrivateWebConfig(
+            allowed_hosts=frozenset({"[::1]:8000"}),
+            allowed_origins=frozenset({"http://[::1]:8000"}),
+            secure_cookies=False,
+        ),
+    )
+    browser = Browser(app, "[::1]:8000", "http://[::1]:8000")
+    assert browser.request("GET", "/login", origin=False)[0] == "200 OK"
 
 
 def test_login_request_validation_and_chat_csrf_cookie(web):
@@ -694,6 +711,17 @@ def test_insecure_local_configuration_omits_secure_cookie_attribute(web):
         {"allowed_hosts": frozenset()},
         {"allowed_origins": frozenset()},
         {"allowed_hosts": frozenset({"BAD HOST"})},
+        {"allowed_hosts": frozenset({""})},
+        {"allowed_hosts": frozenset({"host/path"})},
+        {"allowed_hosts": frozenset({"host?query"})},
+        {"allowed_hosts": frozenset({"host#fragment"})},
+        {"allowed_hosts": frozenset({"user@host"})},
+        {"allowed_hosts": frozenset({"host:0"})},
+        {"allowed_hosts": frozenset({"bad_host"})},
+        {"allowed_hosts": frozenset({"::1:8000"})},
+        {"allowed_hosts": frozenset({"[:::]:8000"})},
+        {"allowed_hosts": frozenset({"[::1]:99999"})},
+        {"allowed_hosts": frozenset({"[::1]extra"})},
         {"allowed_origins": frozenset({"not-an-origin"})},
         {"allowed_origins": frozenset({"https://[invalid"})},
         {"allowed_origins": frozenset({1})},
