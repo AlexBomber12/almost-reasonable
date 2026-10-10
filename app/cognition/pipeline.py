@@ -343,7 +343,11 @@ class CognitionEngine:
             or type(proposal.supporting_event_ids) is not tuple
             or not proposal.supporting_event_ids
             or type(proposal.counterevidence_event_ids) is not tuple
-            or proposal.source_event_id not in proposal.supporting_event_ids
+            or proposal.source_event_id
+            not in (
+                *proposal.supporting_event_ids,
+                *proposal.counterevidence_event_ids,
+            )
             or len(proposal.supporting_event_ids)
             + len(proposal.counterevidence_event_ids)
             + 1

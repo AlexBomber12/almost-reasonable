@@ -594,8 +594,8 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
         context=ProposalContext(
             "operation-belief-history-revise",
             counter_event,
-            (counter_event,),
             (supporting_event,),
+            (counter_event,),
             1,
             "New evidence supports the claim but retains a conflict.",
             NOW + timedelta(minutes=9),

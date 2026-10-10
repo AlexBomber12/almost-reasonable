@@ -75,7 +75,7 @@ def _normalize_privacy_text(value: str) -> str:
     return "".join(
         character
         for character in normalized
-        if unicodedata.category(character) != "Cc"
+        if unicodedata.category(character) not in {"Cc", "Cf"}
         and ord(character) not in _DEFAULT_IGNORABLE_CODEPOINTS
     )
 

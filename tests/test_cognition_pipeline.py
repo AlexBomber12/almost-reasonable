@@ -257,9 +257,10 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
     revised = replace(
         created,
         context=proposal_context(
-            event_id,
+            counter_id,
             "belief-revise",
             expected_revision=1,
+            supporting=(event_id,),
             counter=(counter_id,),
         ),
         stance=BeliefStance.SUPPORTS,
@@ -269,7 +270,7 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
     assert engine.process(context, event_id).status is CognitionOutcomeStatus.PERSISTED
     extractor = FakeExtractor(revised)
     outcome = CognitionEngine(events, state, extractor=extractor).process(
-        context, event_id, evidence_event_ids=(counter_id,)
+        context, counter_id, evidence_event_ids=(event_id,)
     )
 
     assert outcome.status is CognitionOutcomeStatus.PERSISTED
@@ -280,13 +281,13 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
     )
     assert {item.event_id for item in evidence} == {event_id, counter_id}
     [request] = extractor.requests
-    assert tuple(item.event_id for item in request.additional_evidence) == (counter_id,)
-    assert request.additional_evidence[0].content == "A conflicting assertion."
+    assert tuple(item.event_id for item in request.additional_evidence) == (event_id,)
+    assert request.experience.content == "A conflicting assertion."
 
     falsely_verified = replace(revised, verification=VerificationStatus.VERIFIED)
     rejected = CognitionEngine(
         events, state, extractor=FakeExtractor(falsely_verified)
-    ).process(context, event_id, evidence_event_ids=(counter_id,))
+    ).process(context, counter_id, evidence_event_ids=(event_id,))
     assert rejected.status is CognitionOutcomeStatus.REJECTED
     assert rejected.reason is CognitionReason.VERIFICATION_MISMATCH
 
