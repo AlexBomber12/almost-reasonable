@@ -137,6 +137,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     assert crlf_fence.accepted
     assert crlf_fence.foreign_prose_word_count == 0
 
+    assertion_fence = RussianOutputGate().assess(
+        "Проверка:\n```python\nassert response.ok\n```"
+    )
+    assert assertion_fence.accepted
+    assert assertion_fence.foreign_prose_word_count == 0
+
     json_fence = RussianOutputGate().assess(
         'Краткий пример:\n```json\n["apple", "banana", "cherry"]\n```'
     )

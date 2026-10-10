@@ -263,17 +263,21 @@ class TestScheduler:
             valid_decision = None
         except (OSError, ValueError):
             finished_at = self._clock.now()
-            outcome = SchedulerOutcome.FAILED
+            outcome = (
+                SchedulerOutcome.EXECUTION_LIMIT
+                if _execution_limit_exceeded(
+                    started_at, finished_at, self._policy.max_execution_seconds
+                )
+                else SchedulerOutcome.FAILED
+            )
             valid_decision = None
         else:
             finished_at = self._clock.now()
             if not isinstance(decision, AgentDecision):
                 outcome = SchedulerOutcome.FAILED
                 valid_decision = None
-            elif (
-                finished_at < started_at
-                or (finished_at - started_at).total_seconds()
-                > self._policy.max_execution_seconds
+            elif _execution_limit_exceeded(
+                started_at, finished_at, self._policy.max_execution_seconds
             ):
                 outcome = SchedulerOutcome.EXECUTION_LIMIT
                 valid_decision = None
@@ -356,6 +360,15 @@ def _is_finite_number(value: int | float) -> bool:
         return math.isfinite(float(value))
     except OverflowError:
         return False
+
+
+def _execution_limit_exceeded(
+    started_at: datetime, finished_at: datetime, max_seconds: float
+) -> bool:
+    return (
+        finished_at < started_at
+        or (finished_at - started_at).total_seconds() > max_seconds
+    )
 
 
 def _valid_event_text(value: object, max_bytes: int) -> bool:

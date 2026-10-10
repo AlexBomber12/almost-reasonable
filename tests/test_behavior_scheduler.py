@@ -152,6 +152,21 @@ def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
         is SchedulerOutcome.EXECUTION_LIMIT
     )
 
+    slow_failure_clock = MutableClock(NOW)
+
+    def slow_failure(*_: object) -> AgentDecision:
+        slow_failure_clock.advance(timedelta(seconds=3))
+        raise OSError("late provider failure")
+
+    assert (
+        TestScheduler(
+            policy(), InMemorySchedulerStore(), slow_failure_clock, slow_failure
+        )
+        .run((event("slow-failure"),))
+        .outcome
+        is SchedulerOutcome.EXECUTION_LIMIT
+    )
+
     timeout_clock = MutableClock(NOW)
 
     def timed_out(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
