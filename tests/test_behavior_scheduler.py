@@ -340,6 +340,37 @@ def test_rejected_decisions_do_not_refresh_rate_limit_window() -> None:
     )
 
 
+def test_retention_expires_at_boundary_and_clamps_datetime_underflow() -> None:
+    clock = MutableClock(NOW)
+    store = InMemorySchedulerStore()
+    scheduler = TestScheduler(
+        policy(cooldown=timedelta(0), duplicate_window=timedelta(hours=1)),
+        store,
+        clock,
+        lambda *_: AgentDecision.RESEARCH,
+    )
+    assert scheduler.run((event("boundary"),)).outcome is SchedulerOutcome.PROPOSED
+    clock.advance(timedelta(hours=1))
+    assert (
+        scheduler.run((event("boundary", clock.now()),)).outcome
+        is SchedulerOutcome.PROPOSED
+    )
+
+    huge_window = TestScheduler(
+        policy(
+            cadence=timedelta.max,
+            cooldown=timedelta(0),
+            duplicate_window=timedelta.max,
+        ),
+        InMemorySchedulerStore(),
+        MutableClock(NOW),
+        lambda *_: AgentDecision.NO_ACTION,
+    )
+    assert (
+        huge_window.run((event("huge-window"),)).outcome is SchedulerOutcome.NO_ACTION
+    )
+
+
 def test_processed_event_history_remains_bounded_across_cooldown_runs() -> None:
     store = InMemorySchedulerStore(
         SchedulerState(last_deliberation_at=NOW - timedelta(minutes=1))

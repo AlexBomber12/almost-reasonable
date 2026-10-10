@@ -310,11 +310,11 @@ class TestScheduler:
         return SchedulerRun(outcome, selected.event_id, coalesced, 0, None)
 
     def _pruned_state(self, state: SchedulerState, now: datetime) -> SchedulerState:
-        duplicate_cutoff = now - self._policy.duplicate_window
-        action_cutoff = now - self._policy.cadence
+        duplicate_cutoff = _retention_cutoff(now, self._policy.duplicate_window)
+        action_cutoff = _retention_cutoff(now, self._policy.cadence)
         limited_decisions = dict(self._policy.per_action_limits)
         processed_events = tuple(
-            item for item in state.processed_events if item[1] >= duplicate_cutoff
+            item for item in state.processed_events if item[1] > duplicate_cutoff
         )[-MAX_PROCESSED_EVENTS:]
         return replace(
             state,
@@ -322,7 +322,7 @@ class TestScheduler:
             action_history=tuple(
                 item
                 for item in state.action_history
-                if item[0] in limited_decisions and item[1] >= action_cutoff
+                if item[0] in limited_decisions and item[1] > action_cutoff
             )[-MAX_ACTION_HISTORY:],
         )
 
@@ -350,6 +350,13 @@ def _append_processed(
             additions.append((item.event_id, now))
             known.add(item.event_id)
     return (*state.processed_events, *additions)[-MAX_PROCESSED_EVENTS:]
+
+
+def _retention_cutoff(now: datetime, duration: timedelta) -> datetime:
+    try:
+        return now - duration
+    except OverflowError:
+        return datetime.min.replace(tzinfo=now.tzinfo)
 
 
 def _inside_active_hours(current: time, policy: WakeupPolicy) -> bool:

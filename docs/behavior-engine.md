@@ -144,6 +144,9 @@ worthwhile wake-up. Only admitted proposals and admitted `no_action` decisions
 subject to an explicit per-action limit enter action-rate history; the sum of
 configured limits and retained history are each capped at 4,096 entries. A rate
 or execution rejection cannot refresh its own denial window indefinitely.
+Duplicate and action entries expire when their age reaches the configured
+window, and cutoff calculation clamps safely for durations that would underflow
+the injected clock's datetime range.
 
 The in-memory store and mutable clock exist for deterministic tests. Production
 wiring still needs an application-owned durable scheduler repository and actual
