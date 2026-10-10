@@ -688,6 +688,36 @@ def test_response_at_overall_deadline_is_recorded_as_timeout(tmp_path):
     assert record.total_tokens == 120
 
 
+@pytest.mark.parametrize(
+    ("error", "expected", "suspended"),
+    [
+        (OpenAITransportError(status_code=503), GatewayOutcome.TIMEOUT, False),
+        (
+            OpenAITransportError(
+                status_code=429,
+                error_type="insufficient_quota",
+                error_code="project_spend_limit_exceeded",
+            ),
+            GatewayOutcome.SPEND_LIMIT_CONFIRMED,
+            True,
+        ),
+    ],
+)
+def test_error_at_overall_deadline_preserves_only_confirmed_spend_limit(
+    tmp_path, error, expected, suspended
+):
+    instance, transport, store = gateway(tmp_path, [error], times=[0.0, 0.0, 0.0, 20.0])
+
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+
+    assert result.outcome is expected
+    assert len(transport.calls) == 1
+    assert store.usage_attempt("operation-a:1").outcome == expected.value
+    assert store.is_spend_suspended() is suspended
+
+
 def test_reservation_that_consumes_deadline_blocks_provider_call(tmp_path):
     instance, transport, store = gateway(tmp_path, [response()], times=[0.0, 0.0, 20.0])
 

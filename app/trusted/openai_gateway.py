@@ -184,6 +184,11 @@ class TrustedOpenAIGateway:
                 completed_attempts = attempt_number
                 ended = self._checked_monotonic()
                 outcome = _classify_error(error)
+                if (
+                    ended >= deadline
+                    and outcome is not GatewayOutcome.SPEND_LIMIT_CONFIRMED
+                ):
+                    outcome = GatewayOutcome.TIMEOUT
                 persisted = self._record(
                     request=request,
                     correlation_id=correlation_id,
