@@ -86,6 +86,7 @@ class ConsentService:
                 result = ConsentUseResult(False, "invalid_authorization")
             else:
                 return self.ledger.authorize_consent_use(
+                    context=context,
                     principal_id=principal_id,
                     content_reference=content_reference,
                     audience=audience,
@@ -134,6 +135,7 @@ class ConsentService:
                 reason = "invalid_authorization"
             else:
                 created = self.ledger.insert_revocation(
+                    context=context,
                     consent_id=consent_id,
                     operation_id=operation_id,
                     principal_id=context.principal_id,

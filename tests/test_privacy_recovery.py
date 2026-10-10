@@ -1007,6 +1007,7 @@ def test_readiness_revalidates_every_bound_input(tmp_path, monkeypatch, mutation
             sidecar.write_text("concurrent-sidecar")
         else:
             ledger.insert_deletion(
+                context(),
                 DeletionRequest(
                     "delete-before-readiness",
                     "participant-a",
@@ -1056,6 +1057,7 @@ def test_restore_generation_check_is_atomic_with_eligibility_record(
             assert generation_advanced is False
             generation_advanced = True
             ledger.insert_deletion(
+                context(),
                 DeletionRequest(
                     "delete-at-eligibility",
                     "participant-a",
@@ -1356,6 +1358,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     )
 
     ledger.insert_deletion(
+        context(),
         DeletionRequest(
             "delete-operation-after-readiness",
             "participant-a",
@@ -1694,6 +1697,7 @@ def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_pa
     class RacingAdapter(RestoreAdapter):
         def rebuild_dependencies(self):
             ledger.insert_deletion(
+                context(),
                 DeletionRequest(
                     "delete-operation-race",
                     "participant-a",
@@ -2348,6 +2352,7 @@ def test_ledger_rejects_malformed_direct_notice_acknowledgements(
 ):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     values = {
+        "context": context(),
         "principal_id": "participant-a",
         "notice_version": NOTICE_VERSION,
         "actor_reference": "actor-a",
@@ -2359,6 +2364,26 @@ def test_ledger_rejects_malformed_direct_notice_acknowledgements(
 
     with pytest.raises(ValueError, match=message):
         ledger.acknowledge_notice(**values)
+
+    assert not ledger.has_notice("participant-a", NOTICE_VERSION)
+
+
+def test_ledger_rejects_unauthenticated_direct_notice_acknowledgement(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    untrusted = TrustedPrivacyContext(
+        "participant-a", "actor-a", "auth-a", OperationOrigin.CHAT
+    )
+
+    with pytest.raises(ValueError, match="authentication"):
+        ledger.acknowledge_notice(
+            untrusted,
+            "participant-a",
+            NOTICE_VERSION,
+            "actor-a",
+            "auth-a",
+            NOW,
+            "notice-direct",
+        )
 
     assert not ledger.has_notice("participant-a", NOTICE_VERSION)
 

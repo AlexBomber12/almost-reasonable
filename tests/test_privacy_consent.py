@@ -587,6 +587,12 @@ def test_ledger_rejects_cross_principal_direct_revocation(tmp_path):
 
     with pytest.raises(ValueError, match="ownership"):
         ledger.insert_revocation(
+            context=TrustedPrivacyContext(
+                "participant-b",
+                "actor-b",
+                "auth-event-b",
+                OperationOrigin.CONTROL,
+            ),
             consent_id="consent-001",
             operation_id="revoke-direct",
             principal_id="participant-b",
@@ -618,6 +624,7 @@ def test_ledger_rejects_malformed_direct_revocations(tmp_path, changes, message)
     ledger.insert_consent(context(), grant())
     audit_before = ledger.audit_records()
     values = {
+        "context": context(),
         "consent_id": "consent-001",
         "operation_id": "revoke-direct",
         "principal_id": "participant-a",
@@ -650,6 +657,7 @@ def test_ledger_rejects_malformed_direct_revocations(tmp_path, changes, message)
 def test_ledger_rejects_malformed_direct_consent_use_fields(tmp_path, changes, message):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     values = {
+        "context": context(),
         "principal_id": "participant-a",
         "content_reference": "event-001",
         "audience": "public-threads",
@@ -666,6 +674,49 @@ def test_ledger_rejects_malformed_direct_consent_use_fields(tmp_path, changes, m
         ledger.authorize_consent_use(**values)
 
     assert ledger.audit_records() == ()
+    with sqlite3.connect(ledger.path) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM consent_use_attempts"
+        ).fetchone() == (0,)
+
+
+def test_ledger_requires_control_context_for_direct_consent_use_and_revocation(
+    tmp_path,
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    ledger.insert_consent(context(), grant())
+    untrusted = context(origin=OperationOrigin.CHAT)
+    dispatched = []
+    generation = ledger.control_generation()
+
+    with pytest.raises(ValueError, match="authentication"):
+        ledger.authorize_consent_use(
+            context=untrusted,
+            principal_id="participant-a",
+            content_reference="event-001",
+            audience="public-threads",
+            purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+            correlation_id="direct-use-correlation",
+            actor_reference="actor-a",
+            authentication_event_id="auth-event-a",
+            clock=lambda: NOW,
+            dispatch=lambda: dispatched.append("sent"),
+        )
+    with pytest.raises(ValueError, match="authentication"):
+        ledger.insert_revocation(
+            context=untrusted,
+            consent_id="consent-001",
+            operation_id="direct-revocation",
+            principal_id="participant-a",
+            actor_reference="actor-a",
+            authentication_event_id="auth-event-a",
+            revoked_at=NOW,
+            correlation_id="direct-revocation-correlation",
+        )
+
+    assert dispatched == []
+    assert ledger.revocations() == ()
+    assert ledger.control_generation() == generation
     with sqlite3.connect(ledger.path) as connection:
         assert connection.execute(
             "SELECT COUNT(*) FROM consent_use_attempts"
@@ -1412,6 +1463,7 @@ def test_revocation_rolls_back_when_control_generation_is_missing(tmp_path):
 
     with pytest.raises(RuntimeError, match="generation"):
         ledger.insert_revocation(
+            context=context(),
             consent_id="consent-001",
             operation_id="revoke-operation-001",
             principal_id="participant-a",

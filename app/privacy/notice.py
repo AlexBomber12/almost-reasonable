@@ -101,6 +101,7 @@ class NoticeService:
             )
             raise ValueError("unsupported notice version")
         created = self.ledger.acknowledge_notice(
+            context,
             context.principal_id,
             notice_version,
             context.actor_reference,

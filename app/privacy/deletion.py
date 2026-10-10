@@ -69,12 +69,15 @@ class DeletionCoordinator:
 
         if request.content_category is ContentCategory.PUBLIC_ACTION:
             return self._terminal(
-                request, DeletionDisposition.NOT_ELIGIBLE, "public_action_not_erasable"
+                context,
+                request,
+                DeletionDisposition.NOT_ELIGIBLE,
+                "public_action_not_erasable",
             )
 
         if existing is None:
             self.ledger.insert_deletion(
-                request, DeletionDisposition.PENDING, "awaiting_erasure"
+                context, request, DeletionDisposition.PENDING, "awaiting_erasure"
             )
         if after_pending is not None:
             after_pending(request)
@@ -124,9 +127,13 @@ class DeletionCoordinator:
         )
 
     def _terminal(
-        self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
+        self,
+        context: TrustedPrivacyContext,
+        request: DeletionRequest,
+        disposition: DeletionDisposition,
+        reason: str,
     ) -> DeletionOutcome:
-        created = self.ledger.insert_deletion(request, disposition, reason)
+        created = self.ledger.insert_deletion(context, request, disposition, reason)
         if not created:
             record = self.ledger.deletion(request.operation_id)
             return DeletionOutcome(

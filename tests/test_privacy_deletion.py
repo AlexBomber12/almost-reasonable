@@ -113,6 +113,7 @@ def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):
     assert recovered.disposition is DeletionDisposition.APPLIED
     assert (
         coordinator._terminal(
+            context(),
             request(
                 operation_id="delete-operation-public",
                 content_category=ContentCategory.PUBLIC_ACTION,
@@ -129,6 +130,24 @@ def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):
         for entry in ledger.audit_records()
         if entry.action_type == "deletion_rejected"
     } == {rejection_time}
+
+
+def test_ledger_rejects_unauthenticated_direct_deletion_insert(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    generation = ledger.control_generation()
+
+    with pytest.raises(ValueError, match="authentication"):
+        ledger.insert_deletion(
+            context(origin=OperationOrigin.CHAT),
+            request(),
+            DeletionDisposition.PENDING,
+            "awaiting_erasure",
+        )
+
+    with pytest.raises(KeyError):
+        ledger.deletion(request().operation_id)
+    assert ledger.control_generation() == generation
+    assert ledger.audit_records() == ()
 
 
 def test_partial_or_failed_erasure_is_never_completed(tmp_path):
@@ -207,12 +226,16 @@ def test_missing_provenance_and_identity_conflicts_fail_closed(tmp_path):
 
     assert (
         ledger.insert_deletion(
-            request(), DeletionDisposition.PENDING, "ignored-duplicate-reason"
+            context(),
+            request(),
+            DeletionDisposition.PENDING,
+            "ignored-duplicate-reason",
         )
         is False
     )
     with pytest.raises(ValueError, match="operation identity conflict"):
         ledger.insert_deletion(
+            context(),
             request(content_reference="event-003"),
             DeletionDisposition.PENDING,
             "awaiting_erasure",
@@ -253,7 +276,10 @@ def test_concurrent_deletion_ledger_insertion_is_idempotent(tmp_path):
         try:
             results.append(
                 ledger.insert_deletion(
-                    request(), DeletionDisposition.PENDING, "awaiting_erasure"
+                    context(),
+                    request(),
+                    DeletionDisposition.PENDING,
+                    "awaiting_erasure",
                 )
             )
         except Exception as error:
@@ -334,7 +360,9 @@ def test_concurrent_retry_cannot_regress_an_applied_deletion(tmp_path, monkeypat
 def test_deletion_outcome_rolls_back_if_atomic_audit_write_fails(tmp_path, monkeypatch):
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     deletion = request()
-    ledger.insert_deletion(deletion, DeletionDisposition.PENDING, "awaiting_erasure")
+    ledger.insert_deletion(
+        context(), deletion, DeletionDisposition.PENDING, "awaiting_erasure"
+    )
     monkeypatch.setattr(
         ledger,
         "_insert_audit",
@@ -369,7 +397,7 @@ def test_deletion_insert_rolls_back_when_control_generation_is_missing(tmp_path)
 
     with pytest.raises(RuntimeError, match="generation"):
         ledger.insert_deletion(
-            deletion, DeletionDisposition.PENDING, "awaiting_erasure"
+            context(), deletion, DeletionDisposition.PENDING, "awaiting_erasure"
         )
 
     with pytest.raises(KeyError):
@@ -383,15 +411,19 @@ def test_applied_deletion_requires_a_verified_erasure_report(tmp_path):
     generation_before = ledger.control_generation()
 
     with pytest.raises(ValueError, match="disposition"):
-        ledger.insert_deletion(deletion, "pending", "awaiting_erasure")
+        ledger.insert_deletion(context(), deletion, "pending", "awaiting_erasure")
     with pytest.raises(ValueError, match="verified erasure"):
-        ledger.insert_deletion(deletion, DeletionDisposition.APPLIED, "erasure_applied")
+        ledger.insert_deletion(
+            context(), deletion, DeletionDisposition.APPLIED, "erasure_applied"
+        )
     with pytest.raises(KeyError):
         ledger.deletion(deletion.operation_id)
     assert ledger.control_generation() == generation_before
     assert ledger.audit_records() == ()
 
-    ledger.insert_deletion(deletion, DeletionDisposition.PENDING, "awaiting_erasure")
+    ledger.insert_deletion(
+        context(), deletion, DeletionDisposition.PENDING, "awaiting_erasure"
+    )
     audit_before = ledger.audit_records()
     with pytest.raises(ValueError, match="disposition"):
         ledger.update_deletion(deletion, "pending", "awaiting_erasure", NOW)
@@ -432,7 +464,9 @@ def test_deletion_update_rejects_a_missing_operation(tmp_path):
     assert ledger.audit_records() == ()
 
     existing = request()
-    ledger.insert_deletion(existing, DeletionDisposition.PENDING, "awaiting_erasure")
+    ledger.insert_deletion(
+        context(), existing, DeletionDisposition.PENDING, "awaiting_erasure"
+    )
     with pytest.raises(ValueError, match="operation identity conflict"):
         ledger.update_deletion(
             request(content_reference="event-other"),

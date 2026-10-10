@@ -328,21 +328,36 @@ class PrivacyLedger:
             finally:
                 os.close(descriptor)
 
-    def insert_consent(
-        self, context: TrustedPrivacyContext, grant: ConsentGrant
-    ) -> bool:
+    @staticmethod
+    def _require_control_context(
+        context: TrustedPrivacyContext,
+        *,
+        principal_id: str,
+        actor_reference: str,
+        authentication_event_id: str,
+    ) -> None:
         if (
             not isinstance(context, TrustedPrivacyContext)
             or context.origin is not OperationOrigin.CONTROL
         ):
-            raise ValueError("invalid consent authentication")
-        if context.principal_id != grant.principal_id:
-            raise ValueError("invalid consent authorization")
+            raise ValueError("invalid privacy control authentication")
+        if context.principal_id != principal_id:
+            raise ValueError("invalid privacy control authorization")
         if (
-            context.actor_reference != grant.actor_reference
-            or context.authentication_event_id != grant.authentication_event_id
+            context.actor_reference != actor_reference
+            or context.authentication_event_id != authentication_event_id
         ):
-            raise ValueError("invalid consent authentication")
+            raise ValueError("invalid privacy control authentication")
+
+    def insert_consent(
+        self, context: TrustedPrivacyContext, grant: ConsentGrant
+    ) -> bool:
+        self._require_control_context(
+            context,
+            principal_id=grant.principal_id,
+            actor_reference=grant.actor_reference,
+            authentication_event_id=grant.authentication_event_id,
+        )
         values = (
             grant.consent_id,
             grant.operation_id,
@@ -405,6 +420,7 @@ class PrivacyLedger:
     def authorize_consent_use(
         self,
         *,
+        context: TrustedPrivacyContext,
         principal_id: str,
         content_reference: str,
         audience: str,
@@ -423,6 +439,12 @@ class PrivacyLedger:
         require_token(correlation_id, "correlation id")
         require_token(actor_reference, "actor reference")
         require_token(authentication_event_id, "authentication event id")
+        self._require_control_context(
+            context,
+            principal_id=principal_id,
+            actor_reference=actor_reference,
+            authentication_event_id=authentication_event_id,
+        )
         identity = (
             principal_id,
             content_reference,
@@ -593,6 +615,7 @@ class PrivacyLedger:
     def insert_revocation(
         self,
         *,
+        context: TrustedPrivacyContext,
         consent_id: str,
         operation_id: str,
         principal_id: str,
@@ -608,6 +631,12 @@ class PrivacyLedger:
         require_token(authentication_event_id, "authentication event id")
         require_utc(revoked_at, "revocation timestamp")
         require_token(correlation_id, "correlation id")
+        self._require_control_context(
+            context,
+            principal_id=principal_id,
+            actor_reference=actor_reference,
+            authentication_event_id=authentication_event_id,
+        )
         values = (
             consent_id,
             operation_id,
@@ -662,8 +691,18 @@ class PrivacyLedger:
         return tuple((row[0], _time(row[1])) for row in rows)
 
     def insert_deletion(
-        self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
+        self,
+        context: TrustedPrivacyContext,
+        request: DeletionRequest,
+        disposition: DeletionDisposition,
+        reason: str,
     ) -> bool:
+        self._require_control_context(
+            context,
+            principal_id=request.principal_id,
+            actor_reference=request.actor_reference,
+            authentication_event_id=request.authentication_event_id,
+        )
         if not isinstance(disposition, DeletionDisposition):
             raise ValueError("invalid deletion disposition")
         if disposition is DeletionDisposition.APPLIED:
@@ -923,6 +962,7 @@ class PrivacyLedger:
 
     def acknowledge_notice(
         self,
+        context: TrustedPrivacyContext,
         principal_id: str,
         notice_version: str,
         actor_reference: str,
@@ -936,6 +976,12 @@ class PrivacyLedger:
         require_token(authentication_event_id, "authentication event id")
         require_utc(acknowledged_at, "acknowledgement timestamp")
         require_token(correlation_id, "correlation id")
+        self._require_control_context(
+            context,
+            principal_id=principal_id,
+            actor_reference=actor_reference,
+            authentication_event_id=authentication_event_id,
+        )
         values = (
             principal_id,
             notice_version,
