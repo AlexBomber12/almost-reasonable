@@ -62,7 +62,16 @@ class OpenAIWorkerClient:
             InferenceRequest(operation_id, correlation_id, request)
         )
         deadline = time.monotonic() + self._connection_lifetime
-        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        except OSError:
+            return ClientResult(
+                operation_id,
+                correlation_id,
+                CLIENT_COMMUNICATION_FAILURE,
+                0,
+                None,
+            )
         transmitted = False
         try:
             connection.settimeout(min(self._io_timeout, self._connection_lifetime))

@@ -200,6 +200,24 @@ def test_connect_failure_is_distinct_from_uncertain_post_transmission_failure(tm
     assert process.exitcode == 0
 
 
+def test_socket_creation_failure_is_a_pretransmission_communication_failure(
+    tmp_path, monkeypatch
+):
+    client = OpenAIWorkerClient(tmp_path / "worker.sock")
+    monkeypatch.setattr(
+        "app.core.openai_worker_client.socket.socket",
+        lambda *_args: (_ for _ in ()).throw(OSError("descriptor exhausted CANARY")),
+    )
+
+    result = client.infer(
+        request(tmp_path), operation_id="operation-a", correlation_id="correlation-a"
+    )
+
+    assert result.outcome == CLIENT_COMMUNICATION_FAILURE
+    assert result.operation_id == "operation-a"
+    assert "CANARY" not in repr(result)
+
+
 def test_client_does_not_retry_lost_response_under_a_new_operation_id(tmp_path):
     directory = secure_directory(tmp_path)
     socket_path = directory / "worker.sock"
