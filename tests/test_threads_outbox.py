@@ -339,6 +339,24 @@ def test_shared_store_lifecycle_methods_reject_another_accounts_operation(tmp_pa
     assert owner.store.get("operation-1").state is OutboxState.PROPOSED
 
     owner.submit_for_approval("operation-1", now=NOW)
+    foreign_item = owner.store.get("operation-1")
+    with sqlite3.connect(owner.store.database) as connection:
+        foreign_transition_count = connection.execute(
+            "SELECT COUNT(*) FROM threads_outbox_transitions WHERE operation_id=?",
+            ("operation-1",),
+        ).fetchone()[0]
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        other.authorize("operation-1", approve(), now=NOW)
+    assert owner.store.get("operation-1") == foreign_item
+    with sqlite3.connect(owner.store.database) as connection:
+        assert (
+            connection.execute(
+                "SELECT COUNT(*) FROM threads_outbox_transitions WHERE operation_id=?",
+                ("operation-1",),
+            ).fetchone()[0]
+            == foreign_transition_count
+        )
+
     approval = trust_approval(owner, approve(account_ref="account-2"))
     owner.authorize("operation-1", approval, now=NOW)
     owner.simulator.set_fault(
@@ -900,14 +918,23 @@ def test_recovery_cannot_overlap_a_live_dispatcher(tmp_path, monkeypatch):
     ]
 
 
-def test_mutable_policy_is_rechecked_after_authorization_lookup(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    "policy_field, policy_value, message",
+    [
+        ("emergency_stop", True, "stop"),
+        ("account_ref", "account-2", "account mismatch"),
+    ],
+)
+def test_mutable_policy_is_rechecked_after_authorization_lookup(
+    tmp_path, monkeypatch, policy_field, policy_value, message
+):
     service = make_service(tmp_path)
     _, approval = ready(service)
     current_privacy = service.authorization_provider.current_privacy_authorized
 
     def authorize_privacy_then_stop(**kwargs):
         result = current_privacy(**kwargs)
-        service.policy.emergency_stop = True
+        setattr(service.policy, policy_field, policy_value)
         return result
 
     monkeypatch.setattr(
@@ -915,7 +942,7 @@ def test_mutable_policy_is_rechecked_after_authorization_lookup(tmp_path, monkey
         "current_privacy_authorized",
         authorize_privacy_then_stop,
     )
-    with pytest.raises(PolicyDeniedError, match="stop"):
+    with pytest.raises(PolicyDeniedError, match=message):
         service.dispatch("operation-1", approval, now=NOW)
     assert service.store.get("operation-1").state is OutboxState.READY
     assert service.simulator.trace == []

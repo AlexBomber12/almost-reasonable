@@ -141,7 +141,7 @@ class ThreadsService:
     def authorize(
         self, operation_id: str, approval: Approval, *, now: datetime
     ) -> OutboxItem:
-        item = self.store.get(operation_id)
+        item = self._require_owned_item(operation_id)
         try:
             current_approval = self._check_ready_policy(item, approval, now=now)
             validate_approval(
