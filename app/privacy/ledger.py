@@ -174,14 +174,27 @@ class PrivacyLedger:
                 "WHERE operation_id=? OR consent_id=?",
                 (grant.operation_id, grant.consent_id),
             ).fetchone()
+            created = existing is None
             if existing is not None:
                 if existing != values:
                     raise ValueError("consent operation identity conflict")
-                return False
-            connection.execute(
-                "INSERT INTO consent_grants VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values
+            else:
+                connection.execute(
+                    "INSERT INTO consent_grants VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values
+                )
+            self._insert_audit(
+                connection,
+                AuditRecord(
+                    grant.correlation_id,
+                    grant.actor_reference,
+                    "consent_grant",
+                    "consent",
+                    grant.granted_at,
+                    "granted" if created else "already_granted",
+                    "payload_free",
+                ),
             )
-        return True
+        return created
 
     def matching_consent(
         self,
@@ -241,18 +254,31 @@ class PrivacyLedger:
                 "FROM consent_revocations WHERE consent_id=? OR operation_id=?",
                 (consent_id, operation_id),
             ).fetchone()
+            created = existing is None
             if existing is not None:
                 if existing != values:
                     raise ValueError("revocation operation identity conflict")
-                return False
-            connection.execute(
-                "INSERT INTO consent_revocations VALUES(?,?,?,?,?,?,?)", values
+            else:
+                connection.execute(
+                    "INSERT INTO consent_revocations VALUES(?,?,?,?,?,?,?)", values
+                )
+                connection.execute(
+                    "UPDATE privacy_control_generation SET generation=generation+1 "
+                    "WHERE singleton=1"
+                )
+            self._insert_audit(
+                connection,
+                AuditRecord(
+                    correlation_id,
+                    actor_reference,
+                    "consent_revocation",
+                    "consent",
+                    revoked_at,
+                    "revoked" if created else "already_revoked",
+                    "payload_free",
+                ),
             )
-            connection.execute(
-                "UPDATE privacy_control_generation SET generation=generation+1 "
-                "WHERE singleton=1"
-            )
-        return True
+        return created
 
     def revocations(self) -> tuple[tuple[str, datetime], ...]:
         with self._open() as connection:
@@ -388,20 +414,25 @@ class PrivacyLedger:
 
     def record_audit(self, record: AuditRecord) -> None:
         with self._open() as connection:
-            connection.execute(
-                "INSERT INTO privacy_audit(correlation_id, actor_reference, action_type, "
-                "record_category, occurred_at, result_code, redaction_status) "
-                "VALUES(?,?,?,?,?,?,?)",
-                (
-                    record.correlation_id,
-                    record.actor_reference,
-                    record.action_type,
-                    record.record_category,
-                    _stamp(record.occurred_at),
-                    record.result_code,
-                    record.redaction_status,
-                ),
-            )
+            self._insert_audit(connection, record)
+
+    def _insert_audit(
+        self, connection: sqlite3.Connection, record: AuditRecord
+    ) -> None:
+        connection.execute(
+            "INSERT INTO privacy_audit(correlation_id, actor_reference, action_type, "
+            "record_category, occurred_at, result_code, redaction_status) "
+            "VALUES(?,?,?,?,?,?,?)",
+            (
+                record.correlation_id,
+                record.actor_reference,
+                record.action_type,
+                record.record_category,
+                _stamp(record.occurred_at),
+                record.result_code,
+                record.redaction_status,
+            ),
+        )
 
     def audit_records(self) -> tuple[AuditRecord, ...]:
         with self._open() as connection:

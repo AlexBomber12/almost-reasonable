@@ -65,6 +65,7 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
     assert consent.grant(context(), grant()).created is False
     assert (
         consent.authorize(
+            context(),
             principal_id="participant-a",
             content_reference="event-001",
             audience="public-threads",
@@ -91,6 +92,7 @@ def test_exact_consent_use_and_idempotent_authenticated_revocation(service):
     )
     assert (first.created, second.created) == (True, False)
     denied = consent.authorize(
+        context(),
         principal_id="participant-a",
         content_reference="event-001",
         audience="public-threads",
@@ -121,9 +123,13 @@ def test_future_revocation_does_not_take_effect_early(service):
         "purpose": ConsentPurpose.IDENTIFIABLE_QUOTATION,
         "correlation_id": "future-revocation-use",
     }
-    assert consent.authorize(used_at=NOW + timedelta(minutes=29), **request).allowed
+    assert consent.authorize(
+        context(), used_at=NOW + timedelta(minutes=29), **request
+    ).allowed
     assert (
-        consent.authorize(used_at=NOW + timedelta(minutes=30), **request).reason
+        consent.authorize(
+            context(), used_at=NOW + timedelta(minutes=30), **request
+        ).reason
         == "revoked"
     )
     assert ledger.revocations() == (("consent-001", NOW + timedelta(minutes=30)),)
@@ -151,7 +157,7 @@ def test_consent_fails_closed_for_scope_or_expiry(service, overrides, reason):
         "correlation_id": "use-correlation-003",
     }
     request.update(overrides)
-    result = consent.authorize(**request)
+    result = consent.authorize(context(), **request)
     assert (result.allowed, result.reason) == (False, reason)
 
 
@@ -221,6 +227,7 @@ def test_consent_rejects_privilege_purpose_and_conflicting_operation(service):
         grant().revision = 2
     with pytest.raises(ValueError, match="purpose"):
         consent.authorize(
+            context(),
             principal_id="participant-a",
             content_reference="event-001",
             audience="public-threads",
@@ -338,6 +345,7 @@ def test_privacy_ledger_survives_restart_and_rejects_bad_schema(tmp_path):
     assert (
         ConsentService(PrivacyLedger(path))
         .authorize(
+            context(),
             principal_id="participant-a",
             content_reference="event-001",
             audience="public-threads",
@@ -451,6 +459,59 @@ def test_concurrent_consent_revocation_and_notice_retries_are_idempotent(tmp_pat
             )
         )
     ) == [False, True]
+
+
+def test_consent_use_requires_control_origin_and_audits_decision(service):
+    consent, ledger = service
+    consent.grant(context(), grant())
+    result = consent.authorize(
+        context(origin=OperationOrigin.CHAT),
+        principal_id="participant-a",
+        content_reference="event-001",
+        audience="public-threads",
+        purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        used_at=NOW,
+        correlation_id="chat-consent-use",
+    )
+    assert (result.allowed, result.reason) == (False, "invalid_authentication")
+    audit = ledger.audit_records()[-1]
+    assert (audit.actor_reference, audit.result_code) == (
+        "actor-a",
+        "invalid_authentication",
+    )
+
+
+def test_grant_rolls_back_if_atomic_audit_write_fails(tmp_path, monkeypatch):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    consent = ConsentService(ledger)
+    monkeypatch.setattr(
+        ledger,
+        "_insert_audit",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("audit failure")),
+    )
+    with pytest.raises(RuntimeError, match="audit failure"):
+        consent.grant(context(), grant())
+    assert ledger.consent_principal("consent-001") is None
+
+
+def test_revocation_rolls_back_if_atomic_audit_write_fails(tmp_path, monkeypatch):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    consent = ConsentService(ledger)
+    consent.grant(context(), grant())
+    monkeypatch.setattr(
+        ledger,
+        "_insert_audit",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("audit failure")),
+    )
+    with pytest.raises(RuntimeError, match="audit failure"):
+        consent.revoke(
+            context(),
+            consent_id="consent-001",
+            operation_id="revoke-audit-failure",
+            revoked_at=NOW,
+            correlation_id="revoke-audit-failure-correlation",
+        )
+    assert ledger.revocations() == ()
 
 
 def test_interrupted_first_initialization_rolls_back_complete_schema(

@@ -49,11 +49,11 @@ class ConsentService:
             return OperationResult(False, reason)
         created = self.ledger.insert_consent(grant)
         reason = "granted" if created else "already_granted"
-        self._audit(grant, "consent_grant", reason)
         return OperationResult(created, reason)
 
     def authorize(
         self,
+        context: TrustedPrivacyContext,
         *,
         principal_id: str,
         content_reference: str,
@@ -69,19 +69,36 @@ class ConsentService:
         require_utc(used_at, "use timestamp")
         if not isinstance(purpose, ConsentPurpose):
             raise ValueError("invalid consent purpose")
-        match = self.ledger.matching_consent(
-            principal_id, content_reference, audience, purpose
+        if context.origin is not OperationOrigin.CONTROL:
+            result = ConsentUseResult(False, "invalid_authentication")
+        else:
+            match = self.ledger.matching_consent(
+                principal_id, content_reference, audience, purpose
+            )
+            if match is None:
+                result = ConsentUseResult(False, "no_matching_consent")
+            else:
+                consent_id, granted_at, expires_at, revoked_at = match
+                if used_at < granted_at:
+                    result = ConsentUseResult(False, "not_yet_valid", consent_id)
+                elif revoked_at is not None and used_at >= revoked_at:
+                    result = ConsentUseResult(False, "revoked", consent_id)
+                elif used_at >= expires_at:
+                    result = ConsentUseResult(False, "expired", consent_id)
+                else:
+                    result = ConsentUseResult(True, "authorized", consent_id)
+        self.ledger.record_audit(
+            AuditRecord(
+                correlation_id,
+                context.actor_reference,
+                "consent_use",
+                "consent",
+                used_at,
+                result.reason,
+                "payload_free",
+            )
         )
-        if match is None:
-            return ConsentUseResult(False, "no_matching_consent")
-        consent_id, granted_at, expires_at, revoked_at = match
-        if used_at < granted_at:
-            return ConsentUseResult(False, "not_yet_valid", consent_id)
-        if revoked_at is not None and used_at >= revoked_at:
-            return ConsentUseResult(False, "revoked", consent_id)
-        if used_at >= expires_at:
-            return ConsentUseResult(False, "expired", consent_id)
-        return ConsentUseResult(True, "authorized", consent_id)
+        return result
 
     def revoke(
         self,
@@ -115,17 +132,6 @@ class ConsentService:
                 correlation_id=correlation_id,
             )
             reason = "revoked" if created else "already_revoked"
-            self.ledger.record_audit(
-                AuditRecord(
-                    correlation_id,
-                    context.actor_reference,
-                    "consent_revocation",
-                    "consent",
-                    revoked_at,
-                    reason,
-                    "payload_free",
-                )
-            )
             return OperationResult(created, reason)
         self.ledger.record_audit(
             AuditRecord(
@@ -146,14 +152,12 @@ class ConsentService:
         action: str,
         result: str,
         *,
-        actor_reference: str | None = None,
+        actor_reference: str,
     ) -> None:
         self.ledger.record_audit(
             AuditRecord(
                 grant.correlation_id,
-                actor_reference
-                if actor_reference is not None
-                else grant.actor_reference,
+                actor_reference,
                 action,
                 "consent",
                 grant.granted_at,

@@ -22,6 +22,12 @@ purpose grants administrative or infrastructure
 privilege. Revocation prevents later use; it cannot recall an earlier
 publication or external transmission.
 
+Consent use requires a trusted control context and writes a payload-free audit
+decision for every allow or denial before returning. Valid grant/revocation
+state and its audit row commit in the same privacy-ledger transaction; an audit
+write failure rolls back the control state. Rejected-operation audits attribute
+the trusted context actor rather than submitted grant fields.
+
 Ordinary derivatives must retain every source audience. The only proposed
 cross-scope transition is `abstract_to_shared`. Its validator rejects explicit
 identifier, private-canary, personal-information, quotation, recognizable
