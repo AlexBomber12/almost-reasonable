@@ -113,6 +113,7 @@ class MemoryContextSelector:
             confidence = None
             priority = candidate.strength
             stance = None
+            counterevidence_count = 0
             verification = VerificationStatus.UNVERIFIED
         elif isinstance(candidate, BeliefCandidate):
             kind = MemoryKind.BELIEF_OR_HYPOTHESIS
@@ -120,6 +121,7 @@ class MemoryContextSelector:
             confidence = candidate.confidence
             priority = None
             stance = candidate.stance
+            counterevidence_count = candidate.conflicting_evidence_count
             verification = candidate.verification
         else:
             kind = MemoryKind.GOAL_OR_INTENTION
@@ -127,6 +129,7 @@ class MemoryContextSelector:
             confidence = None
             priority = candidate.priority
             stance = None
+            counterevidence_count = 0
             verification = VerificationStatus.UNVERIFIED
         provenance = {
             DecisionOrigin.MODEL: ProvenanceType.MODEL_INFERENCE,
@@ -141,6 +144,7 @@ class MemoryContextSelector:
             "" if confidence is None else str(confidence),
             "" if priority is None else str(priority),
             "" if stance is None else stance.value,
+            str(counterevidence_count),
             verification.value,
             provenance.value,
             recency.isoformat(),
@@ -157,6 +161,7 @@ class MemoryContextSelector:
             confidence=confidence,
             priority=priority,
             stance=stance,
+            counterevidence_count=counterevidence_count,
             verification=verification,
             provenance=provenance,
             recency=recency,

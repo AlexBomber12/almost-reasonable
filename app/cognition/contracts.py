@@ -326,6 +326,7 @@ class MemoryRecord:
     confidence: float | None
     priority: int | None
     stance: BeliefStance | None
+    counterevidence_count: int
     verification: VerificationStatus
     provenance: ProvenanceType
     recency: datetime

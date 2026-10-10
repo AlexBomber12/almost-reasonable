@@ -385,13 +385,13 @@ def test_retrieval_limits_and_identifiers_are_validated(
 
 
 def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_setup):
-    events, state, context, _, event_id, _ = retrieval_setup
+    events, state, context, _, event_id, counter_event_id = retrieval_setup
     belief = BeliefMemoryProposal(
         ProposalContext(
             "operation-retrieve-belief",
             event_id,
             (event_id,),
-            (),
+            (counter_event_id,),
             None,
             "A synthetic belief rationale.",
             NOW + timedelta(minutes=6),
@@ -442,6 +442,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert belief_record.priority is None
     assert belief_record.stance is BeliefStance.OPPOSES
     assert belief_record.provenance is ProvenanceType.MODEL_INFERENCE
+    assert belief_record.counterevidence_count == 1
     serialized_values = (
         belief_record.item_id,
         belief_record.memory_kind.value,
@@ -451,6 +452,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
         str(belief_record.confidence),
         "",
         belief_record.stance.value,
+        str(belief_record.counterevidence_count),
         belief_record.verification.value,
         belief_record.provenance.value,
         belief_record.recency.isoformat(),
@@ -463,6 +465,7 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
     assert by_id["goal-retrieval"].confidence is None
     assert by_id["goal-retrieval"].priority == 65
     assert by_id["goal-retrieval"].stance is None
+    assert by_id["goal-retrieval"].counterevidence_count == 0
 
 
 def test_ranking_considers_authorized_candidates_beyond_core_result_cap(
