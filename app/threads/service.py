@@ -19,6 +19,8 @@ from .domain import (
     PublicationType,
     SourceProvenance,
     Stage,
+    authenticated_approval_reference,
+    content_fingerprint,
     require_aware_time,
     validate_approval,
 )
@@ -30,7 +32,12 @@ from .simulator import (
     ThreadsSimulator,
     simulated_provider_id,
 )
-from .store import ActiveEffectWorkerError, ThreadsStore, ThreadsStoreError
+from .store import (
+    ActiveEffectWorkerError,
+    PollCommitDeadlineError,
+    ThreadsStore,
+    ThreadsStoreError,
+)
 
 
 MAX_DISPATCH_ATTEMPTS = 2
@@ -135,15 +142,24 @@ class ThreadsService:
         self, operation_id: str, approval: Approval, *, now: datetime
     ) -> OutboxItem:
         item = self.store.get(operation_id)
-        current_approval = self._check_ready_policy(item, approval, now=now)
-        validate_approval(
-            current_approval,
-            account_ref=item.account_ref,
-            operation_id=item.operation_id,
-            now=self.utc_now(),
-            require_duplicate_ack=item.replacement_of is not None,
-            purpose=ApprovalPurpose.PUBLICATION,
-        )
+        try:
+            current_approval = self._check_ready_policy(item, approval, now=now)
+            validate_approval(
+                current_approval,
+                account_ref=item.account_ref,
+                operation_id=item.operation_id,
+                now=self.utc_now(),
+                require_duplicate_ack=item.replacement_of is not None,
+                purpose=ApprovalPurpose.PUBLICATION,
+            )
+        except (PolicyDeniedError, ValueError):
+            self._audit_policy_denial(
+                item,
+                approval,
+                phase="authorize",
+                expected_state=OutboxState.AWAITING_APPROVAL,
+            )
+            raise
         return self.store.transition(
             operation_id,
             OutboxState.READY,
@@ -180,7 +196,16 @@ class ThreadsService:
         item = self.store.get(operation_id)
         if item.state is not OutboxState.READY:
             raise ThreadsStoreError("only a ready operation can be dispatched")
-        current_approval = self._check_ready_policy(item, approval, now=now)
+        try:
+            current_approval = self._check_ready_policy(item, approval, now=now)
+        except (PolicyDeniedError, ValueError):
+            self._audit_policy_denial(
+                item,
+                approval,
+                phase="dispatch",
+                expected_state=OutboxState.READY,
+            )
+            raise
         item = self.store.transition(
             operation_id,
             OutboxState.SENDING,
@@ -555,15 +580,24 @@ class ThreadsService:
                 raise PollingError("poll event limit reached")
             if page.next_cursor is not None and page.next_cursor in seen_cursors:
                 raise PollingError("pagination cursor loop detected")
-            inserted, duplicate_count = self.store.commit_poll_page(
-                account_ref=self.policy.account_ref,
-                stream=stream,
-                verified_source_ref=page.source_ref,
-                expected_cursor=cursor,
-                next_cursor=page.next_cursor,
-                events=page.events,
-                now=now,
-            )
+            elapsed = self.clock() - started
+            remaining = timeout_seconds - elapsed
+            if remaining <= 0:
+                raise PollingError("poll time limit reached")
+            try:
+                inserted, duplicate_count = self.store.commit_poll_page(
+                    account_ref=self.policy.account_ref,
+                    stream=stream,
+                    verified_source_ref=page.source_ref,
+                    expected_cursor=cursor,
+                    next_cursor=page.next_cursor,
+                    events=page.events,
+                    now=now,
+                    lock_wait_seconds=min(5.0, remaining),
+                    deadline_check=lambda: (self.clock() - started < timeout_seconds),
+                )
+            except PollCommitDeadlineError as error:
+                raise PollingError("poll time limit reached") from error
             collected.extend(inserted)
             duplicates += duplicate_count
             fetched_count += len(page.events)
@@ -584,6 +618,31 @@ class ThreadsService:
         if item.account_ref != self.policy.account_ref:
             raise PolicyDeniedError("outbound account mismatch")
         return item
+
+    def _audit_policy_denial(
+        self,
+        item: OutboxItem,
+        approval: object,
+        *,
+        phase: str,
+        expected_state: OutboxState,
+    ) -> None:
+        approval_reference = authenticated_approval_reference(
+            approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+        )
+        actor = (
+            "unauthenticated"
+            if approval_reference is None
+            else f"approval-{content_fingerprint(approval_reference)[:16]}"
+        )
+        self.store.record_policy_denial(
+            item.operation_id,
+            expected_state=expected_state,
+            reason=f"{phase}_policy_denied_{actor}",
+            now=self.utc_now(),
+        )
 
     def _check_ready_policy(
         self, item: OutboxItem, approval: Approval, *, now: datetime

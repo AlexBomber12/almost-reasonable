@@ -1,6 +1,6 @@
 """Dedicated versioned SQLite outbox and inbound cursor store."""
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from datetime import datetime
 import fcntl
@@ -70,6 +70,10 @@ class CursorConflictError(ThreadsStoreError):
     """A polling page was based on a stale durable cursor."""
 
 
+class PollCommitDeadlineError(ThreadsStoreError):
+    """A poll page could not commit within its remaining time budget."""
+
+
 class ActiveEffectWorkerError(ThreadsStoreError):
     """Recovery overlapped a live external-effect worker."""
 
@@ -80,11 +84,11 @@ class ThreadsStore:
         self.database.parent.mkdir(parents=True, exist_ok=True)
         self._initialize()
 
-    def _open(self) -> sqlite3.Connection:
+    def _open(self, *, busy_timeout_ms: int = 5000) -> sqlite3.Connection:
         connection = sqlite3.connect(self.database, isolation_level=None)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
-        connection.execute("PRAGMA busy_timeout = 5000")
+        connection.execute(f"PRAGMA busy_timeout = {busy_timeout_ms}")
         return connection
 
     def _initialize(self) -> None:
@@ -291,6 +295,47 @@ class ThreadsStore:
         if row is None:
             raise ThreadsStoreError("unknown operation")
         return _outbox_item(row)
+
+    def record_policy_denial(
+        self,
+        operation_id: str,
+        *,
+        expected_state: OutboxState,
+        reason: str,
+        now: datetime,
+    ) -> OutboxItem:
+        require_reference("operation ID", operation_id)
+        if type(expected_state) is not OutboxState:
+            raise ValueError("invalid expected outbox state")
+        require_reference("policy denial reason", reason)
+        require_aware_time("policy denial time", now)
+        with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            if row is None or OutboxState(row["state"]) is not expected_state:
+                raise ThreadsStoreError("policy denial state changed before audit")
+            revision = row["revision"] + 1
+            connection.execute(
+                "UPDATE threads_outbox SET revision=?, updated_at=? "
+                "WHERE operation_id=?",
+                (revision, now.isoformat(), operation_id),
+            )
+            self._record_transition(
+                connection,
+                operation_id,
+                expected_state,
+                expected_state,
+                revision,
+                reason,
+                now.isoformat(),
+            )
+            result = connection.execute(
+                "SELECT * FROM threads_outbox WHERE operation_id=?", (operation_id,)
+            ).fetchone()
+            connection.commit()
+        return _outbox_item(result)
 
     @contextmanager
     def account_dispatch_guard(self, account_ref: str) -> Iterator[None]:
@@ -791,6 +836,8 @@ class ThreadsStore:
         next_cursor: str | None,
         events: Iterable[InboundEvent],
         now: datetime,
+        lock_wait_seconds: float = 5.0,
+        deadline_check: Callable[[], bool] | None = None,
     ) -> tuple[tuple[InboundEvent, ...], int]:
         require_reference("account reference", account_ref)
         if type(stream) is not InboundKind:
@@ -800,9 +847,25 @@ class ThreadsStore:
             if cursor is not None:
                 require_reference("pagination cursor", cursor)
         require_aware_time("poll commit time", now)
+        if type(lock_wait_seconds) not in {int, float} or not (
+            0 < lock_wait_seconds <= 5.0
+        ):
+            raise ValueError("invalid poll commit lock wait")
+        if deadline_check is not None and not callable(deadline_check):
+            raise ValueError("invalid poll commit deadline check")
         page = tuple(events)
-        with self._open() as connection:
-            connection.execute("BEGIN IMMEDIATE")
+        busy_timeout_ms = max(1, int(lock_wait_seconds * 1000))
+        with self._open(busy_timeout_ms=busy_timeout_ms) as connection:
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+            except sqlite3.OperationalError as error:
+                if "locked" in str(error).casefold():
+                    raise PollCommitDeadlineError(
+                        "poll page commit exceeded its lock-wait budget"
+                    ) from error
+                raise
+            if deadline_check is not None and not deadline_check():
+                raise PollCommitDeadlineError("poll page commit deadline reached")
             row = connection.execute(
                 "SELECT cursor FROM threads_poll_cursors WHERE account_ref=? AND stream=?",
                 (account_ref, stream.value),
@@ -853,6 +916,8 @@ class ThreadsStore:
                     if existing is None or tuple(existing) != expected_event:
                         raise ThreadsStoreError("inbound event identity conflict")
                     duplicates += 1
+            if deadline_check is not None and not deadline_check():
+                raise PollCommitDeadlineError("poll page commit deadline reached")
             connection.execute(
                 """INSERT INTO threads_poll_cursors(account_ref, stream, cursor, updated_at)
                    VALUES (?, ?, ?, ?)

@@ -407,6 +407,51 @@ def test_revocation_or_privacy_change_before_dispatch_blocks_all_effects(tmp_pat
     assert private.simulator.trace == []
 
 
+@pytest.mark.parametrize("phase", ["authorize", "dispatch", "unauthenticated"])
+def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
+    service = make_service(tmp_path)
+    if phase == "authorize":
+        propose(service)
+        service.submit_for_approval("operation-1", now=NOW)
+        approval = trust_approval(service, approve())
+        service.policy.emergency_stop = True
+        expected_actor = f"approval-{content_fingerprint(approval.reference)[:16]}"
+        with pytest.raises(PolicyDeniedError, match="stop"):
+            service.authorize("operation-1", approval, now=NOW)
+        expected_state = OutboxState.AWAITING_APPROVAL
+        expected_phase = "authorize"
+    elif phase == "dispatch":
+        _, approval = ready(service)
+        service.authorization_provider.set_approval(approve(revoked=True))
+        expected_actor = f"approval-{content_fingerprint(approval.reference)[:16]}"
+        with pytest.raises(ValueError, match="revoked"):
+            service.dispatch("operation-1", approval, now=NOW)
+        expected_state = OutboxState.READY
+        expected_phase = "dispatch"
+    else:
+        propose(service)
+        service.submit_for_approval("operation-1", now=NOW)
+        expected_actor = "unauthenticated"
+        with pytest.raises(ValueError, match="authenticated"):
+            service.authorize("operation-1", object(), now=NOW)
+        expected_state = OutboxState.AWAITING_APPROVAL
+        expected_phase = "authorize"
+
+    item = service.store.get("operation-1")
+    assert item.state is expected_state
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT transition.reason, outbox.correlation_id "
+            "FROM threads_outbox_transitions AS transition "
+            "JOIN threads_outbox AS outbox USING(operation_id) "
+            "WHERE transition.operation_id=? ORDER BY transition.revision DESC LIMIT 1",
+            ("operation-1",),
+        ).fetchone() == (
+            f"{expected_phase}_policy_denied_{expected_actor}",
+            "correlation-operation-1",
+        )
+
+
 def test_authorization_provider_contract_fails_closed_on_bad_current_data(
     tmp_path, monkeypatch
 ):
@@ -1692,6 +1737,27 @@ def test_unknown_effect_lock_validation_fails_closed(tmp_path):
     with pytest.raises(ValueError, match="account reference"):
         with service.store.account_dispatch_guard("bad value"):
             pass
+    with pytest.raises(ValueError, match="expected outbox state"):
+        service.store.record_policy_denial(
+            "operation-1",
+            expected_state="proposed",
+            reason="authorize_policy_denied_unauthenticated",
+            now=NOW,
+        )
+    with pytest.raises(ThreadsStoreError, match="state changed"):
+        service.store.record_policy_denial(
+            "missing",
+            expected_state=OutboxState.PROPOSED,
+            reason="authorize_policy_denied_unauthenticated",
+            now=NOW,
+        )
+    with pytest.raises(ThreadsStoreError, match="state changed"):
+        service.store.record_policy_denial(
+            "operation-1",
+            expected_state=OutboxState.READY,
+            reason="authorize_policy_denied_unauthenticated",
+            now=NOW,
+        )
 
 
 def test_stage_three_readiness_explicitly_reports_missing_live_transport(tmp_path):

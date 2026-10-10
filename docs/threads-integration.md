@@ -148,13 +148,19 @@ dispatch-marker write, so no intervening store update creates an authorization
 gap before the provider call. After all potentially blocking authorization
 lookups, the accepted approval is validated again against a freshly sampled
 clock before readiness and before each external effect. Revocation, expiry,
-consent withdrawal, or
-control-plane unavailability after proposal or approval therefore blocks the
-next effect. The approval actually accepted for dispatch replaces the stored
+consent withdrawal, or control-plane unavailability after proposal or approval
+therefore blocks the next effect. The approval actually accepted for dispatch
+replaces the stored
 approval reference atomically with the durable sending transition. A stop
 activated before either call blocks it. A stop activated after a request is in
 flight cannot retract an already accepted effect; the resulting success or
 uncertainty is recorded honestly.
+
+A failed initial readiness or dispatch authorization is also durable audit
+evidence: the outbox revision advances with a same-state transition that keeps
+the operation correlation and records the phase plus either a bounded hash of
+the authentic operation-bound approval reference or `unauthenticated`. It does
+not overwrite the approval attribution of an accepted publication.
 
 After the last pre-effect authorization check and before the first provider
 request, dispatch atomically verifies account uncertainty and acquires one
@@ -235,11 +241,14 @@ identity with different immutable event data is rejected as a conflict, and
 the page cursor is not advanced. Conversation outcomes retain the same scoped
 identity in their foreign key.
 
-The loop has hard page, event, and elapsed-time limits. It rejects account/source
-mismatches, invalid source evidence, stale cursor commits, repeated cursors, and
-oversized pages. Public text is inert data even when it claims to be Meta, the
-owner, or an administrator. No inbound event calls a model or creates a reply by
-itself.
+The loop has hard page, event, and elapsed-time limits. Before an atomic page
+commit it passes only the remaining time budget to SQLite's lock wait, then
+checks the deadline after acquiring the write transaction and again before the
+cursor write; an expired transaction rolls back the page. It rejects
+account/source mismatches, invalid source evidence, stale cursor commits,
+repeated cursors, and oversized pages. Public text is inert data even when it
+claims to be Meta, the owner, or an administrator. No inbound event calls a
+model or creates a reply by itself.
 
 Conversation handling records `no_action`, supported `defer` with a resumption
 condition, `terminate_conversation`, or `cooldown` separately from delivery

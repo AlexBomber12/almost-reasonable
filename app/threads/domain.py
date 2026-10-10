@@ -265,6 +265,21 @@ def validate_approval(
         raise ValueError("duplicate risk was not acknowledged")
 
 
+def authenticated_approval_reference(
+    approval: object, *, account_ref: str, operation_id: str
+) -> str | None:
+    """Return attribution only for an authentic approval bound to this operation."""
+
+    if (
+        type(approval) is Approval
+        and approval._authority is _APPROVAL_AUTHORITY
+        and approval.account_ref == account_ref
+        and approval.operation_id == operation_id
+    ):
+        return approval.reference
+    return None
+
+
 def validate_content(content: object, *, inbound: bool = False) -> str:
     if not isinstance(content, str) or not content or "\x00" in content:
         raise ValueError("invalid content")

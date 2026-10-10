@@ -18,7 +18,12 @@ from app.threads.simulator import (
     SimulatedCrash,
     ThreadsSimulator,
 )
-from app.threads.store import CursorConflictError, ThreadsStore, ThreadsStoreError
+from app.threads.store import (
+    CursorConflictError,
+    PollCommitDeadlineError,
+    ThreadsStore,
+    ThreadsStoreError,
+)
 
 
 NOW = datetime(2026, 10, 10, 12, tzinfo=UTC)
@@ -185,6 +190,108 @@ def test_stale_cursor_page_cannot_overwrite_newer_progress(tmp_path):
         )
 
 
+def test_poll_page_commit_deadline_rolls_back_events_and_cursor(tmp_path):
+    store = service(tmp_path).store
+    checks = iter((True, False))
+    with pytest.raises(ThreadsStoreError, match="deadline"):
+        store.commit_poll_page(
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor="cursor-late",
+            events=(event("late"),),
+            now=NOW,
+            lock_wait_seconds=0.1,
+            deadline_check=lambda: next(checks),
+        )
+    assert store.cursor("account-1", InboundKind.REPLY) is None
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM threads_inbound_events"
+        ).fetchone() == (0,)
+    with pytest.raises(ThreadsStoreError, match="deadline"):
+        store.commit_poll_page(
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor="cursor-late",
+            events=(),
+            now=NOW,
+            lock_wait_seconds=0.1,
+            deadline_check=lambda: False,
+        )
+
+
+def test_poll_page_lock_wait_is_bounded_by_remaining_budget(tmp_path):
+    store = service(tmp_path).store
+    blocker = sqlite3.connect(store.database, isolation_level=None)
+    blocker.execute("BEGIN IMMEDIATE")
+    try:
+        with pytest.raises(ThreadsStoreError, match="lock-wait budget"):
+            store.commit_poll_page(
+                account_ref="account-1",
+                stream=InboundKind.REPLY,
+                verified_source_ref="meta-simulator-v1",
+                expected_cursor=None,
+                next_cursor="cursor-blocked",
+                events=(event("blocked"),),
+                now=NOW,
+                lock_wait_seconds=0.001,
+                deadline_check=lambda: True,
+            )
+    finally:
+        blocker.rollback()
+        blocker.close()
+    assert store.cursor("account-1", InboundKind.REPLY) is None
+
+
+def test_poll_page_preserves_non_locking_database_errors(tmp_path, monkeypatch):
+    store = service(tmp_path).store
+
+    class BrokenConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, _statement):
+            raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(store, "_open", lambda **_kwargs: BrokenConnection())
+    with pytest.raises(sqlite3.OperationalError, match="disk I/O"):
+        store.commit_poll_page(
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor=None,
+            events=(),
+            now=NOW,
+            lock_wait_seconds=0.1,
+            deadline_check=lambda: True,
+        )
+
+
+def test_poll_maps_commit_deadline_to_bounded_polling_error(tmp_path, monkeypatch):
+    threads = service(tmp_path)
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor=None,
+        events=(event("late"),),
+    )
+
+    def exceed_deadline(**_kwargs):
+        raise PollCommitDeadlineError("late commit")
+
+    monkeypatch.setattr(threads.store, "commit_poll_page", exceed_deadline)
+    with pytest.raises(PollingError, match="time limit"):
+        threads.poll(InboundKind.REPLY, now=NOW)
+
+
 def test_flood_page_and_time_step_limits_fail_closed(tmp_path):
     threads = service(tmp_path)
     threads.simulator.add_poll_page(
@@ -209,6 +316,20 @@ def test_slow_terminal_page_exceeding_deadline_is_not_committed(tmp_path):
         cursor=None,
         next_cursor=None,
         events=(event("slow"),),
+    )
+    with pytest.raises(PollingError, match="time limit"):
+        threads.poll(InboundKind.REPLY, now=NOW)
+    assert threads.store.cursor("account-1", InboundKind.REPLY) is None
+
+
+def test_deadline_expiry_before_commit_budget_is_computed(tmp_path):
+    times = iter((0.0, 0.0, 0.0, 31.0))
+    threads = service(tmp_path, clock=lambda: next(times))
+    threads.simulator.add_poll_page(
+        stream=InboundKind.REPLY,
+        cursor=None,
+        next_cursor=None,
+        events=(event("late-budget"),),
     )
     with pytest.raises(PollingError, match="time limit"):
         threads.poll(InboundKind.REPLY, now=NOW)
@@ -429,6 +550,9 @@ def test_cursor_commit_validates_boundary_arguments(tmp_path):
         {"expected_cursor": "bad value"},
         {"next_cursor": "bad value"},
         {"now": datetime(2026, 1, 1)},
+        {"lock_wait_seconds": 0},
+        {"lock_wait_seconds": True},
+        {"deadline_check": object()},
     ]
     values = {
         "account_ref": "account-1",
