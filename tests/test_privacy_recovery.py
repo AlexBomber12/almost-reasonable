@@ -145,6 +145,21 @@ def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
     assert stat.S_IMODE(metadata.path.stat().st_mode) == 0o600
 
 
+def test_backup_percent_escapes_sqlite_uri_metacharacters(tmp_path):
+    source = tmp_path / "source#snapshot?.sqlite3"
+    make_source(source, "literal metacharacter source").close()
+    decoy = tmp_path / "source"
+    make_source(decoy, "wrong database").close()
+    destination = tmp_path / "escaped-backup.sqlite3"
+
+    create_sqlite_backup(source, destination, 3, NOW)
+
+    with sqlite3.connect(destination) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("literal metacharacter source",)
+
+
 def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -316,6 +331,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
             == 0
         )
     assert adapters[0].revocations[0][0] == "consent-001"
+    assert ledger.deletion("delete-operation-001").disposition.value == "pending"
     marker = json.loads(Path(f"{quarantine}.ready.json").read_text())
     assert marker["restore_id"] == result.restore_id
 
@@ -341,6 +357,41 @@ def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):
         QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
             backup, tmp_path / "bad-metadata.sqlite3", NOW
         )
+
+
+@pytest.mark.parametrize("integrity_outcome", [False, sqlite3.DatabaseError("corrupt")])
+def test_restore_checks_quarantine_integrity_before_adapter_or_readiness(
+    tmp_path, monkeypatch, integrity_outcome
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapter_called = False
+
+    def adapter_factory(path):
+        nonlocal adapter_called
+        adapter_called = True
+        return RestoreAdapter(path)
+
+    def integrity(_path):
+        if isinstance(integrity_outcome, Exception):
+            raise integrity_outcome
+        return integrity_outcome
+
+    monkeypatch.setattr(recovery_module, "_integrity_ok", integrity)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "quarantine_integrity_failed",
+    )
+    assert adapter_called is False
+    assert not Path(f"{quarantine}.ready.json").exists()
 
 
 def test_restore_schema_copy_and_reconciliation_failures_are_closed(
@@ -447,6 +498,7 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
         backup, tmp_path / f"quarantine-{method}-{behavior}.sqlite3", NOW
     )
     assert (result.disposition, result.reason) == (RestoreDisposition.BLOCKED, reason)
+    assert ledger.deletion("delete-operation-001").disposition.value == "pending"
 
 
 def test_russian_notice_and_versioned_acknowledgement_are_explicit(tmp_path):

@@ -72,6 +72,7 @@ def test_deletion_writes_pending_first_then_applies_idempotently(tmp_path):
     record = PrivacyLedger(tmp_path / "privacy.sqlite3").deletion(
         "delete-operation-001"
     )
+    assert record.operation_id == "delete-operation-001"
     assert record.disposition is DeletionDisposition.APPLIED
     assert "event-001" in repr(record)
     assert "synthetic deleted private message" not in repr(record)

@@ -126,7 +126,8 @@ successfully is insufficient. The workflow:
    than the snapshot, through `RestoreAdapter`;
 5. applies every current consent revocation;
 6. requires the adapter to rebuild or invalidate dependent state and indexes;
-7. confirms that no applicable pending deletion remains;
+7. confirms that every applicable ledger deletion was applied to this quarantine
+   without changing the live database disposition;
 8. records a payload-free restore outcome; and
 9. writes an owner-only `.ready.json` eligibility marker only after success.
 
@@ -138,6 +139,12 @@ current successful outcome and matching readiness marker. There is still a
 non-atomic boundary between quarantine data, the privacy ledger, and the marker:
 crashes before the marker remain fail-closed, and all operations are idempotent
 for reconciliation.
+
+Applying an erasure to quarantine does not mark the authoritative live deletion
+record `applied`: the live database may still contain the payload if later
+restore checks fail or the quarantine is never activated. Activation integration
+must commit the database switch and live-ledger disposition coherently, with a
+recoverable intent/reconciliation record; that interface is not yet implemented.
 
 ## Russian pre-enrollment notice
 

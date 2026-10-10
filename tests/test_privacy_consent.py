@@ -241,6 +241,7 @@ def test_abstraction_boundary_is_closed_and_preserves_hidden_provenance():
         ({"contains_relationship_detail": True}, "relationship_detail"),
         ({"contains_attribution": True}, "attribution"),
         ({"semantic_screen_passed": False}, "semantic_screen_failed_or_uncertain"),
+        ({"semantic_screen_passed": "false"}, "semantic_screen_failed_or_uncertain"),
         ({"protected_source_references": ()}, "missing_source_provenance"),
         ({"max_source_overlap": 0.5}, "excessive_source_overlap"),
     ],

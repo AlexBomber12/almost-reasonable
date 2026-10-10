@@ -50,7 +50,10 @@ def validate_abstract_to_shared(candidate: AbstractionCandidate) -> BoundaryDeci
         (candidate.recognizable_paraphrase, "recognizable_paraphrase"),
         (candidate.contains_relationship_detail, "relationship_detail"),
         (candidate.contains_attribution, "attribution"),
-        (not candidate.semantic_screen_passed, "semantic_screen_failed_or_uncertain"),
+        (
+            candidate.semantic_screen_passed is not True,
+            "semantic_screen_failed_or_uncertain",
+        ),
         (not candidate.protected_source_references, "missing_source_provenance"),
         (
             candidate.max_source_overlap > MAX_ABSTRACTION_OVERLAP,

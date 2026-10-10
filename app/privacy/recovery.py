@@ -15,7 +15,6 @@ from .ledger import PrivacyLedger
 from .models import (
     BackupMetadata,
     ContentCategory,
-    DeletionDisposition,
     DeletionRecord,
     ErasureReport,
     RestoreDisposition,
@@ -93,7 +92,7 @@ def _sqlite_copy(source: Path, destination: Path) -> None:
     os.close(descriptor)
     with (
         closing(
-            sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=0.1)
+            sqlite3.connect(f"{source.as_uri()}?mode=ro", uri=True, timeout=0.1)
         ) as source_connection,
         closing(sqlite3.connect(destination, timeout=0.1)) as destination_connection,
     ):
@@ -241,6 +240,21 @@ class QuarantinedRestore:
             _cleanup_created(quarantine)
             raise BackupError("quarantine copy failed") from error
         restore_id = f"restore-{uuid4()}"
+        try:
+            quarantine_integrity_ok = _integrity_ok(quarantine)
+        except sqlite3.Error:
+            quarantine_integrity_ok = False
+        if not quarantine_integrity_ok:
+            result = RestoreResult(
+                restore_id,
+                RestoreDisposition.BLOCKED,
+                False,
+                "quarantine_integrity_failed",
+            )
+            self.ledger.record_restore(
+                restore_id, restored_at, result.disposition, result.reason
+            )
+            return result
         adapter = self.adapter_factory(quarantine)
         reason = self._reconcile(adapter)
         if reason is not None:
@@ -290,12 +304,6 @@ class QuarantinedRestore:
                 or not required <= report.invalidated_categories
             ):
                 return "deletion_reconciliation_incomplete"
-            self.ledger.update_deletion(
-                record.operation_id,
-                DeletionDisposition.APPLIED,
-                "restore_reconciliation_applied",
-                record.updated_at,
-            )
         for consent_id, revoked_at in self.ledger.revocations():
             try:
                 if not adapter.apply_revocation(consent_id, revoked_at):
@@ -307,9 +315,4 @@ class QuarantinedRestore:
                 return "dependency_rebuild_incomplete"
         except Exception:
             return "dependency_rebuild_failure"
-        pending = tuple(
-            record
-            for record in self.ledger.deletions_for_reconciliation()
-            if record.disposition is not DeletionDisposition.APPLIED
-        )
-        return "pending_deletions_remain" if pending else None
+        return None
