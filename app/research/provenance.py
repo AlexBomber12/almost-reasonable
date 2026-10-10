@@ -195,6 +195,8 @@ def parse_hosted_search_response(
         raise ValueError("provider response is not completed")
     if type(response.output) is not tuple:
         raise ValueError("provider output must be a tuple")
+    if len(response.output) > MAX_PROVIDER_OUTPUT_ITEMS:
+        raise ValueError("provider response exceeded output item bound")
     try:
         serialized_output = json.dumps(
             response.output,
@@ -207,8 +209,6 @@ def parse_hosted_search_response(
         raise ValueError("provider output is not serializable") from error
     if len(serialized_output_bytes) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
         raise ValueError("provider response exceeds response byte bound")
-    if len(response.output) > MAX_PROVIDER_OUTPUT_ITEMS:
-        raise ValueError("provider response exceeded output item bound")
     _require_timestamp(retrieved_at)
     if (
         type(max_search_calls) is not int

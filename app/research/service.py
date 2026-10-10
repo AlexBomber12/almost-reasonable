@@ -169,8 +169,9 @@ class ResearchService:
                     not isinstance(retry_after, bool)
                     and isinstance(retry_after, (int, float))
                     and math.isfinite(retry_after)
+                    and retry_after >= 0
                 ):
-                    delay = max(0.0, retry_after)
+                    delay = retry_after
                     if delay > self._config.maximum_backoff_seconds:
                         return self._result(outcome, attempts)
                 if ended + delay >= deadline:

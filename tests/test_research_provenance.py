@@ -386,7 +386,7 @@ def test_top_level_response_identifiers_types_and_bounds_are_validated(
         parse_hosted_search_response(provider_response, retrieved_at=NOW, **kwargs)
 
 
-def test_provider_output_item_count_is_bounded():
+def test_provider_output_item_count_is_bounded_before_serialization(monkeypatch):
     import app.research.provenance as provenance_module
 
     valid = response()
@@ -396,6 +396,11 @@ def test_provider_output_item_count_is_bounded():
         tuple({"type": "reasoning"} for _ in range(17)),
     )
     assert len(oversized.output) > provenance_module.MAX_PROVIDER_OUTPUT_ITEMS
+    monkeypatch.setattr(
+        provenance_module.json,
+        "dumps",
+        lambda *_args, **_kwargs: pytest.fail("oversized output was serialized"),
+    )
     with pytest.raises(ValueError, match="output item bound"):
         parse_hosted_search_response(oversized, retrieved_at=NOW)
 

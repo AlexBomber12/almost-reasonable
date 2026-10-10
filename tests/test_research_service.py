@@ -374,7 +374,9 @@ def test_invalid_jitter_source_is_rejected(jitter):
         run(instance)
 
 
-@pytest.mark.parametrize("retry_after", ["later", float("nan"), float("inf"), True])
+@pytest.mark.parametrize(
+    "retry_after", ["later", float("nan"), float("inf"), True, -1.0]
+)
 def test_malformed_retry_after_is_ignored(retry_after):
     instance, _transport, sleeps, _marks = service(
         [
