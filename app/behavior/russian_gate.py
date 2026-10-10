@@ -94,6 +94,23 @@ _BELARUSIAN_WORDS = frozenset(
 _BULGARIAN_WORDS = frozenset(
     ("това", "изцяло", "български", "който", "написан", "защото", "също")
 )
+_NEARBY_SHORT_REPLIES = frozenset(
+    (
+        "добър вечер",
+        "добър ден",
+        "добро утро",
+        "лека нощ",
+        "много благодаря",
+        "добры вечар",
+        "добрай раніцы",
+        "да пабачэння",
+        "вялікі дзякуй",
+        "доброго ранку",
+        "добрий ранок",
+        "добрий вечір",
+        "щиро дякую",
+    )
+)
 _LANGUAGE_REFERENCE_TEXT = {
     "ru": (
         "сегодня хорошая погода я люблю читать книги и разговаривать с друзьями "
@@ -160,11 +177,15 @@ class RussianOutputGate:
             )
         )
         nearby_letters = sum(character in "іїєґўІЇЄҐЎ" for character in prose)
-        foreign = sum(word not in _COMMON_LATIN_TERMS for word in latin)
+        ordinary_latin = sum(word not in _COMMON_LATIN_TERMS for word in latin)
+        technical_latin = len(latin) - ordinary_latin
+        technical_allowance = min(8, max(2, len(cyrillic) // 2))
+        foreign = ordinary_latin + max(0, technical_latin - technical_allowance)
         foreign += _foreign_script_units(prose)
         if (
             nearby_letters >= 2
             or nearby_score >= 2
+            or " ".join(cyrillic) in _NEARBY_SHORT_REPLIES
             or _matches_nearby_cyrillic_profile(cyrillic)
         ):
             return _assessment(

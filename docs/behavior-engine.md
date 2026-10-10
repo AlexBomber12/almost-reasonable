@@ -65,11 +65,13 @@ conversational-language accounting,
 tolerates bounded Latin technical terminology and proper names, and excludes
 HTTP(S), FTP, `www`, conservative known-suffix bare-domain URLs, and code regions before comparing
 Cyrillic and foreign prose with no fixed short-reply allowance: unrecognized
-foreign words must not outnumber Russian words. Non-Latin letter scripts are converted to bounded
+foreign words must not outnumber Russian words. Allowlisted technical terms have
+an eight-token ceiling, further limited to half the Russian-word count with a
+two-token floor; excess repetitions count as foreign prose. Non-Latin letter scripts are converted to bounded
 word-equivalent units so Chinese, Arabic, Greek, and similar prose cannot vanish
 from the ratio. Foreign quotations remain in the language accounting, so their
 Russian framing and explanation must be proportionate to their size. A small
-marker set plus non-Russian Cyrillic letters rejects clear Ukrainian,
+marker set, common two-word nearby-language replies, plus non-Russian Cyrillic letters rejects clear Ukrainian,
 Belarusian, and Bulgarian proximity cases. For Cyrillic passages, a
 frozen character-trigram profile compares Russian with Ukrainian, Belarusian,
 and Bulgarian references; a nearby language wins only with minimum similarity
@@ -246,7 +248,8 @@ requires an immutable rubric tuple so later caller mutation cannot alter the
 validated experiment. It
 records the actual assessor kind/identity, separate SHA-256 identities for the
 frozen case input and output, and an artifact identity binding generation
-configuration, case, trial, output, rubric dimension, and assessor. It does not
+configuration, case, trial, output, rubric version and complete rule definition,
+and assessor. It does not
 reproduce prompt or output text in observations. `EvaluationReport.to_json()`
 emits a stable machine-readable report with per-G/H/M pass/fail counts,
 categorized failures, observations, rubric/harness versions, and explicit

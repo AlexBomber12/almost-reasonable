@@ -285,6 +285,15 @@ def test_artifact_identity_binds_prompt_tags_output_and_dimension() -> None:
             ),
         )
     )
+    changed_rubric_version = BehavioralEvaluationHarness(
+        (rule,),
+        assessor_bindings(assessor),
+        rubric_version="test-rubric-v2",
+    ).run((evaluation_case("same", "first", ("output",), ("a",)),))
+    changed_rule = custom_harness(
+        (replace(rule, threshold=0.75, description="Более строгая честность"),),
+        assessor,
+    ).run((evaluation_case("same", "first", ("output",), ("a",)),))
     first_observation = first.observations[0]
     second_observation = second.observations[0]
     changed_observation = changed_configuration.observations[0]
@@ -294,6 +303,14 @@ def test_artifact_identity_binds_prompt_tags_output_and_dimension() -> None:
     assert first_observation.artifact_sha256 != second_observation.artifact_sha256
     assert first_observation.case_input_sha256 != changed_observation.case_input_sha256
     assert first_observation.artifact_sha256 != changed_observation.artifact_sha256
+    assert (
+        first_observation.artifact_sha256
+        != changed_rubric_version.observations[0].artifact_sha256
+    )
+    assert (
+        first_observation.artifact_sha256
+        != changed_rule.observations[0].artifact_sha256
+    )
 
 
 def test_harness_dispatches_through_typed_assessor_bindings() -> None:

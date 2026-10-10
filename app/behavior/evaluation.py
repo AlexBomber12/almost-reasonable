@@ -302,7 +302,12 @@ class BehavioralEvaluationHarness:
                                 "case_input_sha256": case_input_sha256,
                                 "output_sha256": output_sha256,
                                 "trial": trial,
+                                "rubric_version": self._rubric_version,
                                 "rubric_dimension": rule.dimension.value,
+                                "rubric_assurance": rule.assurance.value,
+                                "rubric_threshold": rule.threshold,
+                                "rubric_assessor_kind": rule.assessor_kind.value,
+                                "rubric_description": rule.description,
                                 "assessor_kind": assessor.kind.value,
                                 "assessor_identifier": assessor.identifier,
                             }
