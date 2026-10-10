@@ -576,6 +576,7 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     ("method", "behavior", "reason"),
     [
         ("apply_deletion", "raise", "deletion_adapter_failure"),
+        ("apply_deletion", "malformed", "invalid_erasure_report"),
         ("apply_revocation", "false", "revocation_reconciliation_incomplete"),
         ("apply_revocation", "string_false", "revocation_reconciliation_incomplete"),
         ("apply_revocation", "raise", "revocation_adapter_failure"),
@@ -620,7 +621,9 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
     class FaultAdapter(RestoreAdapter):
         def apply_deletion(self, record):
             if method == "apply_deletion":
-                raise RuntimeError("private fault")
+                if behavior == "raise":
+                    raise RuntimeError("private fault")
+                return object()
             return super().apply_deletion(record)
 
         def apply_revocation(self, consent_id, revoked_at):

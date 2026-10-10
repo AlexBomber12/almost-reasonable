@@ -138,7 +138,7 @@ def test_future_revocation_does_not_take_effect_early(service):
 @pytest.mark.parametrize(
     ("overrides", "reason"),
     [
-        ({"principal_id": "participant-b"}, "no_matching_consent"),
+        ({"principal_id": "participant-b"}, "invalid_authorization"),
         ({"audience": "participant-b"}, "no_matching_consent"),
         ({"purpose": ConsentPurpose.IDENTIFIABLE_DISCLOSURE}, "no_matching_consent"),
         ({"used_at": NOW - timedelta(microseconds=1)}, "not_yet_valid"),
@@ -214,6 +214,24 @@ def test_chat_model_and_owner_impersonation_cannot_grant_or_revoke(service):
         ).reason
         == "invalid_authentication"
     )
+
+
+def test_consent_use_cannot_borrow_another_principals_grant(service):
+    consent, _ = service
+    consent.grant(
+        context("participant-b", actor="actor-b"),
+        grant(principal_id="participant-b", actor_reference="actor-b"),
+    )
+    result = consent.authorize(
+        context(),
+        principal_id="participant-b",
+        content_reference="event-001",
+        audience="public-threads",
+        purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        used_at=NOW,
+        correlation_id="cross-principal-use",
+    )
+    assert (result.allowed, result.reason) == (False, "invalid_authorization")
 
 
 def test_consent_rejects_privilege_purpose_and_conflicting_operation(service):

@@ -77,6 +77,10 @@ def test_deletion_writes_pending_first_then_applies_idempotently(tmp_path):
     assert record.disposition is DeletionDisposition.APPLIED
     assert "event-001" in repr(record)
     assert "synthetic deleted private message" not in repr(record)
+    assert [entry.result_code for entry in ledger.audit_records()] == [
+        "pending:awaiting_erasure",
+        "applied:erasure_applied",
+    ]
 
 
 def test_invalid_authorization_and_ineligible_are_explicit(tmp_path):
@@ -240,3 +244,60 @@ def test_concurrent_deletion_ledger_insertion_is_idempotent(tmp_path):
 
     assert errors == []
     assert sorted(results) == [False, True]
+
+
+def test_deletion_outcome_rolls_back_if_atomic_audit_write_fails(tmp_path, monkeypatch):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    deletion = request()
+    ledger.insert_deletion(deletion, DeletionDisposition.PENDING, "awaiting_erasure")
+    monkeypatch.setattr(
+        ledger,
+        "_insert_audit",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("audit failure")),
+    )
+    with pytest.raises(RuntimeError, match="audit failure"):
+        DeletionCoordinator(ledger, FakeErasureAdapter()).delete(context(), deletion)
+    assert (
+        ledger.deletion(deletion.operation_id).disposition
+        is DeletionDisposition.PENDING
+    )
+
+
+def test_deletion_insert_rolls_back_if_atomic_audit_write_fails(tmp_path, monkeypatch):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    monkeypatch.setattr(
+        ledger,
+        "_insert_audit",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("audit failure")),
+    )
+    with pytest.raises(RuntimeError, match="audit failure"):
+        DeletionCoordinator(ledger, FakeErasureAdapter()).delete(context(), request())
+    with pytest.raises(KeyError):
+        ledger.deletion(request().operation_id)
+
+
+def test_deletion_update_rejects_a_missing_operation(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    deletion = request(operation_id="delete-operation-missing")
+    with pytest.raises(KeyError, match="delete-operation-missing"):
+        ledger.update_deletion(
+            deletion,
+            DeletionDisposition.APPLIED,
+            "erasure_applied",
+            deletion.requested_at,
+        )
+    assert ledger.audit_records() == ()
+
+    existing = request()
+    ledger.insert_deletion(existing, DeletionDisposition.PENDING, "awaiting_erasure")
+    with pytest.raises(ValueError, match="operation identity conflict"):
+        ledger.update_deletion(
+            request(content_reference="event-other"),
+            DeletionDisposition.APPLIED,
+            "erasure_applied",
+            existing.requested_at,
+        )
+    assert (
+        ledger.deletion(existing.operation_id).disposition
+        is DeletionDisposition.PENDING
+    )

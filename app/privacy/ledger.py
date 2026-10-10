@@ -322,21 +322,66 @@ class PrivacyLedger:
                 "UPDATE privacy_control_generation SET generation=generation+1 "
                 "WHERE singleton=1"
             )
+            self._insert_audit(
+                connection, self._deletion_audit(request, disposition, reason)
+            )
         return True
 
     def update_deletion(
         self,
-        operation_id: str,
+        request: DeletionRequest,
         disposition: DeletionDisposition,
         reason: str,
         updated_at: datetime,
     ) -> None:
+        identity = (
+            request.operation_id,
+            request.principal_id,
+            request.content_reference,
+            request.content_category.value,
+            _stamp(request.requested_at),
+            request.actor_reference,
+            request.correlation_id,
+            request.authentication_event_id,
+        )
         with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT operation_id, principal_id, content_reference, content_category, "
+                "requested_at, actor_reference, correlation_id, authentication_event_id "
+                "FROM deletion_records WHERE operation_id=?",
+                (request.operation_id,),
+            ).fetchone()
+            if existing is None:
+                raise KeyError(request.operation_id)
+            if existing != identity:
+                raise ValueError("deletion operation identity conflict")
             connection.execute(
                 "UPDATE deletion_records SET disposition=?, reason=?, updated_at=? "
                 "WHERE operation_id=?",
-                (disposition.value, reason, _stamp(updated_at), operation_id),
+                (disposition.value, reason, _stamp(updated_at), request.operation_id),
             )
+            self._insert_audit(
+                connection, self._deletion_audit(request, disposition, reason)
+            )
+
+    @staticmethod
+    def _deletion_audit(
+        request: DeletionRequest,
+        disposition: DeletionDisposition,
+        reason: str,
+    ) -> AuditRecord:
+        return AuditRecord(
+            request.correlation_id,
+            request.actor_reference,
+            "deletion",
+            request.content_category.value,
+            request.requested_at,
+            f"{disposition.value}:{reason}",
+            "content_free_tombstone"
+            if disposition is DeletionDisposition.APPLIED
+            else "payload_free",
+        )
 
     def deletion(self, operation_id: str) -> DeletionRecord:
         with self._open() as connection:

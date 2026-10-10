@@ -71,6 +71,8 @@ class ConsentService:
             raise ValueError("invalid consent purpose")
         if context.origin is not OperationOrigin.CONTROL:
             result = ConsentUseResult(False, "invalid_authentication")
+        elif context.principal_id != principal_id:
+            result = ConsentUseResult(False, "invalid_authorization")
         else:
             match = self.ledger.matching_consent(
                 principal_id, content_reference, audience, purpose

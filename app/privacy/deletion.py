@@ -111,7 +111,6 @@ class DeletionCoordinator:
             return DeletionOutcome(
                 request.operation_id, record.disposition, record.reason
             )
-        self._audit(request, disposition, reason)
         return DeletionOutcome(request.operation_id, disposition, reason)
 
     def _reject(
@@ -138,25 +137,5 @@ class DeletionCoordinator:
     def _finish(
         self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
     ) -> DeletionOutcome:
-        self.ledger.update_deletion(
-            request.operation_id, disposition, reason, request.requested_at
-        )
-        self._audit(request, disposition, reason)
+        self.ledger.update_deletion(request, disposition, reason, request.requested_at)
         return DeletionOutcome(request.operation_id, disposition, reason)
-
-    def _audit(
-        self, request: DeletionRequest, disposition: DeletionDisposition, reason: str
-    ) -> None:
-        self.ledger.record_audit(
-            AuditRecord(
-                request.correlation_id,
-                request.actor_reference,
-                "deletion",
-                request.content_category.value,
-                request.requested_at,
-                f"{disposition.value}:{reason}",
-                "content_free_tombstone"
-                if disposition is DeletionDisposition.APPLIED
-                else "payload_free",
-            )
-        )

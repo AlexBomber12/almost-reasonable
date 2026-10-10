@@ -365,6 +365,8 @@ class QuarantinedRestore:
                 report = adapter.apply_deletion(record)
             except Exception:
                 return "deletion_adapter_failure"
+            if not isinstance(report, ErasureReport):
+                return "invalid_erasure_report"
             if (
                 not report.payload_removed
                 or not report.tombstone_written
