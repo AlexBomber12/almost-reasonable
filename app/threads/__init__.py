@@ -4,6 +4,7 @@ from .domain import (
     AccountPolicy,
     Approval,
     ConversationOutcome,
+    CurrentAuthorizationProvider,
     InboundKind,
     OutboxItem,
     OutboxState,
@@ -13,19 +14,26 @@ from .domain import (
     issue_approval,
 )
 from .service import ThreadsService
-from .simulator import Fault, ReconciliationResult, ThreadsSimulator
+from .simulator import (
+    Fault,
+    ReconciliationResult,
+    SimulationAuthorizationProvider,
+    ThreadsSimulator,
+)
 from .store import ThreadsStore
 
 __all__ = (
     "AccountPolicy",
     "Approval",
     "ConversationOutcome",
+    "CurrentAuthorizationProvider",
     "Fault",
     "InboundKind",
     "OutboxItem",
     "OutboxState",
     "PublicationType",
     "ReconciliationResult",
+    "SimulationAuthorizationProvider",
     "SourceProvenance",
     "Stage",
     "ThreadsService",

@@ -10,6 +10,7 @@ from .domain import (
     REQUIRED_REPLY_READ_SCOPES,
     AccountPolicy,
     Approval,
+    CurrentAuthorizationProvider,
     InboundKind,
     OutboxItem,
     OutboxState,
@@ -54,12 +55,7 @@ class ThreadsService:
         *,
         clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
-        privacy_check: Callable[[OutboxItem, datetime], bool] = (
-            lambda item, _now: item.privacy_authorized
-        ),
-        approval_status_check: Callable[[Approval, datetime], bool] = (
-            lambda approval, _now: not approval.revoked
-        ),
+        authorization_provider: CurrentAuthorizationProvider | None = None,
     ):
         policy.validate()
         if simulator.account_ref != policy.account_ref:
@@ -69,8 +65,7 @@ class ThreadsService:
         self.policy = policy
         self.clock = clock
         self.utc_now = utc_now
-        self.privacy_check = privacy_check
-        self.approval_status_check = approval_status_check
+        self.authorization_provider = authorization_provider
 
     def propose(
         self,
@@ -138,13 +133,13 @@ class ThreadsService:
         self, operation_id: str, approval: Approval, *, now: datetime
     ) -> OutboxItem:
         item = self.store.get(operation_id)
-        self._check_ready_policy(item, approval, now=now)
+        current_approval = self._check_ready_policy(item, approval, now=now)
         return self.store.transition(
             operation_id,
             OutboxState.READY,
             reason="operator_and_policy_approved",
             now=now,
-            approval_reference=approval.reference,
+            approval_reference=current_approval.reference,
             approval_status="approved",
         )
 
@@ -162,13 +157,13 @@ class ThreadsService:
         item = self.store.get(operation_id)
         if item.state is not OutboxState.READY:
             raise ThreadsStoreError("only a ready operation can be dispatched")
-        self._check_ready_policy(item, approval, now=now)
+        current_approval = self._check_ready_policy(item, approval, now=now)
         item = self.store.transition(
             operation_id,
             OutboxState.SENDING,
             reason="durable_dispatch_intent",
             now=now,
-            approval_reference=approval.reference,
+            approval_reference=current_approval.reference,
             approval_status="approved",
             dispatch_evidence="pre_dispatch_intent",
             increment_attempt=True,
@@ -394,7 +389,7 @@ class ThreadsService:
 
     def _check_ready_policy(
         self, item: OutboxItem, approval: Approval, *, now: datetime
-    ) -> None:
+    ) -> Approval:
         if item.account_ref != self.policy.account_ref:
             raise PolicyDeniedError("outbound account mismatch")
         validate_approval(
@@ -404,12 +399,39 @@ class ThreadsService:
             now=now,
             require_duplicate_ack=item.replacement_of is not None,
         )
-        if self.approval_status_check(approval, now) is not True:
-            raise PolicyDeniedError("current approval is unavailable")
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
-        if self.privacy_check(item, now) is not True:
+        provider = self.authorization_provider
+        if provider is None:
+            raise PolicyDeniedError("current authorization provider is unavailable")
+        try:
+            current_approval = provider.current_approval(
+                account_ref=item.account_ref,
+                operation_id=item.operation_id,
+                approval_reference=approval.reference,
+                now=now,
+            )
+        except Exception as error:
+            raise PolicyDeniedError("current approval is unavailable") from error
+        if current_approval is None:
+            raise PolicyDeniedError("current approval is unavailable")
+        validate_approval(
+            current_approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=now,
+            require_duplicate_ack=item.replacement_of is not None,
+        )
+        if current_approval.reference != approval.reference:
+            raise ValueError("current approval reference mismatch")
+        try:
+            privacy_authorized = provider.current_privacy_authorized(item=item, now=now)
+        except Exception as error:
+            raise PolicyDeniedError(
+                "current draft privacy authorization is unavailable"
+            ) from error
+        if privacy_authorized is not True:
             raise PolicyDeniedError(
                 "current draft privacy authorization is unavailable"
             )
@@ -424,6 +446,7 @@ class ThreadsService:
                 )
         elif unresolved_ids:
             raise PolicyDeniedError("account is paused by unresolved publication")
+        return current_approval
 
     def _recheck_immediately_before_effect(
         self, item: OutboxItem, approval: Approval, now: datetime

@@ -83,10 +83,23 @@ path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
 credential-owning transport.
 
+Outbound readiness and dispatch also require an explicit
+`CurrentAuthorizationProvider`. Its contract resolves the current authenticated
+approval by account, operation, and approval reference and obtains a current
+per-draft privacy decision. The approval and privacy values stored with a
+proposal are historical evidence, not live authorization. A missing provider,
+an unavailable provider, an absent or mismatched approval, or any result other
+than an exact `True` privacy decision fails closed before the next external
+effect. This package intentionally supplies no production implementation of
+that trusted boundary.
+
 The current transport is `ThreadsSimulator`. It has no URL, socket, token, or
-generic HTTP method. Its `network_calls` counter remains zero. Verified poll
-pages carry simulator-owned source evidence that callers cannot create through
-the public API. JSON fields inside a public message never grant authority.
+generic HTTP method. Its `network_calls` counter remains zero. The separate
+`SimulationAuthorizationProvider` is an in-memory, mutable fixture used to test
+approval revocation, consent changes, and provider unavailability; it also has
+no credentials or network behavior. Verified poll pages carry simulator-owned
+source evidence that callers cannot create through the public API. JSON fields
+inside a public message never grant authority.
 
 Raw private context is not an outbox field. A proposal contains bounded public
 content or an approved public reference, a closed provenance value, and an
@@ -125,14 +138,15 @@ The closed lifecycle is:
 9. `failed_terminal` records a confirmed rejection or exhausted proven
    pre-dispatch attempts.
 
-The service rechecks policy and approval immediately before both container
-creation and publication. The same checks obtain current approval status and a
-current per-draft privacy decision from application control-plane boundaries,
-so revocation after proposal or approval still blocks the next effect. The
-approval actually accepted for dispatch replaces the stored approval reference
-atomically with the durable sending transition. A stop activated before either
-call blocks it. A stop activated after a request is in flight cannot retract an
-already accepted effect; the resulting success or uncertainty is recorded honestly.
+The service resolves current approval and privacy state when an item becomes
+ready, again before entering `sending`, and immediately before both container
+creation and publication. Revocation, expiry, consent withdrawal, or control
+plane unavailability after proposal or approval therefore blocks the next
+effect. The approval actually accepted for dispatch replaces the stored
+approval reference atomically with the durable sending transition. A stop
+activated before either call blocks it. A stop activated after a request is in
+flight cannot retract an already accepted effect; the resulting success or
+uncertainty is recorded honestly.
 
 ## Failure and reconciliation rules
 
@@ -192,6 +206,8 @@ requires all of the following outside this PR:
   production configuration;
 - integrated privacy/consent, independent-public-evidence, Russian-output, and
   semantic platform-safety gates;
+- a reviewed, highly available `CurrentAuthorizationProvider` backed by the
+  authenticated control plane, including revocation and consent audit evidence;
 - authenticated operator controls, emergency stop, rate telemetry, owner
   alerts, and deployment approval;
 - credentialed sandbox smoke tests for current endpoints, errors, quotas,

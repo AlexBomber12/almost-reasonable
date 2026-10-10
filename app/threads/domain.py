@@ -5,6 +5,7 @@ from datetime import datetime
 from enum import StrEnum
 import hashlib
 import re
+from typing import Protocol
 
 
 MAX_CONTENT_CHARS = 500
@@ -80,7 +81,7 @@ def issue_approval(
     revoked: bool = False,
     duplicate_risk_acknowledged: bool = False,
 ) -> Approval:
-    """Represent an approval already authenticated by the future control plane."""
+    """Represent approval evidence authenticated by a trusted boundary."""
 
     require_reference("approval reference", reference)
     require_reference("account reference", account_ref)
@@ -189,6 +190,23 @@ class OutboxItem:
     duplicate_risk_approval_ref: str | None
     created_at: datetime
     updated_at: datetime
+
+
+class CurrentAuthorizationProvider(Protocol):
+    """Trusted application boundary for current approval and privacy state."""
+
+    def current_approval(
+        self,
+        *,
+        account_ref: str,
+        operation_id: str,
+        approval_reference: str,
+        now: datetime,
+    ) -> Approval | None: ...
+
+    def current_privacy_authorized(
+        self, *, item: OutboxItem, now: datetime
+    ) -> bool: ...
 
 
 @dataclass(frozen=True, slots=True)

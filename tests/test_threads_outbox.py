@@ -19,6 +19,7 @@ from app.threads.simulator import (
     ProviderFailure,
     ReconciliationResult,
     SimulatedCrash,
+    SimulationAuthorizationProvider,
     ThreadsSimulator,
     simulated_provider_id,
 )
@@ -59,11 +60,13 @@ def make_policy(**changes):
 def make_service(tmp_path, **policy_changes):
     policy = make_policy(**policy_changes)
     simulator = ThreadsSimulator(account_ref=policy.account_ref)
+    authorization_provider = SimulationAuthorizationProvider()
     return ThreadsService(
         ThreadsStore(tmp_path / "threads.sqlite3"),
         simulator,
         policy,
         utc_now=lambda: NOW,
+        authorization_provider=authorization_provider,
     )
 
 
@@ -91,14 +94,25 @@ def propose(service, operation_id="operation-1", **changes):
         "now": NOW,
     }
     values.update(changes)
-    return service.propose(**values)
+    result = service.propose(**values)
+    provider = service.authorization_provider
+    if isinstance(provider, SimulationAuthorizationProvider):
+        provider.set_privacy(operation_id, True)
+    return result
+
+
+def trust_approval(service, approval):
+    provider = service.authorization_provider
+    assert isinstance(provider, SimulationAuthorizationProvider)
+    provider.set_approval(approval)
+    return approval
 
 
 def ready(service, operation_id="operation-1", **changes):
     item, created = propose(service, operation_id, **changes)
     assert created
     service.submit_for_approval(operation_id, now=NOW)
-    approval = approve(operation_id)
+    approval = trust_approval(service, approve(operation_id))
     return service.authorize(operation_id, approval, now=NOW), approval
 
 
@@ -224,6 +238,7 @@ def test_approval_is_separate_and_rechecked_for_mismatch_revocation_and_expiry(
     "policy_change, message",
     [
         ({"stage": Stage.DISABLED}, "stage"),
+        ({"stage": Stage.STAGE_3}, "live Threads transport"),
         ({"russian_output_gate_available": False}, "Russian"),
         ({"privacy_gate_available": False}, "privacy"),
         ({"publication_capability_enabled": False}, "capability"),
@@ -245,6 +260,80 @@ def test_outbound_account_mismatch_fails_closed(tmp_path):
     service.policy.account_ref = "account-2"
     with pytest.raises(PolicyDeniedError, match="account mismatch"):
         service.authorize("operation-1", approve(), now=NOW)
+
+
+def test_missing_current_authorization_provider_fails_closed(tmp_path):
+    simulator = ThreadsSimulator(account_ref="account-1")
+    service = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"), simulator, make_policy()
+    )
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    with pytest.raises(PolicyDeniedError, match="provider is unavailable"):
+        service.authorize("operation-1", approve(), now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.AWAITING_APPROVAL
+    assert simulator.trace == []
+    assert simulator.network_calls == 0
+
+
+def test_unregistered_or_unavailable_current_approval_fails_closed(tmp_path):
+    service = make_service(tmp_path)
+    propose(service)
+    service.submit_for_approval("operation-1", now=NOW)
+    approval = approve()
+    with pytest.raises(PolicyDeniedError, match="current approval"):
+        service.authorize("operation-1", approval, now=NOW)
+    trust_approval(service, approval)
+    service.authorize("operation-1", approval, now=NOW)
+    service.authorization_provider.approval_available = False
+    with pytest.raises(PolicyDeniedError, match="current approval"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.READY
+    assert service.simulator.trace == []
+
+
+def test_revocation_or_privacy_change_before_dispatch_blocks_all_effects(tmp_path):
+    revoked = make_service(tmp_path / "revoked")
+    _, approval = ready(revoked)
+    revoked.authorization_provider.set_approval(approve(revoked=True))
+    with pytest.raises(ValueError, match="revoked"):
+        revoked.dispatch("operation-1", approval, now=NOW)
+    assert revoked.store.get("operation-1").state is OutboxState.READY
+    assert revoked.simulator.trace == []
+
+    private = make_service(tmp_path / "private")
+    _, approval = ready(private)
+    private.authorization_provider.set_privacy("operation-1", False)
+    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+        private.dispatch("operation-1", approval, now=NOW)
+    assert private.store.get("operation-1").state is OutboxState.READY
+    assert private.simulator.trace == []
+
+
+def test_authorization_provider_contract_fails_closed_on_bad_current_data(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    provider = service.authorization_provider
+    monkeypatch.setattr(
+        provider,
+        "current_approval",
+        lambda **_kwargs: approve(reference="approval-wrong"),
+    )
+    with pytest.raises(ValueError, match="reference mismatch"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.simulator.trace == []
+
+
+def test_privacy_provider_unavailability_fails_closed(tmp_path):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    service.authorization_provider.privacy_available = False
+    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+        service.dispatch("operation-1", approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.READY
+    assert service.simulator.trace == []
 
 
 def test_happy_path_preserves_multistep_provider_evidence(tmp_path):
@@ -284,6 +373,7 @@ def test_simulated_provider_ids_stay_bounded_for_maximum_operation_ids(tmp_path)
         operation_id=long_success,
         expires_at=NOW + timedelta(hours=1),
     )
+    trust_approval(service, success_approval)
     service.authorize(long_success, success_approval, now=NOW)
     confirmed = service.dispatch(long_success, success_approval, now=NOW)
     assert len(confirmed.provider_container_id) <= 128
@@ -303,6 +393,7 @@ def test_simulated_provider_ids_stay_bounded_for_maximum_operation_ids(tmp_path)
         operation_id=long_reconciled,
         expires_at=NOW + timedelta(hours=1),
     )
+    trust_approval(service, reconcile_approval)
     service.authorize(long_reconciled, reconcile_approval, now=NOW)
     service.simulator.set_fault(long_reconciled, "publish", Fault.DURING_PUBLISH)
     service.dispatch(long_reconciled, reconcile_approval, now=NOW)
@@ -499,15 +590,18 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
     times = iter((NOW, NOW + timedelta(minutes=2)))
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
+    authorization_provider = SimulationAuthorizationProvider()
     service = ThreadsService(
         ThreadsStore(tmp_path / "threads.sqlite3"),
         simulator,
         runtime_policy,
         utc_now=lambda: next(times),
+        authorization_provider=authorization_provider,
     )
     propose(service)
     service.submit_for_approval("operation-1", now=NOW)
     expiring = approve(expires_at=NOW + timedelta(minutes=1))
+    trust_approval(service, expiring)
     service.authorize("operation-1", expiring, now=NOW)
     with pytest.raises(ValueError, match="expired"):
         service.dispatch("operation-1", expiring, now=NOW)
@@ -519,18 +613,19 @@ def test_approval_time_is_refreshed_after_container_creation(tmp_path):
     assert simulator.trace == [("create_container", "operation-1")]
 
 
-def test_current_draft_privacy_is_rechecked_before_each_effect(tmp_path):
-    decisions = iter((True, True, True, False))
-    runtime_policy = make_policy()
-    simulator = ThreadsSimulator(account_ref="account-1")
-    service = ThreadsService(
-        ThreadsStore(tmp_path / "threads.sqlite3"),
-        simulator,
-        runtime_policy,
-        utc_now=lambda: NOW,
-        privacy_check=lambda _item, _now: next(decisions),
-    )
+def test_current_draft_privacy_is_rechecked_before_publication(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
     _, approval = ready(service)
+    create_container = service.simulator.create_container
+
+    def create_then_revoke_privacy(item):
+        container_id = create_container(item)
+        service.authorization_provider.set_privacy(item.operation_id, False)
+        return container_id
+
+    monkeypatch.setattr(
+        service.simulator, "create_container", create_then_revoke_privacy
+    )
     with pytest.raises(PolicyDeniedError, match="current draft privacy"):
         service.dispatch("operation-1", approval, now=NOW)
     blocked = service.store.get("operation-1")
@@ -538,34 +633,39 @@ def test_current_draft_privacy_is_rechecked_before_each_effect(tmp_path):
     assert blocked.provider_container_id == simulated_provider_id(
         "container", "operation-1"
     )
-    assert simulator.trace == [("create_container", "operation-1")]
+    assert service.simulator.trace == [("create_container", "operation-1")]
 
 
-def test_current_approval_status_is_rechecked_before_each_effect(tmp_path):
-    decisions = iter((True, True, True, False))
-    simulator = ThreadsSimulator(account_ref="account-1")
-    service = ThreadsService(
-        ThreadsStore(tmp_path / "threads.sqlite3"),
-        simulator,
-        make_policy(),
-        utc_now=lambda: NOW,
-        approval_status_check=lambda _approval, _now: next(decisions),
-    )
+def test_current_approval_status_is_rechecked_before_publication(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
     _, approval = ready(service)
-    with pytest.raises(PolicyDeniedError, match="current approval"):
+    create_container = service.simulator.create_container
+
+    def create_then_revoke_approval(item):
+        container_id = create_container(item)
+        service.authorization_provider.set_approval(
+            approve(item.operation_id, revoked=True)
+        )
+        return container_id
+
+    monkeypatch.setattr(
+        service.simulator, "create_container", create_then_revoke_approval
+    )
+    with pytest.raises(ValueError, match="revoked"):
         service.dispatch("operation-1", approval, now=NOW)
     blocked = service.store.get("operation-1")
     assert blocked.state is OutboxState.READY
     assert blocked.provider_container_id == simulated_provider_id(
         "container", "operation-1"
     )
-    assert simulator.trace == [("create_container", "operation-1")]
+    assert service.simulator.trace == [("create_container", "operation-1")]
 
 
 def test_dispatch_persists_the_current_approval_reference(tmp_path):
     service = make_service(tmp_path)
     _, original = ready(service)
     replacement = approve(reference="approval-replacement")
+    trust_approval(service, replacement)
     confirmed = service.dispatch("operation-1", replacement, now=NOW)
     assert original.reference == "approval-operation-1"
     assert confirmed.approval_reference == "approval-replacement"
@@ -575,15 +675,18 @@ def test_dispatch_persists_the_current_approval_reference(tmp_path):
 def test_expiry_at_first_effect_recheck_restores_proven_safe_state(tmp_path):
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
+    authorization_provider = SimulationAuthorizationProvider()
     service = ThreadsService(
         ThreadsStore(tmp_path / "threads.sqlite3"),
         simulator,
         runtime_policy,
         utc_now=lambda: NOW + timedelta(minutes=2),
+        authorization_provider=authorization_provider,
     )
     propose(service)
     service.submit_for_approval("operation-1", now=NOW)
     expiring = approve(expires_at=NOW + timedelta(minutes=1))
+    trust_approval(service, expiring)
     service.authorize("operation-1", expiring, now=NOW)
     with pytest.raises(ValueError, match="expired"):
         service.dispatch("operation-1", expiring, now=NOW)
@@ -605,11 +708,13 @@ def test_repeated_pre_publish_denials_obey_attempt_cap(tmp_path):
 
     runtime_policy = make_policy()
     simulator = ThreadsSimulator(account_ref="account-1")
+    authorization_provider = SimulationAuthorizationProvider()
     service = ThreadsService(
         ThreadsStore(tmp_path / "threads.sqlite3"),
         simulator,
         runtime_policy,
         utc_now=stop_at_publish_boundary,
+        authorization_provider=authorization_provider,
     )
     _, approval = ready(service)
     with pytest.raises(PolicyDeniedError, match="stop"):
@@ -690,8 +795,9 @@ def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):
         )
     propose(service, "operation-3")
     service.submit_for_approval("operation-3", now=NOW)
+    third_approval = trust_approval(service, approve("operation-3"))
     with pytest.raises(PolicyDeniedError, match="paused"):
-        service.authorize("operation-3", approve("operation-3"), now=NOW)
+        service.authorize("operation-3", third_approval, now=NOW)
 
 
 def test_exceptional_replacement_requires_separate_duplicate_risk_ack(tmp_path):
@@ -716,6 +822,7 @@ def test_exceptional_replacement_requires_separate_duplicate_risk_ack(tmp_path):
     )
     assert replacement.replacement_of == "operation-1"
     service.submit_for_approval("operation-2", now=NOW)
+    trust_approval(service, risk_approval)
     assert (
         service.authorize("operation-2", risk_approval, now=NOW).state
         is OutboxState.READY
@@ -735,6 +842,7 @@ def test_replacement_is_blocked_if_target_reconciles_before_dispatch(tmp_path):
         replacement_approval=risk_approval,
     )
     service.submit_for_approval("operation-2", now=NOW)
+    trust_approval(service, risk_approval)
     service.authorize("operation-2", risk_approval, now=NOW)
     service.simulator.reconciliation["operation-1"] = ReconciliationResult.CONFIRMED
     service.reconcile("operation-1", now=NOW)
@@ -755,6 +863,7 @@ def test_replacement_cannot_bypass_an_additional_unknown_publication(tmp_path):
         replacement_approval=second_approval,
     )
     service.submit_for_approval("operation-2", now=NOW)
+    trust_approval(service, second_approval)
     service.authorize("operation-2", second_approval, now=NOW)
     service.simulator.set_fault("operation-2", "publish", Fault.DURING_PUBLISH)
     service.dispatch("operation-2", second_approval, now=NOW)
@@ -766,6 +875,7 @@ def test_replacement_cannot_bypass_an_additional_unknown_publication(tmp_path):
         replacement_approval=third_approval,
     )
     service.submit_for_approval("operation-3", now=NOW)
+    trust_approval(service, third_approval)
     with pytest.raises(PolicyDeniedError, match="additional unresolved"):
         service.authorize("operation-3", third_approval, now=NOW)
 
@@ -783,6 +893,7 @@ def test_replacement_rejects_resolved_target_and_missing_authenticated_ack(tmp_p
         )
     service.submit_for_approval("operation-1", now=NOW)
     first_approval = approve()
+    trust_approval(service, first_approval)
     service.authorize("operation-1", first_approval, now=NOW)
     service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
     service.dispatch("operation-1", first_approval, now=NOW)
@@ -874,6 +985,12 @@ def test_simulator_rejects_unknown_fault_type_and_handles_inflight_without_hook(
     tmp_path,
 ):
     service = make_service(tmp_path)
+    with pytest.raises(ValueError, match="simulated approval"):
+        service.authorization_provider.set_approval("forged")
+    with pytest.raises(ValueError, match="operation ID"):
+        service.authorization_provider.set_privacy("bad operation", True)
+    with pytest.raises(ValueError, match="privacy decision"):
+        service.authorization_provider.set_privacy("operation-1", 1)
     with pytest.raises(ValueError, match="fault"):
         service.simulator.set_fault("operation-1", "publish", "none")
     _, approval = ready(service)

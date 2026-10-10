@@ -1,10 +1,11 @@
 """Deterministic, zero-network simulator for documented Threads API stages."""
 
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 import hashlib
 
-from .domain import InboundEvent, InboundKind, OutboxItem
+from .domain import Approval, InboundEvent, InboundKind, OutboxItem, require_reference
 
 
 _VERIFIED_SOURCE_AUTHORITY = object()
@@ -84,6 +85,52 @@ class VerifiedPollPage:
 
     def is_verified(self) -> bool:
         return self._authority is _VERIFIED_SOURCE_AUTHORITY
+
+
+class SimulationAuthorizationProvider:
+    """Mutable, credential-free current-authorization fixture for simulation."""
+
+    def __init__(self):
+        self.approvals: dict[str, Approval] = {}
+        self.privacy: dict[str, bool] = {}
+        self.approval_available = True
+        self.privacy_available = True
+        self.network_calls = 0
+
+    def set_approval(self, approval: Approval) -> None:
+        if type(approval) is not Approval:
+            raise ValueError("invalid simulated approval")
+        self.approvals[approval.reference] = approval
+
+    def set_privacy(self, operation_id: str, authorized: bool) -> None:
+        require_reference("operation ID", operation_id)
+        if type(authorized) is not bool:
+            raise ValueError("invalid simulated privacy decision")
+        self.privacy[operation_id] = authorized
+
+    def current_approval(
+        self,
+        *,
+        account_ref: str,
+        operation_id: str,
+        approval_reference: str,
+        now: datetime,
+    ) -> Approval | None:
+        if not self.approval_available:
+            raise RuntimeError("simulated approval provider unavailable")
+        approval = self.approvals.get(approval_reference)
+        if (
+            approval is None
+            or approval.account_ref != account_ref
+            or approval.operation_id != operation_id
+        ):
+            return None
+        return approval
+
+    def current_privacy_authorized(self, *, item: OutboxItem, now: datetime) -> bool:
+        if not self.privacy_available:
+            raise RuntimeError("simulated privacy provider unavailable")
+        return self.privacy.get(item.operation_id, False)
 
 
 class ThreadsSimulator:
