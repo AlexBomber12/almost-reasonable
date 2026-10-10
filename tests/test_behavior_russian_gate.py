@@ -158,6 +158,14 @@ def test_short_majority_foreign_prose_is_not_hidden_by_an_absolute_floor() -> No
         assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
 
 
+def test_unsupported_fenced_languages_remain_in_language_scoring() -> None:
+    assessment = RussianOutputGate().assess(
+        "Да.\n```javascript\nfunction add(left, right) { return left + right; }\n```"
+    )
+    assert not assessment.accepted
+    assert assessment.reason is GateReason.NON_RUSSIAN_PROSE
+
+
 def test_compatibility_latin_is_normalized_before_language_scoring() -> None:
     text = "Да. Ｔｈｉｓ ｉｓ ｏｎｌｙ Ｅｎｇｌｉｓｈ ｐｒｏｓｅ."
     assessment = RussianOutputGate().assess(text)

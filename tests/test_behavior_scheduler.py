@@ -204,11 +204,18 @@ def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
         backward_clock.advance(timedelta(seconds=-1))
         return AgentDecision.REPLY
 
-    backward_result = TestScheduler(
-        policy(), InMemorySchedulerStore(), backward_clock, moved_backward
-    ).run((event("backward-clock"),))
+    backward_store = InMemorySchedulerStore()
+    backward_scheduler = TestScheduler(
+        policy(), backward_store, backward_clock, moved_backward
+    )
+    backward_result = backward_scheduler.run((event("backward-clock"),))
     assert backward_result.outcome is SchedulerOutcome.EXECUTION_LIMIT
     assert backward_result.decision is None
+    assert backward_store.load().last_deliberation_at == NOW
+    assert (
+        backward_scheduler.run((event("after-rollback", backward_clock.now()),)).outcome
+        is SchedulerOutcome.EXECUTION_LIMIT
+    )
 
     for error in (ConnectionError("provider unavailable"), ValueError("bad output")):
         failure_store = InMemorySchedulerStore()

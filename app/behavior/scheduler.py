@@ -298,7 +298,8 @@ class TestScheduler:
                 )
                 valid_decision = decision
 
-        state = self._pruned_state(state, finished_at)
+        recorded_at = max((started_at, finished_at), key=_instant)
+        state = self._pruned_state(state, recorded_at)
         history = state.action_history
         if outcome in (
             SchedulerOutcome.PROPOSED,
@@ -307,8 +308,8 @@ class TestScheduler:
             history = (*history, (valid_decision, finished_at))
         updated = replace(
             state,
-            processed_events=_append_processed(state, unprocessed_due, finished_at),
-            last_deliberation_at=finished_at,
+            processed_events=_append_processed(state, unprocessed_due, recorded_at),
+            last_deliberation_at=recorded_at,
             action_history=history,
         )
         self._store.save(updated)
