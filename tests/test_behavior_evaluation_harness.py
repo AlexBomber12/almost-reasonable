@@ -171,6 +171,15 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         custom_harness((rule,), assessor).run(
             (evaluation_case("empty", "prompt", (), ()),)
         )
+    with pytest.raises(ValueError, match="recorded output"):
+        custom_harness((rule,), assessor).run(
+            (
+                replace(
+                    evaluation_case("string-output", "prompt", ("output",), ()),
+                    recorded_outputs="output",
+                ),
+            )
+        )
     for invalid in (
         evaluation_case("empty-prompt", "", ("output",), ()),
         evaluation_case("invalid-tags", "prompt", ("output",), ("",)),
@@ -209,6 +218,14 @@ def test_harness_validates_scores_cases_and_assessor_failures() -> None:
         custom_harness((rule,), lambda *_: (1.0, ("bad",))).run(  # type: ignore[arg-type]
             (evaluation_case("case", "prompt", ("output",), ()),)
         )
+    for score, failures in (
+        (0.0, ()),
+        (1.0, (FailureCategory.UNSUPPORTED_CLAIM,)),
+    ):
+        with pytest.raises(ValueError, match="threshold outcome"):
+            custom_harness((rule,), lambda *_: (score, failures)).run(
+                (evaluation_case("categorized", "prompt", ("output",), ()),)
+            )
     successful = harness.run((evaluation_case("ok", "p", ("рус",), ()),))
     assert successful.observations[0].adjudication is None
 

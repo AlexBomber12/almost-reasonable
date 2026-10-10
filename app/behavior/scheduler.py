@@ -247,10 +247,12 @@ class TestScheduler:
                 outcome = SchedulerOutcome.FAILED
                 valid_decision = None
             elif (
-                finished_at - started_at
-            ).total_seconds() > self._policy.max_execution_seconds:
+                finished_at < started_at
+                or (finished_at - started_at).total_seconds()
+                > self._policy.max_execution_seconds
+            ):
                 outcome = SchedulerOutcome.EXECUTION_LIMIT
-                valid_decision = decision
+                valid_decision = None
             elif self._rate_limited(state, decision, now):
                 outcome = SchedulerOutcome.RATE_LIMITED
                 valid_decision = decision

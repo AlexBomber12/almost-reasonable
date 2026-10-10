@@ -278,6 +278,7 @@ def _is_disallowed_control(character: str) -> bool:
     return character not in "\n\r\t" and unicodedata.category(character) in (
         "Cc",
         "Cf",
+        "Cs",
     )
 
 

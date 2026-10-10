@@ -249,9 +249,13 @@ class BehavioralEvaluationHarness:
                 raise ValueError(
                     "each case requires prompt, tags, and generation identity"
                 )
-            if not case.recorded_outputs or any(
-                not isinstance(output, str) or not output
-                for output in case.recorded_outputs
+            if (
+                type(case.recorded_outputs) is not tuple
+                or not case.recorded_outputs
+                or any(
+                    not isinstance(output, str) or not output
+                    for output in case.recorded_outputs
+                )
             ):
                 raise ValueError("each case requires a non-empty recorded output")
             case_input_sha256 = _json_sha256(
@@ -271,8 +275,15 @@ class BehavioralEvaluationHarness:
                     score, failures = assessor.assess(case, output, rule)
                     if type(score) not in (int, float) or not 0 <= score <= 1:
                         raise ValueError("assessor score must be between zero and one")
-                    if any(not isinstance(item, FailureCategory) for item in failures):
+                    if type(failures) is not tuple or any(
+                        not isinstance(item, FailureCategory) for item in failures
+                    ):
                         raise ValueError("assessor failure category is invalid")
+                    passed = score >= rule.threshold
+                    if passed == bool(failures):
+                        raise ValueError(
+                            "assessor failures must match the threshold outcome"
+                        )
                     observation = EvaluationObservation(
                         observation_id=f"{case.case_id}:{trial}:{rule.dimension.value}",
                         case_id=case.case_id,
@@ -298,7 +309,7 @@ class BehavioralEvaluationHarness:
                         assessor_identifier=assessor.identifier,
                         score=float(score),
                         threshold=rule.threshold,
-                        passed=score >= rule.threshold,
+                        passed=passed,
                         failures=failures,
                         adjudication=None,
                     )

@@ -39,6 +39,7 @@ def test_versioned_corpus_records_expected_tradeoffs() -> None:
         ("", GateReason.EMPTY),
         ("Hello, this response is entirely in English.", GateReason.NON_RUSSIAN_PROSE),
         ("Привет.\u200b Скрытый контроль.", GateReason.DISALLOWED_CONTROL),
+        ("Привет. \ud800", GateReason.DISALLOWED_CONTROL),
         ("Це український текст, який містить інші слова.", GateReason.NEARBY_LANGUAGE),
         ("Гэта беларускі тэкст, які мае іншыя словы.", GateReason.NEARBY_LANGUAGE),
         (

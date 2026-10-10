@@ -90,6 +90,10 @@ fallback. Expected provider failures during regeneration also terminate at that
 fallback; callback contract errors still surface. It never recurses. The H gate
 does not authorize an action and cannot override G-class policy.
 
+The gate rejects invisible control/format characters and lone Unicode
+surrogates before delivery, so an accepted draft is not carrying a known
+non-encodable code point into UTF-8/JSON response and audit paths.
+
 ## Autonomous wake-ups
 
 `app.behavior.scheduler` is a deterministic test scheduler, not a daemon. It
@@ -110,6 +114,8 @@ deliberation callback receives the hard elapsed-time limit and must enforce it;
 adapter/provider failures (`OSError` and malformed-output `ValueError`) produce
 and persist `failed`; programmer contract errors such as `TypeError` continue to
 surface for diagnosis.
+The same execution-limit outcome applies if the injected clock moves backward
+during deliberation; negative elapsed time never admits a proposal.
 Duplicate events, inactive hours, cooldown, emergency stop, spend suspension,
 rate limiting, invalid decisions, and elapsed-time exhaustion remain distinct
 outcomes. Repeated `no_action` is valid and creates no public operation. An
@@ -199,6 +205,9 @@ reproduce prompt or output text in observations. `EvaluationReport.to_json()`
 emits a stable machine-readable report with per-G/H/M pass/fail counts,
 categorized failures, observations, rubric/harness versions, and explicit
 limitations.
+Recorded outputs must be a non-empty tuple (never a string implicitly treated as
+characters/trials). Every below-threshold observation requires at least one
+typed failure category, while passing observations cannot carry failure labels.
 Optional human calibration receives every observation and records a non-empty
 reviewer identity, calibration version, optional Boolean override
 recommendation, and note; malformed or provenance-free adjudication rejects.

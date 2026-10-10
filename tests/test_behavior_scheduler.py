@@ -159,6 +159,18 @@ def test_cooldown_empty_input_invalid_decision_and_execution_bound() -> None:
     assert timeout_result.outcome is SchedulerOutcome.EXECUTION_LIMIT
     assert timeout_result.decision is None
 
+    backward_clock = MutableClock(NOW)
+
+    def moved_backward(_: WakeupEvent, timeout_seconds: float) -> AgentDecision:
+        backward_clock.advance(timedelta(seconds=-1))
+        return AgentDecision.REPLY
+
+    backward_result = TestScheduler(
+        policy(), InMemorySchedulerStore(), backward_clock, moved_backward
+    ).run((event("backward-clock"),))
+    assert backward_result.outcome is SchedulerOutcome.EXECUTION_LIMIT
+    assert backward_result.decision is None
+
     for error in (ConnectionError("provider unavailable"), ValueError("bad output")):
         failure_store = InMemorySchedulerStore()
 
