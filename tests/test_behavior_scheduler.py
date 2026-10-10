@@ -340,6 +340,11 @@ def test_processed_event_history_remains_bounded_across_cooldown_runs() -> None:
         lambda *_: pytest.fail("cooldown must not deliberate"),
     )
 
+    duplicate_batch = scheduler.run(tuple(event("repeated") for _ in range(1024)))
+    assert duplicate_batch.outcome is SchedulerOutcome.COOLDOWN
+    assert duplicate_batch.coalesced_count == 1023
+    assert store.load().processed_event_ids == ("repeated",)
+
     for batch in range(MAX_PROCESSED_EVENTS // 1024 + 1):
         result = scheduler.run(
             tuple(event(f"batch-{batch}-{index}") for index in range(1024))

@@ -161,6 +161,14 @@ def test_pending_integration_decisions_are_typed_intents(
             "confidence": 2,
         },
         {
+            "decision": "revise_belief",
+            "proposition": "p",
+            "rationale": "r",
+            "evidence_ids": [],
+            "counterevidence_ids": [],
+            "confidence": 10**400,
+        },
+        {
             "decision": "revise_goal",
             "goal_id": "g",
             "status": "change_security_settings",
@@ -230,11 +238,26 @@ def test_engine_enforces_budgets_deadline_defer_and_malformed_output() -> None:
     malformed = engine(RecordedBehaviorModel(("not an object",))).deliberate(
         behavior_input()
     )
+    oversized_confidence = engine(
+        RecordedBehaviorModel(
+            (
+                {
+                    "decision": "revise_belief",
+                    "proposition": "p",
+                    "rationale": "r",
+                    "evidence_ids": [],
+                    "counterevidence_ids": [],
+                    "confidence": 10**400,
+                },
+            )
+        )
+    ).deliberate(behavior_input())
 
     assert no_budget.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
     assert expired.outcome is DeliberationOutcome.BUDGET_EXHAUSTED
     assert defer.outcome is DeliberationOutcome.UNAVAILABLE_CAPABILITY
     assert malformed.outcome is DeliberationOutcome.INVALID_PROPOSAL
+    assert oversized_confidence.outcome is DeliberationOutcome.INVALID_PROPOSAL
 
 
 def test_input_and_fake_model_validation() -> None:

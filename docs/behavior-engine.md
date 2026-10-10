@@ -114,6 +114,7 @@ clock's timezone; aware `time` values reject at policy construction.
 
 A run filters out future events, coalesces only currently due unprocessed
 wake-ups to the newest event, records their IDs, and deliberates at most once.
+Repeated copies of one event ID in the same batch occupy one history entry.
 Future events remain eligible when their time arrives, and a duplicate newest
 event cannot starve an older unprocessed due event. The input batch itself is
 bounded to 1,024 wake-ups, retained processed-event history keeps only the most

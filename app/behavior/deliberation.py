@@ -204,7 +204,7 @@ def _parse_intent_parameters(
         return _one_text(payload, "statement")
     if decision is AgentDecision.REVISE_BELIEF:
         confidence = payload["confidence"]
-        if type(confidence) not in (int, float) or not 0.0 <= float(confidence) <= 1.0:
+        if type(confidence) not in (int, float) or not 0.0 <= confidence <= 1.0:
             return None
         values = _texts_and_lists(
             payload,

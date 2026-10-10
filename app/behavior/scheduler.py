@@ -342,9 +342,11 @@ def _append_processed(
     now: datetime,
 ) -> tuple[tuple[str, datetime], ...]:
     known = set(state.processed_event_ids)
-    additions = tuple(
-        (item.event_id, now) for item in pending if item.event_id not in known
-    )
+    additions = []
+    for item in pending:
+        if item.event_id not in known:
+            additions.append((item.event_id, now))
+            known.add(item.event_id)
     return (*state.processed_events, *additions)[-MAX_PROCESSED_EVENTS:]
 
 
