@@ -95,7 +95,9 @@ def test_year_range_is_allowed_as_a_public_recency_requirement():
     assert result.disposition is BriefDisposition.READY
 
 
-@pytest.mark.parametrize("date", ["01/01/2020", "01.01.2020", "2020/01/01"])
+@pytest.mark.parametrize(
+    "date", ["01/01/2020", "01.01.2020", "2020/01/01", "12/31/2020"]
+)
 def test_calendar_dates_are_allowed_as_public_recency_requirements(date):
     result = build_safe_research_brief(
         records(
@@ -450,6 +452,34 @@ def test_encoded_canary_and_benign_nondecodable_or_nonoverlapping_text(
         screening=screening,
     )
     assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    ("private_value", "screening"),
+    [
+        ("Ann", ResearchScreeningContext(participant_identifiers=("Ann",))),
+        ("secret", ResearchScreeningContext(private_canaries=("secret",))),
+    ],
+)
+def test_short_encoded_private_values_are_rejected(private_value, screening):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded(private_value))),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=screening,
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+    assert result.reason == "encoded_leakage"
+
+
+def test_benign_short_base64_shaped_text_is_allowed():
+    result = build_safe_research_brief(
+        records(ResearchQuestion("YWJj")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(),
+    )
+    assert result.disposition is BriefDisposition.READY
 
 
 @pytest.mark.parametrize(
