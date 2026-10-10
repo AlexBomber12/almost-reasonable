@@ -1092,6 +1092,68 @@ def test_candidate_invalidation_during_extraction_rejects_new_output(
     )
 
 
+def test_candidate_invalidation_before_atomic_persist_rejects_new_output(
+    cognition_setup, monkeypatch
+):
+    events, state, context, invalidated_event = cognition_setup
+    new_event = append_event(events, context, "atomic-invalidation-race")
+    existing = InterestMemoryProposal(
+        proposal_context(invalidated_event, "atomic-race-source-create"),
+        "interest-atomic-race-source",
+        "Private topic valid during extraction",
+        40,
+        InterestStatus.ACTIVE,
+        "The write transaction must validate this dependency.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(existing))
+        .process(context, invalidated_event)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    copied = replace(
+        existing,
+        context=proposal_context(new_event, "atomic-race-copy-create"),
+        item_id="interest-atomic-race-copy",
+    )
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(copied))
+    durable_persist = engine._persist
+
+    def invalidate_then_persist(
+        request_context,
+        requested_proposal,
+        identity,
+        decided_at,
+        expected_candidate_revisions,
+    ):
+        with sqlite3.connect(events.database_path) as connection:
+            connection.execute(
+                "UPDATE protected_state_provenance "
+                "SET retention_status = 'invalidated' WHERE event_id = ?",
+                (invalidated_event,),
+            )
+        return durable_persist(
+            request_context,
+            requested_proposal,
+            identity,
+            decided_at,
+            expected_candidate_revisions,
+        )
+
+    monkeypatch.setattr(engine, "_persist", invalidate_then_persist)
+
+    outcome = engine.process(context, new_event)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STALE_REVISION
+    assert (
+        state.retrieve_private_revision_history(
+            context, StateType.INTEREST, "interest-atomic-race-copy"
+        )
+        == ()
+    )
+
+
 @pytest.mark.parametrize(
     "kind",
     [

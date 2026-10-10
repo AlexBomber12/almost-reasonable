@@ -91,34 +91,94 @@ class SelfStateStore:
         self._fault_injector = fault_injector
 
     def create_interest_candidate(
-        self, context: TrustedPrincipalContext, change: InterestCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: InterestCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.INTEREST, change, creating=True)
+        return self._apply(
+            context,
+            StateType.INTEREST,
+            change,
+            creating=True,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def revise_interest_candidate(
-        self, context: TrustedPrincipalContext, change: InterestCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: InterestCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.INTEREST, change, creating=False)
+        return self._apply(
+            context,
+            StateType.INTEREST,
+            change,
+            creating=False,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def create_belief_candidate(
-        self, context: TrustedPrincipalContext, change: BeliefCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: BeliefCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.BELIEF, change, creating=True)
+        return self._apply(
+            context,
+            StateType.BELIEF,
+            change,
+            creating=True,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def revise_belief_candidate(
-        self, context: TrustedPrincipalContext, change: BeliefCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: BeliefCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.BELIEF, change, creating=False)
+        return self._apply(
+            context,
+            StateType.BELIEF,
+            change,
+            creating=False,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def create_goal_candidate(
-        self, context: TrustedPrincipalContext, change: GoalCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: GoalCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.GOAL, change, creating=True)
+        return self._apply(
+            context,
+            StateType.GOAL,
+            change,
+            creating=True,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def revise_goal_candidate(
-        self, context: TrustedPrincipalContext, change: GoalCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: GoalCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] = (),
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.GOAL, change, creating=False)
+        return self._apply(
+            context,
+            StateType.GOAL,
+            change,
+            creating=False,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def retrieve_private_candidates(
         self, context: TrustedPrincipalContext
@@ -405,6 +465,7 @@ class SelfStateStore:
         change: InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange,
         *,
         creating: bool,
+        expected_candidate_revisions: tuple[tuple[str, int], ...],
     ) -> StateTransitionResult:
         self._validate_context(context)
         self._validate_change(state_type, change, creating=creating)
@@ -429,6 +490,12 @@ class SelfStateStore:
                         TransitionStatus.DUPLICATE,
                         self._snapshot_for_revision(connection, duplicate),
                     )
+
+                self._validate_candidate_snapshot(
+                    connection,
+                    context.principal_id.value,
+                    expected_candidate_revisions,
+                )
 
                 sources = self._validate_evidence(connection, context, change)
                 item = connection.execute(
@@ -565,6 +632,56 @@ class SelfStateStore:
             raise self._events._translated_error(error) from None
         finally:
             connection.close()
+
+    @staticmethod
+    def _validate_candidate_snapshot(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        expected: tuple[tuple[str, int], ...],
+    ) -> None:
+        if not expected:
+            return
+        expected_by_id = dict(expected)
+        placeholders = ", ".join("?" for _ in expected_by_id)
+        rows = connection.execute(
+            f"""
+            SELECT
+                item.item_id,
+                item.current_revision,
+                (SELECT MAX(candidate.revision_number)
+                 FROM state_revisions AS candidate
+                 WHERE candidate.item_key = item.item_key),
+                head_payload.retention_status,
+                EXISTS (
+                    SELECT 1
+                    FROM state_revisions AS tainted_revision
+                    JOIN protected_state_provenance AS tainted_source
+                      ON tainted_source.revision_key = tainted_revision.revision_key
+                    WHERE tainted_revision.item_key = item.item_key
+                      AND tainted_source.retention_status = 'invalidated'
+                )
+            FROM state_items AS item
+            JOIN state_revisions AS head_revision
+              ON head_revision.item_key = item.item_key
+             AND head_revision.revision_number = item.current_revision
+            JOIN state_revision_payloads AS head_payload
+              ON head_payload.revision_key = head_revision.revision_key
+            WHERE item.scope = 'private_candidate'
+              AND item.audience_type = 'private_participant'
+              AND item.audience_principal_id = ?
+              AND item.item_id IN ({placeholders})
+            """,
+            (principal_id, *expected_by_id),
+        ).fetchall()
+        actual = {
+            item_id: current_revision
+            for item_id, current_revision, latest_revision, retention, invalidated in rows
+            if current_revision == latest_revision
+            and retention == "active"
+            and invalidated == 0
+        }
+        if actual != expected_by_id:
+            raise SelfStateConflictError("candidate snapshot conflict")
 
     @staticmethod
     def _find_operation(

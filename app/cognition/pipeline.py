@@ -144,6 +144,7 @@ class CognitionEngine:
             decided_at,
             frozenset((source_event_id, *evidence_event_ids)),
             frozenset(candidate.item_id for candidate in current),
+            tuple((candidate.item_id, candidate.revision) for candidate in current),
         )
 
     def plan_source_invalidation(
@@ -173,6 +174,7 @@ class CognitionEngine:
         decided_at: datetime,
         available_evidence_ids: frozenset[str],
         visible_candidate_ids: frozenset[str],
+        expected_candidate_revisions: tuple[tuple[str, int], ...],
     ) -> CognitionOutcome:
         if type(proposal) is NoChangeProposal:
             return self._authorize_no_change(
@@ -291,7 +293,13 @@ class CognitionEngine:
                 )
             return self._rejected(reason, proposal.memory_kind)
         try:
-            transition = self._persist(context, proposal, identity, decided_at)
+            transition = self._persist(
+                context,
+                proposal,
+                identity,
+                decided_at,
+                expected_candidate_revisions,
+            )
         except SelfStateConflictError:
             return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
         except SelfStateIdentityConflictError:
@@ -461,6 +469,7 @@ class CognitionEngine:
         proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
         identity: ExtractorIdentity,
         decided_at: datetime,
+        expected_candidate_revisions: tuple[tuple[str, int], ...],
     ):
         change = self._build_change(proposal, identity, decided_at)
         creating = proposal.context.expected_revision is None
@@ -482,7 +491,11 @@ class CognitionEngine:
                 if creating
                 else self._state.revise_goal_candidate
             )
-        return method(context, change)
+        return method(
+            context,
+            change,
+            _expected_candidate_revisions=expected_candidate_revisions,
+        )
 
     @staticmethod
     def _build_change(

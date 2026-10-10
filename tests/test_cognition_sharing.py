@@ -33,6 +33,14 @@ from app.core.store import EventStore
 NOW = datetime(2026, 3, 2, 10, 0, tzinfo=UTC)
 
 
+class HostileString(str):
+    def strip(self, _characters=None):
+        raise RuntimeError("synthetic hostile string adapter")
+
+    def encode(self, _encoding="utf-8", _errors="strict"):
+        raise RuntimeError("synthetic hostile string adapter")
+
+
 class RaisingTimezone(tzinfo):
     def utcoffset(self, _value):
         raise RuntimeError("synthetic hostile timezone")
@@ -152,6 +160,7 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
         ("Read https：／／private．example．test/profile.", AbstractReason.IDENTIFIER),
         ("Contact иван@пример。рф privately.", AbstractReason.IDENTIFIER),
         ("Contact иван@пример｡рф privately.", AbstractReason.IDENTIFIER),
+        ("Contact ईमेल@उदाहरण.भारत privately.", AbstractReason.IDENTIFIER),
         ("Contact ada@\u0000example.test privately.", AbstractReason.IDENTIFIER),
         ("Contact ada@\u200bexample.test privately.", AbstractReason.IDENTIFIER),
         ("Contact ada@\ufff9example.test privately.", AbstractReason.IDENTIFIER),
@@ -357,6 +366,19 @@ def test_subclassed_abstraction_contracts_cannot_expose_extra_metadata(sharing_s
         assert result.reason is AbstractReason.INVALID_PROPOSAL
         assert result.quarantined_candidate is None
         assert context.principal_id.value not in repr(result)
+
+
+def test_hostile_string_subclasses_fail_closed_before_value_methods(sharing_setup):
+    events, _, context, event_id = sharing_setup
+    hostile = HostileString("synthetic-hostile-value")
+    candidate = replace(proposal(event_id).candidate, value=hostile)
+
+    result = AbstractToSharedValidator(events).validate(
+        context, replace(proposal(event_id), candidate=candidate)
+    )
+
+    assert result.status is AbstractDecisionStatus.REJECTED
+    assert result.reason is AbstractReason.INVALID_VALUE
 
 
 def test_uncertain_h_screen_quarantines_and_allowing_malicious_text_grants_no_authority(

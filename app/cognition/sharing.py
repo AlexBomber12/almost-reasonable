@@ -91,7 +91,12 @@ def screen_abstract_candidate(
     """Conservative H screen for obvious identity, quotation, and copy leakage."""
 
     normalized_candidate = _normalize_privacy_text(candidate.value)
-    if _IDENTIFIER.search(normalized_candidate) is not None:
+    identifier_candidate = "".join(
+        character
+        for character in normalized_candidate
+        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
+    )
+    if _IDENTIFIER.search(identifier_candidate) is not None:
         return PrivacyScreenResult(
             PRIVACY_SCREEN_VERSION,
             PrivacyScreenDecision.REJECT,
@@ -188,7 +193,7 @@ class AbstractToSharedValidator:
                 AbstractReason.VERIFICATION_MISMATCH,
             )
         if (
-            not isinstance(proposal.operation_id, str)
+            type(proposal.operation_id) is not str
             or _TOKEN.fullmatch(proposal.operation_id) is None
             or not self._valid_time(proposal.proposed_at)
             or not self._valid_value(candidate.value)
@@ -209,7 +214,7 @@ class AbstractToSharedValidator:
                 AbstractReason.MISSING_PROVENANCE,
             )
         if any(
-            not isinstance(item, str) or _TOKEN.fullmatch(item) is None
+            type(item) is not str or _TOKEN.fullmatch(item) is None
             for item in protected_ids
         ) or len(set(protected_ids)) != len(protected_ids):
             return self._result(
@@ -258,7 +263,7 @@ class AbstractToSharedValidator:
         if (
             type(screen) is not PrivacyScreenResult
             or not isinstance(screen.decision, PrivacyScreenDecision)
-            or not isinstance(screen.version, str)
+            or type(screen.version) is not str
             or _TOKEN.fullmatch(screen.version) is None
             or not self._valid_value(screen.reason)
         ):
@@ -302,7 +307,7 @@ class AbstractToSharedValidator:
 
     @staticmethod
     def _valid_value(value: object) -> bool:
-        if not isinstance(value, str) or not value.strip():
+        if type(value) is not str or not value.strip():
             return False
         try:
             return len(value.encode("utf-8")) <= MAX_STATE_TEXT_BYTES
