@@ -17,6 +17,7 @@ from .domain import (
     OutboxState,
     PollResult,
     PublicationType,
+    PublicationAuthorizationSnapshot,
     SourceProvenance,
     Stage,
     authenticated_approval_reference,
@@ -38,6 +39,7 @@ from .store import (
     PollCommitDeadlineError,
     ThreadsStore,
     ThreadsStoreError,
+    UnknownPublicationRiskError,
 )
 
 
@@ -94,41 +96,53 @@ class ThreadsService:
     ) -> tuple[OutboxItem, bool]:
         duplicate_ref = None
         if replacement_of is not None:
-            original = self.store.get(replacement_of)
             if (
-                original.account_ref != self.policy.account_ref
-                or original.state
-                not in {
-                    OutboxState.UNKNOWN,
-                    OutboxState.UNKNOWN_ABANDONED,
-                }
+                type(replacement_approval) is not Approval
+                or replacement_approval.purpose is not ApprovalPurpose.PUBLICATION
             ):
-                raise PolicyDeniedError("replacement target is not unresolved")
-            if replacement_approval is None:
                 raise PolicyDeniedError("replacement requires authenticated approval")
-            validate_approval(
+            if not replacement_approval.duplicate_risk_acknowledged:
+                raise ValueError("duplicate risk was not acknowledged")
+            duplicate_ref = authenticated_approval_reference(
                 replacement_approval,
                 account_ref=self.policy.account_ref,
                 operation_id=operation_id,
-                now=now,
-                require_duplicate_ack=True,
             )
-            duplicate_ref = replacement_approval.reference
-        return self.store.create_proposal(
-            operation_id=operation_id,
-            account_ref=self.policy.account_ref,
-            publication_type=publication_type,
-            draft_id=draft_id,
-            content=content,
-            source_provenance=source_provenance,
-            privacy_authorized=privacy_authorized,
-            russian_output_authorized=russian_output_authorized,
-            correlation_id=correlation_id,
-            now=now,
-            parent_message_id=parent_message_id,
-            replacement_of=replacement_of,
-            duplicate_risk_approval_ref=duplicate_ref,
-        )
+            if duplicate_ref is None:
+                raise PolicyDeniedError("replacement requires authenticated approval")
+        try:
+            return self.store.create_proposal(
+                operation_id=operation_id,
+                account_ref=self.policy.account_ref,
+                publication_type=publication_type,
+                draft_id=draft_id,
+                content=content,
+                source_provenance=source_provenance,
+                privacy_authorized=privacy_authorized,
+                russian_output_authorized=russian_output_authorized,
+                correlation_id=correlation_id,
+                now=now,
+                parent_message_id=parent_message_id,
+                replacement_of=replacement_of,
+                duplicate_risk_approval_ref=duplicate_ref,
+                precreate_check=(
+                    None
+                    if replacement_approval is None
+                    else lambda: validate_approval(
+                        replacement_approval,
+                        account_ref=self.policy.account_ref,
+                        operation_id=operation_id,
+                        now=self.utc_now(),
+                        require_duplicate_ack=True,
+                    )
+                ),
+            )
+        except UnknownPublicationRiskError as error:
+            if replacement_of is not None:
+                raise PolicyDeniedError(
+                    "replacement target is not unresolved"
+                ) from error
+            raise
 
     def submit_for_approval(self, operation_id: str, *, now: datetime) -> OutboxItem:
         self._require_owned_item(operation_id)
@@ -663,22 +677,42 @@ class ThreadsService:
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
-        self._resolve_current_approval(
-            item,
+        validate_approval(
             approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
             now=now,
-            purpose=ApprovalPurpose.PUBLICATION,
             require_duplicate_ack=item.replacement_of is not None,
+            purpose=ApprovalPurpose.PUBLICATION,
         )
         provider = self.authorization_provider
-        assert provider is not None
+        if provider is None:
+            raise PolicyDeniedError("current authorization provider is unavailable")
         try:
-            privacy_authorized = provider.current_privacy_authorized(item=item, now=now)
+            snapshot = provider.current_publication_authorization(
+                item=item,
+                approval_reference=approval.reference,
+                now=self.utc_now(),
+            )
         except Exception as error:
             raise PolicyDeniedError(
-                "current draft privacy authorization is unavailable"
+                "current publication authorization is unavailable"
             ) from error
-        if privacy_authorized is not True:
+        if type(snapshot) is not PublicationAuthorizationSnapshot:
+            raise PolicyDeniedError("current publication authorization is unavailable")
+        if snapshot.approval is None:
+            raise PolicyDeniedError("current approval is unavailable")
+        validate_approval(
+            snapshot.approval,
+            account_ref=item.account_ref,
+            operation_id=item.operation_id,
+            now=self.utc_now(),
+            require_duplicate_ack=item.replacement_of is not None,
+            purpose=ApprovalPurpose.PUBLICATION,
+        )
+        if snapshot.approval.reference != approval.reference:
+            raise ValueError("current approval reference mismatch")
+        if snapshot.privacy_authorized is not True:
             raise PolicyDeniedError(
                 "current draft privacy authorization is unavailable"
             )
@@ -696,13 +730,7 @@ class ThreadsService:
         blockers = self.policy.publication_blockers(item.publication_type)
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
-        return self._resolve_current_approval(
-            item,
-            approval,
-            now=self.utc_now(),
-            purpose=ApprovalPurpose.PUBLICATION,
-            require_duplicate_ack=item.replacement_of is not None,
-        )
+        return snapshot.approval
 
     def _resolve_current_approval(
         self,

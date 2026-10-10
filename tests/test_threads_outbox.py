@@ -9,6 +9,7 @@ from app.threads.domain import (
     Approval,
     ApprovalPurpose,
     OutboxState,
+    PublicationAuthorizationSnapshot,
     PublicationType,
     SourceProvenance,
     Stage,
@@ -99,7 +100,7 @@ def propose(service, operation_id="operation-1", **changes):
     result = service.propose(**values)
     provider = service.authorization_provider
     if isinstance(provider, SimulationAuthorizationProvider):
-        provider.set_privacy(operation_id, True)
+        provider.set_privacy(service.policy.account_ref, operation_id, True)
     return result
 
 
@@ -256,12 +257,8 @@ def test_proposal_identity_is_idempotent_but_conflicts_fail(tmp_path):
 )
 def test_proposal_boundary_rejects_malformed_or_unauthorized_input(tmp_path, changes):
     service = make_service(tmp_path)
-    if changes == {"replacement_of": "operation-old"}:
-        with pytest.raises(ThreadsStoreError):
-            propose(service, **changes)
-    else:
-        with pytest.raises((TypeError, ValueError, PolicyDeniedError)):
-            propose(service, **changes)
+    with pytest.raises((TypeError, ValueError, PolicyDeniedError)):
+        propose(service, **changes)
 
 
 def test_reply_requires_parent_and_enters_same_outbox(tmp_path):
@@ -403,7 +400,7 @@ def test_unregistered_or_unavailable_current_approval_fails_closed(tmp_path):
     trust_approval(service, approval)
     service.authorize("operation-1", approval, now=NOW)
     service.authorization_provider.approval_available = False
-    with pytest.raises(PolicyDeniedError, match="current approval"):
+    with pytest.raises(PolicyDeniedError, match="current publication"):
         service.dispatch("operation-1", approval, now=NOW)
     assert service.store.get("operation-1").state is OutboxState.READY
     assert service.simulator.trace == []
@@ -441,7 +438,7 @@ def test_revocation_or_privacy_change_before_dispatch_blocks_all_effects(tmp_pat
 
     private = make_service(tmp_path / "private")
     _, approval = ready(private)
-    private.authorization_provider.set_privacy("operation-1", False)
+    private.authorization_provider.set_privacy("account-1", "operation-1", False)
     with pytest.raises(PolicyDeniedError, match="current draft privacy"):
         private.dispatch("operation-1", approval, now=NOW)
     assert private.store.get("operation-1").state is OutboxState.READY
@@ -493,18 +490,23 @@ def test_initial_policy_denials_are_revisioned_and_attributed(tmp_path, phase):
         )
 
 
+@pytest.mark.parametrize("bad_snapshot", ["wrong_reference", "invalid_snapshot"])
 def test_authorization_provider_contract_fails_closed_on_bad_current_data(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, bad_snapshot
 ):
     service = make_service(tmp_path)
     _, approval = ready(service)
     provider = service.authorization_provider
-    monkeypatch.setattr(
-        provider,
-        "current_approval",
-        lambda **_kwargs: approve(reference="approval-wrong"),
+    result = (
+        PublicationAuthorizationSnapshot(approve(reference="approval-wrong"), True)
+        if bad_snapshot == "wrong_reference"
+        else object()
     )
-    with pytest.raises(ValueError, match="reference mismatch"):
+    monkeypatch.setattr(
+        provider, "current_publication_authorization", lambda **_kwargs: result
+    )
+    expected = ValueError if bad_snapshot == "wrong_reference" else PolicyDeniedError
+    with pytest.raises(expected):
         service.dispatch("operation-1", approval, now=NOW)
     assert service.simulator.trace == []
 
@@ -513,7 +515,7 @@ def test_privacy_provider_unavailability_fails_closed(tmp_path):
     service = make_service(tmp_path)
     _, approval = ready(service)
     service.authorization_provider.privacy_available = False
-    with pytest.raises(PolicyDeniedError, match="current draft privacy"):
+    with pytest.raises(PolicyDeniedError, match="current publication"):
         service.dispatch("operation-1", approval, now=NOW)
     assert service.store.get("operation-1").state is OutboxState.READY
     assert service.simulator.trace == []
@@ -812,17 +814,17 @@ def test_approval_expiry_is_rechecked_before_ready_transition(tmp_path, monkeypa
     propose(service)
     service.submit_for_approval("operation-1", now=NOW)
     expiring = trust_approval(service, approve(expires_at=NOW + timedelta(minutes=1)))
-    current_privacy = service.authorization_provider.current_privacy_authorized
+    current_snapshot = service.authorization_provider.current_publication_authorization
 
-    def authorize_privacy_then_expire(**kwargs):
-        result = current_privacy(**kwargs)
+    def authorize_snapshot_then_expire(**kwargs):
+        result = current_snapshot(**kwargs)
         current_time[0] = NOW + timedelta(minutes=2)
         return result
 
     monkeypatch.setattr(
         service.authorization_provider,
-        "current_privacy_authorized",
-        authorize_privacy_then_expire,
+        "current_publication_authorization",
+        authorize_snapshot_then_expire,
     )
     with pytest.raises(ValueError, match="expired"):
         service.authorize("operation-1", expiring, now=NOW)
@@ -837,7 +839,9 @@ def test_current_draft_privacy_is_rechecked_before_publication(tmp_path, monkeyp
 
     def create_then_revoke_privacy(item):
         container_id = create_container(item)
-        service.authorization_provider.set_privacy(item.operation_id, False)
+        service.authorization_provider.set_privacy(
+            item.account_ref, item.operation_id, False
+        )
         return container_id
 
     monkeypatch.setattr(
@@ -878,25 +882,17 @@ def test_current_approval_status_is_rechecked_before_publication(tmp_path, monke
     assert service.simulator.trace == [("create_container", "operation-1")]
 
 
-def test_approval_is_rechecked_after_blocking_privacy_lookup(tmp_path, monkeypatch):
+def test_publication_checks_use_atomic_authorization_snapshot(tmp_path, monkeypatch):
     service = make_service(tmp_path)
     _, approval = ready(service)
-    current_privacy = service.authorization_provider.current_privacy_authorized
-
-    def authorize_privacy_then_revoke(**kwargs):
-        result = current_privacy(**kwargs)
-        service.authorization_provider.set_approval(approve(revoked=True))
-        return result
-
     monkeypatch.setattr(
         service.authorization_provider,
-        "current_privacy_authorized",
-        authorize_privacy_then_revoke,
+        "current_approval",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("split approval read")),
     )
-    with pytest.raises(ValueError, match="revoked"):
-        service.dispatch("operation-1", approval, now=NOW)
-    assert service.store.get("operation-1").state is OutboxState.READY
-    assert service.simulator.trace == []
+    assert service.dispatch("operation-1", approval, now=NOW).state is (
+        OutboxState.CONFIRMED
+    )
 
 
 def test_privacy_is_rechecked_after_final_container_marker(tmp_path, monkeypatch):
@@ -907,7 +903,7 @@ def test_privacy_is_rechecked_after_final_container_marker(tmp_path, monkeypatch
     def update_then_revoke(operation_id, evidence, **kwargs):
         update_evidence(operation_id, evidence, **kwargs)
         if evidence == "container_dispatch_started":
-            service.authorization_provider.set_privacy(operation_id, False)
+            service.authorization_provider.set_privacy("account-1", operation_id, False)
 
     monkeypatch.setattr(service.store, "update_sending_evidence", update_then_revoke)
     with pytest.raises(PolicyDeniedError, match="current draft privacy"):
@@ -926,7 +922,7 @@ def test_privacy_is_rechecked_after_final_publish_marker(tmp_path, monkeypatch):
     def update_then_revoke(operation_id, evidence, **kwargs):
         update_evidence(operation_id, evidence, **kwargs)
         if evidence == "publish_dispatch_started":
-            service.authorization_provider.set_privacy(operation_id, False)
+            service.authorization_provider.set_privacy("account-1", operation_id, False)
 
     monkeypatch.setattr(service.store, "update_sending_evidence", update_then_revoke)
     with pytest.raises(PolicyDeniedError, match="current draft privacy"):
@@ -974,17 +970,17 @@ def test_mutable_policy_is_rechecked_after_authorization_lookup(
 ):
     service = make_service(tmp_path)
     _, approval = ready(service)
-    current_privacy = service.authorization_provider.current_privacy_authorized
+    current_snapshot = service.authorization_provider.current_publication_authorization
 
-    def authorize_privacy_then_stop(**kwargs):
-        result = current_privacy(**kwargs)
+    def authorize_snapshot_then_stop(**kwargs):
+        result = current_snapshot(**kwargs)
         setattr(service.policy, policy_field, policy_value)
         return result
 
     monkeypatch.setattr(
         service.authorization_provider,
-        "current_privacy_authorized",
-        authorize_privacy_then_stop,
+        "current_publication_authorization",
+        authorize_snapshot_then_stop,
     )
     with pytest.raises(PolicyDeniedError, match=message):
         service.dispatch("operation-1", approval, now=NOW)
@@ -1010,21 +1006,21 @@ def test_approval_expiry_is_rechecked_after_final_authorization_lookup(
     service.submit_for_approval("operation-1", now=NOW)
     expiring = trust_approval(service, approve(expires_at=NOW + timedelta(minutes=1)))
     service.authorize("operation-1", expiring, now=NOW)
-    current_privacy = authorization_provider.current_privacy_authorized
-    privacy_checks = 0
+    current_snapshot = authorization_provider.current_publication_authorization
+    snapshot_checks = 0
 
-    def expire_during_final_privacy_lookup(**kwargs):
-        nonlocal privacy_checks
-        privacy_checks += 1
-        result = current_privacy(**kwargs)
-        if privacy_checks == 4:
+    def expire_during_final_snapshot_lookup(**kwargs):
+        nonlocal snapshot_checks
+        snapshot_checks += 1
+        result = current_snapshot(**kwargs)
+        if snapshot_checks == 4:
             current_time[0] = NOW + timedelta(minutes=2)
         return result
 
     monkeypatch.setattr(
         authorization_provider,
-        "current_privacy_authorized",
-        expire_during_final_privacy_lookup,
+        "current_publication_authorization",
+        expire_during_final_snapshot_lookup,
     )
     with pytest.raises(ValueError, match="expired"):
         service.dispatch("operation-1", expiring, now=NOW)
@@ -1071,27 +1067,17 @@ def test_expiry_at_initial_dispatch_check_preserves_ready_state(tmp_path):
     assert simulator.trace == []
 
 
-def test_repeated_pre_publish_denials_obey_attempt_cap(tmp_path):
-    calls = 0
-
-    def stop_at_publish_boundary():
-        nonlocal calls
-        calls += 1
-        if calls in {5, 8}:
-            service.policy.emergency_stop = True
-        return NOW
-
-    runtime_policy = make_policy()
-    simulator = ThreadsSimulator(account_ref="account-1")
-    authorization_provider = SimulationAuthorizationProvider()
-    service = ThreadsService(
-        ThreadsStore(tmp_path / "threads.sqlite3"),
-        simulator,
-        runtime_policy,
-        utc_now=stop_at_publish_boundary,
-        authorization_provider=authorization_provider,
-    )
+def test_repeated_pre_publish_denials_obey_attempt_cap(tmp_path, monkeypatch):
+    service = make_service(tmp_path)
     _, approval = ready(service)
+    update_evidence = service.store.update_sending_evidence
+
+    def update_then_stop(operation_id, evidence, **kwargs):
+        update_evidence(operation_id, evidence, **kwargs)
+        if evidence == "publish_dispatch_started":
+            service.policy.emergency_stop = True
+
+    monkeypatch.setattr(service.store, "update_sending_evidence", update_then_stop)
     with pytest.raises(PolicyDeniedError, match="stop"):
         service.dispatch("operation-1", approval, now=NOW)
     assert service.store.get("operation-1").state is OutboxState.READY
@@ -1396,6 +1382,46 @@ def test_administrative_approval_is_rechecked_inside_write_transaction(
             )
 
 
+@pytest.mark.parametrize(
+    "provider_state, expected",
+    [
+        ("missing_provider", "provider is unavailable"),
+        ("unavailable", "current approval is unavailable"),
+        ("unregistered", "current approval is unavailable"),
+        ("wrong_reference", "reference mismatch"),
+    ],
+)
+def test_administrative_authorization_provider_failures_preserve_unknown_state(
+    tmp_path, monkeypatch, provider_state, expected
+):
+    service = make_service(tmp_path)
+    _, publication_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", publication_approval, now=NOW)
+    administrative_approval = approve(
+        reference="approval-abandon-operation-1",
+        purpose=ApprovalPurpose.ABANDON_UNKNOWN,
+    )
+    if provider_state != "unregistered":
+        trust_approval(service, administrative_approval)
+    if provider_state == "missing_provider":
+        service.authorization_provider = None
+    elif provider_state == "unavailable":
+        service.authorization_provider.approval_available = False
+    elif provider_state == "wrong_reference":
+        monkeypatch.setattr(
+            service.authorization_provider,
+            "current_approval",
+            lambda **_kwargs: approve(
+                reference="approval-wrong",
+                purpose=ApprovalPurpose.ABANDON_UNKNOWN,
+            ),
+        )
+    with pytest.raises((PolicyDeniedError, ValueError), match=expected):
+        service.abandon_unknown("operation-1", administrative_approval, now=NOW)
+    assert service.store.get("operation-1").state is OutboxState.UNKNOWN
+
+
 def test_unknown_pauses_account_and_exact_identity_cannot_be_evaded(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -1443,6 +1469,37 @@ def test_exceptional_replacement_requires_separate_duplicate_risk_ack(tmp_path):
     )
 
 
+def test_exact_replacement_retry_survives_target_resolution_and_ack_expiry(tmp_path):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    original_ack = approve("operation-2", duplicate_risk_acknowledged=True)
+    replacement, created = propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=original_ack,
+    )
+    assert created is True
+    service.simulator.reconciliation["operation-1"] = ReconciliationResult.CONFIRMED
+    service.reconcile("operation-1", now=NOW)
+    expired_ack = approve(
+        "operation-2",
+        reference=original_ack.reference,
+        expires_at=NOW,
+        duplicate_risk_acknowledged=True,
+    )
+    repeated, repeated_created = propose(
+        service,
+        "operation-2",
+        replacement_of="operation-1",
+        replacement_approval=expired_ack,
+    )
+    assert repeated_created is False
+    assert repeated == replacement
+
+
 def test_replacement_is_blocked_if_target_reconciles_before_dispatch(tmp_path):
     service = make_service(tmp_path)
     _, first_approval = ready(service)
@@ -1486,7 +1543,7 @@ def test_replacement_target_is_revalidated_in_proposal_transaction(
 
     monkeypatch.setattr(service.store, "create_proposal", resolve_target_before_insert)
     risk_approval = approve("operation-2", duplicate_risk_acknowledged=True)
-    with pytest.raises(UnknownPublicationRiskError, match="no longer unresolved"):
+    with pytest.raises(PolicyDeniedError, match="not unresolved"):
         propose(
             service,
             "operation-2",
@@ -1672,6 +1729,22 @@ def test_replacement_rejects_resolved_target_and_missing_authenticated_ack(tmp_p
     service.dispatch("operation-1", first_approval, now=NOW)
     with pytest.raises(PolicyDeniedError, match="authenticated approval"):
         propose(service, "operation-2", replacement_of="operation-1")
+    forged = Approval(
+        "approval-forged-replacement",
+        "account-1",
+        "operation-2",
+        NOW + timedelta(hours=1),
+        False,
+        True,
+        object(),
+    )
+    with pytest.raises(PolicyDeniedError, match="authenticated approval"):
+        propose(
+            service,
+            "operation-2",
+            replacement_of="operation-1",
+            replacement_approval=forged,
+        )
 
 
 def test_duplicate_fingerprint_is_a_bounded_warning_not_semantic_proof(tmp_path):
@@ -1712,6 +1785,35 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
             russian_output_authorized=True,
             correlation_id="correlation-2",
             now=NOW,
+            duplicate_risk_approval_ref="approval-risk",
+        )
+    with pytest.raises(ValueError, match="pre-create check"):
+        service.store.create_proposal(
+            operation_id="operation-2",
+            account_ref="account-1",
+            publication_type=PublicationType.POST,
+            draft_id="draft-2",
+            content="Новая публикация",
+            source_provenance=SourceProvenance.PUBLIC,
+            privacy_authorized=True,
+            russian_output_authorized=True,
+            correlation_id="correlation-2",
+            now=NOW,
+            precreate_check=object(),
+        )
+    with pytest.raises(ValueError, match="authorization fence"):
+        service.store.create_proposal(
+            operation_id="operation-2",
+            account_ref="account-1",
+            publication_type=PublicationType.POST,
+            draft_id="draft-2",
+            content="Новая публикация",
+            source_provenance=SourceProvenance.PUBLIC,
+            privacy_authorized=True,
+            russian_output_authorized=True,
+            correlation_id="correlation-2",
+            now=NOW,
+            replacement_of="operation-1",
             duplicate_risk_approval_ref="approval-risk",
         )
     with pytest.raises(ValueError, match="approval status"):
@@ -1944,9 +2046,9 @@ def test_simulator_rejects_unknown_fault_type_and_handles_inflight_without_hook(
     with pytest.raises(ValueError, match="simulated approval"):
         service.authorization_provider.set_approval("forged")
     with pytest.raises(ValueError, match="operation ID"):
-        service.authorization_provider.set_privacy("bad operation", True)
+        service.authorization_provider.set_privacy("account-1", "bad operation", True)
     with pytest.raises(ValueError, match="privacy decision"):
-        service.authorization_provider.set_privacy("operation-1", 1)
+        service.authorization_provider.set_privacy("account-1", "operation-1", 1)
     with pytest.raises(ValueError, match="fault"):
         service.simulator.set_fault("operation-1", "publish", "none")
     _, approval = ready(service)

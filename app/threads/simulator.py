@@ -4,8 +4,16 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 import hashlib
+from threading import RLock
 
-from .domain import Approval, InboundEvent, InboundKind, OutboxItem, require_reference
+from .domain import (
+    Approval,
+    InboundEvent,
+    InboundKind,
+    OutboxItem,
+    PublicationAuthorizationSnapshot,
+    require_reference,
+)
 
 
 _VERIFIED_SOURCE_AUTHORITY = object()
@@ -91,8 +99,9 @@ class SimulationAuthorizationProvider:
     """Mutable, credential-free current-authorization fixture for simulation."""
 
     def __init__(self):
+        self._authorization_lock = RLock()
         self.approvals: dict[tuple[str, str, str], Approval] = {}
-        self.privacy: dict[str, bool] = {}
+        self.privacy: dict[tuple[str, str], bool] = {}
         self.approval_available = True
         self.privacy_available = True
         self.network_calls = 0
@@ -100,15 +109,20 @@ class SimulationAuthorizationProvider:
     def set_approval(self, approval: Approval) -> None:
         if type(approval) is not Approval:
             raise ValueError("invalid simulated approval")
-        self.approvals[
-            (approval.account_ref, approval.operation_id, approval.reference)
-        ] = approval
+        with self._authorization_lock:
+            self.approvals[
+                (approval.account_ref, approval.operation_id, approval.reference)
+            ] = approval
 
-    def set_privacy(self, operation_id: str, authorized: bool) -> None:
+    def set_privacy(
+        self, account_ref: str, operation_id: str, authorized: bool
+    ) -> None:
+        require_reference("account reference", account_ref)
         require_reference("operation ID", operation_id)
         if type(authorized) is not bool:
             raise ValueError("invalid simulated privacy decision")
-        self.privacy[operation_id] = authorized
+        with self._authorization_lock:
+            self.privacy[(account_ref, operation_id)] = authorized
 
     def current_approval(
         self,
@@ -120,12 +134,29 @@ class SimulationAuthorizationProvider:
     ) -> Approval | None:
         if not self.approval_available:
             raise RuntimeError("simulated approval provider unavailable")
-        return self.approvals.get((account_ref, operation_id, approval_reference))
+        with self._authorization_lock:
+            return self.approvals.get((account_ref, operation_id, approval_reference))
 
-    def current_privacy_authorized(self, *, item: OutboxItem, now: datetime) -> bool:
-        if not self.privacy_available:
-            raise RuntimeError("simulated privacy provider unavailable")
-        return self.privacy.get(item.operation_id, False)
+    def current_publication_authorization(
+        self,
+        *,
+        item: OutboxItem,
+        approval_reference: str,
+        now: datetime,
+    ) -> PublicationAuthorizationSnapshot:
+        with self._authorization_lock:
+            if not self.approval_available:
+                raise RuntimeError("simulated approval provider unavailable")
+            if not self.privacy_available:
+                raise RuntimeError("simulated privacy provider unavailable")
+            return PublicationAuthorizationSnapshot(
+                approval=self.approvals.get(
+                    (item.account_ref, item.operation_id, approval_reference)
+                ),
+                privacy_authorized=self.privacy.get(
+                    (item.account_ref, item.operation_id), False
+                ),
+            )
 
 
 class ThreadsSimulator:

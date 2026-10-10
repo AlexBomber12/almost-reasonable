@@ -79,6 +79,14 @@ class Approval:
     purpose: ApprovalPurpose = ApprovalPurpose.PUBLICATION
 
 
+@dataclass(frozen=True, slots=True)
+class PublicationAuthorizationSnapshot:
+    """Atomic trusted view of publication approval and per-draft privacy."""
+
+    approval: Approval | None
+    privacy_authorized: bool
+
+
 def issue_approval(
     *,
     reference: str,
@@ -215,9 +223,13 @@ class CurrentAuthorizationProvider(Protocol):
         now: datetime,
     ) -> Approval | None: ...
 
-    def current_privacy_authorized(
-        self, *, item: OutboxItem, now: datetime
-    ) -> bool: ...
+    def current_publication_authorization(
+        self,
+        *,
+        item: OutboxItem,
+        approval_reference: str,
+        now: datetime,
+    ) -> PublicationAuthorizationSnapshot: ...
 
 
 @dataclass(frozen=True, slots=True)

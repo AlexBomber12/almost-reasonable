@@ -164,6 +164,7 @@ class ThreadsStore:
         parent_message_id: str | None = None,
         replacement_of: str | None = None,
         duplicate_risk_approval_ref: str | None = None,
+        precreate_check: Callable[[], None] | None = None,
     ) -> tuple[OutboxItem, bool]:
         for field, value in (
             ("operation ID", operation_id),
@@ -195,6 +196,8 @@ class ThreadsStore:
             )
         elif duplicate_risk_approval_ref is not None:
             raise ValueError("duplicate-risk approval requires a replacement")
+        if precreate_check is not None and not callable(precreate_check):
+            raise ValueError("invalid proposal pre-create check")
         fingerprint = content_fingerprint(content)
         immutable = (
             account_ref,
@@ -220,6 +223,10 @@ class ThreadsStore:
                     raise DuplicateOperationError("operation identity conflict")
                 connection.commit()
                 return _outbox_item(existing), False
+            if replacement_of is not None and precreate_check is None:
+                raise ValueError("replacement requires an authorization fence")
+            if precreate_check is not None:
+                precreate_check()
             if replacement_of is not None:
                 target = connection.execute(
                     "SELECT account_ref, state FROM threads_outbox "

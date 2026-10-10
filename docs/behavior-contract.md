@@ -220,6 +220,8 @@ Every inbound polling action requires an explicit correlation ID. A policy denia
 
 Administrative abandonment and reconciliation-claim recovery revalidate their purpose-bound approval after acquiring the durable write transaction and before changing outbox state, locks, or decision records. Revocation or expiry during database-lock wait therefore rolls the transaction back without applying the administrative change.
 
+The trusted authorization provider supplies approval and per-draft privacy as one atomic publication snapshot. Mutable account policy is rechecked after that snapshot at every external-effect boundary. Exact replacement-proposal retries are identified by their persisted immutable operation data before mutable target state or acknowledgement expiry is evaluated; conflicting operation-ID reuse still fails closed.
+
 Failure classification depends on the external-dispatch boundary:
 
 - **proven pre-dispatch failure:** no external request was transmitted and no side effect occurred; keep or return the item to `ready` for a bounded safe retry, or use `cancelled`/`failed_terminal` as appropriate;
