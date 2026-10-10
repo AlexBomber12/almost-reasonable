@@ -1078,6 +1078,18 @@ def test_deferred_event_survives_restart_and_can_be_resumed(tmp_path):
         resume_condition="public-evidence-arrives",
         now=NOW,
     )
+    with pytest.raises(ThreadsStoreError, match="duplicate conversation outcome"):
+        store.record_conversation_outcome(
+            outcome_id="outcome-defer-first",
+            correlation_id=inbound.correlation_id,
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            inbound_event_id=inbound.event_id,
+            outcome=ConversationOutcome.DEFER,
+            reason="awaiting-public-evidence",
+            resume_condition="public-evidence-arrives",
+            now=NOW,
+        )
 
     restarted = ThreadsStore(store.database)
     deferred = restarted.deferred_inbound_events("account-1", InboundKind.REPLY)
@@ -1159,6 +1171,18 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
         store.record_conversation_outcome(**base)
     with pytest.raises(ThreadsStoreError, match="already processed"):
         store.record_conversation_outcome(**(base | {"outcome_id": "outcome-2"}))
+    with pytest.raises(ThreadsStoreError, match="already processed"):
+        store.record_conversation_outcome(
+            **(
+                base
+                | {
+                    "outcome_id": "outcome-stale-defer",
+                    "outcome": ConversationOutcome.DEFER,
+                    "resume_condition": "stale-worker-retry",
+                }
+            )
+        )
+    assert store.deferred_inbound_events("account-1", InboundKind.REPLY) == ()
     with pytest.raises(ThreadsStoreError):
         store.record_conversation_outcome(
             **(base | {"outcome_id": "outcome-3", "inbound_event_id": "missing"})

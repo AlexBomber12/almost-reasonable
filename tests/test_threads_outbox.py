@@ -8,6 +8,8 @@ from app.threads.domain import (
     AccountPolicy,
     Approval,
     ApprovalPurpose,
+    ConversationOutcome,
+    InboundEvent,
     InboundKind,
     OutboxState,
     PublicationAuthorizationSnapshot,
@@ -272,6 +274,58 @@ def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
             precommit_check=lambda: None,
         )
     assert migrated.cursor("account-1", InboundKind.REPLY) is None
+
+
+def test_version_four_migration_keeps_deferred_event_resumable(tmp_path):
+    path = tmp_path / "threads.sqlite3"
+    store = ThreadsStore(path)
+    inbound = InboundEvent(
+        event_id="event-legacy-defer",
+        correlation_id="correlation-legacy-defer",
+        account_ref="account-1",
+        source_ref="meta-simulator-v1",
+        kind=InboundKind.REPLY,
+        conversation_id="conversation-legacy-defer",
+        parent_message_id="parent-legacy-defer",
+        occurred_at=NOW,
+        content="Публичное отложенное сообщение",
+    )
+    store.commit_poll_page(
+        correlation_id="poll-legacy-defer",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(inbound,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-legacy-defer",
+        correlation_id=inbound.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=inbound.event_id,
+        outcome=ConversationOutcome.DEFER,
+        reason="legacy-defer",
+        resume_condition="after-migration",
+        now=NOW,
+    )
+    with sqlite3.connect(path) as connection:
+        connection.execute("DROP TABLE threads_reconciliation_attempts")
+        connection.execute("DROP TABLE threads_poll_actions")
+        connection.execute(
+            "ALTER TABLE threads_inbound_events DROP COLUMN processed_at"
+        )
+        connection.execute("UPDATE threads_schema_metadata SET version=4")
+
+    migrated = ThreadsStore(path)
+    assert migrated.pending_inbound_events("account-1", InboundKind.REPLY) == (inbound,)
+    deferred = migrated.deferred_inbound_events("account-1", InboundKind.REPLY)
+    assert len(deferred) == 1
+    assert deferred[0].event == inbound
+    assert deferred[0].resume_condition == "after-migration"
 
 
 def test_existing_database_requires_version_metadata_row(tmp_path):
@@ -1644,6 +1698,80 @@ def test_administrative_approval_is_rechecked_inside_write_transaction(
             service.store.claim_reconciliation(
                 operation_id="operation-1",
                 correlation_id="claim-revoked-recovery-blocked",
+                account_ref="account-1",
+                actor_reference="account-actor-1",
+                now=NOW,
+            )
+
+
+@pytest.mark.parametrize("action", ["abandon", "recover"])
+@pytest.mark.parametrize("mutable_binding", ["policy", "simulator"])
+def test_administrative_precommit_rechecks_account_binding(
+    tmp_path, monkeypatch, action, mutable_binding
+):
+    service = make_service(tmp_path)
+    _, publication_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", publication_approval, now=NOW)
+    purpose = (
+        ApprovalPurpose.ABANDON_UNKNOWN
+        if action == "abandon"
+        else ApprovalPurpose.RECOVER_RECONCILIATION
+    )
+    administrative_approval = trust_approval(
+        service,
+        approve(
+            reference=f"approval-{action}-binding",
+            purpose=purpose,
+        ),
+    )
+    if action == "recover":
+        service.store.claim_reconciliation(
+            operation_id="operation-1",
+            correlation_id=f"claim-{mutable_binding}-binding-recovery",
+            account_ref="account-1",
+            actor_reference="account-actor-1",
+            now=NOW,
+        )
+    current_approval = service.authorization_provider.current_approval
+    checks = 0
+
+    def mutate_during_precommit_lookup(**kwargs):
+        nonlocal checks
+        result = current_approval(**kwargs)
+        if kwargs["approval_reference"] == administrative_approval.reference:
+            checks += 1
+            if checks == 2:
+                target = (
+                    service.policy if mutable_binding == "policy" else service.simulator
+                )
+                target.account_ref = "account-2"
+        return result
+
+    monkeypatch.setattr(
+        service.authorization_provider,
+        "current_approval",
+        mutate_during_precommit_lookup,
+    )
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        if action == "abandon":
+            service.abandon_unknown("operation-1", administrative_approval, now=NOW)
+        else:
+            service.recover_reconciliation_claim(
+                "operation-1", administrative_approval, now=NOW
+            )
+
+    assert checks == 2
+    assert service.store.get("operation-1").state is OutboxState.UNKNOWN
+    assert (
+        service.store.operator_decision_reference("operation-1", "abandon_unknown")
+        is None
+    )
+    if action == "recover":
+        with pytest.raises(ThreadsStoreError, match="already reserved"):
+            service.store.claim_reconciliation(
+                operation_id="operation-1",
+                correlation_id=f"claim-{mutable_binding}-still-reserved",
                 account_ref="account-1",
                 actor_reference="account-actor-1",
                 now=NOW,

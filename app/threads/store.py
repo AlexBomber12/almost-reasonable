@@ -1208,7 +1208,7 @@ class ThreadsStore:
                     "inbound_event_id, outcome, reason, resume_condition, occurred_at) "
                     "SELECT ?, ?, account_ref, kind, event_id, ?, ?, ?, ? "
                     "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
-                    "AND event_id=? AND correlation_id=?",
+                    "AND event_id=? AND correlation_id=? AND processed_at IS NULL",
                     (
                         outcome_id,
                         correlation_id,
@@ -1227,11 +1227,23 @@ class ThreadsStore:
                     "invalid or duplicate conversation outcome"
                 ) from error
             if changed != 1:
+                event_state = connection.execute(
+                    "SELECT correlation_id, processed_at "
+                    "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
+                    "AND event_id=?",
+                    (account_ref, stream.value, inbound_event_id),
+                ).fetchone()
+                if (
+                    event_state is not None
+                    and event_state["correlation_id"] == correlation_id
+                    and event_state["processed_at"] is not None
+                ):
+                    raise ThreadsStoreError("inbound event is already processed")
                 raise ThreadsStoreError(
                     "conversation outcome correlation does not match inbound event"
                 )
             if outcome is not ConversationOutcome.DEFER:
-                acknowledged = connection.execute(
+                connection.execute(
                     "UPDATE threads_inbound_events SET processed_at=? "
                     "WHERE account_ref=? AND kind=? AND event_id=? "
                     "AND correlation_id=? AND processed_at IS NULL",
@@ -1242,9 +1254,7 @@ class ThreadsStore:
                         inbound_event_id,
                         correlation_id,
                     ),
-                ).rowcount
-                if acknowledged != 1:
-                    raise ThreadsStoreError("inbound event is already processed")
+                )
             connection.commit()
 
     def pending_inbound_events(
@@ -1652,12 +1662,14 @@ SET processed_at=(
     WHERE outcome.inbound_account_ref=threads_inbound_events.account_ref
       AND outcome.inbound_kind=threads_inbound_events.kind
       AND outcome.inbound_event_id=threads_inbound_events.event_id
+      AND outcome.outcome<>'defer'
 )
 WHERE EXISTS (
     SELECT 1 FROM threads_conversation_outcomes AS outcome
     WHERE outcome.inbound_account_ref=threads_inbound_events.account_ref
       AND outcome.inbound_kind=threads_inbound_events.kind
       AND outcome.inbound_event_id=threads_inbound_events.event_id
+      AND outcome.outcome<>'defer'
 );
 """
 

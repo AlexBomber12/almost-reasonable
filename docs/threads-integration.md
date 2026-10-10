@@ -234,7 +234,8 @@ invalid result, and provider failure complete that append-only attempt record;
 a process death leaves the `started` evidence intact for authorized recovery.
 Both reconciliation-claim recovery and permanent abandonment validate the
 provider-returned purpose-bound approval against a freshly sampled clock
-immediately before their durable administrative change.
+immediately before their durable administrative change, then revalidate the
+pinned policy/transport account binding after that lookup and before commit.
 
 ## Inbound replies, mentions, and conversation outcomes
 
@@ -279,6 +280,9 @@ outcomes. `defer` leaves the inbound event unprocessed, and the durable
 `deferred_inbound_events` query returns the event, reason, resume condition, and
 defer timestamp after restart. Recording a later non-deferred outcome is the
 explicit acknowledgement that removes it from both pending and deferred work.
+Migration backfills `processed_at` only from non-deferred outcomes, and a stale
+worker cannot append a defer outcome after another worker has acknowledged the
+event.
 A chosen public reply starts as a distinct proposal and traverses the same
 approval, unknown, reconciliation, and duplicate controls as a post.
 

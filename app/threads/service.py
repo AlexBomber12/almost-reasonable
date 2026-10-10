@@ -820,6 +820,7 @@ class ThreadsService:
         approval: Approval,
         purpose: ApprovalPurpose,
     ) -> None:
+        self._require_account_binding()
         current_approval = self._resolve_current_approval(
             item,
             approval,
@@ -827,6 +828,7 @@ class ThreadsService:
             purpose=purpose,
             require_duplicate_ack=False,
         )
+        self._require_account_binding()
         validate_approval(
             current_approval,
             account_ref=item.account_ref,
