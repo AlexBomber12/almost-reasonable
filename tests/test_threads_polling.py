@@ -1197,15 +1197,17 @@ def test_malicious_public_text_is_bounded_data_not_authority_or_global_stop(tmp_
 
 
 @pytest.mark.parametrize(
-    "outcome, resume",
+    "outcome, resume, control_expiry",
     [
-        (ConversationOutcome.NO_ACTION, None),
-        (ConversationOutcome.DEFER, "after-research"),
-        (ConversationOutcome.TERMINATE_CONVERSATION, None),
-        (ConversationOutcome.COOLDOWN, None),
+        (ConversationOutcome.NO_ACTION, None, None),
+        (ConversationOutcome.DEFER, "after-research", None),
+        (ConversationOutcome.TERMINATE_CONVERSATION, None, None),
+        (ConversationOutcome.COOLDOWN, None, NOW + timedelta(hours=1)),
     ],
 )
-def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, resume):
+def test_conversation_outcomes_are_distinct_from_delivery(
+    tmp_path, outcome, resume, control_expiry
+):
     threads = service(tmp_path)
     threads.store.commit_poll_page(
         correlation_id="poll-conversation-decision",
@@ -1228,6 +1230,7 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
         reason="bounded-response",
         resume_condition=resume,
         now=NOW,
+        control_expires_at=control_expiry,
     )
     with sqlite3.connect(threads.store.database) as connection:
         assert connection.execute(
@@ -1250,6 +1253,211 @@ def test_conversation_outcomes_are_distinct_from_delivery(tmp_path, outcome, res
         assert (
             threads.store.deferred_inbound_events("account-1", InboundKind.REPLY) == ()
         )
+
+
+def test_terminated_conversation_controls_later_events_durably(tmp_path):
+    store = service(tmp_path).store
+    first = event("terminate-first", conversation_id="conversation-shared")
+    later = event("terminate-later", conversation_id="conversation-shared")
+    store.commit_poll_page(
+        correlation_id="poll-terminate-first",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(first,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-terminate-first",
+        correlation_id=first.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=first.event_id,
+        outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+        reason="conversation-complete",
+        resume_condition=None,
+        now=NOW,
+    )
+    inserted, duplicates = store.commit_poll_page(
+        correlation_id="poll-terminate-later",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(later,),
+        now=NOW + timedelta(minutes=1),
+        precommit_check=lambda: None,
+    )
+
+    assert inserted == ()
+    assert duplicates == 0
+    assert (
+        store.pending_inbound_events(
+            "account-1", InboundKind.REPLY, now=NOW + timedelta(minutes=1)
+        )
+        == ()
+    )
+    control = store.conversation_control(
+        "account-1", InboundKind.REPLY, "conversation-shared", now=NOW
+    )
+    assert control is not None
+    assert control.control is ConversationOutcome.TERMINATE_CONVERSATION
+    assert control.source_outcome_id == "outcome-terminate-first"
+    assert control.expires_at is None
+    with pytest.raises(ThreadsStoreError, match="conversation is controlled"):
+        store.record_conversation_outcome(
+            outcome_id="outcome-terminate-later",
+            correlation_id=later.correlation_id,
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            inbound_event_id=later.event_id,
+            outcome=ConversationOutcome.NO_ACTION,
+            reason="must-not-bypass-control",
+            resume_condition=None,
+            now=NOW + timedelta(minutes=1),
+        )
+
+
+def test_termination_suspends_deferred_work_in_the_same_conversation(tmp_path):
+    store = service(tmp_path).store
+    deferred = event("controlled-defer", conversation_id="conversation-controlled")
+    terminating = event(
+        "controlled-terminate", conversation_id="conversation-controlled"
+    )
+    store.commit_poll_page(
+        correlation_id="poll-controlled-work",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(deferred, terminating),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-controlled-defer",
+        correlation_id=deferred.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=deferred.event_id,
+        outcome=ConversationOutcome.DEFER,
+        reason="wait",
+        resume_condition="after-review",
+        now=NOW,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-controlled-terminate",
+        correlation_id=terminating.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=terminating.event_id,
+        outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+        reason="conversation-complete",
+        resume_condition=None,
+        now=NOW + timedelta(minutes=1),
+    )
+
+    assert (
+        store.deferred_inbound_events(
+            "account-1", InboundKind.REPLY, now=NOW + timedelta(minutes=1)
+        )
+        == ()
+    )
+
+
+def test_cooldown_releases_later_events_only_after_expiry(tmp_path):
+    store = service(tmp_path).store
+    first = event("cooldown-first", conversation_id="conversation-cooldown")
+    later = event("cooldown-later", conversation_id="conversation-cooldown")
+    store.commit_poll_page(
+        correlation_id="poll-cooldown",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(first, later),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    expires_at = NOW + timedelta(hours=1)
+    store.record_conversation_outcome(
+        outcome_id="outcome-cooldown",
+        correlation_id=first.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=first.event_id,
+        outcome=ConversationOutcome.COOLDOWN,
+        reason="rate-limit-conversation",
+        resume_condition=None,
+        now=NOW,
+        control_expires_at=expires_at,
+    )
+
+    assert store.pending_inbound_events("account-1", InboundKind.REPLY, now=NOW) == ()
+    control = store.conversation_control(
+        "account-1", InboundKind.REPLY, "conversation-cooldown", now=NOW
+    )
+    assert control is not None and control.expires_at == expires_at
+    assert (
+        store.conversation_control(
+            "account-1", InboundKind.REPLY, "conversation-cooldown", now=expires_at
+        )
+        is None
+    )
+    assert store.pending_inbound_events(
+        "account-1", InboundKind.REPLY, now=expires_at
+    ) == (later,)
+
+
+def test_version_nine_migration_backfills_conversation_control(tmp_path):
+    store = service(tmp_path).store
+    inbound = event("legacy-control", conversation_id="conversation-legacy-control")
+    store.commit_poll_page(
+        correlation_id="poll-legacy-control",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(inbound,),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+    store.record_conversation_outcome(
+        outcome_id="outcome-legacy-control",
+        correlation_id=inbound.correlation_id,
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        inbound_event_id=inbound.event_id,
+        outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+        reason="legacy-termination",
+        resume_condition=None,
+        now=NOW,
+    )
+    with sqlite3.connect(store.database) as connection:
+        connection.execute("DROP TABLE threads_conversation_controls")
+        connection.execute("UPDATE threads_schema_metadata SET version=9")
+
+    migrated = ThreadsStore(store.database)
+    control = migrated.conversation_control(
+        "account-1",
+        InboundKind.REPLY,
+        "conversation-legacy-control",
+        now=NOW,
+    )
+    assert control is not None
+    assert control.source_outcome_id == "outcome-legacy-control"
+    assert control.control is ConversationOutcome.TERMINATE_CONVERSATION
+    with sqlite3.connect(store.database) as connection:
+        assert connection.execute(
+            "SELECT version FROM threads_schema_metadata"
+        ).fetchone() == (10,)
 
 
 def test_deferred_event_does_not_block_new_pending_event(tmp_path):
@@ -1416,6 +1624,10 @@ def test_deferred_event_survives_restart_and_can_be_resumed(tmp_path):
 
 def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
     store = service(tmp_path).store
+    with pytest.raises(ValueError, match="invalid inbound stream"):
+        store.conversation_control(
+            "account-1", "reply", "conversation-decision", now=NOW
+        )
     store.commit_poll_page(
         correlation_id="poll-outcome-validation",
         account_ref="account-1",
@@ -1448,6 +1660,16 @@ def test_conversation_outcome_validation_and_duplicate_protection(tmp_path):
         {"reason": "bad value"},
         {"outcome": ConversationOutcome.DEFER},
         {"resume_condition": "unexpected"},
+        {"outcome": ConversationOutcome.COOLDOWN},
+        {
+            "outcome": ConversationOutcome.COOLDOWN,
+            "control_expires_at": NOW,
+        },
+        {
+            "outcome": ConversationOutcome.COOLDOWN,
+            "control_expires_at": datetime(2026, 10, 11),
+        },
+        {"control_expires_at": NOW + timedelta(hours=1)},
         {"now": datetime(2026, 1, 1)},
     ]
     for changes in invalid:

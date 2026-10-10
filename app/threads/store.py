@@ -9,6 +9,7 @@ import sqlite3
 from typing import Iterator
 
 from .domain import (
+    ConversationControl,
     ConversationOutcome,
     DeferredInboundEvent,
     InboundEvent,
@@ -24,7 +25,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 MAX_PENDING_INBOUND_EVENTS = 100
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
@@ -205,6 +206,20 @@ class ThreadsStore:
                             "ADD COLUMN actor_reference TEXT NOT NULL "
                             "DEFAULT 'legacy-unattributed'"
                         )
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (9,),
+                    )
+                    version = 9
+                if version == 9:
+                    control_table = connection.execute(
+                        "SELECT 1 FROM sqlite_master WHERE type='table' "
+                        "AND name='threads_conversation_controls'"
+                    ).fetchone()
+                    if control_table is None:
+                        for statement in _MIGRATION_9_TO_10.split(";"):
+                            if statement.strip():
+                                connection.execute(statement)
                     connection.execute(
                         "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
                         (SCHEMA_VERSION,),
@@ -1211,7 +1226,20 @@ class ThreadsStore:
                     ),
                 ).rowcount
                 if changed:
-                    inserted.append(event)
+                    active_control = connection.execute(
+                        "SELECT 1 FROM threads_conversation_controls "
+                        "WHERE account_ref=? AND inbound_kind=? "
+                        "AND conversation_id=? AND (expires_at IS NULL OR "
+                        "threads_utc_timestamp(expires_at)>threads_utc_timestamp(?))",
+                        (
+                            event.account_ref,
+                            event.kind.value,
+                            event.conversation_id,
+                            now.astimezone(UTC).isoformat(),
+                        ),
+                    ).fetchone()
+                    if active_control is None:
+                        inserted.append(event)
                 else:
                     existing = connection.execute(
                         "SELECT correlation_id, source_ref, conversation_id, "
@@ -1344,6 +1372,7 @@ class ThreadsStore:
         reason: str,
         resume_condition: str | None,
         now: datetime,
+        control_expires_at: datetime | None = None,
     ) -> None:
         require_reference("outcome ID", outcome_id)
         require_reference("correlation ID", correlation_id)
@@ -1359,6 +1388,20 @@ class ThreadsStore:
         elif resume_condition is not None:
             raise ValueError("resume condition is only valid for defer")
         require_aware_time("outcome time", now)
+        if outcome is ConversationOutcome.COOLDOWN:
+            if control_expires_at is None:
+                raise ValueError("cooldown requires an expiry")
+            require_aware_time("conversation control expiry", control_expires_at)
+            if control_expires_at <= now:
+                raise ValueError("cooldown expiry must be in the future")
+        elif control_expires_at is not None:
+            raise ValueError("control expiry is only valid for cooldown")
+        outcome_time = now.astimezone(UTC).isoformat()
+        control_expiry = (
+            None
+            if control_expires_at is None
+            else control_expires_at.astimezone(UTC).isoformat()
+        )
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
@@ -1368,18 +1411,28 @@ class ThreadsStore:
                     "inbound_event_id, outcome, reason, resume_condition, occurred_at) "
                     "SELECT ?, ?, account_ref, kind, event_id, ?, ?, ?, ? "
                     "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
-                    "AND event_id=? AND correlation_id=? AND processed_at IS NULL",
+                    "AND event_id=? AND correlation_id=? AND processed_at IS NULL "
+                    "AND NOT EXISTS ("
+                    "SELECT 1 FROM threads_conversation_controls AS control "
+                    "WHERE control.account_ref=threads_inbound_events.account_ref "
+                    "AND control.inbound_kind=threads_inbound_events.kind "
+                    "AND control.conversation_id="
+                    "threads_inbound_events.conversation_id "
+                    "AND (control.expires_at IS NULL OR "
+                    "threads_utc_timestamp(control.expires_at)>"
+                    "threads_utc_timestamp(?)))",
                     (
                         outcome_id,
                         correlation_id,
                         outcome.value,
                         reason,
                         resume_condition,
-                        now.astimezone(UTC).isoformat(),
+                        outcome_time,
                         account_ref,
                         stream.value,
                         inbound_event_id,
                         correlation_id,
+                        outcome_time,
                     ),
                 ).rowcount
             except sqlite3.IntegrityError as error:
@@ -1388,7 +1441,7 @@ class ThreadsStore:
                 ) from error
             if changed != 1:
                 event_state = connection.execute(
-                    "SELECT correlation_id, processed_at "
+                    "SELECT correlation_id, conversation_id, processed_at "
                     "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
                     "AND event_id=?",
                     (account_ref, stream.value, inbound_event_id),
@@ -1399,8 +1452,52 @@ class ThreadsStore:
                     and event_state["processed_at"] is not None
                 ):
                     raise ThreadsStoreError("inbound event is already processed")
+                if event_state is not None:
+                    active_control = connection.execute(
+                        "SELECT 1 FROM threads_conversation_controls "
+                        "WHERE account_ref=? AND inbound_kind=? "
+                        "AND conversation_id=? AND (expires_at IS NULL OR "
+                        "threads_utc_timestamp(expires_at)>threads_utc_timestamp(?))",
+                        (
+                            account_ref,
+                            stream.value,
+                            event_state["conversation_id"],
+                            outcome_time,
+                        ),
+                    ).fetchone()
+                    if active_control is not None:
+                        raise ThreadsStoreError("inbound conversation is controlled")
                 raise ThreadsStoreError(
                     "conversation outcome correlation does not match inbound event"
+                )
+            if outcome in {
+                ConversationOutcome.TERMINATE_CONVERSATION,
+                ConversationOutcome.COOLDOWN,
+            }:
+                conversation_id = connection.execute(
+                    "SELECT conversation_id FROM threads_inbound_events "
+                    "WHERE account_ref=? AND kind=? AND event_id=?",
+                    (account_ref, stream.value, inbound_event_id),
+                ).fetchone()[0]
+                connection.execute(
+                    "INSERT INTO threads_conversation_controls "
+                    "(account_ref, inbound_kind, conversation_id, source_outcome_id, "
+                    "control, reason, started_at, expires_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT(account_ref, inbound_kind, conversation_id) "
+                    "DO UPDATE SET source_outcome_id=excluded.source_outcome_id, "
+                    "control=excluded.control, reason=excluded.reason, "
+                    "started_at=excluded.started_at, expires_at=excluded.expires_at",
+                    (
+                        account_ref,
+                        stream.value,
+                        conversation_id,
+                        outcome_id,
+                        outcome.value,
+                        reason,
+                        outcome_time,
+                        control_expiry,
+                    ),
                 )
             if outcome is not ConversationOutcome.DEFER:
                 connection.execute(
@@ -1408,7 +1505,7 @@ class ThreadsStore:
                     "WHERE account_ref=? AND kind=? AND event_id=? "
                     "AND correlation_id=? AND processed_at IS NULL",
                     (
-                        now.isoformat(),
+                        outcome_time,
                         account_ref,
                         stream.value,
                         inbound_event_id,
@@ -1418,9 +1515,16 @@ class ThreadsStore:
             connection.commit()
 
     def pending_inbound_events(
-        self, account_ref: str, stream: InboundKind, *, limit: int = 100
+        self,
+        account_ref: str,
+        stream: InboundKind,
+        *,
+        limit: int = 100,
+        now: datetime | None = None,
     ) -> tuple[InboundEvent, ...]:
         self._validate_inbound_query(account_ref, stream, limit)
+        as_of = datetime.now(UTC) if now is None else now
+        require_aware_time("pending inbound time", as_of)
         with self._open() as connection:
             rows = connection.execute(
                 "SELECT event.* FROM threads_inbound_events AS event "
@@ -1431,17 +1535,60 @@ class ThreadsStore:
                 "AND outcome.inbound_kind=event.kind "
                 "AND outcome.inbound_event_id=event.event_id "
                 "AND outcome.outcome='defer') "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM threads_conversation_controls AS control "
+                "WHERE control.account_ref=event.account_ref "
+                "AND control.inbound_kind=event.kind "
+                "AND control.conversation_id=event.conversation_id "
+                "AND (control.expires_at IS NULL OR "
+                "threads_utc_timestamp(control.expires_at)>"
+                "threads_utc_timestamp(?))) "
                 "ORDER BY threads_utc_timestamp(event.received_at), "
                 "threads_utc_timestamp(event.occurred_at), "
                 "event.event_id LIMIT ?",
-                (account_ref, stream.value, limit),
+                (account_ref, stream.value, as_of.astimezone(UTC).isoformat(), limit),
             ).fetchall()
         return tuple(_inbound_event(row) for row in rows)
 
+    def conversation_control(
+        self,
+        account_ref: str,
+        stream: InboundKind,
+        conversation_id: str,
+        *,
+        now: datetime,
+    ) -> ConversationControl | None:
+        require_reference("account reference", account_ref)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
+        require_reference("conversation ID", conversation_id)
+        require_aware_time("conversation control time", now)
+        with self._open() as connection:
+            row = connection.execute(
+                "SELECT * FROM threads_conversation_controls "
+                "WHERE account_ref=? AND inbound_kind=? AND conversation_id=? "
+                "AND (expires_at IS NULL OR threads_utc_timestamp(expires_at)>"
+                "threads_utc_timestamp(?))",
+                (
+                    account_ref,
+                    stream.value,
+                    conversation_id,
+                    now.astimezone(UTC).isoformat(),
+                ),
+            ).fetchone()
+        return None if row is None else _conversation_control(row)
+
     def deferred_inbound_events(
-        self, account_ref: str, stream: InboundKind, *, limit: int = 100
+        self,
+        account_ref: str,
+        stream: InboundKind,
+        *,
+        limit: int = 100,
+        now: datetime | None = None,
     ) -> tuple[DeferredInboundEvent, ...]:
         self._validate_inbound_query(account_ref, stream, limit)
+        as_of = datetime.now(UTC) if now is None else now
+        require_aware_time("deferred inbound time", as_of)
         with self._open() as connection:
             rows = connection.execute(
                 "SELECT event.*, outcome.outcome_id AS defer_outcome_id, "
@@ -1466,9 +1613,17 @@ class ThreadsStore:
                 "(threads_utc_timestamp(later.occurred_at)="
                 "threads_utc_timestamp(outcome.occurred_at) "
                 "AND later.outcome_id>outcome.outcome_id))) "
+                "AND NOT EXISTS ("
+                "SELECT 1 FROM threads_conversation_controls AS control "
+                "WHERE control.account_ref=event.account_ref "
+                "AND control.inbound_kind=event.kind "
+                "AND control.conversation_id=event.conversation_id "
+                "AND (control.expires_at IS NULL OR "
+                "threads_utc_timestamp(control.expires_at)>"
+                "threads_utc_timestamp(?))) "
                 "ORDER BY threads_utc_timestamp(outcome.occurred_at), "
                 "outcome.outcome_id LIMIT ?",
-                (account_ref, stream.value, limit),
+                (account_ref, stream.value, as_of.astimezone(UTC).isoformat(), limit),
             ).fetchall()
         return tuple(
             DeferredInboundEvent(
@@ -1620,6 +1775,23 @@ def _inbound_event(row: sqlite3.Row) -> InboundEvent:
     )
 
 
+def _conversation_control(row: sqlite3.Row) -> ConversationControl:
+    return ConversationControl(
+        account_ref=row["account_ref"],
+        stream=InboundKind(row["inbound_kind"]),
+        conversation_id=row["conversation_id"],
+        source_outcome_id=row["source_outcome_id"],
+        control=ConversationOutcome(row["control"]),
+        reason=row["reason"],
+        started_at=datetime.fromisoformat(row["started_at"]),
+        expires_at=(
+            None
+            if row["expires_at"] is None
+            else datetime.fromisoformat(row["expires_at"])
+        ),
+    )
+
+
 _SCHEMA = """
 CREATE TABLE threads_schema_metadata (
     singleton INTEGER PRIMARY KEY CHECK(singleton=1),
@@ -1727,6 +1899,18 @@ CREATE TABLE threads_conversation_outcomes (
     occurred_at TEXT NOT NULL,
     FOREIGN KEY(inbound_account_ref, inbound_kind, inbound_event_id)
         REFERENCES threads_inbound_events(account_ref, kind, event_id)
+);
+CREATE TABLE threads_conversation_controls (
+    account_ref TEXT NOT NULL,
+    inbound_kind TEXT NOT NULL CHECK(inbound_kind IN ('reply','mention')),
+    conversation_id TEXT NOT NULL,
+    source_outcome_id TEXT NOT NULL UNIQUE
+        REFERENCES threads_conversation_outcomes(outcome_id),
+    control TEXT NOT NULL CHECK(control IN ('terminate_conversation','cooldown')),
+    reason TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    expires_at TEXT,
+    PRIMARY KEY(account_ref, inbound_kind, conversation_id)
 );
 CREATE TABLE threads_operator_decisions (
     operation_id TEXT NOT NULL REFERENCES threads_outbox(operation_id),
@@ -1971,4 +2155,49 @@ INSERT OR IGNORE INTO threads_poll_attempts(
 SELECT correlation_id, account_ref, stream, actor_reference, 'policy_denied',
        occurred_at, occurred_at
 FROM threads_poll_policy_denials;
+"""
+
+
+_MIGRATION_9_TO_10 = """
+CREATE TABLE threads_conversation_controls (
+    account_ref TEXT NOT NULL,
+    inbound_kind TEXT NOT NULL CHECK(inbound_kind IN ('reply','mention')),
+    conversation_id TEXT NOT NULL,
+    source_outcome_id TEXT NOT NULL UNIQUE
+        REFERENCES threads_conversation_outcomes(outcome_id),
+    control TEXT NOT NULL CHECK(control IN ('terminate_conversation','cooldown')),
+    reason TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    expires_at TEXT,
+    PRIMARY KEY(account_ref, inbound_kind, conversation_id)
+);
+INSERT INTO threads_conversation_controls(
+    account_ref, inbound_kind, conversation_id, source_outcome_id,
+    control, reason, started_at, expires_at
+)
+SELECT outcome.inbound_account_ref, outcome.inbound_kind, event.conversation_id,
+       outcome.outcome_id, outcome.outcome, outcome.reason,
+       outcome.occurred_at, NULL
+FROM threads_conversation_outcomes AS outcome
+JOIN threads_inbound_events AS event
+  ON event.account_ref=outcome.inbound_account_ref
+ AND event.kind=outcome.inbound_kind
+ AND event.event_id=outcome.inbound_event_id
+WHERE outcome.outcome IN ('terminate_conversation','cooldown')
+  AND NOT EXISTS (
+      SELECT 1 FROM threads_conversation_outcomes AS later
+      JOIN threads_inbound_events AS later_event
+        ON later_event.account_ref=later.inbound_account_ref
+       AND later_event.kind=later.inbound_kind
+       AND later_event.event_id=later.inbound_event_id
+      WHERE later.inbound_account_ref=outcome.inbound_account_ref
+        AND later.inbound_kind=outcome.inbound_kind
+        AND later_event.conversation_id=event.conversation_id
+        AND later.outcome IN ('terminate_conversation','cooldown')
+        AND (threads_utc_timestamp(later.occurred_at)>
+             threads_utc_timestamp(outcome.occurred_at)
+          OR (threads_utc_timestamp(later.occurred_at)=
+              threads_utc_timestamp(outcome.occurred_at)
+              AND later.outcome_id>outcome.outcome_id))
+  );
 """

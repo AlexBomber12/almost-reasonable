@@ -256,6 +256,18 @@ class DeferredInboundEvent:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationControl:
+    account_ref: str
+    stream: InboundKind
+    conversation_id: str
+    source_outcome_id: str
+    control: ConversationOutcome
+    reason: str
+    started_at: datetime
+    expires_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class PollResult:
     new_events: tuple[InboundEvent, ...]
     duplicate_count: int

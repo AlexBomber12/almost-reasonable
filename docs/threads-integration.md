@@ -77,8 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-9 SQLite database in WAL mode, including atomic migrations
-through version 9 from every earlier schema version; it does not alter the main
+separate version-10 SQLite database in WAL mode, including atomic migrations
+through version 10 from every earlier schema version; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -331,6 +331,17 @@ that removes it from deferred work.
 Migration backfills `processed_at` only from non-deferred outcomes, and a stale
 worker cannot append a defer outcome after another worker has acknowledged the
 event.
+Termination and cooldown also create a durable control scoped to the inbound
+account, stream, and provider conversation identifier. Termination has no
+implicit expiry; new cooldown decisions require an explicit future expiry.
+Later events remain durably stored but are excluded from poll new-event results,
+ordinary pending work, and deferred recovery while the control is active; direct
+outcome recording cannot bypass it. Expired cooldown events become pending
+again. The active-control lookup exposes the reason, source outcome, scope, and
+expiry so suppression is inspectable rather than a silent discard. Version-9
+termination and cooldown outcomes are
+conservatively backfilled as non-expiring controls because no historical expiry
+was recorded.
 A chosen public reply starts as a distinct proposal and traverses the same
 approval, unknown, reconciliation, and duplicate controls as a post.
 

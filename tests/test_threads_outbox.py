@@ -206,7 +206,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (9,)
+        ).fetchone() == (10,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -264,7 +264,7 @@ def test_version_eight_transition_history_marks_legacy_attribution(tmp_path):
     with sqlite3.connect(service.store.database) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (9,)
+        ).fetchone() == (10,)
         assert connection.execute(
             "SELECT approval_reference, actor_reference "
             "FROM threads_outbox_transitions WHERE operation_id='operation-1'"
