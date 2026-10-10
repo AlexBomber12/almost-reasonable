@@ -116,6 +116,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
         assert assessment.accepted
         assert assessment.foreign_prose_word_count == 0
 
+    tagged_fence = RussianOutputGate().assess(
+        "Краткий пример:\n```python\nfor item in items:\n    yield item\n```"
+    )
+    assert tagged_fence.accepted
+    assert tagged_fence.foreign_prose_word_count == 0
+
 
 def test_short_majority_foreign_prose_is_not_hidden_by_an_absolute_floor() -> None:
     for text in ("Да. This is English.", "Да. This.is.entirely.English.prose."):

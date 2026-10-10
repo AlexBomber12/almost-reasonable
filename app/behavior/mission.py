@@ -615,9 +615,13 @@ def _document_from_dict(
             proposal_values["decided_at"]
         )
         proposal_values["supporting_reasons"] = tuple(
-            proposal_values["supporting_reasons"]
+            _require_json_list(
+                proposal_values["supporting_reasons"], "supporting_reasons"
+            )
         )
-        proposal_values["counterevidence"] = tuple(proposal_values["counterevidence"])
+        proposal_values["counterevidence"] = tuple(
+            _require_json_list(proposal_values["counterevidence"], "counterevidence")
+        )
         proposal_values["purpose"] = MissionPurpose(proposal_values["purpose"])
         proposal_values["invariants"] = CapabilityPolicyInvariants(
             **proposal_values["invariants"]
@@ -635,14 +639,18 @@ def _document_from_dict(
                 confirmation_values["outcome"]
             )
             for key in ("reasons", "counterevidence", "evidence_ids"):
-                confirmation_values[key] = tuple(confirmation_values[key])
+                confirmation_values[key] = tuple(
+                    _require_json_list(confirmation_values[key], key)
+                )
             confirmation_values["evidence_sources"] = tuple(
                 MissionEvidenceSource(
                     source["evidence_id"],
                     source["source_id"],
                     EvidenceProvenance(source["provenance"]),
                 )
-                for source in confirmation_values["evidence_sources"]
+                for source in _require_json_list(
+                    confirmation_values["evidence_sources"], "evidence_sources"
+                )
             )
             confirmation_values["invariants"] = CapabilityPolicyInvariants(
                 **confirmation_values["invariants"]
@@ -665,6 +673,12 @@ def _document_from_dict(
         )
     _validate_active_mission(current, tuple(records), trusted_root)
     return MissionDocument(current, tuple(records), stored_invariants)
+
+
+def _require_json_list(value: object, name: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"mission repository {name} must be an array")
+    return value
 
 
 def _validate_stored_mission(mission: Mission) -> None:

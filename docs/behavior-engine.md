@@ -83,6 +83,8 @@ Markdown remains in language accounting, including ordinary parentheticals and
 conversational uses of words such as `select` and `from` without SQL structure.
 Likewise, an equals sign excludes a span only when its right-hand side has a
 clear literal, collection, constant, or call shape rather than English prose.
+Fenced blocks with a recognized language info string are treated as code even
+when their body does not contain one of those standalone syntax signals.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
@@ -215,7 +217,9 @@ to an `EvidenceAuthority` implementation without rendering private provenance
 into ordinary model context.
 Repository loads re-run proposal and confirmation validation and enforce status /
 confirmation consistency before returning a document; persisted text never
-becomes trusted merely because it came from the mission JSON file. A non-root
+becomes trusted merely because it came from the mission JSON file. Persisted
+proposal, confirmation, identifier, and evidence-source collections must be
+JSON arrays before conversion to immutable tuples. A non-root
 active mission must match exactly one confirmed proposal, parent, purpose, text,
 and confirmation timestamp in that validated history. The root mission must
 equal the application-supplied trusted initial mission. Global proposal/version

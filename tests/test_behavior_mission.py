@@ -830,6 +830,21 @@ def test_repository_revalidates_persisted_records_before_use(tmp_path) -> None:
         )
     )
     resolved = json.loads(path.read_text(encoding="utf-8"))
+
+    for key in ("supporting_reasons", "counterevidence"):
+        malformed_proposal_collection = json.loads(json.dumps(pending))
+        malformed_proposal_collection["proposals"][0]["proposal"][key] = "abc"
+        path.write_text(json.dumps(malformed_proposal_collection), encoding="utf-8")
+        with pytest.raises(ValueError, match="must be an array"):
+            repository.load()
+
+    for key in ("reasons", "counterevidence", "evidence_ids", "evidence_sources"):
+        malformed_confirmation_collection = json.loads(json.dumps(resolved))
+        malformed_confirmation_collection["proposals"][0]["confirmation"][key] = "abc"
+        path.write_text(json.dumps(malformed_confirmation_collection), encoding="utf-8")
+        with pytest.raises(ValueError, match="must be an array"):
+            repository.load()
+
     rolled_back_current = json.loads(json.dumps(resolved))
     rolled_back_current["current"] = pending["current"]
     path.write_text(json.dumps(rolled_back_current), encoding="utf-8")

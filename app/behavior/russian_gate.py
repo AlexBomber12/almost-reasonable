@@ -54,8 +54,35 @@ _URL = re.compile(
     r"(?:/[^\s<>()]*)?)",
     re.IGNORECASE,
 )
-_FENCED_CODE = re.compile(r"```(.*?)```", re.DOTALL)
+_FENCED_CODE = re.compile(r"```(?:([A-Za-z0-9_+#.-]+)[ \t]*\n)?(.*?)```", re.DOTALL)
 _INLINE_CODE = re.compile(r"`([^`]*)`")
+_FENCED_CODE_LANGUAGES = frozenset(
+    (
+        "bash",
+        "c",
+        "cpp",
+        "csharp",
+        "css",
+        "go",
+        "html",
+        "java",
+        "javascript",
+        "json",
+        "php",
+        "python",
+        "ruby",
+        "rust",
+        "sh",
+        "shell",
+        "sql",
+        "toml",
+        "ts",
+        "typescript",
+        "xml",
+        "yaml",
+        "yml",
+    )
+)
 _CODE_SIGNAL = re.compile(
     r"(?:\b(?:def|class)\s+[A-Za-z_]\w*\s*[:({]|"
     r"\b(?:const|let|var)\s+[A-Za-z_]\w*\s*=|"
@@ -324,9 +351,17 @@ def corpus_cases() -> tuple[RussianCorpusCase, ...]:
 
 
 def _strip_non_prose_regions(text: str) -> str:
-    without_code = _FENCED_CODE.sub(_replace_code_span, text)
+    without_code = _FENCED_CODE.sub(_replace_fenced_code_span, text)
     without_code = _INLINE_CODE.sub(_replace_code_span, without_code)
     return _URL.sub(" ", without_code)
+
+
+def _replace_fenced_code_span(match: re.Match[str]) -> str:
+    language = match.group(1)
+    content = match.group(2)
+    if language is not None and language.casefold() in _FENCED_CODE_LANGUAGES:
+        return " "
+    return " " if _CODE_SIGNAL.search(content) else content
 
 
 def _replace_code_span(match: re.Match[str]) -> str:
