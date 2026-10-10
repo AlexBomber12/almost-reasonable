@@ -1409,8 +1409,16 @@ class SelfStateStore:
             SelfStateStore._require_token("model identifier", revision.model_identifier)
             SelfStateStore._require_token("prompt version", revision.prompt_version)
         SelfStateStore._validate_time("review time", change.review_at)
+        counterevidence_only_revision = (
+            isinstance(change, BeliefCandidateChange)
+            and not creating
+            and type(change.conflicting_event_ids) is tuple
+            and bool(change.conflicting_event_ids)
+        )
         SelfStateStore._validate_event_ids(
-            "supporting evidence", change.supporting_event_ids
+            "supporting evidence",
+            change.supporting_event_ids,
+            allow_empty=counterevidence_only_revision,
         )
         counter_count = 0
         if isinstance(change, BeliefCandidateChange):

@@ -38,7 +38,7 @@ from app.core.self_state import (
     InterestStatus,
 )
 from app.core.self_state_store import SelfStateStore
-from app.core.store import EventStore
+from app.core.store import EventStore, EventStoreError
 
 
 NOW = datetime(2026, 3, 3, 10, 0, tzinfo=UTC)
@@ -681,6 +681,39 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
     )
     assert "belief-history" not in {record.item_id for record in head_too_large.records}
     assert head_too_large.records_omitted is True
+
+    for invalid_pointer in (1, 3):
+        with sqlite3.connect(events.database_path) as connection:
+            connection.execute(
+                """
+                UPDATE state_items
+                SET current_revision = ?
+                WHERE item_id = 'belief-history'
+                """,
+                (invalid_pointer,),
+            )
+        with pytest.raises(EventStoreError, match="event store operation failed"):
+            MemoryContextSelector(events, state).select(
+                context,
+                RetrievalRequest(RetrievalPurpose.REVISION, "ocean warming", 8192, 10),
+            )
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE state_items
+            SET current_revision = 2
+            WHERE item_id = 'belief-history'
+            """
+        )
+    restored = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.REVISION, "ocean warming", 8192, 10),
+    )
+    assert [
+        record.revision
+        for record in restored.records
+        if record.item_id == "belief-history"
+    ] == [2, 1]
 
     with sqlite3.connect(events.database_path) as connection:
         connection.execute(

@@ -33,6 +33,7 @@ from app.core.events import (
 from app.core.self_state import (
     BeliefStance,
     BeliefStatus,
+    EvidenceRole,
     GoalStatus,
     InterestStatus,
     StateType,
@@ -260,7 +261,7 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
             counter_id,
             "belief-revise",
             expected_revision=1,
-            supporting=(event_id,),
+            supporting=(),
             counter=(counter_id,),
         ),
         stance=BeliefStance.SUPPORTS,
@@ -270,24 +271,60 @@ def test_belief_revision_keeps_conflict_and_never_verifies_assertion(cognition_s
     assert engine.process(context, event_id).status is CognitionOutcomeStatus.PERSISTED
     extractor = FakeExtractor(revised)
     outcome = CognitionEngine(events, state, extractor=extractor).process(
-        context, counter_id, evidence_event_ids=(event_id,)
+        context, counter_id
     )
 
     assert outcome.status is CognitionOutcomeStatus.PERSISTED
     assert outcome.transition.state.verification is VerificationStatus.UNVERIFIED
+    assert outcome.transition.state.supporting_evidence_count == 0
     assert outcome.transition.state.conflicting_evidence_count == 1
     evidence = state.inspect_private_revision_evidence(
         context, StateType.BELIEF, "belief-ocean", 2
     )
-    assert {item.event_id for item in evidence} == {event_id, counter_id}
+    assert [(item.event_id, item.role) for item in evidence] == [
+        (counter_id, EvidenceRole.COUNTER),
+        (counter_id, EvidenceRole.INITIATING),
+    ]
     [request] = extractor.requests
-    assert tuple(item.event_id for item in request.additional_evidence) == (event_id,)
+    assert request.additional_evidence == ()
     assert request.experience.content == "A conflicting assertion."
+
+    duplicate = CognitionEngine(
+        events, state, extractor=FakeExtractor(revised)
+    ).process(context, counter_id)
+    assert duplicate.status is CognitionOutcomeStatus.PERSISTED
+    assert duplicate.transition.status is TransitionStatus.DUPLICATE
+
+    invalid_evidence = replace(
+        revised,
+        context=replace(
+            revised.context,
+            operation_id="operation-belief-invalid-counter",
+            counterevidence_event_ids=(counter_id, "event-invented"),
+        ),
+    )
+    rejected = CognitionEngine(
+        events, state, extractor=FakeExtractor(invalid_evidence)
+    ).process(context, counter_id)
+    assert rejected.reason is CognitionReason.EVIDENCE_NOT_FOUND
+
+    malformed_counter = replace(
+        revised,
+        context=replace(
+            revised.context,
+            operation_id="operation-belief-malformed-counter",
+            counterevidence_event_ids=[],
+        ),
+    )
+    rejected = CognitionEngine(
+        events, state, extractor=FakeExtractor(malformed_counter)
+    ).process(context, counter_id)
+    assert rejected.reason is CognitionReason.INVALID_PROPOSAL
 
     falsely_verified = replace(revised, verification=VerificationStatus.VERIFIED)
     rejected = CognitionEngine(
         events, state, extractor=FakeExtractor(falsely_verified)
-    ).process(context, counter_id, evidence_event_ids=(event_id,))
+    ).process(context, counter_id)
     assert rejected.status is CognitionOutcomeStatus.REJECTED
     assert rejected.reason is CognitionReason.VERIFICATION_MISMATCH
 
@@ -1209,6 +1246,11 @@ def test_no_change_rejects_valid_but_unexposed_evidence(cognition_setup):
         replace(
             proposal_context("event-a", "bad-evidence-id"),
             supporting_event_ids=("event-a", "bad id"),
+        ),
+        replace(
+            proposal_context("event-a", "bad-counter-shape", expected_revision=1),
+            supporting_event_ids=(),
+            counterevidence_event_ids=[],
         ),
     ],
 )

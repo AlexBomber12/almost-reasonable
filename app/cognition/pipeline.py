@@ -195,7 +195,10 @@ class CognitionEngine:
             ):
                 return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
         reason = self._validate_common(
-            proposal.context, source_event_id, available_evidence_ids
+            proposal.context,
+            source_event_id,
+            available_evidence_ids,
+            allow_counterevidence_only=isinstance(proposal, BeliefMemoryProposal),
         )
         if reason is not None:
             return self._rejected(reason, self._safe_kind(proposal))
@@ -330,18 +333,26 @@ class CognitionEngine:
         proposal: ProposalContext,
         source_event_id: str,
         available_evidence_ids: frozenset[str],
+        *,
+        allow_counterevidence_only: bool,
     ) -> CognitionReason | None:
         if type(proposal) is not ProposalContext:
             return CognitionReason.INVALID_PROPOSAL
         if proposal.source_event_id != source_event_id:
             return CognitionReason.SOURCE_MISMATCH
+        counterevidence_only = (
+            allow_counterevidence_only
+            and proposal.expected_revision is not None
+            and type(proposal.counterevidence_event_ids) is tuple
+            and bool(proposal.counterevidence_event_ids)
+        )
         if (
             not CognitionEngine._valid_token(proposal.operation_id)
             or not CognitionEngine._valid_text(proposal.reason)
             or not CognitionEngine._valid_time(proposal.proposed_at)
             or not CognitionEngine._valid_time(proposal.review_at)
             or type(proposal.supporting_event_ids) is not tuple
-            or not proposal.supporting_event_ids
+            or (not proposal.supporting_event_ids and not counterevidence_only)
             or type(proposal.counterevidence_event_ids) is not tuple
             or proposal.source_event_id
             not in (

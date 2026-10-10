@@ -198,6 +198,26 @@ class CognitionReadStore:
             with connection:
                 connection.execute("BEGIN")
                 self._events._verify_current_schema(connection)
+                if include_belief_history:
+                    revision_pointers = connection.execute(
+                        """
+                        SELECT item.current_revision,
+                               MAX(revision.revision_number)
+                        FROM state_items AS item
+                        LEFT JOIN state_revisions AS revision
+                          ON revision.item_key = item.item_key
+                        WHERE item.scope = 'private_candidate'
+                          AND item.audience_type = 'private_participant'
+                          AND item.audience_principal_id = ?
+                          AND item.state_type = 'belief'
+                        GROUP BY item.item_key
+                        """,
+                        (context.principal_id.value,),
+                    ).fetchall()
+                    for current_revision, latest_revision in revision_pointers:
+                        self._state._validate_current_revision_pointer(
+                            current_revision, latest_revision
+                        )
                 rows = self._query_candidate_rows(
                     connection,
                     context.principal_id.value,
