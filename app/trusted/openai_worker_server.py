@@ -23,6 +23,7 @@ from app.trusted.openai_gateway import GatewayResult, TrustedOpenAIGateway
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_protocol import (
     IPC_REJECTED,
+    InferenceRequest,
     WorkerProtocolError,
     WorkerResponse,
     decode_request,
@@ -82,15 +83,25 @@ class WorkerServerConfig:
 class OpenAIWorkerServer:
     """Serve a single closed operation after OS-authenticating each peer."""
 
-    def __init__(self, config: WorkerServerConfig, gateway: TrustedOpenAIGateway):
+    def __init__(
+        self,
+        config: WorkerServerConfig,
+        gateway: TrustedOpenAIGateway,
+        *,
+        request_guard: Callable[[InferenceRequest], WorkerResponse | None]
+        | None = None,
+    ):
         if type(config) is not WorkerServerConfig:
             raise TypeError("config must be a WorkerServerConfig")
         if type(gateway) is not TrustedOpenAIGateway:
             raise TypeError("gateway must be a TrustedOpenAIGateway")
+        if request_guard is not None and not callable(request_guard):
+            raise TypeError("request_guard must be callable")
         if not hasattr(socket, "SO_PEERCRED"):
             raise RuntimeError("Unix peer credentials are unavailable")
         self._config = config
         self._gateway = gateway
+        self._request_guard = request_guard
         self._listener: socket.socket | None = None
         self._socket_identity: tuple[int, int] | None = None
 
@@ -185,21 +196,31 @@ class OpenAIWorkerServer:
             except (TypeError, ValueError):
                 response = WorkerResponse(IPC_REJECTED, 0, _INVALID_REQUEST_RU, None)
             else:
-                gateway_allowance = (
-                    MAX_OVERALL_TIMEOUT_SECONDS + self._config.io_timeout_seconds
+                guarded = (
+                    None
+                    if self._request_guard is None
+                    else self._request_guard(request)
                 )
-                if deadline - monotonic() < gateway_allowance:
-                    response = WorkerResponse("timeout", 0, _TIMEOUT_RU, None)
-                else:
-                    try:
-                        result = self._gateway.submit(
-                            request.model_request,
-                            correlation_id=request.correlation_id,
-                            operation_id=request.operation_id,
-                        )
-                    except (TypeError, ValueError):
+                if guarded is not None:
+                    if type(guarded) is not WorkerResponse:
                         return
-                    response = _gateway_response(result)
+                    response = guarded
+                else:
+                    gateway_allowance = (
+                        MAX_OVERALL_TIMEOUT_SECONDS + self._config.io_timeout_seconds
+                    )
+                    if deadline - monotonic() < gateway_allowance:
+                        response = WorkerResponse("timeout", 0, _TIMEOUT_RU, None)
+                    else:
+                        try:
+                            result = self._gateway.submit(
+                                request.model_request,
+                                correlation_id=request.correlation_id,
+                                operation_id=request.operation_id,
+                            )
+                        except (TypeError, ValueError):
+                            return
+                        response = _gateway_response(result)
             try:
                 send_frame(
                     connection,

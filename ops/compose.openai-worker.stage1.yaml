@@ -1,0 +1,91 @@
+name: almost-reasonable-openai-stage1
+
+services:
+  openai-worker:
+    image: almost-reasonable-openai-worker-stage1:local
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.openai-worker-stage1
+    user: "${STAGE1_WORKER_UID:-11001}:${STAGE1_WORKER_GID:-11001}"
+    group_add:
+      - "${STAGE1_IPC_GID:-11000}"
+    command:
+      - python
+      - -B
+      - -m
+      - app.trusted.openai_stage1_smoke
+      - --socket
+      - /run/almost-reasonable/openai-worker.sock
+      - --database
+      - /var/lib/almost-reasonable/provider.sqlite3
+      - --allow-uid
+      - "${STAGE1_PLANNER_UID:-11002}"
+      - --socket-group-gid
+      - "${STAGE1_IPC_GID:-11000}"
+      - --log-peer-uids
+    read_only: true
+    networks:
+      - provider-egress
+    volumes:
+      - type: bind
+        source: ${STAGE1_SOCKET_DIR:?set STAGE1_SOCKET_DIR to an absolute precreated directory}
+        target: /run/almost-reasonable
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${STAGE1_DATABASE_DIR:?set STAGE1_DATABASE_DIR to an absolute precreated directory}
+        target: /var/lib/almost-reasonable
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${STAGE1_CONTROL_DIR:?set STAGE1_CONTROL_DIR to an absolute precreated directory}
+        target: /run/almost-reasonable-stage1/control
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${STAGE1_SECRET_DIR:?set STAGE1_SECRET_DIR to the absolute protected secret directory}
+        target: /run/secrets
+        read_only: true
+        bind:
+          create_host_path: false
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 64
+    mem_limit: 256m
+    stop_grace_period: 10s
+    healthcheck:
+      test: ["CMD", "python", "-B", "-c", "import os, stat; p='/run/almost-reasonable/openai-worker.sock'; s=os.lstat(p) if os.path.lexists(p) else None; raise SystemExit(0 if s is not None and stat.S_ISSOCK(s.st_mode) and stat.S_IMODE(s.st_mode) == 0o660 and s.st_uid == os.geteuid() else 1)"]
+      interval: 1s
+      timeout: 2s
+      retries: 30
+
+  planner-probe:
+    image: almost-reasonable-openai-planner-probe-stage1:local
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.openai-planner-probe-stage1
+    user: "${STAGE1_PLANNER_UID:-11002}:${STAGE1_PLANNER_GID:-11002}"
+    group_add:
+      - "${STAGE1_IPC_GID:-11000}"
+    read_only: true
+    network_mode: none
+    volumes:
+      - type: bind
+        source: ${STAGE1_SOCKET_DIR:?set STAGE1_SOCKET_DIR to an absolute precreated directory}
+        target: /run/almost-reasonable
+        read_only: true
+        bind:
+          create_host_path: false
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    pids_limit: 32
+    mem_limit: 128m
+
+networks:
+  provider-egress:
+    driver: bridge
