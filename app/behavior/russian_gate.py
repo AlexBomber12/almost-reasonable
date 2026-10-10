@@ -58,7 +58,7 @@ _URL = re.compile(
 )
 _FENCE_OPEN = re.compile(
     r"^[ \t]{0,3}(?P<fence>`{3,}|~{3,})"
-    r"(?P<language>[A-Za-z0-9_+#.-]+)?[ \t]*\r?\n",
+    r"[ \t]*(?P<language>[A-Za-z0-9_+#.-]+)?[ \t]*\r?\n",
     re.MULTILINE,
 )
 _INLINE_CODE = re.compile(
@@ -268,9 +268,12 @@ class RussianOutputPolicy:
                 break
             attempt += 1
             try:
-                current = regenerate(current)
+                regenerated = regenerate(current)
             except (OSError, ValueError):
                 break
+            if not isinstance(regenerated, str):
+                raise TypeError("regenerate must return a string")
+            current = regenerated
         return DeliveryResult(
             self.SAFE_FALLBACK,
             True,

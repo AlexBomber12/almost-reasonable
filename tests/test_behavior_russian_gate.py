@@ -141,6 +141,12 @@ def test_sql_syntax_remains_excluded_from_language_scoring() -> None:
     assert tagged_fence.accepted
     assert tagged_fence.foreign_prose_word_count == 0
 
+    spaced_info_fence = RussianOutputGate().assess(
+        "Да:\n``` python\nfor item in items:\n    print(item)\n```"
+    )
+    assert spaced_info_fence.accepted
+    assert spaced_info_fence.foreign_prose_word_count == 0
+
     crlf_fence = RussianOutputGate().assess(
         "Краткий пример:\r\n```python\r\nfor item in items:\r\n    yield item\r\n```"
     )
@@ -312,6 +318,11 @@ def test_policy_does_not_regenerate_valid_text_and_validates_limit() -> None:
     assert immediate.used_fallback
     with pytest.raises(ValueError, match="max_regenerations"):
         RussianOutputPolicy(max_regenerations=3)
+    with pytest.raises(TypeError, match="return a string"):
+        RussianOutputPolicy(max_regenerations=2).deliver(
+            "English only",
+            lambda _: None,  # type: ignore[return-value]
+        )
 
 
 @pytest.mark.parametrize(
