@@ -131,6 +131,11 @@ def test_interruption_before_atomic_commit_replays_page_without_loss(tmp_path):
             interrupt_after_fetch=True,
         )
     assert threads.store.cursor("account-1", InboundKind.MENTION) is None
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT status FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-interrupted'"
+        ).fetchone() == ("interrupted",)
     recovered = threads.poll(
         InboundKind.MENTION,
         now=NOW,
@@ -141,15 +146,44 @@ def test_interruption_before_atomic_commit_replays_page_without_loss(tmp_path):
     assert recovered.final_cursor == "mention-cursor-1"
 
 
-def test_successful_empty_poll_persists_idempotent_correlated_action_audit(tmp_path):
+def test_process_exit_after_poll_attempt_start_remains_auditable(tmp_path, monkeypatch):
     threads = service(tmp_path)
-    for poll_time in (NOW, NOW.replace(minute=NOW.minute + 1)):
-        result = threads.poll(
+    monkeypatch.setattr(
+        threads.simulator,
+        "poll",
+        lambda _stream, _cursor: (_ for _ in ()).throw(SystemExit("terminated")),
+    )
+
+    with pytest.raises(SystemExit, match="terminated"):
+        threads.poll(
             InboundKind.REPLY,
-            now=poll_time,
+            now=NOW,
+            correlation_id="poll-process-exit",
+        )
+
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT status, completed_at FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-process-exit'"
+        ).fetchone() == ("started", None)
+
+
+def test_successful_empty_poll_persists_correlated_action_and_attempt(tmp_path):
+    threads = service(tmp_path)
+    result = threads.poll(
+        InboundKind.REPLY,
+        now=NOW,
+        correlation_id="poll-empty-success",
+    )
+    assert result.new_events == ()
+    trace = tuple(threads.simulator.trace)
+    with pytest.raises(ThreadsStoreError, match="correlation is already used"):
+        threads.poll(
+            InboundKind.REPLY,
+            now=NOW.replace(minute=NOW.minute + 1),
             correlation_id="poll-empty-success",
         )
-        assert result.new_events == ()
+    assert tuple(threads.simulator.trace) == trace
 
     with sqlite3.connect(threads.store.database) as connection:
         assert connection.execute(
@@ -164,6 +198,10 @@ def test_successful_empty_poll_persists_idempotent_correlated_action_audit(tmp_p
             "poll_committed",
             NOW.isoformat(),
         )
+        assert connection.execute(
+            "SELECT status, started_at, completed_at FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-empty-success'"
+        ).fetchone() == ("committed", NOW.isoformat(), NOW.isoformat())
 
 
 def test_poll_correlation_cannot_be_reused_for_a_later_cursor_range(tmp_path):
@@ -187,7 +225,8 @@ def test_poll_correlation_cannot_be_reused_for_a_later_cursor_range(tmp_path):
         events=(event("second-range"),),
     )
 
-    with pytest.raises(ThreadsStoreError, match="action correlation conflict"):
+    trace = tuple(threads.simulator.trace)
+    with pytest.raises(ThreadsStoreError, match="correlation is already used"):
         threads.poll(
             InboundKind.REPLY,
             now=NOW.replace(minute=NOW.minute + 1),
@@ -195,6 +234,7 @@ def test_poll_correlation_cannot_be_reused_for_a_later_cursor_range(tmp_path):
             max_pages=1,
         )
 
+    assert tuple(threads.simulator.trace) == trace
     assert threads.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
     assert threads.store.pending_inbound_events("account-1", InboundKind.REPLY) == (
         event("first-range"),
@@ -706,6 +746,64 @@ def test_poll_action_correlation_conflict_rolls_back_page(tmp_path):
     assert store.pending_inbound_events("account-1", InboundKind.MENTION) == ()
 
 
+def test_poll_attempt_contract_is_validated_and_committed_idempotently(tmp_path):
+    store = ThreadsStore(tmp_path / "threads.sqlite3")
+    with pytest.raises(ValueError, match="invalid inbound stream"):
+        store.start_poll_attempt(
+            correlation_id="poll-invalid-stream",
+            account_ref="account-1",
+            stream="reply",
+            actor_reference="account-actor-1",
+            now=NOW,
+        )
+    with pytest.raises(ValueError, match="invalid poll attempt outcome"):
+        store.complete_poll_attempt("poll-missing", "committed", now=NOW)
+    with pytest.raises(ThreadsStoreError, match="active poll attempt is missing"):
+        store.complete_poll_attempt("poll-missing", "failed", now=NOW)
+
+    values = {
+        "correlation_id": "poll-idempotent",
+        "account_ref": "account-1",
+        "stream": InboundKind.REPLY,
+        "verified_source_ref": "meta-simulator-v1",
+        "expected_cursor": None,
+        "next_cursor": None,
+        "events": (),
+        "now": NOW,
+        "precommit_check": lambda: None,
+    }
+    assert store.commit_poll_page(**values) == ((), 0)
+    assert store.commit_poll_page(**values) == ((), 0)
+
+
+def test_failed_poll_attempt_cannot_be_reclassified_as_committed(tmp_path):
+    store = ThreadsStore(tmp_path / "threads.sqlite3")
+    store.start_poll_attempt(
+        correlation_id="poll-failed-attempt",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        actor_reference="account-actor-1",
+        now=NOW,
+    )
+    store.complete_poll_attempt("poll-failed-attempt", "failed", now=NOW)
+
+    with pytest.raises(ThreadsStoreError, match="attempt correlation conflict"):
+        store.commit_poll_page(
+            correlation_id="poll-failed-attempt",
+            account_ref="account-1",
+            stream=InboundKind.REPLY,
+            verified_source_ref="meta-simulator-v1",
+            expected_cursor=None,
+            next_cursor="cursor-must-roll-back",
+            events=(event("must-roll-back"),),
+            now=NOW,
+            precommit_check=lambda: None,
+        )
+
+    assert store.cursor("account-1", InboundKind.REPLY) is None
+    assert store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+
+
 def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
     threads = service(tmp_path)
     threads.simulator.add_poll_page(
@@ -744,6 +842,10 @@ def test_polling_rechecks_stop_before_each_page_request(tmp_path, monkeypatch):
             "poll-stop-between-pages",
             "inbound_polling_capability_unavailable",
         )
+        assert connection.execute(
+            "SELECT status FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-stop-between-pages'"
+        ).fetchone() == ("policy_denied",)
 
 
 def test_later_page_provider_failure_leaves_batch_replayable(tmp_path):
@@ -911,6 +1013,11 @@ def test_polling_rejects_invalid_stream_time_and_provider_failure(tmp_path):
     threads.simulator.set_fault("reply", "start", Fault.POLL)
     with pytest.raises(ProviderFailure, match="poll_failed"):
         threads.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-provider-failure")
+    with sqlite3.connect(threads.store.database) as connection:
+        assert connection.execute(
+            "SELECT status FROM threads_poll_attempts "
+            "WHERE correlation_id='poll-provider-failure'"
+        ).fetchone() == ("failed",)
 
 
 @pytest.mark.parametrize(

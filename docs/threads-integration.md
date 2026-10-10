@@ -77,8 +77,8 @@ Not verified or deliberately unsupported:
 ## Architecture and credential boundary
 
 `app/threads/` is an application-owned domain package. `ThreadsStore` owns a
-separate version-7 SQLite database in WAL mode, including atomic migrations
-through version 7 from every earlier schema version; it does not alter the main
+separate version-8 SQLite database in WAL mode, including atomic migrations
+through version 8 from every earlier schema version; it does not alter the main
 `EventStore` schema. Application integration will eventually supply the database
 path, configured account reference, authenticated approval objects, privacy and
 Russian-output gate results, emergency-stop state, and a narrow
@@ -232,6 +232,9 @@ configured-account actor and `started` record commit atomically with the durable
 claim before the provider read. Normal success, rejection, inconclusive result,
 invalid result, and provider failure complete that append-only attempt record;
 a process death leaves the `started` evidence intact for authorized recovery.
+The pinned account binding is rechecked after the claim, after the provider
+read, and inside the final classification transaction; rebinding leaves the
+operation unknown and the claim fail-closed.
 Both reconciliation-claim recovery and permanent abandonment validate the
 provider-returned purpose-bound approval against a freshly sampled clock
 immediately before their durable administrative change, then revalidate the
@@ -268,6 +271,13 @@ rejects account/source mismatches, invalid source evidence, stale cursor commits
 repeated cursors, and oversized pages. Public text is inert data even when it
 claims to be Meta, the owner, or an administrator. No inbound event calls a
 model or creates a reply by itself.
+
+Before the first provider page fetch, polling durably records a unique caller
+correlation, bounded account actor, stream, and `started` status. Success is
+completed atomically with events and cursor; policy denial, interruption, and
+ordinary failure record terminal outcomes, while a real process exit leaves the
+`started` evidence for diagnosis. Reusing a completed correlation is rejected
+before another provider read.
 
 Version-6 poll actions lacked cursor-range evidence. Migration rebuilds their
 table with the version-7 `NOT NULL` invariant and marks those rows explicitly as

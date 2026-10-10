@@ -24,7 +24,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 MAX_PENDING_INBOUND_EVENTS = 100
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
@@ -164,6 +164,15 @@ class ThreadsStore:
                     version = 6
                 if version == 6:
                     for statement in _MIGRATION_6_TO_7.split(";"):
+                        if statement.strip():
+                            connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (7,),
+                    )
+                    version = 7
+                if version == 7:
+                    for statement in _MIGRATION_7_TO_8.split(";"):
                         if statement.strip():
                             connection.execute(statement)
                     connection.execute(
@@ -880,15 +889,19 @@ class ThreadsStore:
         *,
         correlation_id: str,
         now: datetime,
+        precommit_check: Callable[[], None],
     ) -> OutboxItem:
         require_reference("operation ID", operation_id)
         require_reference("reconciliation status", status)
         require_reference("reconciliation correlation ID", correlation_id)
         require_aware_time("reconciliation time", now)
+        if not callable(precommit_check):
+            raise ValueError("invalid reconciliation pre-commit check")
         if status not in {"attempt_failed", "invalid_result", "unresolved"}:
             raise ValueError("invalid unresolved reconciliation status")
         with self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            precommit_check()
             changed = connection.execute(
                 "UPDATE threads_outbox SET reconciliation_status=?, updated_at=? "
                 "WHERE operation_id=? AND state=?",
@@ -1003,6 +1016,58 @@ class ThreadsStore:
             expected = (account_ref, stream.value, actor_reference, reason)
             if tuple(existing) != expected:
                 raise ThreadsStoreError("poll denial correlation conflict")
+
+    def start_poll_attempt(
+        self,
+        *,
+        correlation_id: str,
+        account_ref: str,
+        stream: InboundKind,
+        actor_reference: str,
+        now: datetime,
+    ) -> None:
+        for field, value in (
+            ("poll correlation ID", correlation_id),
+            ("account reference", account_ref),
+            ("poll actor reference", actor_reference),
+        ):
+            require_reference(field, value)
+        if type(stream) is not InboundKind:
+            raise ValueError("invalid inbound stream")
+        require_aware_time("poll attempt time", now)
+        with self._open() as connection:
+            try:
+                connection.execute(
+                    "INSERT INTO threads_poll_attempts "
+                    "(correlation_id, account_ref, stream, actor_reference, "
+                    "status, started_at, completed_at) "
+                    "VALUES (?, ?, ?, ?, 'started', ?, NULL)",
+                    (
+                        correlation_id,
+                        account_ref,
+                        stream.value,
+                        actor_reference,
+                        now.isoformat(),
+                    ),
+                )
+            except sqlite3.IntegrityError as error:
+                raise ThreadsStoreError("poll correlation is already used") from error
+
+    def complete_poll_attempt(
+        self, correlation_id: str, status: str, *, now: datetime
+    ) -> None:
+        require_reference("poll correlation ID", correlation_id)
+        if status not in {"failed", "interrupted", "policy_denied"}:
+            raise ValueError("invalid poll attempt outcome")
+        require_aware_time("poll attempt completion time", now)
+        with self._open() as connection:
+            changed = connection.execute(
+                "UPDATE threads_poll_attempts SET status=?, completed_at=? "
+                "WHERE correlation_id=? AND status='started'",
+                (status, now.isoformat(), correlation_id),
+            ).rowcount
+        if changed != 1:
+            raise ThreadsStoreError("active poll attempt is missing")
 
     def commit_poll_page(
         self,
@@ -1169,6 +1234,40 @@ class ThreadsStore:
                 )
                 if existing is None or tuple(existing) != expected:
                     raise ThreadsStoreError("poll action correlation conflict")
+            attempt = connection.execute(
+                "SELECT account_ref, stream, actor_reference, status "
+                "FROM threads_poll_attempts WHERE correlation_id=?",
+                (correlation_id,),
+            ).fetchone()
+            if attempt is None:
+                connection.execute(
+                    "INSERT INTO threads_poll_attempts "
+                    "(correlation_id, account_ref, stream, actor_reference, "
+                    "status, started_at, completed_at) "
+                    "VALUES (?, ?, ?, ?, 'committed', ?, ?)",
+                    (
+                        correlation_id,
+                        account_ref,
+                        stream.value,
+                        actor_reference,
+                        now.isoformat(),
+                        now.isoformat(),
+                    ),
+                )
+            else:
+                identity = (account_ref, stream.value, actor_reference)
+                if tuple(attempt)[:3] != identity or attempt["status"] not in {
+                    "started",
+                    "committed",
+                }:
+                    raise ThreadsStoreError("poll attempt correlation conflict")
+                if attempt["status"] == "started":
+                    connection.execute(
+                        "UPDATE threads_poll_attempts "
+                        "SET status='committed', completed_at=? "
+                        "WHERE correlation_id=? AND status='started'",
+                        (now.isoformat(), correlation_id),
+                    )
             connection.commit()
         return tuple(inserted), duplicates
 
@@ -1515,6 +1614,17 @@ CREATE TABLE threads_poll_actions (
     cursor_identity TEXT NOT NULL,
     occurred_at TEXT NOT NULL
 );
+CREATE TABLE threads_poll_attempts (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'started','committed','failed','interrupted','policy_denied'
+    )),
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
 CREATE TABLE threads_conversation_outcomes (
     outcome_id TEXT PRIMARY KEY,
     correlation_id TEXT NOT NULL,
@@ -1713,6 +1823,21 @@ CREATE TABLE threads_reconciliation_attempts (
     status TEXT NOT NULL CHECK(status IN (
         'started','attempt_failed','invalid_result','unresolved',
         'verified_rejection','verified_success'
+    )),
+    started_at TEXT NOT NULL,
+    completed_at TEXT
+);
+"""
+
+
+_MIGRATION_7_TO_8 = """
+CREATE TABLE threads_poll_attempts (
+    correlation_id TEXT PRIMARY KEY,
+    account_ref TEXT NOT NULL,
+    stream TEXT NOT NULL CHECK(stream IN ('reply','mention')),
+    actor_reference TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN (
+        'started','committed','failed','interrupted','policy_denied'
     )),
     started_at TEXT NOT NULL,
     completed_at TEXT

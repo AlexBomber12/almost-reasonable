@@ -466,6 +466,7 @@ class ThreadsService:
             actor_reference=(f"account-{content_fingerprint(item.account_ref)[:16]}"),
             now=now,
         )
+        self._require_account_binding()
         try:
             result = self.simulator.reconcile(item)
         except Exception:
@@ -474,14 +475,17 @@ class ThreadsService:
                 "attempt_failed",
                 correlation_id=correlation_id,
                 now=now,
+                precommit_check=self._require_account_binding,
             )
         else:
+            self._require_account_binding()
             if result is ReconciliationResult.UNRESOLVED:
                 reconciled = self.store.note_reconciliation(
                     operation_id,
                     "unresolved",
                     correlation_id=correlation_id,
                     now=now,
+                    precommit_check=self._require_account_binding,
                 )
             elif result is ReconciliationResult.REJECTED:
                 reconciled = self.store.transition(
@@ -494,6 +498,7 @@ class ThreadsService:
                     release_lock_target_operation_id=operation_id,
                     release_lock_kind="reconciliation",
                     release_lock_required=True,
+                    precommit_check=self._require_account_binding,
                 )
             elif result is ReconciliationResult.CONFIRMED:
                 reconciled = self.store.transition(
@@ -509,6 +514,7 @@ class ThreadsService:
                     release_lock_target_operation_id=operation_id,
                     release_lock_kind="reconciliation",
                     release_lock_required=True,
+                    precommit_check=self._require_account_binding,
                 )
             else:
                 reconciled = self.store.note_reconciliation(
@@ -516,6 +522,7 @@ class ThreadsService:
                     "invalid_result",
                     correlation_id=correlation_id,
                     now=now,
+                    precommit_check=self._require_account_binding,
                 )
         return reconciled
 
@@ -603,6 +610,46 @@ class ThreadsService:
             0 < timeout_seconds <= MAX_POLL_SECONDS
         ):
             raise ValueError("invalid poll timeout")
+        actor_reference = f"account-{content_fingerprint(self._account_ref)[:16]}"
+        self.store.start_poll_attempt(
+            correlation_id=correlation_id,
+            account_ref=self._account_ref,
+            stream=stream,
+            actor_reference=actor_reference,
+            now=now,
+        )
+        try:
+            return self._poll_started(
+                stream,
+                now=now,
+                correlation_id=correlation_id,
+                max_pages=max_pages,
+                max_events=max_events,
+                timeout_seconds=timeout_seconds,
+                interrupt_after_fetch=interrupt_after_fetch,
+            )
+        except Exception as error:
+            status = (
+                "interrupted"
+                if isinstance(error, SimulatedCrash)
+                else "policy_denied"
+                if isinstance(error, PolicyDeniedError)
+                else "failed"
+            )
+            self.store.complete_poll_attempt(correlation_id, status, now=self.utc_now())
+            raise
+
+    def _poll_started(
+        self,
+        stream: InboundKind,
+        *,
+        now: datetime,
+        correlation_id: str,
+        max_pages: int,
+        max_events: int,
+        timeout_seconds: float,
+        interrupt_after_fetch: bool,
+    ) -> PollResult:
         started = self.clock()
         cursor = self.store.cursor(self._account_ref, stream)
         initial_cursor = cursor

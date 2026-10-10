@@ -177,6 +177,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
         connection.execute("DROP TABLE threads_operator_decisions")
         connection.execute("DROP TABLE threads_poll_policy_denials")
         connection.execute("DROP TABLE threads_poll_actions")
+        connection.execute("DROP TABLE threads_poll_attempts")
         connection.execute("DROP TABLE threads_reconciliation_attempts")
         connection.execute(
             "ALTER TABLE threads_inbound_events DROP COLUMN correlation_id"
@@ -189,7 +190,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     with sqlite3.connect(path) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (7,)
+        ).fetchone() == (8,)
         assert connection.execute(
             "SELECT correlation_id FROM threads_inbound_events "
             "WHERE event_id='event-legacy'"
@@ -226,6 +227,7 @@ def test_version_one_database_migrates_authorization_and_correlation_schema(tmp_
     assert "threads_operator_decisions" in tables
     assert "threads_poll_policy_denials" in tables
     assert "threads_poll_actions" in tables
+    assert "threads_poll_attempts" in tables
     assert "threads_reconciliation_attempts" in tables
     assert store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
 
@@ -243,6 +245,7 @@ def test_version_six_poll_audits_migrate_to_explicit_legacy_identity(tmp_path):
             (NOW.isoformat(),),
         )
         connection.execute("DROP TABLE threads_reconciliation_attempts")
+        connection.execute("DROP TABLE threads_poll_attempts")
         connection.execute(
             "ALTER TABLE threads_poll_actions DROP COLUMN cursor_identity"
         )
@@ -315,6 +318,7 @@ def test_version_four_migration_keeps_deferred_event_resumable(tmp_path):
     with sqlite3.connect(path) as connection:
         connection.execute("DROP TABLE threads_reconciliation_attempts")
         connection.execute("DROP TABLE threads_poll_actions")
+        connection.execute("DROP TABLE threads_poll_attempts")
         connection.execute(
             "ALTER TABLE threads_inbound_events DROP COLUMN processed_at"
         )
@@ -1375,6 +1379,72 @@ def test_repeated_unresolved_reconciliation_attempts_are_append_only(tmp_path):
     assert tuple(service.simulator.trace) == trace
 
 
+@pytest.mark.parametrize("mutation_point", ["claim", "provider", "classification"])
+def test_reconciliation_fails_closed_on_account_rebinding(
+    tmp_path, monkeypatch, mutation_point
+):
+    service = make_service(tmp_path)
+    _, approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", approval, now=NOW)
+    correlation_id = f"reconcile-rebound-{mutation_point}"
+
+    if mutation_point == "claim":
+        claim_reconciliation = service.store.claim_reconciliation
+
+        def claim_then_rebind(**kwargs):
+            claim_reconciliation(**kwargs)
+            service.simulator.account_ref = "account-2"
+
+        monkeypatch.setattr(service.store, "claim_reconciliation", claim_then_rebind)
+    elif mutation_point == "provider":
+        reconcile = service.simulator.reconcile
+
+        def reconcile_then_rebind(item):
+            result = reconcile(item)
+            service.simulator.account_ref = "account-2"
+            return result
+
+        monkeypatch.setattr(service.simulator, "reconcile", reconcile_then_rebind)
+    else:
+        service.simulator.reconciliation["operation-1"] = ReconciliationResult.CONFIRMED
+        transition = service.store.transition
+
+        def transition_with_rebinding_fence(*args, **kwargs):
+            policy_fence = kwargs["precommit_check"]
+
+            def rebound_policy_fence():
+                service.simulator.account_ref = "account-2"
+                policy_fence()
+
+            return transition(
+                *args, **(kwargs | {"precommit_check": rebound_policy_fence})
+            )
+
+        monkeypatch.setattr(
+            service.store, "transition", transition_with_rebinding_fence
+        )
+
+    with pytest.raises(PolicyDeniedError, match="account mismatch"):
+        service.reconcile("operation-1", correlation_id=correlation_id, now=NOW)
+
+    assert service.store.get("operation-1").state is OutboxState.UNKNOWN
+    with sqlite3.connect(service.store.database) as connection:
+        assert connection.execute(
+            "SELECT status, completed_at FROM threads_reconciliation_attempts "
+            "WHERE correlation_id=?",
+            (correlation_id,),
+        ).fetchone() == ("started", None)
+    with pytest.raises(ThreadsStoreError, match="already reserved"):
+        service.store.claim_reconciliation(
+            operation_id="operation-1",
+            correlation_id=f"{correlation_id}-second",
+            account_ref="account-1",
+            actor_reference="account-actor-1",
+            now=NOW,
+        )
+
+
 @pytest.mark.parametrize("result", [None, "confirmed", object()])
 def test_unknown_reconciliation_result_preserves_uncertainty(
     tmp_path, monkeypatch, result
@@ -2342,6 +2412,7 @@ def test_store_rejects_invalid_transition_metadata_and_state_specific_updates(tm
             "unresolved",
             correlation_id="reconcile-invalid-state",
             now=NOW,
+            precommit_check=lambda: None,
         )
 
 
@@ -2380,6 +2451,15 @@ def test_reconciliation_completion_requires_attempt_and_claim(tmp_path):
             "verified_success",
             correlation_id="reconcile-invalid-status",
             now=NOW,
+            precommit_check=lambda: None,
+        )
+    with pytest.raises(ValueError, match="pre-commit check"):
+        service.store.note_reconciliation(
+            "operation-1",
+            "unresolved",
+            correlation_id="reconcile-invalid-fence",
+            now=NOW,
+            precommit_check=None,
         )
     with pytest.raises(ThreadsStoreError, match="attempt is missing"):
         service.store.note_reconciliation(
@@ -2387,6 +2467,7 @@ def test_reconciliation_completion_requires_attempt_and_claim(tmp_path):
             "unresolved",
             correlation_id="reconcile-missing-attempt",
             now=NOW,
+            precommit_check=lambda: None,
         )
     with pytest.raises(ThreadsStoreError, match="attempt is missing"):
         service.store.transition(
@@ -2417,6 +2498,7 @@ def test_reconciliation_completion_requires_attempt_and_claim(tmp_path):
             "unresolved",
             correlation_id="reconcile-missing-claim",
             now=NOW,
+            precommit_check=lambda: None,
         )
     assert service.store.get("operation-1").state is OutboxState.UNKNOWN
 
