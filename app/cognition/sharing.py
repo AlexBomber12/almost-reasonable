@@ -209,8 +209,12 @@ class AbstractToSharedValidator:
                 AbstractReason.PRIVACY_REJECTED,
                 audit=audit,
             )
-        if not isinstance(screen, PrivacyScreenResult) or not isinstance(
-            screen.decision, PrivacyScreenDecision
+        if (
+            type(screen) is not PrivacyScreenResult
+            or not isinstance(screen.decision, PrivacyScreenDecision)
+            or not isinstance(screen.version, str)
+            or _TOKEN.fullmatch(screen.version) is None
+            or not self._valid_value(screen.reason)
         ):
             return self._result(
                 AbstractDecisionStatus.REJECTED,

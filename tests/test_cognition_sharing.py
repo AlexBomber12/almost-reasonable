@@ -333,6 +333,20 @@ def test_rejecting_h_screen_and_invalid_screen_result_fail_closed(sharing_setup)
     assert invalid.status is AbstractDecisionStatus.REJECTED
     assert invalid.reason is AbstractReason.PRIVACY_REJECTED
 
+    malformed_results = (
+        PrivacyScreenResult([], PrivacyScreenDecision.ALLOW, "allowed"),
+        PrivacyScreenResult("test-screen-v1", PrivacyScreenDecision.REJECT, []),
+    )
+    for malformed_screen in malformed_results:
+        malformed = AbstractToSharedValidator(
+            events,
+            privacy_screen=lambda _candidate, _sources, result=malformed_screen: result,
+        ).validate(context, proposal(event_id))
+        assert malformed.status is AbstractDecisionStatus.REJECTED
+        assert malformed.reason is AbstractReason.PRIVACY_REJECTED
+        assert malformed.audit.screen_version is None
+        assert malformed.audit.screen_reason is None
+
     def crashes(_candidate, _sources):
         raise RuntimeError("synthetic screen failure")
 
