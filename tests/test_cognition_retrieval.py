@@ -1,3 +1,4 @@
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -211,6 +212,66 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
     assert [record.item_id for record in selected.records] == ["interest-a-art"]
 
 
+def test_invalidation_filter_checks_the_complete_revision_chain(retrieval_setup):
+    events, state, context, _, old_event, new_event = retrieval_setup
+    proposal = InterestMemoryProposal(
+        ProposalContext(
+            "operation-history-create",
+            old_event,
+            (old_event,),
+            (),
+            None,
+            "Create from old evidence.",
+            NOW + timedelta(minutes=4),
+            NOW + timedelta(days=7),
+        ),
+        "interest-history",
+        "Revision history",
+        40,
+        InterestStatus.ACTIVE,
+        "Historical taint must remain visible.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+        .process(context, old_event)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    revised = replace(
+        proposal,
+        context=ProposalContext(
+            "operation-history-revise",
+            new_event,
+            (new_event,),
+            (),
+            1,
+            "Revise from newer evidence.",
+            NOW + timedelta(minutes=5),
+            NOW + timedelta(days=7),
+        ),
+        strength=60,
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(revised))
+        .process(context, new_event)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+
+    selection = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            "revision history",
+            4096,
+            10,
+            invalidated_event_ids=(old_event,),
+        ),
+    )
+
+    assert "interest-history" not in {item.item_id for item in selection.records}
+
+
 def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
     retrieval_setup,
 ):
@@ -290,6 +351,13 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
             100,
             1,
             invalidated_event_ids=tuple(f"event-{index}" for index in range(101)),
+        ),
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            "topic",
+            100,
+            1,
+            include_terminal=True,
         ),
     ],
 )

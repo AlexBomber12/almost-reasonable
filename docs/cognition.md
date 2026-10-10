@@ -117,13 +117,16 @@ verification state, participant-assertion provenance class, recency, and the
 fixed `untrusted_memory_data` trust label. `can_instruct` is always false. No
 protected evidence IDs or participant IDs are rendered into model context.
 Terminal records are excluded by default and may be requested only for an
-explicit revision purpose.
+explicit revision purpose; `include_terminal` is rejected for conversation or
+general deliberation.
 
 The retrieval request can receive externally supplied invalidated event IDs and
-will omit current candidates tainted by them. `plan_source_invalidation` finds
-affected private revisions but returns `pending_integration` and performs no
-durable deletion. This is an explicit hook for the future authenticated deletion
-ledger, not a claim that cascade deletion or backup reconciliation exists now.
+will omit current candidates when any revision in their complete provenance
+chain is tainted by one of them. `plan_source_invalidation` finds all affected
+private revisions without applying the core 100-revision presentation cap, but
+returns `pending_integration` and performs no durable deletion. This is an
+explicit hook for the future authenticated deletion ledger, not a claim that
+cascade deletion or backup reconciliation exists now.
 
 ## Model and security boundary
 

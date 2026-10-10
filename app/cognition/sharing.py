@@ -24,6 +24,7 @@ from .contracts import (
     PrivacyScreenDecision,
     PrivacyScreenResult,
 )
+from .read_store import retrieve_exact_private_event
 
 
 PRIVACY_SCREEN_VERSION = "abstract-privacy-screen-v1"
@@ -170,14 +171,16 @@ class AbstractToSharedValidator:
                 AbstractDecisionStatus.REJECTED,
                 AbstractReason.INVALID_PROVENANCE,
             )
-        visible = self._events.retrieve_private_events(context)
-        by_id = {item.event_id: item for item in visible}
-        if any(item not in by_id for item in protected_ids):
+        resolved_sources = tuple(
+            retrieve_exact_private_event(self._events, context, item)
+            for item in protected_ids
+        )
+        if any(item is None for item in resolved_sources):
             return self._result(
                 AbstractDecisionStatus.REJECTED,
                 AbstractReason.INVALID_PROVENANCE,
             )
-        sources = tuple(by_id[item] for item in protected_ids)
+        sources = tuple(item for item in resolved_sources if item is not None)
         audit = AbstractAuditRecord(
             proposal.operation_id,
             protected_ids,

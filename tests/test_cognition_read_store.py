@@ -159,3 +159,31 @@ def test_candidate_sql_failure_is_translated(read_setup, monkeypatch):
 
     with pytest.raises(EventStoreError, match="event store operation failed"):
         CognitionReadStore(events, state).retrieve_all_private_candidates(context)
+
+
+def test_candidate_evidence_sql_failure_is_translated(read_setup, monkeypatch):
+    events, state, context = read_setup
+    monkeypatch.setattr(
+        events,
+        "_verify_current_schema",
+        lambda _connection: (_ for _ in ()).throw(sqlite3.OperationalError("boom")),
+    )
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        CognitionReadStore(events, state).retrieve_private_candidate_evidence_ids(
+            context, "interest-a"
+        )
+
+
+def test_revision_reference_sql_failure_is_translated(read_setup, monkeypatch):
+    events, state, context = read_setup
+    monkeypatch.setattr(
+        events,
+        "_verify_current_schema",
+        lambda _connection: (_ for _ in ()).throw(sqlite3.OperationalError("boom")),
+    )
+
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        CognitionReadStore(events, state).retrieve_private_revision_references(
+            context, "event-a"
+        )

@@ -19,7 +19,6 @@ from app.core.self_state import (
     InterestStatus,
     RevisionContext,
     RevisionKind,
-    StateType,
 )
 from app.core.self_state_store import (
     MAX_EVIDENCE_PER_REVISION,
@@ -125,24 +124,13 @@ class CognitionEngine:
         source = self._read.retrieve_exact_private_event(context, source_event_id)
         if source is None:
             return InvalidationPlan(InvalidationStatus.REJECTED, source_event_id, ())
-        affected: list[tuple[str, str, int]] = []
-        for candidate in self._read.retrieve_all_private_candidates(context):
-            state_type = self._state_type(candidate)
-            history = self._state.retrieve_private_revision_history(
-                context, state_type, candidate.item_id
-            )
-            for revision in history:
-                evidence = self._state.inspect_private_revision_evidence(
-                    context, state_type, candidate.item_id, revision.revision
-                )
-                if source_event_id in {item.event_id for item in evidence}:
-                    affected.append(
-                        (state_type.value, candidate.item_id, revision.revision)
-                    )
+        affected = self._read.retrieve_private_revision_references(
+            context, source_event_id
+        )
         return InvalidationPlan(
             InvalidationStatus.PENDING_INTEGRATION,
             source_event_id,
-            tuple(affected),
+            affected,
         )
 
     def _authorize(
@@ -532,14 +520,6 @@ class CognitionEngine:
                 and isinstance(existing, GoalCandidate)
             )
         )
-
-    @staticmethod
-    def _state_type(candidate: object) -> StateType:
-        if isinstance(candidate, InterestCandidate):
-            return StateType.INTEREST
-        if isinstance(candidate, BeliefCandidate):
-            return StateType.BELIEF
-        return StateType.GOAL
 
     @staticmethod
     def _safe_kind(proposal: object) -> MemoryKind | None:

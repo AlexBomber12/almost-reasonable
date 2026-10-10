@@ -1065,3 +1065,47 @@ def test_invalidation_scans_belief_and_goal_revision_types(cognition_setup):
         )
     plan = CognitionEngine(events, state).plan_source_invalidation(context, event_id)
     assert {item[0] for item in plan.affected_items} == {"belief", "goal"}
+
+
+def test_invalidation_plan_scans_beyond_bounded_revision_history(cognition_setup):
+    events, state, context, old_event = cognition_setup
+    new_event = append_event(events, context, "new-revision-source")
+    proposal = InterestMemoryProposal(
+        proposal_context(old_event, "long-history-create"),
+        "interest-long-history",
+        "Long revision history",
+        40,
+        InterestStatus.ACTIVE,
+        "Deletion must reach the complete chain.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+        .process(context, old_event)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    for revision in range(1, 101):
+        proposal = replace(
+            proposal,
+            context=proposal_context(
+                new_event,
+                f"long-history-{revision:03d}",
+                expected_revision=revision,
+            ),
+            strength=50 + revision % 2,
+        )
+        assert (
+            CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+            .process(context, new_event)
+            .status
+            is CognitionOutcomeStatus.PERSISTED
+        )
+    bounded = state.retrieve_private_revision_history(
+        context, StateType.INTEREST, "interest-long-history"
+    )
+    assert len(bounded) == 100
+    assert bounded[0].revision == 2
+
+    plan = CognitionEngine(events, state).plan_source_invalidation(context, old_event)
+
+    assert plan.affected_items == (("interest", "interest-long-history", 1),)

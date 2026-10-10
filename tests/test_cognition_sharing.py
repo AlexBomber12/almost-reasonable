@@ -108,6 +108,25 @@ def test_safe_abstraction_is_quarantined_with_protected_audit_but_not_shared(
     assert state.retrieve_shared_state() == ()
 
 
+def test_old_protected_source_remains_exactly_addressable(sharing_setup):
+    events, _, context, event_id = sharing_setup
+    for index in range(100):
+        append_event(
+            events,
+            context,
+            f"new-{index:03d}",
+            f"Unrelated recent source {index}.",
+        )
+    assert event_id not in {
+        item.event_id for item in events.retrieve_private_events(context)
+    }
+
+    result = AbstractToSharedValidator(events).validate(context, proposal(event_id))
+
+    assert result.status is AbstractDecisionStatus.QUARANTINED
+    assert result.reason is AbstractReason.SHARED_COMMIT_DISABLED
+
+
 @pytest.mark.parametrize(
     ("value", "reason"),
     [

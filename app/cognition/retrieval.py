@@ -59,10 +59,10 @@ class MemoryContextSelector:
                 omitted = True
                 continue
             state_type = self._state_type(candidate)
-            evidence = self._state.inspect_private_revision_evidence(
-                context, state_type, candidate.item_id, candidate.revision
+            evidence_ids = self._read.retrieve_private_candidate_evidence_ids(
+                context, candidate.item_id
             )
-            if invalidated & {item.event_id for item in evidence}:
+            if invalidated & set(evidence_ids):
                 omitted = True
                 continue
             history = self._state.retrieve_private_revision_history(
@@ -182,6 +182,10 @@ class MemoryContextSelector:
             or type(request.relevant_topic) is not str
             or len(request.relevant_topic.encode("utf-8")) > 4096
             or type(request.include_terminal) is not bool
+            or (
+                request.include_terminal
+                and request.purpose is not RetrievalPurpose.REVISION
+            )
             or type(request.invalidated_event_ids) is not tuple
             or len(request.invalidated_event_ids) > 100
             or len(set(request.invalidated_event_ids))

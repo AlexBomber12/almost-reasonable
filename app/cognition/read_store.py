@@ -27,6 +27,71 @@ from app.core.store import EventStore, MAX_PRIVATE_PAYLOAD_BYTES
 StateChange = InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange
 
 
+def retrieve_exact_private_event(
+    event_store: EventStore,
+    context: TrustedPrincipalContext,
+    event_id: str,
+) -> PrivateConversationEvent | None:
+    """Retrieve one active event without applying a recent-history limit."""
+
+    event_store._validate_context(context)
+    connection = event_store._open()
+    try:
+        with connection:
+            connection.execute("BEGIN")
+            event_store._verify_current_schema(connection)
+            row = connection.execute(
+                """
+                SELECT
+                    event.event_id,
+                    event.occurred_at,
+                    event.event_type,
+                    event.channel,
+                    event.correlation_id,
+                    event.audience_type,
+                    event.audience_principal_id,
+                    event.provenance_type,
+                    event.verification_status,
+                    payload.provenance_type,
+                    payload.verification_status,
+                    taint.source_event_id,
+                    taint.source_principal_id,
+                    taint.source_provenance_type,
+                    CASE
+                        WHEN typeof(payload.content) = 'text'
+                         AND length(CAST(payload.content AS BLOB))
+                             BETWEEN 1 AND ?
+                        THEN payload.content
+                    END AS content
+                FROM event_envelopes AS event
+                JOIN private_payloads AS payload
+                  ON payload.payload_id = event.payload_id
+                LEFT JOIN protected_event_taints AS taint
+                  ON taint.event_id = event.event_id
+                WHERE event.event_id = ?
+                  AND event.audience_type = 'private_participant'
+                  AND event.audience_principal_id = ?
+                  AND payload.audience_type = event.audience_type
+                  AND payload.audience_principal_id = event.audience_principal_id
+                  AND payload.retention_status = 'active'
+                """,
+                (
+                    MAX_PRIVATE_PAYLOAD_BYTES,
+                    event_id,
+                    context.principal_id.value,
+                ),
+            ).fetchone()
+        return None if row is None else event_store._conversation_event(row)
+    except (OverflowError, TypeError, ValueError):
+        raise event_store._translated_error(
+            sqlite3.DatabaseError("invalid stored event")
+        ) from None
+    except sqlite3.Error as error:
+        raise event_store._translated_error(error) from None
+    finally:
+        connection.close()
+
+
 class CognitionReadStore:
     """Narrow read-only adapter used only by deterministic cognition code."""
 
@@ -37,62 +102,7 @@ class CognitionReadStore:
     def retrieve_exact_private_event(
         self, context: TrustedPrincipalContext, event_id: str
     ) -> PrivateConversationEvent | None:
-        self._events._validate_context(context)
-        connection = self._events._open()
-        try:
-            with connection:
-                connection.execute("BEGIN")
-                self._events._verify_current_schema(connection)
-                row = connection.execute(
-                    """
-                    SELECT
-                        event.event_id,
-                        event.occurred_at,
-                        event.event_type,
-                        event.channel,
-                        event.correlation_id,
-                        event.audience_type,
-                        event.audience_principal_id,
-                        event.provenance_type,
-                        event.verification_status,
-                        payload.provenance_type,
-                        payload.verification_status,
-                        taint.source_event_id,
-                        taint.source_principal_id,
-                        taint.source_provenance_type,
-                        CASE
-                            WHEN typeof(payload.content) = 'text'
-                             AND length(CAST(payload.content AS BLOB))
-                                 BETWEEN 1 AND ?
-                            THEN payload.content
-                        END AS content
-                    FROM event_envelopes AS event
-                    JOIN private_payloads AS payload
-                      ON payload.payload_id = event.payload_id
-                    LEFT JOIN protected_event_taints AS taint
-                      ON taint.event_id = event.event_id
-                    WHERE event.event_id = ?
-                      AND event.audience_type = 'private_participant'
-                      AND event.audience_principal_id = ?
-                      AND payload.audience_type = event.audience_type
-                      AND payload.audience_principal_id = event.audience_principal_id
-                      AND payload.retention_status = 'active'
-                    """,
-                    (
-                        MAX_PRIVATE_PAYLOAD_BYTES,
-                        event_id,
-                        context.principal_id.value,
-                    ),
-                ).fetchone()
-            return None if row is None else self._events._conversation_event(row)
-        except (OverflowError, TypeError, ValueError):
-            raise self._events._translated_error(
-                sqlite3.DatabaseError("invalid stored event")
-            ) from None
-        except sqlite3.Error as error:
-            raise self._events._translated_error(error) from None
-        finally:
-            connection.close()
+        return retrieve_exact_private_event(self._events, context, event_id)
 
     def retrieve_exact_private_candidate(
         self, context: TrustedPrincipalContext, item_id: str
@@ -104,6 +114,79 @@ class CognitionReadStore:
         self, context: TrustedPrincipalContext
     ) -> tuple[PrivateCandidate, ...]:
         return self._retrieve_candidate_rows(context)
+
+    def retrieve_private_candidate_evidence_ids(
+        self,
+        context: TrustedPrincipalContext,
+        item_id: str,
+    ) -> tuple[str, ...]:
+        """Return active protected evidence across the complete revision chain."""
+
+        self._state._validate_context(context)
+        connection = self._events._open()
+        try:
+            with connection:
+                connection.execute("BEGIN")
+                self._events._verify_current_schema(connection)
+                rows = connection.execute(
+                    """
+                    SELECT DISTINCT source.event_id
+                    FROM state_items AS item
+                    JOIN state_revisions AS revision
+                      ON revision.item_key = item.item_key
+                    JOIN protected_state_provenance AS source
+                      ON source.revision_key = revision.revision_key
+                    WHERE item.scope = 'private_candidate'
+                      AND item.audience_type = 'private_participant'
+                      AND item.audience_principal_id = ?
+                      AND item.item_id = ?
+                      AND source.retention_status = 'active'
+                    ORDER BY source.event_id
+                    """,
+                    (context.principal_id.value, item_id),
+                ).fetchall()
+                return tuple(row[0] for row in rows)
+        except sqlite3.Error as error:
+            raise self._events._translated_error(error) from None
+        finally:
+            connection.close()
+
+    def retrieve_private_revision_references(
+        self,
+        context: TrustedPrincipalContext,
+        event_id: str,
+    ) -> tuple[tuple[str, str, int], ...]:
+        """Return every private revision tainted by one source event."""
+
+        self._state._validate_context(context)
+        connection = self._events._open()
+        try:
+            with connection:
+                connection.execute("BEGIN")
+                self._events._verify_current_schema(connection)
+                rows = connection.execute(
+                    """
+                    SELECT DISTINCT
+                        item.state_type, item.item_id, revision.revision_number
+                    FROM state_items AS item
+                    JOIN state_revisions AS revision
+                      ON revision.item_key = item.item_key
+                    JOIN protected_state_provenance AS source
+                      ON source.revision_key = revision.revision_key
+                    WHERE item.scope = 'private_candidate'
+                      AND item.audience_type = 'private_participant'
+                      AND item.audience_principal_id = ?
+                      AND source.event_id = ?
+                      AND source.retention_status = 'active'
+                    ORDER BY item.state_type, item.item_id, revision.revision_number
+                    """,
+                    (context.principal_id.value, event_id),
+                ).fetchall()
+                return tuple(rows)
+        except sqlite3.Error as error:
+            raise self._events._translated_error(error) from None
+        finally:
+            connection.close()
 
     def replay_private_operation(
         self,
