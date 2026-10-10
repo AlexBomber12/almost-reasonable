@@ -26,13 +26,20 @@ The gateway owns the single bounded retry policy. Credentials are absent from
 domain dataclasses, request bodies, results, telemetry, exception text, and
 representations.
 
-This module split is a code trust boundary, not OS isolation. A later deployment
-must run planner and credential holder under separate identities; mount no provider
-credential into the planner; give the worker only its required key; expose no
-public credential-bearing endpoint; strongly authenticate and narrowly scope
-worker requests; restrict egress; use read-only/minimal mounts; provide no Docker
-socket, generic shell, filesystem executor, or unrestricted tool framework; and
-return bounded secretless responses. Those runtime protections are not active yet.
+PR #8 adds an executable process boundary around this gateway. A secretless client
+uses a single-operation, framed JSON protocol over AF_UNIX; the worker checks Linux
+peer credentials, independently reconstructs and validates `ModelRequest`, owns
+this gateway and its SQLite provider state, and returns only a bounded sanitized
+outcome or validated untrusted proposal. The default executable worker remains
+Stage 0 with `FakeOpenAITransport`. See `docs/openai-worker-isolation.md`.
+
+This is process separation, not yet full production OS isolation. A later
+deployment must run planner and credential holder under separate identities;
+mount no provider credential into the planner; give the worker only its required
+key; validate narrowly scoped socket access for those identities; restrict egress;
+use read-only/minimal mounts; and provide no Docker socket, generic shell,
+filesystem executor, or unrestricted tool framework. Compose was not changed and
+those deployment protections are not active yet.
 
 ## Provider contract verified from current documentation
 
