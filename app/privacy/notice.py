@@ -71,7 +71,7 @@ class NoticeService:
             )
             occurred_at = self._clock()
             require_utc(occurred_at, "notice rejection timestamp")
-            self.ledger.record_audit(
+            self.ledger._record_audit(
                 AuditRecord(
                     correlation_id,
                     context.actor_reference,
@@ -88,7 +88,7 @@ class NoticeService:
         if notice_version != NOTICE_VERSION:
             occurred_at = self._clock()
             require_utc(occurred_at, "notice rejection timestamp")
-            self.ledger.record_audit(
+            self.ledger._record_audit(
                 AuditRecord(
                     correlation_id,
                     context.actor_reference,

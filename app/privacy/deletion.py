@@ -149,7 +149,7 @@ class DeletionCoordinator:
     ) -> DeletionOutcome:
         occurred_at = self.clock()
         require_utc(occurred_at, "deletion rejection timestamp")
-        self.ledger.record_audit(
+        self.ledger._record_audit(
             AuditRecord(
                 request.correlation_id,
                 context.actor_reference,

@@ -930,7 +930,7 @@ class PrivacyLedger:
             request, DeletionDisposition(row[8]), row[9], _time(row[10])
         )
 
-    def record_audit(self, record: AuditRecord) -> None:
+    def _record_audit(self, record: AuditRecord) -> None:
         if type(record) is not AuditRecord:
             raise ValueError("invalid audit record")
         with self._open() as connection:

@@ -788,7 +788,25 @@ def test_ledger_rejects_duck_typed_audit_records(tmp_path):
         redaction_status = "payload_free"
 
     with pytest.raises(ValueError, match="audit record"):
-        ledger.record_audit(ForgedAudit())
+        ledger._record_audit(ForgedAudit())
+
+    assert ledger.audit_records() == ()
+
+
+def test_audit_insertion_is_not_public(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    record = AuditRecord(
+        "audit-correlation",
+        "actor-a",
+        "consent_use",
+        "consent",
+        NOW,
+        "authorized",
+        "payload_free",
+    )
+
+    with pytest.raises(AttributeError):
+        ledger.record_audit(record)
 
     assert ledger.audit_records() == ()
 

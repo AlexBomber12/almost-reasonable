@@ -470,13 +470,22 @@ def _seal_fresh_snapshot(
         _fsync_owned_parents(sealed)
     except (OSError, sqlite3.Error, BackupError):
         _cleanup_created(sealed)
+        sealed.clear()
         return None
     except BaseException:
         _cleanup_created(sealed)
+        sealed.clear()
         raise
     finally:
-        fence.rollback()
-        fence.close()
+        try:
+            try:
+                fence.rollback()
+            finally:
+                fence.close()
+        except BaseException:
+            _cleanup_created(sealed)
+            sealed.clear()
+            raise
     return sealed[0]
 
 

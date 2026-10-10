@@ -98,7 +98,7 @@ class ConsentService:
                     dispatch=dispatch,
                 )
         used_at = self._trusted_time()
-        self.ledger.record_audit(
+        self.ledger._record_audit(
             AuditRecord(
                 correlation_id,
                 context.actor_reference,
@@ -146,7 +146,7 @@ class ConsentService:
                 )
                 reason = "revoked" if created else "already_revoked"
                 return OperationResult(created, reason)
-        self.ledger.record_audit(
+        self.ledger._record_audit(
             AuditRecord(
                 correlation_id,
                 context.actor_reference,
@@ -167,7 +167,7 @@ class ConsentService:
         *,
         actor_reference: str,
     ) -> None:
-        self.ledger.record_audit(
+        self.ledger._record_audit(
             AuditRecord(
                 grant.correlation_id,
                 actor_reference,

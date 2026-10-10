@@ -1783,6 +1783,70 @@ def test_fresh_snapshot_seal_cleans_an_interruption(tmp_path, monkeypatch):
     assert not sealed.exists()
 
 
+@pytest.mark.parametrize("failure", ["rollback", "close"])
+def test_fresh_snapshot_seal_cleans_a_fence_teardown_failure(
+    tmp_path, monkeypatch, failure
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "snapshot.sqlite3"
+    make_source(source).close()
+    descriptor = os.open(source, os.O_RDWR)
+    sealed = tmp_path / "sealed.sqlite3"
+    real_connect = recovery_module.sqlite3.connect
+    real_open_owned_file = recovery_module._open_owned_file
+    fence_connections = []
+    sealed_outputs = []
+
+    class FenceConnection:
+        def __init__(self, connection):
+            self.connection = connection
+
+        def __getattr__(self, name):
+            return getattr(self.connection, name)
+
+        def rollback(self):
+            if failure == "rollback":
+                raise SimulatedInterrupt()
+            self.connection.rollback()
+
+        def close(self):
+            self.connection.close()
+            if failure == "close":
+                raise SimulatedInterrupt()
+
+    def connect(*args, **kwargs):
+        connection = real_connect(*args, **kwargs)
+        if not fence_connections:
+            fence_connections.append(connection)
+            return FenceConnection(connection)
+        return connection
+
+    def track_sealed_output(path, access, owned):
+        output_descriptor = real_open_owned_file(path, access, owned)
+        if path == sealed:
+            sealed_outputs.append(owned[-1])
+        return output_descriptor
+
+    monkeypatch.setattr(recovery_module.sqlite3, "connect", connect)
+    monkeypatch.setattr(recovery_module, "_open_owned_file", track_sealed_output)
+    try:
+        with pytest.raises(SimulatedInterrupt):
+            recovery_module._seal_fresh_snapshot(source, descriptor, sealed)
+    finally:
+        os.close(descriptor)
+
+    assert not sealed.exists()
+    assert len(sealed_outputs) == 1
+    with pytest.raises(OSError):
+        os.fstat(sealed_outputs[0].descriptor)
+    with pytest.raises(OSError):
+        os.fstat(sealed_outputs[0].parent_descriptor)
+    with pytest.raises(sqlite3.ProgrammingError):
+        fence_connections[0].execute("SELECT 1")
+
+
 def test_restore_tracks_sealed_inode_before_releasing_adapter_staging(
     tmp_path, monkeypatch
 ):
