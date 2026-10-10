@@ -207,6 +207,20 @@ class ThreadsStore:
                     raise DuplicateOperationError("operation identity conflict")
                 connection.commit()
                 return _outbox_item(existing), False
+            if replacement_of is not None:
+                target = connection.execute(
+                    "SELECT account_ref, state FROM threads_outbox "
+                    "WHERE operation_id=?",
+                    (replacement_of,),
+                ).fetchone()
+                if (
+                    target is None
+                    or target["account_ref"] != account_ref
+                    or OutboxState(target["state"]) not in UNRESOLVED_STATES
+                ):
+                    raise UnknownPublicationRiskError(
+                        "replacement target is no longer unresolved"
+                    )
             unresolved = connection.execute(
                 "SELECT operation_id FROM threads_outbox WHERE account_ref=? "
                 "AND content_fingerprint=? AND state IN (?, ?)",

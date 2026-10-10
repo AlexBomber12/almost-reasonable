@@ -195,7 +195,10 @@ cannot be recreated under a new ID. Any unresolved `unknown` or
 `unknown_abandoned` pauses ordinary readiness for that account. An exceptional
 replacement must link the unresolved operation and carry a separate
 authenticated approval that explicitly acknowledges duplicate-publication risk;
-it never changes or retries the original item.
+it never changes or retries the original item. Proposal insertion revalidates
+the replacement target's account and unresolved state inside the same SQLite
+transaction, so a concurrent reconciliation cannot consume the replacement's
+immutable operation ID with a stale target.
 
 Before any replacement provider request, the same transaction also reserves
 its unresolved target. Reconciliation takes an exclusive claim on that target.
@@ -241,6 +244,9 @@ Conversation handling records `no_action`, supported `defer` with a resumption
 condition, `terminate_conversation`, or `cooldown` separately from delivery
 outcomes. A chosen public reply starts as a distinct proposal and traverses the
 same approval, unknown, reconciliation, and duplicate controls as a post.
+
+All persisted and authorization timestamps must be genuinely timezone-aware:
+a non-null `tzinfo` whose UTC offset is unavailable or raises is rejected.
 
 ## Stage 3 readiness and remaining blockers
 

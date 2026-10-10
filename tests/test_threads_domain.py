@@ -1,5 +1,5 @@
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, timedelta, tzinfo
 
 import pytest
 
@@ -29,6 +29,16 @@ SCOPES = frozenset(
         "threads_manage_mentions",
     }
 )
+
+
+class MissingOffset(tzinfo):
+    def utcoffset(self, _dt):
+        return None
+
+
+class BrokenOffset(tzinfo):
+    def utcoffset(self, _dt):
+        raise RuntimeError("invalid timezone")
 
 
 def policy(**changes):
@@ -187,7 +197,12 @@ def test_reference_and_time_validators_are_closed():
     for value in (None, "", "bad value", "x" * 129):
         with pytest.raises(ValueError):
             require_reference("field", value)
-    for value in (None, datetime(2026, 1, 1)):
+    for value in (
+        None,
+        datetime(2026, 1, 1),
+        datetime(2026, 1, 1, tzinfo=MissingOffset()),
+        datetime(2026, 1, 1, tzinfo=BrokenOffset()),
+    ):
         with pytest.raises(ValueError):
             require_aware_time("time", value)
 

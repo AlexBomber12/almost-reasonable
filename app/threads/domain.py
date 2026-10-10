@@ -290,4 +290,10 @@ def require_reference(field: str, value: object) -> str:
 def require_aware_time(field: str, value: object) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError(f"invalid {field}")
+    try:
+        offset = value.utcoffset()
+    except Exception as error:
+        raise ValueError(f"invalid {field}") from error
+    if offset is None:
+        raise ValueError(f"invalid {field}")
     return value

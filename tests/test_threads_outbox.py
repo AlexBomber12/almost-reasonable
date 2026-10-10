@@ -1247,6 +1247,39 @@ def test_replacement_is_blocked_if_target_reconciles_before_dispatch(tmp_path):
         service.dispatch("operation-2", risk_approval, now=NOW)
 
 
+def test_replacement_target_is_revalidated_in_proposal_transaction(
+    tmp_path, monkeypatch
+):
+    service = make_service(tmp_path)
+    _, first_approval = ready(service)
+    service.simulator.set_fault("operation-1", "publish", Fault.DURING_PUBLISH)
+    service.dispatch("operation-1", first_approval, now=NOW)
+    create_proposal = service.store.create_proposal
+
+    def resolve_target_before_insert(**kwargs):
+        service.store.transition(
+            "operation-1",
+            OutboxState.CONFIRMED,
+            reason="concurrent_reconciliation_success",
+            now=NOW,
+            provider_publication_id="thread-reconciled",
+            reconciliation_status="verified_success",
+        )
+        return create_proposal(**kwargs)
+
+    monkeypatch.setattr(service.store, "create_proposal", resolve_target_before_insert)
+    risk_approval = approve("operation-2", duplicate_risk_acknowledged=True)
+    with pytest.raises(UnknownPublicationRiskError, match="no longer unresolved"):
+        propose(
+            service,
+            "operation-2",
+            replacement_of="operation-1",
+            replacement_approval=risk_approval,
+        )
+    with pytest.raises(ThreadsStoreError, match="unknown operation"):
+        service.store.get("operation-2")
+
+
 def test_replacement_publication_serializes_target_reconciliation(
     tmp_path, monkeypatch
 ):
