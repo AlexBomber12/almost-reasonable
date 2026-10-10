@@ -63,7 +63,8 @@ _CODE_SIGNAL = re.compile(
     r"\s+from\s+[A-Za-z_]\w*(?:\s*;|\s+(?:where|join|group\s+by|"
     r"order\s+by|limit)\b)|"
     r"\b(?:print|len|range|open|input|str|int|float|list|dict|set|tuple)\s*\(|"
-    r"\b[A-Za-z_]\w*\s*=\s*[^=]|</?[A-Za-z][^>]*>|"
+    r"\b[A-Za-z_]\w*\s*=\s*(?:[\"']|\d|[\[({]|(?:True|False|None|null)\b|"
+    r"[A-Za-z_]\w*\s*\()|</?[A-Za-z][^>]*>|"
     r"\{[^{}]*(?::|=)[^{}]*\})",
     re.IGNORECASE,
 )

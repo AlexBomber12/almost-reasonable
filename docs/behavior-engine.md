@@ -79,6 +79,8 @@ runs from three Cyrillic words onward. Backtick spans are excluded only when
 syntax or keywords make them code-like; prose merely wrapped as inline or fenced
 Markdown remains in language accounting, including ordinary parentheticals and
 conversational uses of words such as `select` and `from` without SQL structure.
+Likewise, an equals sign excludes a span only when its right-hand side has a
+clear literal, collection, constant, or call shape rather than English prose.
 
 The corpus contains eleven labeled cases: fluent Russian, Russian with English
 technical terms, Italian place names, Ukrainian, Belarusian, Bulgarian, English-only,
