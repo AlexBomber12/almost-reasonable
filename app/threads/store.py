@@ -1374,6 +1374,7 @@ class ThreadsStore:
                 "AND outcome.inbound_event_id=event.event_id "
                 "AND outcome.outcome='defer') "
                 "ORDER BY threads_utc_timestamp(event.received_at), "
+                "threads_utc_timestamp(event.occurred_at), "
                 "event.event_id LIMIT ?",
                 (account_ref, stream.value, limit),
             ).fetchall()

@@ -375,6 +375,35 @@ def test_pending_events_are_ordered_by_exact_receipt_instant(tmp_path):
     )
 
 
+def test_same_batch_events_are_ordered_by_provider_instant_before_id(tmp_path):
+    store = service(tmp_path).store
+    older = event(
+        "batch-older",
+        event_id="event-z-older",
+        occurred_at=NOW,
+    )
+    newer = event(
+        "batch-newer",
+        event_id="event-a-newer",
+        occurred_at=NOW + timedelta(microseconds=1),
+    )
+    store.commit_poll_page(
+        correlation_id="poll-same-batch-order",
+        account_ref="account-1",
+        stream=InboundKind.REPLY,
+        verified_source_ref="meta-simulator-v1",
+        expected_cursor=None,
+        next_cursor=None,
+        events=(older, newer),
+        now=NOW,
+        precommit_check=lambda: None,
+    )
+
+    assert store.pending_inbound_events("account-1", InboundKind.REPLY, limit=1) == (
+        older,
+    )
+
+
 @pytest.mark.parametrize(
     "stream, limit",
     [

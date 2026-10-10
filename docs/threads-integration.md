@@ -265,8 +265,10 @@ identity, source reference, account, kind, conversation ID, optional parent,
 provider event time normalized to UTC, and bounded public content. Equivalent
 aware timestamps replayed with another UTC offset retain the same identity. An
 event's receipt time is normalized to UTC, and the pending queue orders both new
-and migrated offset-bearing values by their exact receipt instant. An event page
-and its cursor commit in one SQLite transaction. Each inbound event
+and migrated offset-bearing values by their exact receipt instant. Events within
+one received batch are then ordered by exact provider occurrence time before the
+deterministic event-ID tie-breaker. An event page and its cursor commit in one
+SQLite transaction. Each inbound event
 and conversation outcome also persists a bounded application correlation ID so
 ingestion, deliberation,
 and a later reply operation can share an internal trace without treating a
