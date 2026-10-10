@@ -673,6 +673,45 @@ def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkey
     assert marker.read_text() == "concurrent-marker"
 
 
+def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    marker = Path(f"{quarantine}.ready.json")
+    opened = []
+    real_open_owned_file = recovery_module._open_owned_file
+
+    def track_open(path, access, owned):
+        descriptor = real_open_owned_file(path, access, owned)
+        opened.append(owned[-1])
+        return descriptor
+
+    monkeypatch.setattr(recovery_module, "_open_owned_file", track_open)
+    monkeypatch.setattr(
+        recovery_module,
+        "_write_all",
+        lambda *_args: (_ for _ in ()).throw(SimulatedInterrupt()),
+    )
+
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+
+    assert not marker.exists()
+    for owned_file in opened:
+        with pytest.raises(OSError):
+            os.fstat(owned_file.descriptor)
+        with pytest.raises(OSError):
+            os.fstat(owned_file.parent_descriptor)
+
+
 def test_backup_rejects_malformed_database_and_verification_faults(
     tmp_path, monkeypatch
 ):

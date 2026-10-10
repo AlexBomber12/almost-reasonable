@@ -887,6 +887,78 @@ def test_timestamps_must_be_utc_and_ledger_path_is_protected(tmp_path):
     assert os.stat(path).st_mode & 0o777 == 0o600
 
 
+def test_privacy_ledger_rejects_unsafe_parent_chains(tmp_path):
+    unsafe = tmp_path / "unsafe"
+    nested = unsafe / "nested"
+    nested.mkdir(parents=True)
+    unsafe.chmod(0o777)
+
+    for path in (unsafe / "direct.sqlite3", nested / "nested.sqlite3"):
+        with pytest.raises(ValueError, match="parent is unsafe"):
+            PrivacyLedger(path)
+        assert not path.exists()
+
+    target = tmp_path / "target"
+    target.mkdir()
+    parent_link = tmp_path / "parent-link"
+    parent_link.symlink_to(target, target_is_directory=True)
+    with pytest.raises(ValueError, match="parent is unsafe"):
+        PrivacyLedger(parent_link / "linked.sqlite3")
+
+
+def test_privacy_ledger_file_open_failure_closes_pinned_parent(tmp_path, monkeypatch):
+    class SimulatedOpenFailure(BaseException):
+        pass
+
+    parent_descriptors = []
+    real_open_chain = ledger_module.open_trusted_directory_chain
+    real_open = os.open
+
+    def track_parent(directory):
+        descriptor = real_open_chain(directory)
+        parent_descriptors.append(descriptor)
+        return descriptor
+
+    def fail_ledger_open(path, *args, **kwargs):
+        if path == "privacy.sqlite3":
+            raise SimulatedOpenFailure
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(ledger_module, "open_trusted_directory_chain", track_parent)
+    monkeypatch.setattr(ledger_module.os, "open", fail_ledger_open)
+
+    with pytest.raises(SimulatedOpenFailure):
+        PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(OSError):
+        os.fstat(parent_descriptors[0])
+
+
+def test_privacy_ledger_rejects_non_regular_sidecars(tmp_path):
+    class WalConnection:
+        @staticmethod
+        def execute(statement):
+            if statement == "PRAGMA foreign_keys=ON":
+                return None
+
+            class Cursor:
+                @staticmethod
+                def fetchone():
+                    return ("wal",)
+
+            return Cursor()
+
+    ledger = object.__new__(PrivacyLedger)
+    ledger.path = tmp_path / "privacy.sqlite3"
+    ledger._parent_descriptor = ledger_module.open_trusted_directory_chain(tmp_path)
+    os.mkfifo(tmp_path / "privacy.sqlite3-wal")
+    try:
+        with pytest.raises(RuntimeError, match="sidecar is unsafe"):
+            ledger._configure(WalConnection())
+    finally:
+        os.close(ledger._parent_descriptor)
+
+
 def run_concurrently(operation):
     barrier = threading.Barrier(3)
     results = []

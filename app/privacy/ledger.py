@@ -7,8 +7,10 @@ import fcntl
 import os
 from pathlib import Path
 import sqlite3
+import stat
 from weakref import finalize
 
+from .files import open_trusted_directory_chain
 from .models import (
     AuditRecord,
     ConsentGrant,
@@ -140,14 +142,23 @@ class PrivacyLedger:
         if requested_path == Path(":memory:"):
             raise ValueError("in-memory privacy ledgers are not supported")
         self.path = requested_path.absolute()
-        if self.path.exists() and self.path.is_symlink():
+        if self.path.is_symlink():
             raise ValueError("privacy ledger must not be a symbolic link")
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor = os.open(
-            self.path,
-            os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-            0o600,
-        )
+        try:
+            parent_descriptor = open_trusted_directory_chain(self.path.parent)
+        except OSError as error:
+            raise ValueError("privacy ledger parent is unsafe") from error
+        try:
+            descriptor = os.open(
+                self.path.name,
+                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
+                0o600,
+                dir_fd=parent_descriptor,
+            )
+        except BaseException:
+            os.close(parent_descriptor)
+            raise
+        self._parent_descriptor = parent_descriptor
         try:
             with closing(self._connect_descriptor(descriptor)) as connection:
                 self._require_file_identity(connection, descriptor)
@@ -172,9 +183,11 @@ class PrivacyLedger:
                     fcntl.flock(descriptor, fcntl.LOCK_UN)
         except BaseException:
             os.close(descriptor)
+            os.close(parent_descriptor)
             raise
         self._descriptor = descriptor
         self._finalizer = finalize(self, os.close, descriptor)
+        self._parent_finalizer = finalize(self, os.close, parent_descriptor)
 
     @staticmethod
     def _has_valid_schema(connection: sqlite3.Connection) -> bool:
@@ -231,14 +244,20 @@ class PrivacyLedger:
 
     def _require_path_identity(self, descriptor: int) -> None:
         try:
-            current = self.path.stat(follow_symlinks=False)
+            current = os.stat(
+                self.path.name,
+                dir_fd=self._parent_descriptor,
+                follow_symlinks=False,
+            )
+            public = self.path.stat(follow_symlinks=False)
         except OSError as error:
             raise RuntimeError("privacy ledger path identity changed") from error
         identity = os.fstat(descriptor)
-        if (current.st_dev, current.st_ino) != (
-            identity.st_dev,
-            identity.st_ino,
-        ):
+        expected = (identity.st_dev, identity.st_ino)
+        if (current.st_dev, current.st_ino) != expected or (
+            public.st_dev,
+            public.st_ino,
+        ) != expected:
             raise RuntimeError("privacy ledger path identity changed")
 
     def _require_file_identity(
@@ -263,9 +282,20 @@ class PrivacyLedger:
         if journal_mode != ("wal",):
             raise RuntimeError("privacy ledger requires WAL journal mode")
         for suffix in ("-wal", "-shm"):
-            sidecar = Path(f"{self.path}{suffix}")
-            if sidecar.exists():
-                os.chmod(sidecar, 0o600, follow_symlinks=False)
+            try:
+                sidecar_descriptor = os.open(
+                    f"{self.path.name}{suffix}",
+                    os.O_RDWR | os.O_NOFOLLOW,
+                    dir_fd=self._parent_descriptor,
+                )
+            except FileNotFoundError:
+                continue
+            try:
+                if not stat.S_ISREG(os.fstat(sidecar_descriptor).st_mode):
+                    raise RuntimeError("privacy ledger sidecar is unsafe")
+                os.fchmod(sidecar_descriptor, 0o600)
+            finally:
+                os.close(sidecar_descriptor)
 
     def insert_consent(self, grant: ConsentGrant) -> bool:
         values = (
