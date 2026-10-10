@@ -1,7 +1,7 @@
 """Isolated durable two-phase state machine for major mission revision."""
 
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 import json
 import os
@@ -232,7 +232,7 @@ class MissionStateMachine:
         _validate_proposal(proposal)
         if proposal.current_mission_version != document.current.version:
             raise ValueError("proposal does not reference the current mission")
-        if proposal.decided_at < document.current.activated_at:
+        if _instant(proposal.decided_at) < _instant(document.current.activated_at):
             raise ValueError("proposal predates the current mission")
         if proposal.version_identity == document.current.version or any(
             item.proposal.version_identity == proposal.version_identity
@@ -387,7 +387,7 @@ def _validate_confirmation(
     if confirmation.correlation_id == proposal.correlation_id:
         raise ValueError("confirmation requires an independent correlation")
     _validate_time(confirmation.decided_at)
-    if confirmation.decided_at <= proposal.decided_at:
+    if _instant(confirmation.decided_at) <= _instant(proposal.decided_at):
         raise ValueError("confirmation must be later than the proposal")
     if not isinstance(confirmation.outcome, ConfirmationOutcome):
         raise ValueError("confirmation outcome is invalid")
@@ -472,6 +472,7 @@ def _validate_identifier_tuple(value: tuple[str, ...], name: str) -> None:
         type(value) is not tuple
         or not value
         or len(value) > MAX_MISSION_COLLECTION_ITEMS
+        or len(set(value)) != len(value)
         or any(not _valid_identifier(item) for item in value)
     ):
         raise ValueError(f"{name} must contain bounded identifiers")
@@ -499,8 +500,16 @@ def _validate_evidence_sources(value: tuple[MissionEvidenceSource, ...]) -> None
 
 
 def _validate_time(value: datetime) -> None:
-    if not isinstance(value, datetime) or value.tzinfo is None:
+    if (
+        not isinstance(value, datetime)
+        or value.tzinfo is None
+        or value.utcoffset() is None
+    ):
         raise ValueError("decision timestamp must be timezone-aware")
+
+
+def _instant(value: datetime) -> datetime:
+    return value.astimezone(UTC)
 
 
 def _valid_text(value: object) -> bool:
@@ -773,11 +782,13 @@ def _validate_active_mission(
         and left.proposal.invariants != right.proposal.invariants
         and (
             resolution_times[right.proposal.proposal_id] is None
-            or left.proposal.decided_at < resolution_times[right.proposal.proposal_id]
+            or _instant(left.proposal.decided_at)
+            < _instant(resolution_times[right.proposal.proposal_id])
         )
         and (
             resolution_times[left.proposal.proposal_id] is None
-            or right.proposal.decided_at < resolution_times[left.proposal.proposal_id]
+            or _instant(right.proposal.decided_at)
+            < _instant(resolution_times[left.proposal.proposal_id])
         )
         for index, left in enumerate(records)
         for right in records[index + 1 :]
@@ -807,16 +818,16 @@ def _validate_active_mission(
     )
     invalid_parent = any(
         record.proposal.current_mission_version not in parent_activation
-        or record.proposal.decided_at
-        < parent_activation[record.proposal.current_mission_version]
+        or _instant(record.proposal.decided_at)
+        < _instant(parent_activation[record.proposal.current_mission_version])
         or (
             record.proposal.current_mission_version in parent_replaced_at
             and (
-                record.proposal.decided_at
-                > parent_replaced_at[record.proposal.current_mission_version]
+                _instant(record.proposal.decided_at)
+                > _instant(parent_replaced_at[record.proposal.current_mission_version])
                 or record.confirmation is not None
-                and record.confirmation.decided_at
-                > parent_replaced_at[record.proposal.current_mission_version]
+                and _instant(record.confirmation.decided_at)
+                > _instant(parent_replaced_at[record.proposal.current_mission_version])
             )
         )
         for record in records
@@ -835,7 +846,8 @@ def _validate_active_mission(
         or current_record.proposal.proposed_mission != current.text
         or current_record.proposal.purpose is not current.purpose
         or current_record.confirmation is None
-        or current_record.confirmation.decided_at != current.activated_at
+        or _instant(current_record.confirmation.decided_at)
+        != _instant(current.activated_at)
     ):
         raise ValueError("active mission does not match confirmed history")
 

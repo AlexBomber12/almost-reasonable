@@ -2,6 +2,7 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 import json
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -485,6 +486,17 @@ def test_mission_additional_validation_and_corrupt_store_paths(tmp_path) -> None
             )
         },
         {
+            "evidence_ids": ("evidence-2", "evidence-2"),
+            "evidence_sources": (
+                MissionEvidenceSource(
+                    "evidence-2", "source-2", EvidenceProvenance.PUBLIC_SOURCE
+                ),
+                MissionEvidenceSource(
+                    "evidence-2", "source-3", EvidenceProvenance.PUBLIC_SOURCE
+                ),
+            ),
+        },
+        {
             "evidence_sources": (
                 MissionEvidenceSource("evidence-2", "source-2", "public_source"),
             )
@@ -534,6 +546,33 @@ def test_mission_additional_validation_and_corrupt_store_paths(tmp_path) -> None
     fresh.write_text(json.dumps(raw), encoding="utf-8")
     with pytest.raises(ValueError, match="proposals"):
         repository.load()
+
+
+def test_confirmation_order_uses_absolute_instants_across_dst_fold(tmp_path) -> None:
+    new_york = ZoneInfo("America/New_York")
+    root_time = datetime(2026, 11, 1, 0, 30, tzinfo=new_york)
+    proposal_time = datetime(2026, 11, 1, 1, 15, tzinfo=new_york, fold=1)
+    earlier_confirmation = datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=0)
+    initial = Mission("mission-v1", "Миссия", root_time, None)
+    machine = mission_machine(JsonMissionRepository(tmp_path / "dst.json", initial))
+    pending = replace(proposal(), decided_at=proposal_time)
+    machine.propose(pending)
+
+    with pytest.raises(ValueError, match="later than the proposal"):
+        machine.confirm(
+            MissionConfirmation(
+                "mp-1",
+                "event-2",
+                "corr-2",
+                earlier_confirmation,
+                ConfirmationOutcome.REJECTED,
+                ("Причина",),
+                ("Контраргумент",),
+                ("evidence-2",),
+                invariants(),
+                independent_sources(),
+            )
+        )
 
 
 def test_mission_rejects_invalid_unicode_text(tmp_path) -> None:

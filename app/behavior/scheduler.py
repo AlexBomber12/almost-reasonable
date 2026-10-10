@@ -2,7 +2,7 @@
 
 from collections.abc import Callable
 from dataclasses import dataclass, replace
-from datetime import datetime, time, timedelta
+from datetime import UTC, datetime, time, timedelta
 from enum import StrEnum
 import math
 from typing import Protocol
@@ -186,15 +186,18 @@ class TestScheduler:
             return SchedulerRun(SchedulerOutcome.NOTHING_DUE, None, 0, 0, None)
 
         now = self._clock.now()
+        now_instant = _instant(now)
         state = self._pruned_state(self._store.load(), now)
-        due = tuple(item for item in pending if item.scheduled_at <= now)
+        due = tuple(
+            item for item in pending if _instant(item.scheduled_at) <= now_instant
+        )
         if not due:
             self._store.save(state)
             return SchedulerRun(SchedulerOutcome.NOTHING_DUE, None, 0, 0, None)
         processed = set(state.processed_event_ids)
         unprocessed_due = tuple(item for item in due if item.event_id not in processed)
         if not unprocessed_due:
-            selected = max(due, key=lambda item: item.scheduled_at)
+            selected = max(due, key=lambda item: _instant(item.scheduled_at))
             self._store.save(state)
             return SchedulerRun(
                 SchedulerOutcome.DUPLICATE,
@@ -203,10 +206,12 @@ class TestScheduler:
                 0,
                 None,
             )
-        selected = max(unprocessed_due, key=lambda item: item.scheduled_at)
+        selected = max(unprocessed_due, key=lambda item: _instant(item.scheduled_at))
         coalesced = len(unprocessed_due) - 1
 
-        if state.last_deliberation_at is not None and now < state.last_deliberation_at:
+        if state.last_deliberation_at is not None and now_instant < _instant(
+            state.last_deliberation_at
+        ):
             return SchedulerRun(
                 SchedulerOutcome.EXECUTION_LIMIT,
                 selected.event_id,
@@ -243,7 +248,8 @@ class TestScheduler:
             )
         if (
             state.last_deliberation_at is not None
-            and now - state.last_deliberation_at < self._policy.cooldown
+            and now_instant - _instant(state.last_deliberation_at)
+            < self._policy.cooldown
         ):
             return self._skip(
                 state,
@@ -327,7 +333,9 @@ class TestScheduler:
         action_cutoff = _retention_cutoff(now, self._policy.cadence)
         limited_decisions = dict(self._policy.per_action_limits)
         processed_events = tuple(
-            item for item in state.processed_events if item[1] > duplicate_cutoff
+            item
+            for item in state.processed_events
+            if _instant(item[1]) > duplicate_cutoff
         )[-MAX_PROCESSED_EVENTS:]
         return replace(
             state,
@@ -335,7 +343,7 @@ class TestScheduler:
             action_history=tuple(
                 item
                 for item in state.action_history
-                if item[0] in limited_decisions and item[1] > action_cutoff
+                if item[0] in limited_decisions and _instant(item[1]) > action_cutoff
             )[-MAX_ACTION_HISTORY:],
         )
 
@@ -348,7 +356,7 @@ class TestScheduler:
         return (
             limit is not None
             and sum(
-                prior is decision and recorded_at > cutoff
+                prior is decision and _instant(recorded_at) > cutoff
                 for prior, recorded_at in state.action_history
             )
             >= limit
@@ -366,8 +374,8 @@ def _execution_limit_exceeded(
     started_at: datetime, finished_at: datetime, max_seconds: float
 ) -> bool:
     return (
-        finished_at < started_at
-        or (finished_at - started_at).total_seconds() > max_seconds
+        _instant(finished_at) < _instant(started_at)
+        or (_instant(finished_at) - _instant(started_at)).total_seconds() > max_seconds
     )
 
 
@@ -395,10 +403,15 @@ def _append_processed(
 
 
 def _retention_cutoff(now: datetime, duration: timedelta) -> datetime:
+    now_instant = _instant(now)
     try:
-        return now - duration
+        return now_instant - duration
     except OverflowError:
-        return datetime.min.replace(tzinfo=now.tzinfo)
+        return datetime.min.replace(tzinfo=UTC)
+
+
+def _instant(value: datetime) -> datetime:
+    return value.astimezone(UTC)
 
 
 def _inside_active_hours(current: time, policy: WakeupPolicy) -> bool:

@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -327,6 +328,24 @@ def test_scheduler_never_runs_or_discards_future_wakeups() -> None:
     later = scheduler.run((due, future))
     assert later.selected_event_id == "future"
     assert calls == ["due", "future"]
+
+
+def test_scheduler_orders_dst_fold_events_by_absolute_instant() -> None:
+    new_york = ZoneInfo("America/New_York")
+    clock = MutableClock(datetime(2026, 11, 1, 1, 30, tzinfo=new_york, fold=0))
+    future_fold = WakeupEvent(
+        "future-fold",
+        datetime(2026, 11, 1, 1, 15, tzinfo=new_york, fold=1),
+        "periodic",
+    )
+    scheduler = TestScheduler(
+        policy(active_start=time(0), active_end=time(0)),
+        InMemorySchedulerStore(),
+        clock,
+        lambda *_: pytest.fail("future fold event must not deliberate"),
+    )
+
+    assert scheduler.run((future_fold,)).outcome is SchedulerOutcome.NOTHING_DUE
 
 
 def test_inter_run_clock_rollback_does_not_consume_pending_event() -> None:
