@@ -1199,17 +1199,11 @@ class SelfStateStore:
                 raise ValueError("malformed stored revision")
         if row[25] != previous_status or row[27] != previous_confidence:
             raise ValueError("malformed stored revision")
-        if type(row[31]) is not str or _CORE_SELF_VERSION.fullmatch(row[31]) is None:
-            raise ValueError("malformed stored revision")
         self._validate_text("stored revision reason", row[29])
         kind = RevisionKind(row[32])
-        decision_origin = DecisionOrigin(row[33])
-        if decision_origin is DecisionOrigin.DETERMINISTIC:
-            if row[34] is not None or row[35] is not None:
-                raise ValueError("malformed stored revision")
-        else:
-            self._require_token("stored model identifier", row[34])
-            self._require_token("stored prompt version", row[35])
+        decision_origin = self._validate_stored_revision_metadata(
+            row[31], row[33], row[34], row[35]
+        )
         return StateRevision(
             item_id=row[1],
             state_type=StateType(row[2]),
@@ -1231,6 +1225,30 @@ class SelfStateStore:
             prompt_version=row[35],
             state=state,
         )
+
+    @staticmethod
+    def _validate_stored_revision_metadata(
+        core_self_version: object,
+        decision_origin: object,
+        model_identifier: object,
+        prompt_version: object,
+    ) -> DecisionOrigin:
+        if (
+            type(core_self_version) is not str
+            or _CORE_SELF_VERSION.fullmatch(core_self_version) is None
+        ):
+            raise ValueError("malformed stored revision")
+        try:
+            origin = DecisionOrigin(decision_origin)
+        except (TypeError, ValueError):
+            raise ValueError("malformed stored revision") from None
+        if origin is DecisionOrigin.DETERMINISTIC:
+            if model_identifier is not None or prompt_version is not None:
+                raise ValueError("malformed stored revision")
+        else:
+            SelfStateStore._require_token("stored model identifier", model_identifier)
+            SelfStateStore._require_token("stored prompt version", prompt_version)
+        return origin
 
     def _current_snapshot_from_row(
         self, connection: sqlite3.Connection, row: tuple[object, ...]

@@ -312,6 +312,9 @@ class CognitionReadStore:
                 records: list[PrivateCandidateRead] = []
                 for row in rows:
                     self._state._validate_text("stored revision reason", row[29])
+                    decision_origin = self._state._validate_stored_revision_metadata(
+                        row[30], row[28], row[31], row[32]
+                    )
                     if include_belief_history and row[2] == "belief":
                         candidate = self._state._snapshot_from_row(
                             payload_reader, row[:24]
@@ -327,7 +330,7 @@ class CognitionReadStore:
                         PrivateCandidateRead(
                             candidate,
                             self._state._parse_time(row[27]),
-                            DecisionOrigin(row[28]),
+                            decision_origin,
                             row[29],
                             row[30],
                             row[31],

@@ -24,7 +24,7 @@ from app.core.events import (
     TrustedPrincipalContext,
     VerificationStatus,
 )
-from app.core.self_state import InterestStatus
+from app.core.self_state import DecisionOrigin, InterestStatus
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, EventStoreError
 
@@ -190,6 +190,77 @@ def test_candidate_snapshot_read_malformed_state_is_translated(read_setup):
 
     with pytest.raises(EventStoreError, match="event store operation failed"):
         CognitionReadStore(events, state).retrieve_all_private_candidate_reads(context)
+
+
+def test_candidate_reads_accept_valid_model_and_deterministic_revision_metadata(
+    read_setup,
+):
+    events, state, context = read_setup
+    read_store = CognitionReadStore(events, state)
+
+    for include_history in (False, True):
+        [model_read] = read_store.retrieve_all_private_candidate_reads(
+            context, include_belief_history=include_history
+        )
+        assert model_read.decision_origin is DecisionOrigin.MODEL
+        assert model_read.core_self_version == "core-self-v1"
+        assert model_read.model_identifier == "fake-model-v1"
+        assert model_read.prompt_version == "memory-prompt-v1"
+
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            """
+            UPDATE state_revisions
+            SET decision_origin = 'deterministic',
+                model_identifier = NULL,
+                prompt_version = NULL
+            """
+        )
+
+    for include_history in (False, True):
+        [deterministic_read] = read_store.retrieve_all_private_candidate_reads(
+            context, include_belief_history=include_history
+        )
+        assert deterministic_read.decision_origin is DecisionOrigin.DETERMINISTIC
+        assert deterministic_read.core_self_version == "core-self-v1"
+        assert deterministic_read.model_identifier is None
+        assert deterministic_read.prompt_version is None
+
+
+@pytest.mark.parametrize("include_history", [False, True])
+@pytest.mark.parametrize(
+    "mutation",
+    [
+        "UPDATE state_revisions SET core_self_version = ''",
+        "UPDATE state_revisions SET core_self_version = 'private-core-secret'",
+        "UPDATE state_revisions SET core_self_version = CAST(X'00' AS BLOB)",
+        "UPDATE state_revisions SET decision_origin = 'unsupported'",
+        "UPDATE state_revisions SET decision_origin = CAST(X'00' AS BLOB)",
+        "UPDATE state_revisions SET model_identifier = NULL",
+        "UPDATE state_revisions SET model_identifier = 'private model secret'",
+        "UPDATE state_revisions SET model_identifier = CAST(X'00' AS BLOB)",
+        "UPDATE state_revisions SET prompt_version = NULL",
+        "UPDATE state_revisions SET prompt_version = 'private prompt secret'",
+        "UPDATE state_revisions SET prompt_version = CAST(X'00' AS BLOB)",
+        "UPDATE state_revisions SET model_identifier = NULL, prompt_version = NULL",
+        "UPDATE state_revisions SET decision_origin = 'deterministic'",
+    ],
+)
+def test_candidate_reads_sanitize_malformed_revision_metadata(
+    read_setup, mutation, include_history
+):
+    events, state, context = read_setup
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(mutation)
+
+    with pytest.raises(EventStoreError) as error:
+        CognitionReadStore(events, state).retrieve_all_private_candidate_reads(
+            context, include_belief_history=include_history
+        )
+
+    assert str(error.value) == "event store operation failed"
+    assert "private" not in str(error.value)
 
 
 def test_candidate_snapshot_read_sql_failure_is_translated(read_setup, monkeypatch):
