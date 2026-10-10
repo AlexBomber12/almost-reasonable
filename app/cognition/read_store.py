@@ -23,6 +23,7 @@ from app.core.self_state import (
 from app.core.self_state_store import (
     SelfStateIdentityConflictError,
     SelfStateStore,
+    SelfStateValidationError,
 )
 from app.core.store import EventStore, MAX_PRIVATE_PAYLOAD_BYTES
 
@@ -406,6 +407,19 @@ class CognitionReadStore:
                 )
                 if revision_key is None:
                     return None
+                invalidated = connection.execute(
+                    """
+                    SELECT 1
+                    FROM protected_state_provenance
+                    WHERE revision_key = ? AND retention_status = 'invalidated'
+                    LIMIT 1
+                    """,
+                    (revision_key,),
+                ).fetchone()
+                if invalidated is not None:
+                    raise SelfStateValidationError(
+                        "operation provenance is invalidated"
+                    )
                 stored = self._state._stored_change(connection, revision_key)
                 normalized = replace(
                     change,

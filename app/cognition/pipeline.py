@@ -131,6 +131,8 @@ class CognitionEngine:
             proposal = self._extractor.extract(request)
         except Exception:
             return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        if self._state.retrieve_private_candidates(context) != current:
+            return self._rejected(CognitionReason.STALE_REVISION)
         decided_at = self._canonical_time(self._clock())
         if decided_at is None:
             raise ValueError("clock returned an invalid decision time")
@@ -251,6 +253,8 @@ class CognitionEngine:
             return self._rejected(
                 CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
             )
+        except SelfStateValidationError:
+            return self._rejected(CognitionReason.STORE_REJECTED, proposal.memory_kind)
         if duplicate is not None:
             return CognitionOutcome(
                 CognitionOutcomeStatus.PERSISTED,
@@ -274,6 +278,10 @@ class CognitionEngine:
                 return self._rejected(
                     CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
                 )
+            except SelfStateValidationError:
+                return self._rejected(
+                    CognitionReason.STORE_REJECTED, proposal.memory_kind
+                )
             if duplicate is not None:
                 return CognitionOutcome(
                     CognitionOutcomeStatus.PERSISTED,
@@ -291,6 +299,10 @@ class CognitionEngine:
                 duplicate = self._read.replay_private_operation(context, change)
             except SelfStateIdentityConflictError:
                 duplicate = None
+            except SelfStateValidationError:
+                return self._rejected(
+                    CognitionReason.STORE_REJECTED, proposal.memory_kind
+                )
             if duplicate is None:
                 return self._rejected(
                     CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
@@ -544,15 +556,25 @@ class CognitionEngine:
         if not CognitionEngine._valid_token(getattr(proposal, "item_id", None)):
             return False
         if isinstance(proposal, InterestMemoryProposal):
-            return type(proposal.strength) is int and isinstance(
-                proposal.status, InterestStatus
+            return (
+                CognitionEngine._valid_text(proposal.topic)
+                and CognitionEngine._valid_text(proposal.reason_for_interest)
+                and type(proposal.strength) is int
+                and isinstance(proposal.status, InterestStatus)
             )
         if isinstance(proposal, BeliefMemoryProposal):
-            return isinstance(proposal.stance, BeliefStance) and isinstance(
-                proposal.status, BeliefStatus
+            return (
+                CognitionEngine._valid_text(proposal.proposition)
+                and CognitionEngine._valid_text_tuple(proposal.alternatives)
+                and isinstance(proposal.stance, BeliefStance)
+                and isinstance(proposal.status, BeliefStatus)
             )
         return (
             isinstance(proposal, GoalMemoryProposal)
+            and CognitionEngine._valid_text(proposal.description)
+            and CognitionEngine._valid_text(proposal.rationale)
+            and CognitionEngine._valid_text(proposal.review_condition)
+            and CognitionEngine._valid_text_tuple(proposal.constraints)
             and type(proposal.priority) is int
             and isinstance(proposal.status, GoalStatus)
         )
@@ -589,16 +611,22 @@ class CognitionEngine:
 
     @staticmethod
     def _valid_token(value: object) -> bool:
-        return isinstance(value, str) and _TOKEN.fullmatch(value) is not None
+        return type(value) is str and _TOKEN.fullmatch(value) is not None
 
     @staticmethod
     def _valid_text(value: object) -> bool:
-        if not isinstance(value, str) or not value.strip():
+        if type(value) is not str or not value.strip():
             return False
         try:
             return len(value.encode("utf-8")) <= MAX_STATE_TEXT_BYTES
         except UnicodeEncodeError:
             return False
+
+    @staticmethod
+    def _valid_text_tuple(values: object) -> bool:
+        return type(values) is tuple and all(
+            CognitionEngine._valid_text(value) for value in values
+        )
 
     @staticmethod
     def _valid_time(value: object) -> bool:

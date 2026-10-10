@@ -40,7 +40,11 @@ from app.core.self_state import (
     StateType,
     TransitionStatus,
 )
-from app.core.self_state_store import SelfStateStore
+from app.core.self_state_store import (
+    SelfStateIdentityConflictError,
+    SelfStateStore,
+    SelfStateValidationError,
+)
 from app.core.store import EventStore
 
 
@@ -78,6 +82,14 @@ class SingleUseTimezone(tzinfo):
 class HostileDatetime(datetime):
     def astimezone(self, _timezone=None):
         raise RuntimeError("synthetic hostile datetime adapter")
+
+
+class HostileString(str):
+    def strip(self, _characters=None):
+        raise RuntimeError("synthetic hostile string adapter")
+
+    def encode(self, _encoding="utf-8", _errors="strict"):
+        raise RuntimeError("synthetic hostile string adapter")
 
 
 def principal(name: str, *, owner: bool = False) -> TrustedPrincipalContext:
@@ -620,6 +632,92 @@ def test_operation_identity_race_is_rejected_without_aborting(
     assert calls == 2
 
 
+def test_invalidated_replay_during_stale_fallback_is_store_rejected(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    original = InterestMemoryProposal(
+        proposal_context(event_id, "invalidated-stale-create"),
+        "interest-invalidated-stale",
+        "Invalidated stale replay",
+        40,
+        InterestStatus.ACTIVE,
+        "Invalidated operations fail closed in stale races.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(original))
+        .process(context, event_id)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    stale = replace(
+        original,
+        context=proposal_context(
+            event_id, "invalidated-stale-revision", expected_revision=99
+        ),
+    )
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(stale))
+    calls = 0
+
+    def invalidated_after_initial_miss(_request_context, _change):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        raise SelfStateValidationError("synthetic invalidated operation")
+
+    monkeypatch.setattr(
+        engine._read,
+        "replay_private_operation",
+        invalidated_after_initial_miss,
+    )
+
+    outcome = engine.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STORE_REJECTED
+    assert calls == 2
+
+
+def test_invalidated_replay_after_identity_race_is_store_rejected(
+    cognition_setup, monkeypatch
+):
+    events, state, context, event_id = cognition_setup
+    proposal = InterestMemoryProposal(
+        proposal_context(event_id, "invalidated-identity-race"),
+        "interest-invalidated-identity-race",
+        "Invalidated identity replay",
+        40,
+        InterestStatus.ACTIVE,
+        "Invalidated operations fail closed after persistence races.",
+    )
+    engine = CognitionEngine(events, state, extractor=FakeExtractor(proposal))
+    calls = 0
+
+    def invalidated_after_initial_miss(_request_context, _change):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return None
+        raise SelfStateValidationError("synthetic invalidated operation")
+
+    def identity_race(*_args):
+        raise SelfStateIdentityConflictError("synthetic identity race")
+
+    monkeypatch.setattr(
+        engine._read,
+        "replay_private_operation",
+        invalidated_after_initial_miss,
+    )
+    monkeypatch.setattr(engine, "_persist", identity_race)
+
+    outcome = engine.process(context, event_id)
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STORE_REJECTED
+    assert calls == 2
+
+
 def test_identical_operation_race_replays_durable_winner(cognition_setup, monkeypatch):
     events, state, context, event_id = cognition_setup
     proposal = InterestMemoryProposal(
@@ -932,6 +1030,66 @@ def test_invalidated_candidate_is_excluded_from_extraction_and_revision(
         context, StateType.INTEREST, "interest-invalidated"
     )
     assert stored.revision == 1
+    replay = CognitionEngine(events, state, extractor=FakeExtractor(created)).process(
+        context, invalidated_event
+    )
+    assert replay.status is CognitionOutcomeStatus.REJECTED
+    assert replay.reason is CognitionReason.STORE_REJECTED
+
+
+def test_candidate_invalidation_during_extraction_rejects_new_output(
+    cognition_setup,
+):
+    events, state, context, invalidated_event = cognition_setup
+    new_event = append_event(events, context, "invalidation-race")
+    existing = InterestMemoryProposal(
+        proposal_context(invalidated_event, "race-source-create"),
+        "interest-race-source",
+        "Private topic visible before invalidation",
+        40,
+        InterestStatus.ACTIVE,
+        "Concurrent invalidation must make extraction stale.",
+    )
+    assert (
+        CognitionEngine(events, state, extractor=FakeExtractor(existing))
+        .process(context, invalidated_event)
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    copied = replace(
+        existing,
+        context=proposal_context(new_event, "race-copy-create"),
+        item_id="interest-race-copy",
+    )
+
+    class InvalidatingExtractor(FakeExtractor):
+        def extract(self, request):
+            self.requests.append(request)
+            with sqlite3.connect(events.database_path) as connection:
+                connection.execute(
+                    "UPDATE protected_state_provenance "
+                    "SET retention_status = 'invalidated' WHERE event_id = ?",
+                    (invalidated_event,),
+                )
+            return self.proposal
+
+    extractor = InvalidatingExtractor(copied)
+
+    outcome = CognitionEngine(events, state, extractor=extractor).process(
+        context, new_event
+    )
+
+    assert [item.item_id for item in extractor.requests[0].current_candidates] == [
+        "interest-race-source"
+    ]
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STALE_REVISION
+    assert (
+        state.retrieve_private_revision_history(
+            context, StateType.INTEREST, "interest-race-copy"
+        )
+        == ()
+    )
 
 
 @pytest.mark.parametrize(
@@ -1357,6 +1515,66 @@ def test_subclassed_proposal_context_is_rejected_before_normalization(
     )
 
     assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
+
+
+def test_hostile_string_subclasses_are_rejected_without_invoking_overrides(
+    cognition_setup,
+):
+    events, state, context, event_id = cognition_setup
+    hostile = HostileString("synthetic-hostile-value")
+    interest = InterestMemoryProposal(
+        proposal_context(event_id, "hostile-string"),
+        "interest-hostile-string",
+        "Plain topic",
+        50,
+        InterestStatus.ACTIVE,
+        "Plain rationale.",
+    )
+    proposals = (
+        replace(
+            interest,
+            context=replace(interest.context, reason=hostile),
+        ),
+        replace(interest, item_id=hostile),
+        replace(interest, topic=hostile),
+        BeliefMemoryProposal(
+            proposal_context(event_id, "hostile-alternative"),
+            "belief-hostile-string",
+            "Plain proposition.",
+            BeliefStance.UNCERTAIN,
+            0.4,
+            BeliefStatus.ACTIVE,
+            (hostile,),
+            VerificationStatus.UNVERIFIED,
+        ),
+        GoalMemoryProposal(
+            proposal_context(event_id, "hostile-constraint"),
+            "goal-hostile-string",
+            "Plain goal.",
+            "Plain rationale.",
+            50,
+            GoalStatus.ACTIVE,
+            (hostile,),
+            "Review later.",
+        ),
+        GenericMemoryProposal(
+            proposal_context(event_id, "hostile-generic"),
+            MemoryKind.CANDIDATE_USEFUL_MEMORY,
+            hostile,
+            0.4,
+            VerificationStatus.UNVERIFIED,
+        ),
+        NoChangeProposal(event_id, hostile, (event_id,)),
+    )
+
+    for proposal in proposals:
+        outcome = CognitionEngine(
+            events, state, extractor=FakeExtractor(proposal)
+        ).process(context, event_id)
+        assert outcome.status is CognitionOutcomeStatus.REJECTED
+        assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+
     assert state.retrieve_private_candidates(context) == ()
 
 
