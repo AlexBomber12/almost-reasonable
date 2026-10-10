@@ -299,7 +299,7 @@ class CognitionEngine:
         proposal: ProposalContext,
         source_event_id: str,
     ) -> CognitionReason | None:
-        if not isinstance(proposal, ProposalContext):
+        if type(proposal) is not ProposalContext:
             return CognitionReason.INVALID_PROPOSAL
         if proposal.source_event_id != source_event_id:
             return CognitionReason.SOURCE_MISMATCH

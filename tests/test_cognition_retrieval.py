@@ -561,7 +561,10 @@ def test_belief_and_goal_records_preserve_distinct_epistemic_fields(retrieval_se
 
 
 def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
-    events, state, context, _, supporting_event, counter_event = retrieval_setup
+    events, state, _, _, _, _ = retrieval_setup
+    context = principal("history")
+    supporting_event = append_event(events, context, "history-supporting")
+    counter_event = append_event(events, context, "history-counter")
     created = BeliefMemoryProposal(
         ProposalContext(
             "operation-belief-history-create",
@@ -654,6 +657,20 @@ def test_revision_retrieval_returns_the_full_belief_history(retrieval_setup):
     assert current_only.records[0].item_id == "belief-history"
     assert current_only.records[0].revision == 2
     assert current_only.records_omitted is True
+
+    by_revision = {record.revision: record for record in revision_beliefs}
+    assert by_revision[2].utf8_bytes > by_revision[1].utf8_bytes
+    head_too_large = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(
+            RetrievalPurpose.REVISION,
+            "ocean warming",
+            by_revision[1].utf8_bytes,
+            10,
+        ),
+    )
+    assert "belief-history" not in {record.item_id for record in head_too_large.records}
+    assert head_too_large.records_omitted is True
 
 
 def test_terminal_belief_history_requires_explicit_inclusion(retrieval_setup):

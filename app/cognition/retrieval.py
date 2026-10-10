@@ -121,13 +121,22 @@ class MemoryContextSelector:
 
         ranked.sort(key=lambda item: item[0], reverse=True)
         selected: list[MemoryRecord] = []
+        omitted_revision_heads: set[str] = set()
         used = 0
         for _, record in ranked:
             if len(selected) == limits.max_records:
                 omitted = True
                 break
+            if record.item_id in omitted_revision_heads:
+                omitted = True
+                continue
             if used + record.utf8_bytes > limits.max_utf8_bytes:
                 omitted = True
+                if (
+                    request.purpose is RetrievalPurpose.REVISION
+                    and record.revision == latest_by_item[record.item_id].revision
+                ):
+                    omitted_revision_heads.add(record.item_id)
                 continue
             selected.append(record)
             used += record.utf8_bytes

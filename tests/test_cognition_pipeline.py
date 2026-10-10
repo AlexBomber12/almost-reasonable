@@ -1048,6 +1048,42 @@ def test_invalid_common_proposal_context_is_rejected(cognition_setup, context_ch
     assert outcome.reason is CognitionReason.INVALID_PROPOSAL
 
 
+def test_subclassed_proposal_context_is_rejected_before_normalization(
+    cognition_setup,
+):
+    events, state, context, event_id = cognition_setup
+
+    class IncompatibleContext(ProposalContext):
+        def __init__(self, source):
+            for name in (
+                "operation_id",
+                "source_event_id",
+                "supporting_event_ids",
+                "counterevidence_event_ids",
+                "expected_revision",
+                "reason",
+                "proposed_at",
+                "review_at",
+            ):
+                object.__setattr__(self, name, getattr(source, name))
+
+    proposal = InterestMemoryProposal(
+        IncompatibleContext(proposal_context(event_id, "context-subclass")),
+        "interest-context-subclass",
+        "Closed context contracts",
+        50,
+        InterestStatus.ACTIVE,
+        "Subclass constructors cannot escape validation.",
+    )
+
+    outcome = CognitionEngine(events, state, extractor=FakeExtractor(proposal)).process(
+        context, event_id
+    )
+
+    assert outcome.reason is CognitionReason.INVALID_PROPOSAL
+    assert state.retrieve_private_candidates(context) == ()
+
+
 @pytest.mark.parametrize("field", ["proposed_at", "review_at"])
 def test_hostile_proposal_timezone_is_rejected(cognition_setup, field):
     events, state, context, event_id = cognition_setup
