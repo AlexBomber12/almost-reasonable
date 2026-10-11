@@ -857,9 +857,7 @@ class QuarantinedRestore:
                     _publish_owned_file(owned[0].path, quarantine, owned[0])
                 return result
             except BaseException:
-                if owned and _path_matches_descriptor(
-                    owned[0].path, owned[0].descriptor
-                ):
+                if owned:
                     _cleanup_created_resumable(owned)
                     owned.clear()
                 raise

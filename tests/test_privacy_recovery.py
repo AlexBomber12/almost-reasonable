@@ -835,8 +835,9 @@ def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupte
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
 
 
-def test_restore_cleans_publication_when_link_succeeds_then_interrupts(
-    tmp_path, monkeypatch
+@pytest.mark.parametrize("remove_staging", [False, True])
+def test_restore_cleans_publication_alias_when_link_succeeds_then_interrupts(
+    tmp_path, monkeypatch, remove_staging
 ):
     class SimulatedInterrupt(BaseException):
         pass
@@ -855,6 +856,8 @@ def test_restore_cleans_publication_when_link_succeeds_then_interrupts(
         nonlocal interrupted
         result = real_link(*args, **kwargs)
         if not interrupted:
+            if remove_staging:
+                os.unlink(args[0], dir_fd=kwargs["src_dir_fd"])
             interrupted = True
             raise SimulatedInterrupt()
         return result
