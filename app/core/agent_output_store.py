@@ -355,6 +355,12 @@ class AgentOutputStore:
 
     def resolution(self, context: TrustedPrincipalContext, operation_id: str):
         """Return content-free terminal/release metadata only for live scoped sources."""
+        return self.read_reply_and_resolution(context, operation_id)[1]
+
+    def read_reply_and_resolution(
+        self, context: TrustedPrincipalContext, operation_id: str
+    ):
+        """Read the live scoped reply and resolution from one SQLite snapshot."""
         EventStore._validate_context(context)
         EventStore._require_token("operation id", operation_id)
         db = self._store._open()
@@ -362,12 +368,14 @@ class AgentOutputStore:
             with db:
                 db.execute("BEGIN")
                 self._store._verify_current_schema(db)
-                if self._read(db, context, operation_id) is None:
-                    return None
-                return db.execute(
+                reply = self._read(db, context, operation_id)
+                if reply is None:
+                    return None, None
+                resolution = db.execute(
                     "SELECT outcome, release_id FROM agent_reply_resolutions WHERE operation_id=?",
                     (operation_id,),
                 ).fetchone()
+                return reply, resolution
         finally:
             db.close()
 

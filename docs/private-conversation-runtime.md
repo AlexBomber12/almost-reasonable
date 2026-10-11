@@ -137,8 +137,9 @@ The original v4 draft columns remain `held`. A separate durable completed resolu
 is the reviewed **released-for-response** transition; draft existence alone grants
 no rendering. `release_reply` revalidates the exact policy grant, current controls,
 Russian content and complete live source set in its storage transaction. Release
-records and source edges remain internal. History renders only released replies
-and rechecks current controls and source availability. Current stop/spend/delivery
+records and source edges remain internal. Response reads obtain the reply and terminal resolution in one SQLite snapshot,
+so concurrent completion cannot produce a completed status without content.
+History renders only released replies and rechecks current controls and source availability. Current stop/spend/delivery
 suspension hides a previously released reply without claiming it was recalled.
 
 `POST /api/messages` retains the existing JSON contract:

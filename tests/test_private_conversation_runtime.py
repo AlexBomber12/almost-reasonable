@@ -880,3 +880,65 @@ def test_missing_commit_sequence_fails_closed_before_inference(setup):
     assert not gate.reconcile()
     with pytest.raises(PrivacyReadBlocked):
         runtime.history(principal("a"))
+
+
+def test_concurrent_completion_never_returns_completed_without_content(
+    setup, monkeypatch
+):
+    from app.core.agent_output_store import AgentOutputStore, ResultState
+    from app.core.action_policy import (
+        ActionPolicy,
+        CapabilityState,
+        TrustedActionContext,
+    )
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+
+    store, _, gate, fake, _ = setup
+
+    def interrupt(point):
+        if point == "after_reservation":
+            raise RuntimeError("synthetic owner interruption")
+
+    owner = Stage0ConversationRuntime(store, gate, fake, checkpoint=interrupt)
+    with pytest.raises(RuntimeError):
+        owner.submit(principal("a"), "completion-race", "Синтетический запрос")
+    event = gate.retrieve_private_events(principal("a"))[0]
+    outputs = AgentOutputStore(store)
+    operation_id = owner._operation_id(event.event_id)
+    operation = outputs.read_reply(principal("a"), operation_id).operation
+    route = TrustedActionContext(event.correlation_id, principal("a"))
+    caps = CapabilityState("stage0", False, False, True, False, True)
+    proposal = ReplyProposal("Да, это синтетический ответ.")
+    grant = ActionPolicy().evaluate(ProposalValidation(proposal, None), route, caps)
+    armed, committed = [False], [False]
+    original = AgentOutputStore._read
+
+    def completion_at_read(self, db, context, identifier):
+        reply = original(self, db, context, identifier)
+        if armed[0] and not committed[0] and reply.result_state is ResultState.PENDING:
+            committed[0] = True
+            # Actual trusted storage writes on another connection in WAL mode;
+            # the response callback already holds the current privacy fence.
+            outputs.persist_reply(route, operation, grant, caps)
+            outputs.release_reply(
+                route, operation, grant, caps, f"release:{operation_id}"
+            )
+        return reply
+
+    monkeypatch.setattr(AgentOutputStore, "_read", completion_at_read)
+
+    def arm(point):
+        if point == "before_release":
+            armed[0] = True
+
+    duplicate = Stage0ConversationRuntime(store, gate, fake, checkpoint=arm)
+    first = duplicate.submit(principal("a"), "completion-race", "Синтетический запрос")
+    assert committed[0]
+    assert first.model_state.value == "pending"
+    assert first.response_content is None
+    recovered = duplicate.submit(
+        principal("a"), "completion-race", "Синтетический запрос"
+    )
+    assert recovered.model_state.value == "completed"
+    assert recovered.response_content == proposal.content
+    assert not fake.calls

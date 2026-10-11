@@ -252,10 +252,11 @@ class Stage0ConversationRuntime(ConversationService):
         )
 
     def _response(self, message_status, route, operation_id):
-        reply = self._outputs.read_reply(route.principal, operation_id)
+        reply, resolution = self._outputs.read_reply_and_resolution(
+            route.principal, operation_id
+        )
         if reply is None:
             raise PrivacyReadBlocked("reply_sources_unavailable")
-        resolution = self._outputs.resolution(route.principal, operation_id)
         if reply.result_state is ResultState.PERSISTED:
             caps = self._capabilities()
             if (
