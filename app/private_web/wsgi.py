@@ -343,6 +343,7 @@ class PrivateWebApplication:
                 "event_id": item.event_id,
                 "occurred_at": item.occurred_at.isoformat(),
                 "content": item.content,
+                "role": item.role,
             }
             for item in self._conversations.history(session.trusted_context)
         ]
@@ -370,6 +371,14 @@ class PrivateWebApplication:
             )
         except ValueError:
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid message.") from None
+        current = self._auth_store.authenticate(
+            self._cookie_value(environ, SESSION_COOKIE)
+        )
+        if current is None or current.trusted_context != session.trusted_context:
+            raise _RequestError(
+                HTTPStatus.UNAUTHORIZED,
+                "Your session is invalid or expired. Please sign in again.",
+            )
         status = (
             HTTPStatus.CREATED
             if result.message_status.value == "created"

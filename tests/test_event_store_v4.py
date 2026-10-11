@@ -28,7 +28,10 @@ def populated_v3(path):
     )
     ProviderStateStore(store).record_attempt(attempt())
     with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER event_input_sequence_append")
+        db.execute("DROP TABLE event_input_sequences")
         for table in (
+            "agent_reply_resolutions",
             "agent_reply_sources",
             "agent_reply_payloads",
             "agent_reply_operations",
@@ -49,7 +52,7 @@ def test_v3_migration_preserves_every_existing_row_and_history(tmp_path):
     path = tmp_path / "events.db"
     original = populated_v3(path)
     store = EventStore(path)
-    assert store.diagnostics().schema_version == 4
+    assert store.diagnostics().schema_version == 5
     with sqlite3.connect(path) as db:
         for table, rows in original.items():
             assert db.execute(f'SELECT * FROM "{table}"').fetchall() == rows
@@ -81,7 +84,7 @@ def test_v4_interruption_rolls_back_entire_migration(tmp_path):
         assert schema_objects(db) == schema
         assert db.execute("PRAGMA user_version").fetchone() == (3,)
         assert db.execute("SELECT version FROM schema_metadata").fetchone() == (3,)
-    assert EventStore(path).diagnostics().schema_version == 4
+    assert EventStore(path).diagnostics().schema_version == 5
 
 
 @pytest.mark.parametrize(
@@ -129,8 +132,8 @@ def test_v4_online_backup_preserves_private_reply_and_exact_schema(tmp_path):
     outputs.reserve_reply(principal("a"), operation())
     saved = persist(outputs)
     destination = tmp_path / "snapshot.db"
-    assert create_sqlite_backup(path, destination, 4, NOW).schema_version == 4
-    assert _schema_version(destination) == 4
+    assert create_sqlite_backup(path, destination, 5, NOW).schema_version == 5
+    assert _schema_version(destination) == 5
     assert (
         AgentOutputStore(EventStore(destination)).read_reply(principal("a"), "reply-1")
         == saved

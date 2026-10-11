@@ -27,7 +27,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -72,9 +72,11 @@ class FaultPoint(StrEnum):
     BEFORE_V2_MIGRATION_COMMIT = "before_v2_migration_commit"
     BEFORE_V3_MIGRATION_COMMIT = "before_v3_migration_commit"
     BEFORE_V4_MIGRATION_COMMIT = "before_v4_migration_commit"
+    BEFORE_V5_MIGRATION_COMMIT = "before_v5_migration_commit"
     AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
     AFTER_REPLY_COMMIT = "after_reply_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
+    AFTER_INPUT_ENVELOPE_INSERT = "after_input_envelope_insert"
 
 
 @dataclass(frozen=True, slots=True)
@@ -567,6 +569,37 @@ _SCHEMA_V4 = (
 )
 
 
+_SCHEMA_V5 = (
+    """
+    CREATE TABLE agent_reply_resolutions (
+        operation_id TEXT PRIMARY KEY REFERENCES agent_reply_operations(operation_id),
+        outcome TEXT NOT NULL CHECK (outcome IN
+            ('completed', 'no_action', 'failed', 'invalid', 'unsupported', 'skipped')),
+        release_id TEXT UNIQUE,
+        CHECK ((outcome = 'completed' AND release_id IS NOT NULL)
+            OR (outcome <> 'completed' AND release_id IS NULL))
+    )
+    """,
+    """
+    CREATE TABLE event_input_sequences (
+        sequence INTEGER PRIMARY KEY CHECK (sequence > 0),
+        event_id TEXT NOT NULL UNIQUE REFERENCES event_envelopes(event_id) ON DELETE CASCADE
+    )
+    """,
+    """
+    INSERT INTO event_input_sequences(sequence, event_id)
+    SELECT ROW_NUMBER() OVER (ORDER BY rowid), event_id FROM event_envelopes
+    """,
+    """
+    CREATE TRIGGER event_input_sequence_append AFTER INSERT ON event_envelopes
+    BEGIN
+        INSERT INTO event_input_sequences(sequence, event_id)
+        VALUES ((SELECT COALESCE(MAX(sequence), 0) + 1 FROM event_input_sequences), NEW.event_id);
+    END
+    """,
+)
+
+
 def schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
     """Exact application objects, including explicit indexes and triggers."""
     return {
@@ -581,7 +614,7 @@ def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
     expected = {}
     with sqlite3.connect(":memory:") as connection:
         for version, statements in enumerate(
-            (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4), start=1
+            (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5), start=1
         ):
             for statement in statements:
                 connection.execute(statement)
@@ -710,7 +743,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -719,7 +752,7 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
+                if version not in {0, 1, 2, 3, 4, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if (
                     connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -734,6 +767,7 @@ class EventStore:
                         *_SCHEMA_V2,
                         *_SCHEMA_V3,
                         *_SCHEMA_V4,
+                        *_SCHEMA_V5,
                     ):
                         connection.execute(statement)
                     connection.execute(
@@ -746,6 +780,7 @@ class EventStore:
                         (2, _SCHEMA_V2, FaultPoint.BEFORE_V2_MIGRATION_COMMIT),
                         (3, _SCHEMA_V3, FaultPoint.BEFORE_V3_MIGRATION_COMMIT),
                         (4, _SCHEMA_V4, FaultPoint.BEFORE_V4_MIGRATION_COMMIT),
+                        (5, _SCHEMA_V5, FaultPoint.BEFORE_V5_MIGRATION_COMMIT),
                     )
                     for target, statements, fault_point in migrations:
                         if target > version:
@@ -924,6 +959,8 @@ class EventStore:
                         event.payload_id,
                     ),
                 )
+                if self._fault_injector is not None:
+                    self._fault_injector(FaultPoint.AFTER_INPUT_ENVELOPE_INSERT)
                 connection.execute(
                     """
                     INSERT INTO protected_event_taints(
@@ -949,14 +986,38 @@ class EventStore:
     def retrieve_private_events(
         self, context: TrustedPrincipalContext
     ) -> tuple[PrivateConversationEvent, ...]:
+        return self._retrieve_private_events(context)
+
+    def retrieve_private_events_in_commit_order(
+        self, context: TrustedPrincipalContext, through_event_id: str | None = None
+    ) -> tuple[PrivateConversationEvent, ...]:
+        """Read a scoped prefix of durable input commits, bounded before selection."""
+        if through_event_id is not None:
+            self._require_token("through event id", through_event_id)
+        return self._retrieve_private_events(
+            context, through_event_id, commit_order=True
+        )
+
+    def _retrieve_private_events(
+        self,
+        context: TrustedPrincipalContext,
+        through_event_id: str | None = None,
+        *,
+        commit_order: bool = False,
+    ) -> tuple[PrivateConversationEvent, ...]:
         self._validate_context(context)
+        ordering = (
+            "sequence.sequence DESC"
+            if commit_order
+            else "event.occurred_at DESC, event.event_id DESC"
+        )
         connection = self._open()
         try:
             with connection:
                 connection.execute("BEGIN")
                 self._verify_current_schema(connection)
                 rows = connection.execute(
-                    """
+                    f"""
                     SELECT
                         event.event_id,
                         event.occurred_at,
@@ -979,6 +1040,7 @@ class EventStore:
                             THEN payload.content
                         END AS content
                     FROM event_envelopes AS event
+                    JOIN event_input_sequences AS sequence ON sequence.event_id=event.event_id
                     JOIN private_payloads AS payload
                       ON payload.payload_id = event.payload_id
                     LEFT JOIN protected_event_taints AS taint
@@ -988,11 +1050,19 @@ class EventStore:
                       AND payload.audience_type = event.audience_type
                       AND payload.audience_principal_id = event.audience_principal_id
                       AND payload.retention_status = 'active'
-                    ORDER BY event.occurred_at DESC, event.event_id DESC
+                      AND (? IS NULL OR sequence.sequence <= (
+                          SELECT boundary.sequence FROM event_input_sequences boundary
+                          JOIN event_envelopes initiating USING(event_id)
+                          WHERE boundary.event_id=? AND initiating.audience_principal_id=?
+                      ))
+                    ORDER BY {ordering}
                     LIMIT ?
                     """,
                     (
                         MAX_PRIVATE_PAYLOAD_BYTES,
+                        context.principal_id.value,
+                        through_event_id,
+                        through_event_id,
                         context.principal_id.value,
                         MAX_PRIVATE_EVENTS_PER_RETRIEVAL,
                     ),

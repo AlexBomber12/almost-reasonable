@@ -1,4 +1,4 @@
-"""Reviewed Stage 0 EventStore v4 erasure and quarantine boundaries.
+"""Reviewed Stage 0 EventStore v5 erasure and quarantine boundaries.
 
 Only event references with PRIVATE_PAYLOAD category are accepted. Metadata and
 invalidated protected edges remain for identity/replay checks, never for model or
@@ -17,7 +17,7 @@ from app.core.agent_output_store import AgentOutputStore
 from app.core.events import TrustedPrincipalContext
 from app.core.self_state import StateType
 from app.core.self_state_store import SelfStateStore
-from app.core.store import EventStore
+from app.core.store import EventStore, SCHEMA_VERSION
 
 from .deletion import DeletionCoordinator
 from .ledger import PrivacyLedger
@@ -36,10 +36,25 @@ class ApplicationPrivacyError(RuntimeError):
     """A fixed, payload-free application validation reason."""
 
 
-# Every v4 table is either validated here, mutated below, or metadata-only:
+# Every v5 table is either validated here, mutated below, or metadata-only:
 # schema_metadata and provider_{spend_suspensions,attempt_reservations,usage_attempts}.
 # Provider records contain usage/control metadata, never prompts or model results.
 _GRAPH_CHECKS = (
+    (
+        "missing_input_sequence",
+        """
+        SELECT 1 FROM event_envelopes e LEFT JOIN event_input_sequences s USING(event_id)
+        WHERE s.event_id IS NULL
+        """,
+    ),
+    (
+        "invalid_reply_resolution",
+        """
+        SELECT 1 FROM agent_reply_resolutions r JOIN agent_reply_operations o USING(operation_id)
+        WHERE (r.outcome='completed') <> (o.result_state='persisted')
+           OR (r.outcome='completed' AND r.release_id <> 'release:' || r.operation_id)
+        """,
+    ),
     (
         "unsupported_shared_state",
         "SELECT 1 FROM state_items WHERE scope <> 'private_candidate'",
@@ -150,25 +165,36 @@ _GRAPH_CHECKS = (
 )
 
 
-def _validate_graph(db: sqlite3.Connection) -> None:
-    EventStore._verify_current_schema(db)
+def _validate_graph(
+    db: sqlite3.Connection, schema_version: int = SCHEMA_VERSION
+) -> None:
+    if schema_version == 4:
+        EventStore._verify_schema_version(db, 4)
+        checks = _GRAPH_CHECKS[2:]  # v4 has no resolution or commit-sequence tables.
+    else:
+        EventStore._verify_current_schema(db)
+        checks = _GRAPH_CHECKS
     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    for reason, sql in _GRAPH_CHECKS:
+    for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
 
 
-def _erase(db: sqlite3.Connection, request: DeletionRequest) -> ErasureReport:
+def _erase(
+    db: sqlite3.Connection,
+    request: DeletionRequest,
+    schema_version: int = SCHEMA_VERSION,
+) -> ErasureReport:
     if request.content_category is not ContentCategory.PRIVATE_PAYLOAD:
         raise ApplicationPrivacyError("unsupported_source_category")
     db.execute("PRAGMA secure_delete=ON")
     db.execute("PRAGMA synchronous=FULL")
     with db:
         db.execute("BEGIN IMMEDIATE")
-        _validate_graph(db)
+        _validate_graph(db, schema_version)
         source = db.execute(
             "SELECT audience_principal_id, payload_id FROM event_envelopes WHERE event_id=?",
             (request.content_reference,),
@@ -212,7 +238,7 @@ def _erase(db: sqlite3.Connection, request: DeletionRequest) -> ErasureReport:
                 (operation_id,),
             )
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
-        _validate_graph(db)
+        _validate_graph(db, schema_version)
     # SQLite updates its ordinary indexes in this transaction. No keyed content
     # fingerprints, summaries or generic memory exist in the exact v4 schema.
     # Shared state is provably empty above; any future category/object is blocked.
@@ -258,7 +284,9 @@ class EventStoreRestoreAdapter:
 
     def apply_deletion(self, record: DeletionRecord) -> ErasureReport:
         with closing(self._open()) as db:
-            return _erase(db, record.request)
+            return _erase(
+                db, record.request, db.execute("PRAGMA user_version").fetchone()[0]
+            )
 
     def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool:
         require_token(consent_id, "consent id")
@@ -266,7 +294,7 @@ class EventStoreRestoreAdapter:
         with closing(self._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                _validate_graph(db)
+                _validate_graph(db, db.execute("PRAGMA user_version").fetchone()[0])
         # v4 has no persisted consent grants, disclosure authorization or consent
         # cache. External PrivacyLedger remains the sole current-use authority.
         return True
@@ -275,7 +303,7 @@ class EventStoreRestoreAdapter:
         with closing(self._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                _validate_graph(db)
+                _validate_graph(db, db.execute("PRAGMA user_version").fetchone()[0])
         # All supported indexes are SQLite indexes, maintained atomically above.
         return True
 
@@ -296,7 +324,8 @@ class PrivacyReadGate:
 
     Starts closed, replays even APPLIED records against this database, and fences
     participant reads against newly committed privacy controls. This Stage 0
-    boundary is deliberately not installed in participant or owner WSGI routes.
+    boundary is installed by the explicit synthetic private conversation runtime;
+    ordinary disabled web and owner routes retain their existing configuration.
     Callers must never expose raw stores or an eligible quarantine to participants.
     """
 
@@ -364,6 +393,14 @@ class PrivacyReadGate:
                 if self._database_identity() != self._identity:
                     raise PrivacyReadBlocked("application_database_changed")
                 return result
+
+    def authorized(self, callback: Callable[[], _T]) -> _T:
+        """Run a short application read/write boundary under the privacy fence.
+
+        Never hold this fence over model execution. Authorization is rechecked
+        at subsequent persistence and response boundaries.
+        """
+        return self._read(callback)
 
     def retrieve_private_events(self, context: TrustedPrincipalContext):
         return self._read(lambda: self._store.retrieve_private_events(context))

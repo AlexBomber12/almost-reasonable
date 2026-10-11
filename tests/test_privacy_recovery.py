@@ -78,6 +78,12 @@ def insert_event_envelope(connection, event_id, payload_id):
 def make_source(path, message="synthetic deleted private message CANARY-RESTORE"):
     EventStore(path)
     connection = sqlite3.connect(path)
+    # Keep these legacy backup contract fixtures at genuine v4.
+    connection.execute("DROP TRIGGER event_input_sequence_append")
+    connection.execute("DROP TABLE event_input_sequences")
+    connection.execute("DROP TABLE agent_reply_resolutions")
+    connection.execute("UPDATE schema_metadata SET version=4")
+    connection.execute("PRAGMA user_version=4")
     connection.execute("PRAGMA journal_mode=WAL")
     insert_private_payload(connection, "event-001", message)
     connection.commit()

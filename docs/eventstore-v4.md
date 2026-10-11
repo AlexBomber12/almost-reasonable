@@ -66,3 +66,8 @@ database-switch protocol are implemented and independently validated. A readines
 marker or a fake adapter's eligible result is not activation authority. No
 activation API, real participant enrollment, provider call, deployment change or
 external effect is introduced here.
+
+INT-04 adds metadata-only v5 resolution/release and input-sequence tables without changing these
+v4 draft columns. See [the runtime lifecycle](private-conversation-runtime.md).
+Exact v4 backups and transactional upgrade remain supported; held drafts alone
+remain non-deliverable.
