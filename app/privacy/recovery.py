@@ -738,13 +738,13 @@ class QuarantinedRestore:
                     restore_id, restored_at, "adapter_initialization_failure"
                 )
             self._require_quarantine_identity(staging, quarantine_descriptor)
-            reason = self._reconcile(adapter, snapshot)
+            try:
+                reason = self._reconcile(adapter, snapshot)
+            except BaseException:
+                _cleanup_created_database(owned)
+                raise
             if reason is not None:
-                if reason in {
-                    "adapter_writer_release_incomplete",
-                    "adapter_writer_release_failure",
-                }:
-                    _cleanup_created_database(owned)
+                _cleanup_created_database(owned)
                 return self._blocked_restore(restore_id, restored_at, reason)
             self._require_quarantine_identity(staging, quarantine_descriptor)
             sealed_staging = quarantine.with_name(f".privacy-sealed-{uuid4()}.sqlite3")
@@ -754,6 +754,7 @@ class QuarantinedRestore:
                 sealed_staging,
             )
             if sealed_quarantine is None:
+                _cleanup_created_database(owned)
                 return self._blocked_restore(
                     restore_id, restored_at, "quarantine_finalization_failed"
                 )

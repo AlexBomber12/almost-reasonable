@@ -1497,6 +1497,9 @@ def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
             super().__init__(path)
             self.connection = sqlite3.connect(path)
             self.connection.execute("PRAGMA journal_mode=WAL")
+            self.reader = sqlite3.connect(path)
+            self.reader.execute("BEGIN")
+            self.reader.execute("SELECT * FROM synthetic_private").fetchall()
             self.released = False
 
         def apply_deletion(self, record):
@@ -1529,8 +1532,13 @@ def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
     assert adapters[0].released is True
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
-    with sqlite3.connect(quarantine) as connection:
-        assert connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    adapters[0].reader.close()
 
 
 def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
@@ -1758,9 +1766,13 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
         RestoreDisposition.BLOCKED,
         "quarantine_finalization_failed",
     )
-    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
-    assert quarantine.exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
 
 
 def test_fresh_snapshot_seal_rejects_a_fence_connection_failure(tmp_path, monkeypatch):
@@ -2554,6 +2566,52 @@ def test_restore_writer_release_failure_does_not_publish_wal_staging(
     )
 
     assert (result.disposition, result.reason) == (RestoreDisposition.BLOCKED, reason)
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    adapters[0].connection.close()
+
+
+def test_restore_writer_release_interruption_cleans_wal_staging(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    class InterruptedReleaseWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+
+        def rebuild_dependencies(self):
+            self.connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-interrupt', 'private')"
+            )
+            self.connection.commit()
+            return True
+
+        def release_writers(self):
+            raise SimulatedInterrupt()
+
+    def adapter_factory(path):
+        adapter = InterruptedReleaseWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, adapter_factory).restore(backup, quarantine, NOW)
+
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
