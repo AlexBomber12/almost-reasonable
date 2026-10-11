@@ -1,7 +1,8 @@
 # Privacy consent, deletion, and recovery foundations
 
-Status: foundation only. This change does **not** enroll participants, activate a
-private-to-public path, or make Stage 2 privacy complete.
+Status: foundations plus INT-03 synthetic EventStore v4 erasure and quarantine
+integration. This does **not** enroll participants, activate a private-to-public
+path, switch a production database, or make Stage 2 privacy complete.
 
 ## Security boundary and guarantees
 
@@ -128,44 +129,30 @@ content. Invalid-authentication attempts are payload-free audited outcomes but
 are not persisted as authoritative deletion operations, so they cannot reserve
 an operation ID and suppress a later authenticated request.
 
-## Application erasure adapter and migration specification
+## Application erasure and trusted read integration
 
-EventStore schema v4 adds durable private drafts (see
-[storage contracts](eventstore-v4.md)), but it exposes no reviewed public API that can atomically remove a private payload and invalidate every dependent
-memory, summary, revision, index, abstraction, and duplicate key. The privacy
-foundation therefore does not mutate EventStore tables and does not present partial SQL as a
-complete deletion. `ErasureAdapter` is the strict integration boundary.
+`app/privacy/application.py` implements `EventStoreErasureAdapter`,
+`EventStoreRestoreAdapter` and `PrivacyReadGate` against the exact reviewed v4
+schema. See [INT-03 guarantees and table inventory](privacy-eventstore-integration.md)
+for the supported cascade, deterministic evidence, unsupported categories and
+activation blockers. No schema migration, participant WSGI or Owner Control route
+change is introduced.
 
-For one `DeletionRequest`, an integrated adapter must make an idempotent
-transaction in the application database which:
+The adapter accepts only `PRIVATE_PAYLOAD` requests whose content reference is an
+exact EventStore **event ID**, not a payload ID, conversation ID or text search.
+Authenticated control ingress must call the pending-first `DeletionCoordinator`;
+the adapter itself is an internal storage capability, not authentication.
+The coordinator writes durable intent first and records success only after the
+application transaction commits. Reconciliation remains idempotent after an
+interruption between the independent application and ledger commits.
 
-1. selects the exact authenticated principal-scoped eligible source;
-2. deletes or irreversibly anonymizes the private payload;
-3. preserves only a content-free event tombstone;
-4. follows protected provenance and invalidates derived private memory,
-   summaries, revision rationales, shared abstractions, and search/index rows;
-5. destroys bounded/keyed duplicate material where applicable; and
-6. returns all required `ContentCategory` values only after those effects commit.
-
-The adapter must return blockers, including missing source provenance, instead
-of guessing. Legal holds/public actions must be reported as not eligible by the
-authenticated integration layer. It must be safe to repeat after an uncertain
-process crash. After reconciliation it must explicitly release every database
-writer and return success from `release_writers`; failure or an exception blocks
-the restore before sealing.
-
-The INT-03 erasure integration must cover the v4 reply source edges as well as
-existing protected state provenance. Further integration must add
-protected source-to-derived edges for every memory/summary/revision/index/shared
-abstraction, explicit retention/invalidation states, and references to
-destroyable duplicate-key material. It must preserve v3 event identities,
-principal audiences, and content-free tombstones; migrate in one application-DB
-transaction; reject orphaned or untyped provenance; support rollback before
-commit; and include v3-to-v4, interrupted-migration, cascade, concurrency, and
-restore tests. The privacy ledger remains separately versioned. The narrowly
-additive v4 migration does not implement this complete cascade.
-V4 restore activation remains blocked until the INT-03 adapter and activation
-fence are reviewed; exact backup schema recognition is not restore readiness.
+The trusted service must retain a closed `PrivacyReadGate` until `reconcile()`
+succeeds and use its scoped event/state/history/evidence/reply methods for reads.
+Even `APPLIED` records are replayed against the configured application database
+at startup. New privacy controls invalidate the gate's generation; reads take a
+short ledger write fence to serialize with durable deletion intent. Raw stores
+remain internal capabilities and this synthetic gate is not wired into routes.
+Production participant enrollment remains disabled pending that ingress wiring.
 
 ## WAL-consistent backup
 
