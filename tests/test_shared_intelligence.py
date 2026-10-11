@@ -684,7 +684,12 @@ def test_mission_authority_rejects_owner_claims_early_or_same_participant_eviden
                 ),
             ),
         ):
-            assert not adapter._authority(db, adapter._source_identity("mp"), evidence)
+            assert not adapter._authority(
+                db,
+                adapter._source_identity("mp"),
+                evidence,
+                pending_at=NOW + timedelta(seconds=2),
+            )
     tick[0] += timedelta(seconds=1)
     c = append_event(events, principal("a"), "new-a", "Synthetic new viewpoint.")
     same = replace(
@@ -1163,6 +1168,33 @@ def test_copied_parent_event_must_retain_inherited_role(shared):
         )
         db.execute(
             "UPDATE protected_shared_manifests SET binding=json_set(binding,'$.sources[0][2]','counter') WHERE operation_id='role-child'"
+        )
+    with pytest.raises(ValueError, match="protected_shared_graph"):
+        app.context(principal("b"))
+    assert not gate.reconcile()
+
+
+def test_inherited_child_row_requires_matching_parent_event(shared):
+    events, _, gate, _, b = shared
+    fresh = tuple(
+        append_event(events, principal("b"), name, "Synthetic separate observations.")
+        for name in ("new-extra-1", "new-extra-2")
+    )
+    first = approval(b, author="b")
+    second = approval(fresh[0], op="extra-child", author="b", revision=1)
+    second = replace(
+        second, proposal=replace(second.proposal, protected_source_event_ids=fresh)
+    )
+    app = SharedIntelligence(events, gate, approvals=(first, second), clock=lambda: NOW)
+    app.commit(first)
+    app.commit(second)
+    with events._open() as db:
+        db.execute(
+            "UPDATE protected_shared_sources SET role='inherited' WHERE operation_id='extra-child' AND event_id=?",
+            (fresh[0],),
+        )
+        db.execute(
+            "UPDATE protected_shared_manifests SET binding=json_set(binding,'$.sources[1][2]','inherited') WHERE operation_id='extra-child'"
         )
     with pytest.raises(ValueError, match="protected_shared_graph"):
         app.context(principal("b"))

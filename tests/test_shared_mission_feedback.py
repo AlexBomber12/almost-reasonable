@@ -158,10 +158,13 @@ def test_missing_ambiguous_or_forged_mission_source_binding_never_grants_authori
     )
     with events._open() as db:
         assert not adapter._authority(db, "missing-origin", sources)
+        assert not adapter._authority(db, adapter._source_identity("mp"), sources)
         db.execute(
             "UPDATE shared_mission_document SET document=json_set(document,'$.proposals[0].proposal.initiating_source_id','forged-origin')"
         )
-        assert not adapter._authority(db, "forged-origin", sources)
+        assert not adapter._authority(
+            db, "forged-origin", sources, pending_at=tick[0] + timedelta(seconds=2)
+        )
         db.execute(
             "UPDATE shared_mission_document SET document=json_set(document,'$.proposals[0].proposal.initiating_source_id','shared-a')"
         )
@@ -201,3 +204,66 @@ def test_inherited_source_from_original_principal_cannot_confirm_mission(case):
             approvals[4], correlation_id="corr-c", counterevidence_checked=True
         )
     assert adapter.current_mission().version == "mission-v1"
+
+
+def test_future_evidence_cannot_activate_or_authorize_persisted_mission(case):
+    events, _, tick, adapter, _, proposal, approvals = case
+    adapter.propose(**proposal)
+    tick[0] += timedelta(seconds=3)
+    evidence(case, "future-evidence", "shared-b")
+    tick[0] -= timedelta(seconds=1)
+    too_early = tick[0]
+    with pytest.raises(ValueError, match="independently authorized"):
+        adapter.confirm(
+            approvals[2], correlation_id="corr-b", counterevidence_checked=True
+        )
+    assert adapter.current_mission().version == "mission-v1"
+    tick[0] += timedelta(seconds=1)
+    adapter.confirm(approvals[2], correlation_id="corr-b", counterevidence_checked=True)
+    assert adapter.current_mission().version == "mission-v2"
+    with events._open() as db:
+        db.execute(
+            "UPDATE shared_mission_document SET document=json_set(document,'$.proposals[0].confirmation.decided_at',?,'$.current.activated_at',?)",
+            (too_early.isoformat(), too_early.isoformat()),
+        )
+    with pytest.raises(ValueError, match="persisted confirmation evidence"):
+        adapter.current_mission()
+
+
+def test_private_source_time_cannot_postdate_confirmation(case):
+    from app.behavior.mission import MissionEvidenceSource, EvidenceProvenance
+
+    events, gate, tick, adapter, _, proposal, approvals = case
+    adapter.propose(**proposal)
+    tick[0] += timedelta(seconds=1)
+    events.append_private_input(
+        principal("b"),
+        replace(
+            private_input("event-future-only", "Synthetic future-clock observation."),
+            audience=EventAudience.private_for(principal("b").principal_id),
+            occurred_at=tick[0] + timedelta(seconds=2),
+        ),
+    )
+    approved = replace(
+        sharing_tests.approval(
+            "event-event-future-only", op="shared-b", author="b", item="independent"
+        ),
+        allow_mission_evidence=True,
+    )
+    SharedIntelligence(
+        events, gate, approvals=(approved,), clock=lambda: tick[0]
+    ).commit(approved)
+    tick[0] += timedelta(seconds=1)
+    with events._open() as db:
+        source = (
+            MissionEvidenceSource(
+                "shared-b", "shared-b", EvidenceProvenance.AGENT_OBSERVATION
+            ),
+        )
+        assert not adapter._authority(
+            db, adapter._source_identity("mp"), source, pending_at=tick[0]
+        )
+    with pytest.raises(ValueError, match="independently authorized"):
+        adapter.confirm(
+            approvals[2], correlation_id="corr-b", counterevidence_checked=True
+        )

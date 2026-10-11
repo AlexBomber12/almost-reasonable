@@ -46,7 +46,9 @@ An item has at most 32 revisions. Each revision has at most 50 distinct material
 sources and 16 explicit conversation audiences. Incoming proposals may not relist
 inherited events; their earlier supporting/counterevidence classification is
 preserved and checked against the parent even if child metadata is rewritten.
-Copied parent events must retain both the inherited role and their classification. The new author's source set is
+Copied parent events must retain both the inherited role and their classification.
+Every inherited child row must also correspond to an actual parent row; checking
+parent coverage in only one direction is insufficient. The new author's source set is
 resolved within that author's existing private scope. Earlier material sources
 are inherited in full; a revision may narrow its parent's audience but cannot
 expand it. Exceeding a dependency bound rejects the change rather than dropping
@@ -93,7 +95,9 @@ mission use. A proposal uses a current shared revision and leaves the current mi
 Each proposal has a distinct protected source-binding identity derived from its
 trusted operation ID. Authority revalidation uses that exact proposal timestamp,
 so a later proposal reusing an intellectual origin cannot change an earlier
-confirmation's cutoff. Unique historical bindings from the earlier adapter remain
+confirmation's cutoff. Material event timestamps and shared evidence decision
+times must also be no later than the exact confirmation time. This upper bound is
+revalidated for persisted confirmations, independent of the current clock. Unique historical bindings from the earlier adapter remain
 readable and replayable; missing, ambiguous or forged bindings grant no authority.
 
 A separate constructor-bound `SyntheticMissionConfirmationApproval` grants only

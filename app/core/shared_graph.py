@@ -97,6 +97,11 @@ _CHECKS = (
                 WHERE a.operation_id=o.operation_id AND NOT EXISTS (
                     SELECT 1 FROM protected_shared_audiences b
                     WHERE b.operation_id=p.operation_id AND b.principal_id=a.principal_id))))""",
+    """SELECT 1 FROM protected_shared_sources s JOIN shared_operations o USING(operation_id)
+        WHERE s.role='inherited' AND NOT EXISTS (
+            SELECT 1 FROM protected_shared_sources p WHERE p.operation_id=o.parent_operation
+                AND p.event_id=s.event_id AND p.source_principal=s.source_principal
+                AND p.classification=s.classification)""",
     """SELECT 1 FROM agent_reply_operations o WHERE o.shared_count <>
         (SELECT COUNT(*) FROM protected_reply_shared s WHERE s.operation_id=o.operation_id)""",
     """SELECT 1 FROM protected_reply_shared s JOIN agent_reply_operations r USING(operation_id)

@@ -45,6 +45,7 @@ class _Repository:
     def __init__(self, db, initial):
         self.db = db
         self.initial = initial
+        self.pending_at = None
 
     def load(self):
         row = self.db.execute(
@@ -129,16 +130,22 @@ class SharedMissionAdapter:
         ):
             raise ValueError("mission requires current shared revision")
 
-    def _authority(self, db, original, evidence):
+    def _authority(self, db, original, evidence, *, pending_at=None):
         document = _Repository(db, self._initial).load()
         matches = [
-            r.proposal
-            for r in document.proposals
-            if r.proposal.initiating_source_id == original
+            r for r in document.proposals if r.proposal.initiating_source_id == original
         ]
         if len(matches) != 1:
             return False
-        proposal = matches[0]
+        record = matches[0]
+        proposal = record.proposal
+        confirmed_at = (
+            record.confirmation.decided_at
+            if record.confirmation is not None
+            else pending_at
+        )
+        if confirmed_at is None:
+            return False
         if proposal.initiating_source_id not in (
             self._source_identity(proposal.proposal_id),
             proposal.initiating_event_id,
@@ -172,12 +179,17 @@ class SharedMissionAdapter:
                 "SELECT s.event_id, s.source_principal, e.occurred_at FROM protected_shared_sources s JOIN event_envelopes e USING(event_id) WHERE s.operation_id=?",
                 (source.evidence_id,),
             ).fetchall()
-            if later <= proposed_at or any(
-                e in original_events
-                or p in original_principals
-                or datetime.fromisoformat(occurred.replace("Z", "+00:00"))
-                <= proposed_at
-                for e, p, occurred in new
+            if (
+                later <= proposed_at
+                or later > confirmed_at
+                or any(
+                    e in original_events
+                    or p in original_principals
+                    or not proposed_at
+                    < datetime.fromisoformat(occurred.replace("Z", "+00:00"))
+                    <= confirmed_at
+                    for e, p, occurred in new
+                )
             ):
                 return False
         return True
@@ -197,7 +209,9 @@ class SharedMissionAdapter:
                     raise ValueError("capability-policy invariants changed")
                 machine = MissionStateMachine(
                     repository,
-                    lambda original, evidence: self._authority(db, original, evidence),
+                    lambda original, evidence: self._authority(
+                        db, original, evidence, pending_at=repository.pending_at
+                    ),
                 )
                 result = callback(db, repository, machine)
                 validate_shared_graph(db)
@@ -320,6 +334,7 @@ class SharedMissionAdapter:
                     raise ValueError("mission confirmation identity conflict")
                 return existing[0]
             self._require_current(db, approval.shared_operation)
+            repository.pending_at = confirmation.decided_at
             result = machine.confirm(confirmation)
             db.execute(
                 "INSERT INTO protected_mission_shared VALUES (?, 'confirmation', ?, 1)",
