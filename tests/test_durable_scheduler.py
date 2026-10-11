@@ -7,7 +7,7 @@ from threading import Event
 import pytest
 
 from app.behavior.durable_scheduler import DurableScheduler, SQLiteSchedulerRepository
-from app.behavior.scheduler import MutableClock, SchedulerOutcome
+from app.behavior.scheduler import MutableClock, SchedulerOutcome, WakeupEvent
 from app.core.agent_proposals import AgentDecision
 from tests.test_behavior_scheduler import NOW, event, policy
 
@@ -711,7 +711,7 @@ def test_completed_no_action_survives_real_process_exit(tmp_path):
 import os, sys
 from pathlib import Path
 from app.behavior.durable_scheduler import DurableScheduler, SQLiteSchedulerRepository
-from app.behavior.scheduler import MutableClock, SchedulerOutcome
+from app.behavior.scheduler import MutableClock, SchedulerOutcome, WakeupEvent
 from app.core.agent_proposals import AgentDecision
 from tests.test_behavior_scheduler import NOW, policy, event
 class Controls:
@@ -835,3 +835,29 @@ def test_selected_cadence_round_trips_exactly_across_restart(tmp_path, cadence):
     reopened = SQLiteSchedulerRepository(path)
     claim = reopened.claim((event("cadence"),), NOW, timedelta(seconds=5))
     assert claim.cadence == cadence
+
+
+def test_expired_reusable_identity_survives_rollback_after_delayed_start(tmp_path):
+    path = tmp_path / "scheduler.sqlite"
+    clock, controls = MutableClock(NOW), Controls()
+    calls = []
+
+    def deliberate(wakeup, _timeout):
+        calls.append((wakeup.event_id, wakeup.trigger))
+        return AgentDecision.NO_ACTION
+
+    running = scheduler(path, clock, controls, deliberate)
+    assert running.run((event("reusable"),)).outcome is SchedulerOutcome.NO_ACTION
+    clock.advance(timedelta(hours=23))
+    claim = running.repository.claim(
+        (event("paused", clock.now()),), clock.now(), timedelta(days=1)
+    )
+    clock.advance(timedelta(hours=2))
+    assert running.repository.begin(claim, clock.now())
+    clock.advance(timedelta(minutes=-30))
+    reused = WakeupEvent("reusable", clock.now(), "new-valuable-evidence")
+    assert running.run((reused,)).outcome is SchedulerOutcome.EXECUTION_LIMIT
+    clock.advance(timedelta(hours=22, minutes=30, seconds=1))
+    reopened = scheduler(path, clock, controls, deliberate)
+    assert reopened.run().outcome is SchedulerOutcome.NO_ACTION
+    assert calls == [("reusable", "periodic"), ("reusable", "new-valuable-evidence")]

@@ -55,8 +55,10 @@ semantics; a gateway must still enforce its own durable operation identity.
 
 Wall-clock deadlines use UTC instants. A durable clock watermark includes the
 completed deliberation timestamp and rejects execution during clock rollback.
-Arrivals are still admitted transactionally before deferring work, so a one-time
-event survives restart and becomes eligible when the clock catches up. Local active-hour policy still uses the injected
+Ordinary completed identities expire before rollback admission; uncertain
+identities retain their fence. Arrivals are admitted transactionally before
+deferring work, so both new and legitimately reusable one-time events survive
+restart and become eligible when the clock catches up. Local active-hour policy still uses the injected
 clock's timezone, including overnight windows and DST folds. The application
 must provide its chosen timezone consistently across restarts.
 

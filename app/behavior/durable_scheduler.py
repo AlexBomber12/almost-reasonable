@@ -152,14 +152,14 @@ class SQLiteSchedulerRepository:
                 "SELECT payload, cadence, watermark FROM scheduler_state"
             ).fetchone()
             state = _decode_state(payload)
-            if watermark is not None and timestamp < watermark:
-                self._admit(db, pending)
-                return _empty(SchedulerOutcome.EXECUTION_LIMIT)
-            db.execute("UPDATE scheduler_state SET watermark=?", (timestamp,))
             db.execute(
                 "DELETE FROM scheduler_events WHERE status='done' AND recorded<=?",
                 (_retention_cutoff(now, duplicate_window).isoformat(),),
             )
+            if watermark is not None and timestamp < watermark:
+                self._admit(db, pending)
+                return _empty(SchedulerOutcome.EXECUTION_LIMIT)
+            db.execute("UPDATE scheduler_state SET watermark=?", (timestamp,))
             active = db.execute(
                 "SELECT token, phase, expires, started, ids FROM scheduler_claim"
             ).fetchone()
