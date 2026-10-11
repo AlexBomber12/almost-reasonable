@@ -642,11 +642,11 @@ def _seal_fresh_snapshot(
             raise BackupError("sealed quarantine identity changed")
         _fsync_owned_parents(sealed)
     except (OSError, sqlite3.Error, BackupError):
-        _cleanup_created(sealed)
+        _cleanup_created_resumable(sealed)
         sealed.clear()
         return None
     except BaseException:
-        _cleanup_created(sealed)
+        _cleanup_created_resumable(sealed)
         sealed.clear()
         raise
     finally:
@@ -656,7 +656,7 @@ def _seal_fresh_snapshot(
             finally:
                 fence.close()
         except BaseException:
-            _cleanup_created(sealed)
+            _cleanup_created_resumable(sealed)
             sealed.clear()
             raise
     return sealed[0]
@@ -831,10 +831,10 @@ class QuarantinedRestore:
                 _sqlite_copy(pinned_backup, quarantine_descriptor)
                 _fsync_owned_parents(owned)
             except (OSError, sqlite3.Error, BackupError) as error:
-                _cleanup_created(owned)
+                _cleanup_created_resumable(owned)
                 raise BackupError("quarantine copy failed") from error
             except BaseException:
-                _cleanup_created(owned)
+                _cleanup_created_resumable(owned)
                 raise
         finally:
             _close_pinned_database(pinned_backup)
@@ -860,7 +860,7 @@ class QuarantinedRestore:
                 if owned and _path_matches_descriptor(
                     owned[0].path, owned[0].descriptor
                 ):
-                    _cleanup_created(owned)
+                    _cleanup_created_resumable(owned)
                     owned.clear()
                 raise
         finally:
