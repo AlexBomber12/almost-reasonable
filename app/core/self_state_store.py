@@ -91,34 +91,94 @@ class SelfStateStore:
         self._fault_injector = fault_injector
 
     def create_interest_candidate(
-        self, context: TrustedPrincipalContext, change: InterestCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: InterestCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.INTEREST, change, creating=True)
+        return self._apply(
+            context,
+            StateType.INTEREST,
+            change,
+            creating=True,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def revise_interest_candidate(
-        self, context: TrustedPrincipalContext, change: InterestCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: InterestCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.INTEREST, change, creating=False)
+        return self._apply(
+            context,
+            StateType.INTEREST,
+            change,
+            creating=False,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def create_belief_candidate(
-        self, context: TrustedPrincipalContext, change: BeliefCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: BeliefCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.BELIEF, change, creating=True)
+        return self._apply(
+            context,
+            StateType.BELIEF,
+            change,
+            creating=True,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def revise_belief_candidate(
-        self, context: TrustedPrincipalContext, change: BeliefCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: BeliefCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.BELIEF, change, creating=False)
+        return self._apply(
+            context,
+            StateType.BELIEF,
+            change,
+            creating=False,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def create_goal_candidate(
-        self, context: TrustedPrincipalContext, change: GoalCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: GoalCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.GOAL, change, creating=True)
+        return self._apply(
+            context,
+            StateType.GOAL,
+            change,
+            creating=True,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def revise_goal_candidate(
-        self, context: TrustedPrincipalContext, change: GoalCandidateChange
+        self,
+        context: TrustedPrincipalContext,
+        change: GoalCandidateChange,
+        *,
+        _expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> StateTransitionResult:
-        return self._apply(context, StateType.GOAL, change, creating=False)
+        return self._apply(
+            context,
+            StateType.GOAL,
+            change,
+            creating=False,
+            expected_candidate_revisions=_expected_candidate_revisions,
+        )
 
     def retrieve_private_candidates(
         self, context: TrustedPrincipalContext
@@ -129,6 +189,9 @@ class SelfStateStore:
             with connection:
                 connection.execute("BEGIN")
                 self._events._verify_current_schema(connection)
+                self._validate_current_revision_pointers(
+                    connection, context.principal_id.value
+                )
                 rows = connection.execute(
                     """
                     SELECT
@@ -177,6 +240,15 @@ class SelfStateStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND payload.retention_status = 'active'
+                      AND NOT EXISTS (
+                          SELECT 1
+                          FROM state_revisions AS tainted_revision
+                          JOIN protected_state_provenance AS tainted_source
+                            ON tainted_source.revision_key =
+                               tainted_revision.revision_key
+                          WHERE tainted_revision.item_key = item.item_key
+                            AND tainted_source.retention_status <> 'active'
+                      )
                     ORDER BY revision.revision_key DESC, item.item_id DESC
                     LIMIT ?
                     """,
@@ -396,6 +468,7 @@ class SelfStateStore:
         change: InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange,
         *,
         creating: bool,
+        expected_candidate_revisions: tuple[tuple[str, int], ...] | None,
     ) -> StateTransitionResult:
         self._validate_context(context)
         self._validate_change(state_type, change, creating=creating)
@@ -410,6 +483,12 @@ class SelfStateStore:
                     change.revision.operation_id,
                 )
                 if duplicate is not None:
+                    if self._revision_chain_has_tainted_provenance(
+                        connection, duplicate
+                    ):
+                        raise SelfStateValidationError(
+                            "operation provenance is not active"
+                        )
                     if self._logical_change(
                         self._stored_change(connection, duplicate)
                     ) != self._logical_change(change):
@@ -420,6 +499,12 @@ class SelfStateStore:
                         TransitionStatus.DUPLICATE,
                         self._snapshot_for_revision(connection, duplicate),
                     )
+
+                self._validate_candidate_snapshot(
+                    connection,
+                    context.principal_id.value,
+                    expected_candidate_revisions,
+                )
 
                 sources = self._validate_evidence(connection, context, change)
                 item = connection.execute(
@@ -556,6 +641,74 @@ class SelfStateStore:
             raise self._events._translated_error(error) from None
         finally:
             connection.close()
+
+    @staticmethod
+    def _validate_candidate_snapshot(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        expected: tuple[tuple[str, int], ...] | None,
+    ) -> None:
+        if expected is None:
+            return
+        expected_by_id = dict(expected)
+        rows = connection.execute(
+            """
+            SELECT
+                item.item_id,
+                item.current_revision,
+                (SELECT MAX(candidate.revision_number)
+                 FROM state_revisions AS candidate
+                 WHERE candidate.item_key = item.item_key)
+            FROM state_items AS item
+            JOIN state_revisions AS head_revision
+              ON head_revision.item_key = item.item_key
+             AND head_revision.revision_number = item.current_revision
+            JOIN state_revision_payloads AS head_payload
+              ON head_payload.revision_key = head_revision.revision_key
+            WHERE item.scope = 'private_candidate'
+              AND item.audience_type = 'private_participant'
+              AND item.audience_principal_id = ?
+              AND head_payload.retention_status = 'active'
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM state_revisions AS tainted_revision
+                  JOIN protected_state_provenance AS tainted_source
+                    ON tainted_source.revision_key = tainted_revision.revision_key
+                  WHERE tainted_revision.item_key = item.item_key
+                    AND tainted_source.retention_status <> 'active'
+              )
+            ORDER BY head_revision.revision_key DESC, item.item_id DESC
+            LIMIT ?
+            """,
+            (principal_id, MAX_PRIVATE_STATE_ITEMS_PER_RETRIEVAL),
+        ).fetchall()
+        actual = {
+            item_id: current_revision
+            for item_id, current_revision, latest_revision in rows
+            if current_revision == latest_revision
+        }
+        if actual != expected_by_id:
+            raise SelfStateConflictError("candidate snapshot conflict")
+
+    @staticmethod
+    def _revision_chain_has_tainted_provenance(
+        connection: sqlite3.Connection, revision_key: int
+    ) -> bool:
+        row = connection.execute(
+            """
+            SELECT 1
+            FROM state_revisions AS replayed_revision
+            JOIN state_revisions AS item_revision
+              ON item_revision.item_key = replayed_revision.item_key
+            JOIN protected_state_provenance AS source
+              ON source.revision_key = item_revision.revision_key
+            WHERE replayed_revision.revision_key = ?
+              AND source.retention_status <> 'active'
+            LIMIT 1
+            """,
+            (revision_key,),
+        ).fetchone()
+        return row is not None
 
     @staticmethod
     def _find_operation(
@@ -1199,17 +1352,11 @@ class SelfStateStore:
                 raise ValueError("malformed stored revision")
         if row[25] != previous_status or row[27] != previous_confidence:
             raise ValueError("malformed stored revision")
-        if type(row[31]) is not str or _CORE_SELF_VERSION.fullmatch(row[31]) is None:
-            raise ValueError("malformed stored revision")
         self._validate_text("stored revision reason", row[29])
         kind = RevisionKind(row[32])
-        decision_origin = DecisionOrigin(row[33])
-        if decision_origin is DecisionOrigin.DETERMINISTIC:
-            if row[34] is not None or row[35] is not None:
-                raise ValueError("malformed stored revision")
-        else:
-            self._require_token("stored model identifier", row[34])
-            self._require_token("stored prompt version", row[35])
+        decision_origin = self._validate_stored_revision_metadata(
+            row[31], row[33], row[34], row[35]
+        )
         return StateRevision(
             item_id=row[1],
             state_type=StateType(row[2]),
@@ -1232,6 +1379,30 @@ class SelfStateStore:
             state=state,
         )
 
+    @staticmethod
+    def _validate_stored_revision_metadata(
+        core_self_version: object,
+        decision_origin: object,
+        model_identifier: object,
+        prompt_version: object,
+    ) -> DecisionOrigin:
+        if (
+            type(core_self_version) is not str
+            or _CORE_SELF_VERSION.fullmatch(core_self_version) is None
+        ):
+            raise ValueError("malformed stored revision")
+        try:
+            origin = DecisionOrigin(decision_origin)
+        except (TypeError, ValueError):
+            raise ValueError("malformed stored revision") from None
+        if origin is DecisionOrigin.DETERMINISTIC:
+            if model_identifier is not None or prompt_version is not None:
+                raise ValueError("malformed stored revision")
+        else:
+            SelfStateStore._require_token("stored model identifier", model_identifier)
+            SelfStateStore._require_token("stored prompt version", prompt_version)
+        return origin
+
     def _current_snapshot_from_row(
         self, connection: sqlite3.Connection, row: tuple[object, ...]
     ) -> PrivateCandidate:
@@ -1251,6 +1422,35 @@ class SelfStateStore:
             or current_revision != latest_revision
         ):
             raise ValueError("malformed stored revision")
+
+    @staticmethod
+    def _validate_current_revision_pointers(
+        connection: sqlite3.Connection,
+        principal_id: str,
+        item_id: str | None = None,
+    ) -> None:
+        item_filter = "" if item_id is None else "AND item.item_id = ?"
+        parameters: tuple[object, ...] = (principal_id,)
+        if item_id is not None:
+            parameters += (item_id,)
+        rows = connection.execute(
+            f"""
+            SELECT item.current_revision, MAX(revision.revision_number)
+            FROM state_items AS item
+            LEFT JOIN state_revisions AS revision
+              ON revision.item_key = item.item_key
+            WHERE item.scope = 'private_candidate'
+              AND item.audience_type = 'private_participant'
+              AND item.audience_principal_id = ?
+              {item_filter}
+            GROUP BY item.item_key
+            """,
+            parameters,
+        ).fetchall()
+        for current_revision, latest_revision in rows:
+            SelfStateStore._validate_current_revision_pointer(
+                current_revision, latest_revision
+            )
 
     @staticmethod
     def _validate_snapshot_header(
@@ -1409,8 +1609,16 @@ class SelfStateStore:
             SelfStateStore._require_token("model identifier", revision.model_identifier)
             SelfStateStore._require_token("prompt version", revision.prompt_version)
         SelfStateStore._validate_time("review time", change.review_at)
+        counterevidence_only_revision = (
+            isinstance(change, BeliefCandidateChange)
+            and not creating
+            and type(change.conflicting_event_ids) is tuple
+            and bool(change.conflicting_event_ids)
+        )
         SelfStateStore._validate_event_ids(
-            "supporting evidence", change.supporting_event_ids
+            "supporting evidence",
+            change.supporting_event_ids,
+            allow_empty=counterevidence_only_revision,
         )
         counter_count = 0
         if isinstance(change, BeliefCandidateChange):
