@@ -52,8 +52,8 @@ malformed JSON, duplicate keys, unknown fields and invalid types fail safely.
 
 | Endpoint | Contract |
 | --- | --- |
-| `GET /login` | Obtain a server-held five-minute login CSRF challenge and its cookie. At most 128 pending challenges; expired entries are removed and oldest entries evicted on issuance so anonymous requests cannot fill a global admission gate. |
-| `POST /login` | Exact `username`, `password`, `csrf` fields; matching login cookie and Origin required. Challenge is consumed once, including failed credential attempts. Returns session cookie and session CSRF token on success; generic 401/429 failures. |
+| `GET /login` | Obtain a signed five-minute login CSRF challenge and its cookie, bound to the validated client address. Issuance is read-only and cannot exhaust or evict another client's challenge. |
+| `POST /login` | Exact `username`, `password`, `csrf` fields; matching login cookie and Origin required. Challenge is consumed once, including failed credential attempts. Protected signing key and replay markers survive restart; expired markers are removed during consumption. At most 32 live consumed markers per client, with no global admission quota or eviction of unrelated live evidence. Returns session cookie and session CSRF token on success; generic 401/429 failures. |
 | `GET /status` | Owner session and Origin required. Stage 0 capability status, durable stop, provider suspension/count/evidence, EventStore diagnostics, privacy readiness and at most 50 recent owner audit records. |
 | `POST /operation` | Owner session, Origin and `X-CSRF-Token` required. Issue a server-generated stop operation ID bound to this session, expiring after five minutes or session expiry. At most 32 pending IDs per session. |
 | `POST /stop` | Owner session, Origin, CSRF and exact `operation_id`, boolean `active` fields required. `true` stops; `false` explicitly clears only this stop state. |

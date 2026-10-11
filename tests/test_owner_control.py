@@ -501,14 +501,36 @@ def test_safe_sidecar_and_inode_replacement(boundary, monkeypatch):
 
 def test_login_challenges_bounded_expiring_and_single_use(boundary):
     store, _, now, _ = boundary
-    challenge = store.login_challenge()
-    assert store.consume_login_challenge(challenge)
-    assert not store.consume_login_challenge(challenge)
-    for _ in range(128):
-        store.login_challenge()
-    assert store.login_challenge()
+    client = "127.0.0.1"
+    challenge = store.login_challenge(client)
+    for invalid in [
+        None,
+        "x" * 257,
+        "malformed",
+        "invalid.nonce.client.signature",
+        challenge[:-1] + "x",
+    ]:
+        assert not store.consume_login_challenge(invalid, client)
+    assert not store.consume_login_challenge(challenge, "127.0.0.2")
+    assert store.consume_login_challenge(challenge, client)
+    assert not store.consume_login_challenge(challenge, client)
+    simultaneous = store.login_challenge(client)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        consumed = list(
+            pool.map(
+                lambda _: store.consume_login_challenge(simultaneous, client), range(4)
+            )
+        )
+    assert sorted(consumed) == [False, False, False, True]
+    for _ in range(30):
+        assert store.consume_login_challenge(store.login_challenge(client), client)
+    assert not store.consume_login_challenge(store.login_challenge(client), client)
+    other = "127.0.0.2"
+    assert store.consume_login_challenge(store.login_challenge(other), other)
+    expired = store.login_challenge(client)
     now[0] += timedelta(minutes=5)
-    assert store.login_challenge()
+    assert not store.consume_login_challenge(expired, client)
+    assert store.consume_login_challenge(store.login_challenge(client), client)
 
 
 def test_confirmed_spend_limit_inspection_is_sanitized(boundary):
@@ -627,17 +649,16 @@ def test_anonymous_challenge_flood_does_not_block_owner_login(boundary):
     import sqlite3
 
     store, app, _, _ = boundary
-    oldest = store.login_challenge()
-    for _ in range(128):
-        assert request(app, "/login")[0] == 200
-    assert not store.consume_login_challenge(oldest)
-    with sqlite3.connect(store.path) as connection:
-        assert connection.execute(
-            "SELECT count(*) FROM owner_login_challenges"
-        ).fetchone() == (128,)
+    # Reviewer interleaving: owner obtains a challenge BEFORE the anonymous flood.
     status, challenge, headers, _ = request(app, "/login")
     assert status == 200
     cookie = next(value.split(";")[0] for key, value in headers if key == "Set-Cookie")
+    for _ in range(256):
+        assert request(app, "/login", REMOTE_ADDR="127.0.0.2")[0] == 200
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM owner_login_replays"
+        ).fetchone() == (0,)
     payload = {
         "username": "operator",
         "password": "synthetic-owner-password",
@@ -649,3 +670,7 @@ def test_anonymous_challenge_flood_does_not_block_owner_login(boundary):
     assert status == 200
     assert body["authenticated"] is True
     assert request(app, "/login", "POST", payload=payload, HTTP_COOKIE=cookie)[0] == 403
+    reopened = OwnerStore(store.directory, clock=store._clock)
+    assert not reopened.consume_login_challenge(challenge["csrf"], "127.0.0.1")
+    fresh = store.login_challenge("127.0.0.1")
+    assert reopened.consume_login_challenge(fresh, "127.0.0.1")

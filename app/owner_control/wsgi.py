@@ -65,7 +65,7 @@ class OwnerApplication:
         token = self._http._cookie_value(env, "ar_owner_session")
         if path == "/login":
             if method == "GET":
-                csrf = self.store.login_challenge()
+                csrf = self.store.login_challenge(self._http._client_key(env))
                 return (
                     200,
                     {"csrf": csrf},
@@ -74,16 +74,15 @@ class OwnerApplication:
             self._http._require_origin(env)
             payload = self._body(env, {"username", "password", "csrf"})
             cookie = self._http._cookie_value(env, "ar_owner_login")
+            client = self._http._client_key(env)
             if (
                 type(payload["csrf"]) is not str
                 or not cookie
                 or not secrets.compare_digest(payload["csrf"].encode(), cookie.encode())
-                or not self.store.consume_login_challenge(payload["csrf"])
+                or not self.store.consume_login_challenge(payload["csrf"], client)
             ):
                 raise _RequestError(HTTPStatus.FORBIDDEN, "Invalid CSRF.")
-            result = self.store.login(
-                payload["username"], payload["password"], self._http._client_key(env)
-            )
+            result = self.store.login(payload["username"], payload["password"], client)
             if result.status is not LoginStatus.SUCCESS:
                 return (
                     (429 if result.status is LoginStatus.LOCKED else 401),

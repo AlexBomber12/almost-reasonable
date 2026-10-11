@@ -3,6 +3,7 @@
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
+import hmac
 import os
 from pathlib import Path
 import secrets
@@ -55,7 +56,13 @@ class OwnerStore:
                 )
                 connection.execute("INSERT INTO owner_stop VALUES (1,1)")
                 connection.execute(
-                    "CREATE TABLE owner_login_challenges(digest TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)"
+                    "CREATE TABLE owner_login_replays(digest TEXT PRIMARY KEY, client_digest TEXT NOT NULL, expires_at INTEGER NOT NULL)"
+                )
+                connection.execute(
+                    "CREATE TABLE owner_login_key(secret BLOB NOT NULL CHECK(length(secret)=32))"
+                )
+                connection.execute(
+                    "INSERT INTO owner_login_key VALUES (?)", (secrets.token_bytes(32),)
                 )
                 connection.execute(
                     "CREATE TABLE owner_operations(operation_id TEXT PRIMARY KEY, session_digest TEXT NOT NULL, expires_at INTEGER NOT NULL, action INTEGER, result TEXT)"
@@ -105,30 +112,51 @@ class OwnerStore:
             if connection is not None:
                 connection.close()
 
-    def login_challenge(self):
+    def _login_signature(self, message):
+        with self._connection() as connection:
+            key = connection.execute("SELECT secret FROM owner_login_key").fetchone()[0]
+        return hmac.new(key, message.encode(), hashlib.sha256).hexdigest()
+
+    def login_challenge(self, client):
+        # Issuance is read-only: anonymous traffic cannot evict live challenges.
+        expires = int(self._clock().timestamp()) + 300
+        message = f"{expires}.{secrets.token_hex(16)}.{self._digest(client)}"
+        return message + "." + self._login_signature(message)
+
+    def consume_login_challenge(self, token, client):
+        if type(token) is not str or len(token) > 256:
+            return False
+        now = int(self._clock().timestamp())
+        try:
+            expires, nonce, client_digest, signature = token.split(".")
+            expiry = int(expires)
+            message = f"{expires}.{nonce}.{client_digest}"
+            if (
+                not now < expiry <= now + 300
+                or client_digest != self._digest(client)
+                or not hmac.compare_digest(
+                    signature.encode(), self._login_signature(message).encode()
+                )
+            ):
+                return False
+        except ValueError:
+            return False
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            now = int(self._clock().timestamp())
             connection.execute(
-                "DELETE FROM owner_login_challenges WHERE expires_at <= ?", (now,)
+                "DELETE FROM owner_login_replays WHERE expires_at <= ?", (now,)
             )
-            connection.execute(
-                "DELETE FROM owner_login_challenges WHERE rowid IN "
-                "(SELECT rowid FROM owner_login_challenges ORDER BY rowid "
-                "LIMIT max(0, (SELECT count(*) FROM owner_login_challenges) - 127))"
-            )
-            token = secrets.token_urlsafe(32)
-            connection.execute(
-                "INSERT INTO owner_login_challenges VALUES (?,?)",
-                (self._digest(token), now + 300),
-            )
-            return token
-
-    def consume_login_challenge(self, token):
-        with self._connection() as connection:
+            if (
+                connection.execute(
+                    "SELECT count(*) FROM owner_login_replays WHERE client_digest=?",
+                    (client_digest,),
+                ).fetchone()[0]
+                >= 32
+            ):
+                return False
             cursor = connection.execute(
-                "DELETE FROM owner_login_challenges WHERE digest=? AND expires_at>?",
-                (self._digest(token), int(self._clock().timestamp())),
+                "INSERT OR IGNORE INTO owner_login_replays VALUES (?,?,?)",
+                (self._digest(token), client_digest, expiry),
             )
             return cursor.rowcount == 1
 
