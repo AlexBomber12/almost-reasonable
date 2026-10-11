@@ -861,3 +861,26 @@ def test_expired_reusable_identity_survives_rollback_after_delayed_start(tmp_pat
     reopened = scheduler(path, clock, controls, deliberate)
     assert reopened.run().outcome is SchedulerOutcome.NO_ACTION
     assert calls == [("reusable", "periodic"), ("reusable", "new-valuable-evidence")]
+
+
+@pytest.mark.parametrize("elapsed", [timedelta(hours=25), timedelta(hours=48)])
+def test_claim_covers_long_valid_execution_budget(tmp_path, elapsed):
+    clock, controls = MutableClock(NOW), Controls()
+    allowed = timedelta(hours=48).total_seconds()
+
+    def deliberate(_event, timeout):
+        assert timeout == allowed
+        clock.advance(elapsed)
+        return AgentDecision.NO_ACTION
+
+    running = DurableScheduler(
+        policy(max_execution_seconds=allowed),
+        SQLiteSchedulerRepository(tmp_path / "scheduler.sqlite"),
+        clock,
+        deliberate,
+        owner=controls,
+        provider=controls,
+    )
+    assert running.run((event("long-budget"),)).outcome is SchedulerOutcome.NO_ACTION
+    assert running.repository.outcomes()[-1].outcome is SchedulerOutcome.NO_ACTION
+    assert running.repository.load().last_deliberation_at == clock.now()

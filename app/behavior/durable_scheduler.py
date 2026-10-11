@@ -31,9 +31,6 @@ from app.behavior.scheduler import (
 from app.core.agent_proposals import AgentDecision
 
 
-MAX_CLAIM_LEASE_SECONDS = 24 * 60 * 60
-
-
 class StopSource(Protocol):
     def active(self) -> bool: ...
 
@@ -402,11 +399,7 @@ class DurableScheduler:
         claim = self.repository.claim(
             pending,
             self.clock.now(),
-            timedelta(
-                seconds=min(
-                    self.policy.max_execution_seconds + 5, MAX_CLAIM_LEASE_SECONDS
-                )
-            ),
+            _execution_lease(self.policy.max_execution_seconds),
             self.policy.duplicate_window,
         )
         if isinstance(claim, SchedulerRun):
@@ -455,6 +448,15 @@ class DurableScheduler:
         if not self.repository.complete(claim, memory.load(), result, self.clock.now()):
             return _empty(SchedulerOutcome.EXECUTION_LIMIT)
         return result
+
+
+def _execution_lease(max_seconds: int | float) -> timedelta:
+    # Preserve the accepted timeout and grace rather than imposing a new cap.
+    # Saturation only applies beyond datetime's representable clock domain.
+    try:
+        return timedelta(seconds=max_seconds) + timedelta(seconds=5)
+    except OverflowError:
+        return timedelta.max
 
 
 def _empty(outcome: SchedulerOutcome) -> SchedulerRun:

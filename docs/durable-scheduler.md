@@ -22,12 +22,12 @@ callback. One claim covers all currently due events, selecting the newest once.
 Future events remain durable. Submissions made during a live claim are retained
 within the total 1,024 pending/claimed-event bound. Oversized admission rolls back.
 
-A claim has an opaque owner token and a lease of the policy's maximum execution
-time plus five seconds for bookkeeping, capped at 24 hours. This technical lease
-bound preserves accepted policy values, including very large finite execution
-budgets; the callback still receives the policy's original timeout. The lease
-deadline also clamps to the latest representable UTC instant. The application
-adapter must enforce
+A claim has an opaque owner token and a lease covering the policy's full maximum
+execution time plus five seconds for bookkeeping. Construction saturates to
+`timedelta.max` only if the duration exceeds Python's representable range; the
+absolute deadline clamps to the latest representable UTC instant. There is no
+additional daily cap or shorter model budget. The callback still receives the
+policy's original timeout. The application adapter must enforce
 the supplied hard model-call timeout. Completion requires the matching token,
 matching claimed event identities and an unexpired lease. A successful decision
 also requires a committed start fence. Repeated starts, stale owners and
