@@ -44,9 +44,9 @@ This design deliberately separates four concepts that must not be collapsed:
 3. **Trusted research authorization** is a separate, opaque, integrity-bound,
    short-lived decision for one exact brief and configuration. It must originate
    from application-controlled evidence.
-4. **Provider execution capability** belongs to a future credential-holding
-   worker. This package contains only a deterministic fake transport and cannot
-   perform network I/O.
+4. **Provider execution capability** remains synthetic in the trusted Stage 0
+   worker. Only an exact deterministic fake transport is admitted; a future
+   credential-holding research adapter requires a separately reviewed change.
 
 An arbitrary conversation, participant assertion, extracted memory,
 model-generated question, request field, or self-declared `public` label can at
@@ -203,28 +203,14 @@ The synthesis is untrusted data and explicitly declares that it still requires
 the shared Russian output gate. It is evidence for later cognition integration,
 not a command or a direct belief/goal update.
 
-## Stage 1 worker integration still required
+## Trusted Stage 0 worker integration
 
-After the Stage 1 worker branch lands, a separate authorized change must:
-
-1. add an authenticated application-controlled authorization provider based on
-   trusted public-source evidence, with expiry, replay policy, audit records,
-   and revocation; it must never accept model or request self-classification;
-2. add a narrow credential-holding adapter that accepts only a currently
-   authorized `HostedSearchRequest`, rechecks authorization at the worker
-   boundary, calls `responses.create`, and returns only the modeled response
-   fields or sanitized transport errors;
-3. add the research operation to the worker's authenticated closed protocol
-   without broadening conversation requests or exposing generic provider
-   parameters;
-4. persist sanitized attempt/usage/spend evidence and connect the confirmed
-   spend-suspension state;
-5. recheck capability, emergency stop, budget, retry, and deadline state at the
-   worker boundary;
-6. verify actual approved-model support and SDK serialization with an explicitly
-   authorized credentialed smoke test; and
-7. keep production enablement off until privacy H/M evaluation, the shared
-   Russian output gate, and operator configuration are ready.
+[Trusted research worker](trusted-research-worker.md) defines the separate
+`research-worker-stage0-v1` AF_UNIX endpoint, worker-local fixture authorization,
+replay protection, durable technical evidence, output gating, and the remaining
+separately approved Stage 1 work. Existing `infer` and fixed Stage 1 inference
+smoke contracts are unchanged. Research production issuance and paid transport
+remain unavailable.
 
 No private-participant research, deployment change, credential access, or live
 provider call is part of this implementation.
