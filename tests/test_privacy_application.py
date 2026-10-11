@@ -191,13 +191,13 @@ def test_old_wal_backup_replayed_in_quarantine(setup, tmp_path):
     writer = sqlite3.connect(store.database_path)
     try:
         backup = tmp_path / "old.db"
-        create_sqlite_backup(store.database_path, backup, 5, NOW)
+        create_sqlite_backup(store.database_path, backup, 6, NOW)
         assert (
             coordinator.delete(context(), deletion()).disposition
             is DeletionDisposition.APPLIED
         )
         quarantine = tmp_path / "quarantine.db"
-        result = QuarantinedRestore(ledger, 5, EventStoreRestoreAdapter).restore(
+        result = QuarantinedRestore(ledger, 6, EventStoreRestoreAdapter).restore(
             backup, quarantine, NOW
         )
         assert result.activation_eligible
@@ -525,7 +525,7 @@ def test_current_revocation_no_application_consent_cache_and_released_writer(
         correlation_id="revoke-correlation",
     )
     backup = tmp_path / "revoked-backup.db"
-    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
     adapters = []
 
     class TrackingAdapter(EventStoreRestoreAdapter):
@@ -539,7 +539,7 @@ def test_current_revocation_no_application_consent_cache_and_released_writer(
         return adapter
 
     assert (
-        QuarantinedRestore(ledger, 5, factory)
+        QuarantinedRestore(ledger, 6, factory)
         .restore(backup, tmp_path / "revoked-quarantine.db", NOW)
         .activation_eligible
     )
@@ -573,7 +573,7 @@ def test_real_quarantine_failures_never_become_ready_or_apply_live_ledger(
     if failure == "provenance":
         with sqlite3.connect(store.database_path) as db:
             db.execute("DELETE FROM protected_event_taints WHERE event_id='event-a'")
-    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
 
     def crash(_):
         raise SystemExit
@@ -610,7 +610,7 @@ def test_real_quarantine_failures_never_become_ready_or_apply_live_ledger(
             return failure != "rebuild"
 
     quarantine = tmp_path / "blocked-quarantine.db"
-    result = QuarantinedRestore(ledger, 5, FailingAdapter).restore(
+    result = QuarantinedRestore(ledger, 6, FailingAdapter).restore(
         backup, quarantine, NOW
     )
     assert not result.activation_eligible
@@ -684,7 +684,7 @@ def test_reconcile_applied_record_against_stale_live_copy_fails_closed(setup, tm
     # alone never proves the configured EventStore has been reconciled.
     store, ledger, _, coordinator = setup
     backup = tmp_path / "startup-backup.db"
-    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
     assert (
         coordinator.delete(context(), deletion()).disposition
         is DeletionDisposition.APPLIED
@@ -765,7 +765,7 @@ def test_restore_missing_identity_is_blocked_instead_of_fabricated_tombstone(
 ):
     store, ledger, _, coordinator = setup
     backup = tmp_path / "before-source.db"
-    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
     store.append_private_input(principal("a"), private_input("later", CANARY))
     assert (
         coordinator.delete(
@@ -773,7 +773,7 @@ def test_restore_missing_identity_is_blocked_instead_of_fabricated_tombstone(
         ).disposition
         is DeletionDisposition.APPLIED
     )
-    result = QuarantinedRestore(ledger, 5, EventStoreRestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 6, EventStoreRestoreAdapter).restore(
         backup, tmp_path / "missing-identity.db", NOW
     )
     assert not result.activation_eligible
@@ -788,7 +788,7 @@ def test_gate_readiness_bound_to_reconciled_database_inode(setup, tmp_path):
     gate = PrivacyReadGate(ledger, store)
     assert gate.reconcile()
     backup = tmp_path / "alternate-backup.db"
-    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
     # No restore activation occurs. A synthetic inode replacement must invalidate
     # an already reconciled gate even when the ledger generation is unchanged.
     replacement = tmp_path / "replacement.db"
@@ -809,7 +809,7 @@ def test_gate_discards_read_when_database_inode_changes_during_retrieval(
     gate = PrivacyReadGate(ledger, store)
     assert gate.reconcile()
     backup = tmp_path / "during-read-backup.db"
-    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
     original = store.retrieve_private_events
 
     def swapped(ctx):

@@ -208,3 +208,7 @@ and retention controls, safe live restore activation, shared-memory commits,
 research, mission updates, public disclosure, Threads effects and semantic model
 behavior evaluation remain unavailable or unvalidated. No complete MVP scenario
 is claimed; see the updated scenario traceability in `integration-contracts.md`.
+
+INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence. The
+older component description above does not authorize production sharing.

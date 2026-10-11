@@ -18,6 +18,8 @@ from .action_policy import (
 )
 from .agent_proposals import ReplyProposal
 from .events import TrustedPrincipalContext
+from .shared_graph import validate_shared_graph
+
 from .store import (
     EventIdentityConflictError,
     EventStore,
@@ -44,6 +46,7 @@ class ReplyOperation:
     prompt_version: str
     core_self_version: str
     source_event_ids: tuple[str, ...]
+    shared_operation_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,6 +97,17 @@ class AgentOutputStore:
         ):
             raise EventValidationError("invalid reply sources")
 
+        shared = operation.shared_operation_ids
+        if (
+            type(shared) is not tuple
+            or len(shared) > 16
+            or any(type(item) is not str for item in shared)
+            or tuple(sorted(set(shared))) != shared
+        ):
+            raise EventValidationError("invalid shared reply sources")
+        for item in shared:
+            EventStore._require_token("shared operation", item)
+
     @staticmethod
     def _binding(context: TrustedPrincipalContext, op: ReplyOperation) -> tuple:
         return (
@@ -112,6 +126,27 @@ class AgentOutputStore:
     def _sources_valid(
         db: sqlite3.Connection, principal: str, op: ReplyOperation
     ) -> bool:
+        validate_shared_graph(db)
+        all_sources = set(op.source_event_ids)
+        for shared in op.shared_operation_ids:
+            authorized = db.execute(
+                """SELECT 1 FROM shared_operations o
+                JOIN protected_shared_audiences a USING(operation_id)
+                WHERE o.operation_id=? AND o.status='active'
+                    AND a.principal_id=? AND a.purpose='conversation'""",
+                (shared, principal),
+            ).fetchone()
+            if authorized is None:
+                return False
+            all_sources.update(
+                e[0]
+                for e in db.execute(
+                    "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                    (shared,),
+                )
+            )
+        if len(all_sources) > 100:
+            return False
         for source in op.source_event_ids:
             row = db.execute(
                 """
@@ -188,10 +223,13 @@ class AgentOutputStore:
                     """
                     INSERT INTO agent_reply_operations(operation_id, audience_principal_id,
                         initiating_event_id, conversation_id, correlation_id, model_identifier,
-                        prompt_version, core_self_version, source_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        prompt_version, core_self_version, source_count, shared_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                    self._binding(context, operation),
+                    (
+                        *self._binding(context, operation),
+                        len(operation.shared_operation_ids),
+                    ),
                 )
                 db.executemany(
                     """
@@ -201,6 +239,13 @@ class AgentOutputStore:
                     (
                         (operation.operation_id, source, context.principal_id.value)
                         for source in operation.source_event_ids
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO protected_reply_shared VALUES (?, ?, 1)",
+                    (
+                        (operation.operation_id, item)
+                        for item in operation.shared_operation_ids
                     ),
                 )
                 return PrivateReply(
@@ -326,6 +371,15 @@ class AgentOutputStore:
             source[1:] != (context.principal_id.value, "active") for source in sources
         ):
             return None
+        shared = tuple(
+            item[0]
+            for item in db.execute(
+                "SELECT shared_operation FROM protected_reply_shared WHERE operation_id=? ORDER BY shared_operation",
+                (operation_id,),
+            )
+        )
+        if len(shared) != row[13]:
+            return None
         op = ReplyOperation(
             row[0],
             row[2],
@@ -335,9 +389,13 @@ class AgentOutputStore:
             row[6],
             row[7],
             tuple(source[0] for source in sources),
+            shared,
         )
         self._validate(context, op)
-        if not self._sources_valid(db, context.principal_id.value, op):
+        try:
+            if not self._sources_valid(db, context.principal_id.value, op):
+                return None
+        except ValueError:
             return None
         correlation = db.execute(
             "SELECT correlation_id FROM event_envelopes WHERE event_id=?",

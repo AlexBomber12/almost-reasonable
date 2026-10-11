@@ -203,3 +203,7 @@ SCN-11, and SCN-12, but it does not by itself satisfy full M5 or SCN-07
 acceptance. In particular, generic memory durability, production restore activation,
 shared-state promotion, mission revision, and real-model behavioral evaluation
 remain incomplete. Private deletion/reconciliation is connected in INT-05A.
+
+INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence. The
+older component description above does not authorize production sharing.

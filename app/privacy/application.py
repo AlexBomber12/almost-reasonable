@@ -1,4 +1,4 @@
-"""Reviewed Stage 0 EventStore v5 erasure and quarantine boundaries.
+"""Reviewed Stage 0 EventStore v6 erasure and quarantine boundaries.
 
 Only event references with PRIVATE_PAYLOAD category are accepted. Metadata and
 invalidated protected edges remain for identity/replay checks, never for model or
@@ -18,6 +18,7 @@ from app.core.events import TrustedPrincipalContext
 from app.core.self_state import StateType
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, SCHEMA_VERSION
+from app.core.shared_graph import validate_shared_graph, erase_shared_source
 
 from .deletion import DeletionCoordinator
 from .ledger import PrivacyLedger
@@ -36,7 +37,8 @@ class ApplicationPrivacyError(RuntimeError):
     """A fixed, payload-free application validation reason."""
 
 
-# Every v5 table is either validated here, mutated below, or metadata-only:
+# Legacy private tables are validated here; v6 shared tables are validated by
+# shared_graph and erased in the same transaction. Metadata-only tables include:
 # schema_metadata and provider_{spend_suspensions,attempt_reservations,usage_attempts}.
 # Provider records contain usage/control metadata, never prompts or model results.
 _GRAPH_CHECKS = (
@@ -172,12 +174,17 @@ def _validate_graph(
         EventStore._verify_schema_version(db, 4)
         checks = _GRAPH_CHECKS[2:]  # v4 has no resolution or commit-sequence tables.
     else:
-        EventStore._verify_current_schema(db)
+        EventStore._verify_schema_version(db, schema_version)
         checks = _GRAPH_CHECKS
     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
+    if schema_version == 6:
+        try:
+            validate_shared_graph(db)
+        except ValueError as error:
+            raise ApplicationPrivacyError(str(error)) from None
     for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
@@ -237,11 +244,13 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
+        if schema_version == 6:
+            erase_shared_source(db, request.content_reference)
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
         _validate_graph(db, schema_version)
-    # SQLite updates its ordinary indexes in this transaction. No keyed content
-    # fingerprints, summaries or generic memory exist in the exact v4 schema.
-    # Shared state is provably empty above; any future category/object is blocked.
+    # SQLite updates indexes in this transaction. Legacy shared rows remain
+    # unsupported; exactly the v6 graph is cascaded above, including removable
+    # candidate fingerprints. Unknown schemas/categories continue to fail closed.
     return ErasureReport(
         True, True, frozenset(ContentCategory.required_erasure_categories()), ()
     )

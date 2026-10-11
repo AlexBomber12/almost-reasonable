@@ -128,3 +128,7 @@ authorized research evidence integration, privacy-safe shared influence, semanti
 injection/paraphrase-leakage evaluation and approved production enrollment,
 processor/retention/deletion controls and restore activation. This PR completes
 the synthetic private slice; it does not claim full M5 acceptance.
+
+INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence. The
+older component description above does not authorize production sharing.

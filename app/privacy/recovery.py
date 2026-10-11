@@ -13,7 +13,14 @@ import stat
 from typing import Protocol
 from uuid import uuid4
 
-from app.core.store import _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5
+from app.core.store import (
+    _SCHEMA_V1,
+    _SCHEMA_V2,
+    _SCHEMA_V3,
+    _SCHEMA_V4,
+    _SCHEMA_V5,
+    _SCHEMA_V6,
+)
 
 from . import files as _files
 from .ledger import PrivacyLedger
@@ -59,6 +66,7 @@ def _expected_application_schemas() -> dict[int, dict[tuple[str, str, str], str]
         4: (*_SCHEMA_V1, *_SCHEMA_V2, *_SCHEMA_V3, *_SCHEMA_V4),
         5: (*_SCHEMA_V1, *_SCHEMA_V2, *_SCHEMA_V3, *_SCHEMA_V4, *_SCHEMA_V5),
     }
+    statements_by_version[6] = (*statements_by_version[5], *_SCHEMA_V6)
     schemas = {}
     for version, statements in statements_by_version.items():
         with sqlite3.connect(":memory:") as connection:
