@@ -199,7 +199,10 @@ def _cleanup_created_resumable(owned: list[_OwnedFile]) -> None:
 
 
 def _cleanup_created_database_sidecars(
-    owned: list[_OwnedFile], *, count: int | None = None
+    owned: list[_OwnedFile],
+    *,
+    count: int | None = None,
+    preserved_sidecars: set[Path],
 ) -> None:
     outputs = owned if count is None else owned[:count]
     for output in outputs:
@@ -225,13 +228,19 @@ def _cleanup_created_database_sidecars(
             for sidecar_path, descriptor in pinned.sidecars:
                 if _path_matches_descriptor(sidecar_path, descriptor):
                     os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
+                else:
+                    preserved_sidecars.add(sidecar_path)
         finally:
             _close_pinned_database(pinned)
 
 
-def _cleanup_missing_database_sidecars(output: _OwnedFile) -> None:
+def _cleanup_missing_database_sidecars(
+    output: _OwnedFile, preserved_sidecars: set[Path] | None = None
+) -> None:
     for suffix in _SQLITE_SIDECAR_SUFFIXES:
         sidecar_path = Path(f"{output.path}{suffix}")
+        if preserved_sidecars is not None and sidecar_path in preserved_sidecars:
+            continue
         try:
             descriptor = os.open(
                 sidecar_path.name,
@@ -264,13 +273,39 @@ def _cleanup_missing_database_sidecars(output: _OwnedFile) -> None:
 def _cleanup_created_database(
     owned: list[_OwnedFile], *, count: int | None = None
 ) -> None:
+    outputs = owned if count is None else owned[:count]
+    post_cleanup_outputs = [
+        _OwnedFile(
+            output.path,
+            output.descriptor,
+            os.dup(output.parent_descriptor),
+            output.cleanup_alias,
+        )
+        for output in outputs
+    ]
+    preserved_sidecars: set[Path] = set()
     try:
-        _cleanup_created_database_sidecars(owned, count=count)
-    except BaseException:
-        _cleanup_created_database_sidecars(owned, count=count)
+        try:
+            _cleanup_created_database_sidecars(
+                owned,
+                count=count,
+                preserved_sidecars=preserved_sidecars,
+            )
+        except BaseException:
+            _cleanup_created_database_sidecars(
+                owned,
+                count=count,
+                preserved_sidecars=preserved_sidecars,
+            )
+            _cleanup_created(owned, count=count)
+            raise
         _cleanup_created(owned, count=count)
-        raise
-    _cleanup_created(owned, count=count)
+    finally:
+        for output in post_cleanup_outputs:
+            try:
+                _cleanup_missing_database_sidecars(output, preserved_sidecars)
+            finally:
+                os.close(output.parent_descriptor)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:
