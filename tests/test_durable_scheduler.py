@@ -823,3 +823,15 @@ def test_lease_deadline_clamps_at_latest_representable_instant(tmp_path):
     # later instant in which execution could start with an unexpired lease.
     recovered = repo.claim((), latest, timedelta(seconds=5))
     assert recovered.events == claim.events
+
+
+@pytest.mark.parametrize(
+    "cadence", [timedelta.max, timedelta(days=365001, microseconds=1)]
+)
+def test_selected_cadence_round_trips_exactly_across_restart(tmp_path, cadence):
+    path = tmp_path / "scheduler.sqlite"
+    repo = SQLiteSchedulerRepository(path)
+    repo.select_cadence(cadence)
+    reopened = SQLiteSchedulerRepository(path)
+    claim = reopened.claim((event("cadence"),), NOW, timedelta(seconds=5))
+    assert claim.cadence == cadence

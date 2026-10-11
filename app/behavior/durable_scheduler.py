@@ -69,7 +69,7 @@ class SQLiteSchedulerRepository:
             if not versions:
                 db.execute("INSERT INTO scheduler_schema VALUES(1)")
             db.execute(
-                "CREATE TABLE IF NOT EXISTS scheduler_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL, cadence REAL, watermark TEXT)"
+                "CREATE TABLE IF NOT EXISTS scheduler_state(singleton INTEGER PRIMARY KEY CHECK(singleton=1), payload TEXT NOT NULL, cadence TEXT, watermark TEXT)"
             )
             db.execute(
                 "INSERT OR IGNORE INTO scheduler_state VALUES(1, ?, NULL, NULL)",
@@ -115,10 +115,11 @@ class SQLiteSchedulerRepository:
         """Application accepts an agent-selected interval, never an activity quota."""
         if not isinstance(cadence, timedelta) or cadence <= timedelta(0):
             raise ValueError("cadence must be positive")
+        microseconds = (
+            cadence.days * 86400 + cadence.seconds
+        ) * 1000000 + cadence.microseconds
         with self._transaction() as db:
-            db.execute(
-                "UPDATE scheduler_state SET cadence=?", (cadence.total_seconds(),)
-            )
+            db.execute("UPDATE scheduler_state SET cadence=?", (str(microseconds),))
 
     def outcomes(self) -> tuple[SchedulerRun, ...]:
         with self._transaction() as db:
@@ -245,7 +246,7 @@ class SQLiteSchedulerRepository:
                 token,
                 events,
                 state,
-                None if cadence is None else timedelta(seconds=cadence),
+                None if cadence is None else timedelta(microseconds=int(cadence)),
             )
 
     @staticmethod

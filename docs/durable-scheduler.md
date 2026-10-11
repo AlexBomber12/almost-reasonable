@@ -80,7 +80,8 @@ owned solely by the existing provider-state store. Clearing stop changes no
 capabilities and enables no public effect.
 
 `repository.select_cadence(timedelta(...))` persists an application-accepted,
-agent-selected positive interval across restart. It preserves the existing
+agent-selected positive interval exactly, including microseconds, across restart.
+It preserves the existing
 cadence semantics (including the technical action-rate window), active hours,
 cooldown and one-iteration bound. Cadence updates during deliberation are not
 overwritten by completion. Wake-up event creation remains the application's
