@@ -327,6 +327,8 @@ class SharedIntelligence:
             ):
                 sources[e] = (e, p, "inherited", classification)
         for e in a.proposal.protected_source_event_ids:
+            if e in sources:
+                raise ValueError("shared revision cannot relist inherited source")
             row = db.execute(
                 "SELECT audience_principal_id, payload_id FROM event_envelopes WHERE event_id=?",
                 (e,),

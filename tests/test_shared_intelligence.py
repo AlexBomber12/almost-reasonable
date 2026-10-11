@@ -215,7 +215,8 @@ def test_mission_two_phase_restart_and_deletion_reassessment(shared):
         approval(
             "event-b-later",
             op="shared-b",
-            revision=1,
+            revision=0,
+            item="independent-confirmation",
             author="b",
             counter=("event-b-later",),
             value="Consider competing explanations of uncertainty.",
@@ -1077,5 +1078,69 @@ def test_shared_payload_must_match_exact_screened_application_binding(shared, mu
     with sqlite3.connect(events.database_path) as db:
         db.execute(mutation)
     with pytest.raises(ValueError):
+        app.context(principal("b"))
+    assert not gate.reconcile()
+
+
+def test_relisting_parent_event_cannot_reclassify_counterevidence(shared):
+    events, _, gate, _, b = shared
+    new = append_event(
+        events,
+        principal("b"),
+        "new-relist-evidence",
+        "Synthetic subsequent observation.",
+    )
+    first = approval(b, author="b", counter=(b,))
+    relisted = approval(new, op="relisted", author="b", revision=1)
+    relisted = replace(
+        relisted,
+        proposal=replace(relisted.proposal, protected_source_event_ids=(b, new)),
+    )
+    proper = replace(
+        relisted,
+        proposal=replace(
+            relisted.proposal,
+            operation_id="new-only",
+            protected_source_event_ids=(new,),
+        ),
+    )
+    app = SharedIntelligence(
+        events, gate, approvals=(first, relisted, proper), clock=lambda: NOW
+    )
+    app.commit(first)
+    with pytest.raises(ValueError, match="relist inherited"):
+        app.commit(relisted)
+    assert app.context(principal("b"))[0].counterevidence_count == 1
+    app.commit(proper)
+    assert app.context(principal("b"))[0].counterevidence_count == 1
+    with events._open() as db:
+        assert db.execute(
+            "SELECT role,classification FROM protected_shared_sources WHERE operation_id=? AND event_id=?",
+            ("new-only", b),
+        ).fetchone() == ("inherited", "counter")
+
+
+def test_graph_rejects_reclassification_even_with_rewritten_child_manifest(shared):
+    events, _, gate, _, b = shared
+    new = append_event(
+        events,
+        principal("b"),
+        "new-classification",
+        "Synthetic supplementary evidence.",
+    )
+    first = approval(b, author="b", counter=(b,))
+    second = approval(new, op="classification-child", author="b", revision=1)
+    app = SharedIntelligence(events, gate, approvals=(first, second), clock=lambda: NOW)
+    app.commit(first)
+    app.commit(second)
+    with events._open() as db:
+        db.execute(
+            "UPDATE protected_shared_sources SET role='supporting',classification='supporting' WHERE operation_id='classification-child' AND event_id=?",
+            (b,),
+        )
+        db.execute(
+            "UPDATE protected_shared_manifests SET binding=json_set(binding,'$.sources[0][2]','supporting','$.sources[0][3]','supporting') WHERE operation_id='classification-child'"
+        )
+    with pytest.raises(ValueError, match="protected_shared_graph"):
         app.context(principal("b"))
     assert not gate.reconcile()

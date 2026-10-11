@@ -181,3 +181,23 @@ def test_missing_ambiguous_or_forged_mission_source_binding_never_grants_authori
             "UPDATE shared_mission_document SET document=json_set(document,'$.proposals[1].proposal.initiating_source_id','shared-a')"
         )
         assert not adapter._authority(db, "shared-a", sources)
+
+
+def test_inherited_source_from_original_principal_cannot_confirm_mission(case):
+    _, _, tick, adapter, _, proposal, approvals = case
+    adapter.propose(**proposal)
+    tick[0] += timedelta(seconds=1)
+    evidence(
+        case,
+        "contaminating-source",
+        "contaminated-root",
+        author="a",
+        item="contaminated",
+    )
+    tick[0] += timedelta(seconds=1)
+    evidence(case, "later-independent-row", "shared-c", item="contaminated", revision=1)
+    with pytest.raises(ValueError, match="independently authorized"):
+        adapter.confirm(
+            approvals[4], correlation_id="corr-c", counterevidence_checked=True
+        )
+    assert adapter.current_mission().version == "mission-v1"

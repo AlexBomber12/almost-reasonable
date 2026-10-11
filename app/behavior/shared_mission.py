@@ -169,7 +169,7 @@ class SharedMissionAdapter:
                 return False
             later = self._active(db, source.evidence_id)
             new = db.execute(
-                "SELECT s.event_id, s.source_principal, e.occurred_at FROM protected_shared_sources s JOIN event_envelopes e USING(event_id) WHERE s.operation_id=? AND s.role<>'inherited'",
+                "SELECT s.event_id, s.source_principal, e.occurred_at FROM protected_shared_sources s JOIN event_envelopes e USING(event_id) WHERE s.operation_id=?",
                 (source.evidence_id,),
             ).fetchall()
             if later <= proposed_at or any(

@@ -43,7 +43,9 @@ sources are rejected before persistence and cannot become screened approvals.
 ## Revision and context behavior
 
 An item has at most 32 revisions. Each revision has at most 50 distinct material
-sources and 16 explicit conversation audiences. The new author's source set is
+sources and 16 explicit conversation audiences. Incoming proposals may not relist
+inherited events; their earlier supporting/counterevidence classification is
+preserved and checked against the parent even if child metadata is rewritten. The new author's source set is
 resolved within that author's existing private scope. Earlier material sources
 are inherited in full; a revision may narrow its parent's audience but cannot
 expand it. Exceeding a dependency bound rejects the change rather than dropping
@@ -95,7 +97,8 @@ readable and replayable; missing, ambiguous or forged bindings grant no authorit
 
 A separate constructor-bound `SyntheticMissionConfirmationApproval` grants only
 one exact proposal/evidence/outcome combination. Confirmation requires later
-shared evidence and material private events arriving after the original proposal,
+shared evidence whose entire protected source set, including inherited rows,
+contains only material private events arriving after the original proposal,
 from principals outside the original material source set. Original evidence,
 old assertions repackaged later, synthetic owner claims, forged verification,
 stale parents, changed operational invariants and absent counterevidence checks
@@ -155,6 +158,7 @@ full M5 acceptance.
 | Injection, private paraphrase, quotation and canary denial | Completed: closed-vocabulary promotion tests plus preserved cognition screening suite |
 | Whole-record UTF-8 and complete dependency bounds | Completed: context limits and protected reply source tests |
 | Two-phase mission activation and restart | Completed: `test_mission_two_phase_restart_and_deletion_reassessment` |
+| Inherited mission evidence and relisted counterevidence | Completed: full-source independence and relisting/classification regression tests |
 | Independent rejection and no_change | Completed: mission rejection and missing-check tests |
 | Self-confirmation, stale evidence/parent, owner/verification claims, changed invariants | Completed: mission authority, current revision and invariant tests |
 | Reused proposal origin and superseded confirmation evidence | Completed: `test_shared_mission_feedback.py`; exact cutoff, current-head confirmation, historical/restart/legacy replay |
