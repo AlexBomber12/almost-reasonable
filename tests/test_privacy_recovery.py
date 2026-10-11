@@ -1284,6 +1284,51 @@ def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
         assert owned_file.parent_descriptor in closed
 
 
+def test_readiness_marker_cleanup_resumes_after_an_interrupt(tmp_path, monkeypatch):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    quarantine = tmp_path / "quarantine.sqlite3"
+    marker = Path(f"{quarantine}.ready.json")
+    real_cleanup_created = recovery_module._cleanup_created
+    marker_cleanup_attempts = 0
+
+    def interrupt_first_marker_cleanup(owned, **kwargs):
+        nonlocal marker_cleanup_attempts
+        if owned and owned[0].path == marker:
+            marker_cleanup_attempts += 1
+            if marker_cleanup_attempts == 1:
+                raise SimulatedInterrupt()
+        real_cleanup_created(owned, **kwargs)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            recovery_module, "_cleanup_created", interrupt_first_marker_cleanup
+        )
+        patch.setattr(
+            recovery_module,
+            "_write_all",
+            lambda *_args: (_ for _ in ()).throw(OSError("marker write failed")),
+        )
+        with pytest.raises(SimulatedInterrupt):
+            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+                backup, quarantine, NOW
+            )
+
+    assert marker_cleanup_attempts == 2
+    assert not quarantine.exists()
+    assert not marker.exists()
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+
+
 def test_readiness_close_interrupt_preserves_committed_artifacts(tmp_path, monkeypatch):
     class SimulatedInterrupt(BaseException):
         pass

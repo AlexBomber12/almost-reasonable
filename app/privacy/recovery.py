@@ -1007,10 +1007,10 @@ class QuarantinedRestore:
                 raise BackupError("privacy ledger changed before readiness")
             _fsync_owned_parents(marker_files)
         except Exception as error:
-            _cleanup_created(marker_files)
+            _cleanup_created_resumable(marker_files)
             raise BackupError("readiness marker write failed") from error
         except BaseException:
-            _cleanup_created(marker_files)
+            _cleanup_created_resumable(marker_files)
             raise
         published_files = owned.copy()
         try:
@@ -1022,10 +1022,10 @@ class QuarantinedRestore:
                 expected_generation=snapshot.generation,
             )
         except BaseException:
-            _cleanup_created(marker_files)
+            _cleanup_created_resumable(marker_files)
             raise
         if not recorded:
-            _cleanup_created(marker_files)
+            _cleanup_created_resumable(marker_files)
             return self._blocked_restore(
                 restore_id,
                 restored_at,
