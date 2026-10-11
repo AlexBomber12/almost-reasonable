@@ -13,6 +13,8 @@ import stat
 from typing import Protocol
 from uuid import uuid4
 
+from app.core.store import _SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3
+
 from . import files as _files
 from .ledger import PrivacyLedger
 from .models import (
@@ -37,6 +39,37 @@ _SQLITE_SIDECAR_SUFFIXES = ("-wal", "-shm", "-journal")
 _directory_is_trusted = _files.directory_is_trusted
 _regular_file_is_trusted = _files.regular_file_is_trusted
 _open_directory_chain = _files.open_trusted_directory_chain
+
+
+def _schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
+    return {
+        (object_type, name, table_name): " ".join(sql.split())
+        for object_type, name, table_name, sql in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master "
+            "WHERE name NOT LIKE 'sqlite_%' AND sql IS NOT NULL"
+        )
+    }
+
+
+def _expected_application_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
+    statements_by_version = {
+        1: _SCHEMA_V1,
+        2: (*_SCHEMA_V1, *_SCHEMA_V2),
+        3: (*_SCHEMA_V1, *_SCHEMA_V2, *_SCHEMA_V3),
+    }
+    schemas = {}
+    for version, statements in statements_by_version.items():
+        with sqlite3.connect(":memory:") as connection:
+            for statement in statements:
+                connection.execute(statement)
+            schemas[version] = _schema_objects(connection)
+    return schemas
+
+
+_EXPECTED_APPLICATION_SCHEMAS = _expected_application_schemas()
+_KNOWN_APPLICATION_SCHEMA_KEYS = frozenset(
+    key for schema in _EXPECTED_APPLICATION_SCHEMAS.values() for key in schema
+)
 
 
 class BackupError(RuntimeError):
@@ -122,6 +155,18 @@ def _connection_schema_version(connection: sqlite3.Connection) -> int:
     ).fetchone()
     user_version = connection.execute("PRAGMA user_version").fetchone()[0]
     if row is None or type(row[0]) is not int or user_version != row[0]:
+        raise BackupError("unable to validate database schema")
+    expected_schema = _EXPECTED_APPLICATION_SCHEMAS.get(row[0])
+    actual_schema = _schema_objects(connection)
+    if (
+        expected_schema is None
+        or {
+            key: sql
+            for key, sql in actual_schema.items()
+            if key in _KNOWN_APPLICATION_SCHEMA_KEYS
+        }
+        != expected_schema
+    ):
         raise BackupError("unable to validate database schema")
     return row[0]
 
@@ -772,12 +817,13 @@ class QuarantinedRestore:
         try:
             _require_database_identity(pinned_backup)
             _load_metadata(backup, self.expected_schema_version)
-            if (
-                _schema_version(
+            try:
+                backup_schema_version = _schema_version(
                     pinned_backup.descriptor, immutable=pinned_backup.immutable
                 )
-                != self.expected_schema_version
-            ):
+            except BackupError as error:
+                raise BackupError("unsupported backup schema") from error
+            if backup_schema_version != self.expected_schema_version:
                 raise BackupError("unsupported backup schema")
             _require_database_identity(pinned_backup)
             try:

@@ -13,6 +13,7 @@ import re
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}\Z")
+NOTICE_VERSION = "privacy-notice-ru-v1"
 
 
 def require_token(value: object, name: str) -> str:

@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from .ledger import PrivacyLedger
 from .models import (
     AuditRecord,
+    NOTICE_VERSION,
     OperationOrigin,
     OperationResult,
     TrustedPrivacyContext,
@@ -13,9 +14,6 @@ from .models import (
     require_token,
     require_utc,
 )
-
-
-NOTICE_VERSION = "privacy-notice-ru-v1"
 
 NOTICE_RU = """До начала общения важно знать, как обрабатываются данные.
 

@@ -25,6 +25,7 @@ from .models import (
     DeletionRecord,
     DeletionRequest,
     ErasureReport,
+    NOTICE_VERSION,
     OperationOrigin,
     PrivacyReconciliationSnapshot,
     RestoreDisposition,
@@ -1000,6 +1001,8 @@ class PrivacyLedger:
     ) -> bool:
         require_token(principal_id, "principal id")
         require_token(notice_version, "notice version")
+        if notice_version != NOTICE_VERSION:
+            raise ValueError("unsupported notice version")
         require_token(actor_reference, "actor reference")
         require_token(authentication_event_id, "authentication event id")
         require_utc(acknowledged_at, "acknowledgement timestamp")

@@ -9,6 +9,7 @@ import threading
 
 import pytest
 
+from app.core.store import EventStore
 from app.privacy import recovery as recovery_module
 
 from app.privacy import (
@@ -44,13 +45,9 @@ def context():
 
 
 def make_source(path, message="synthetic deleted private message CANARY-RESTORE"):
+    EventStore(path)
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute("PRAGMA user_version=3")
-    connection.execute(
-        "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
-    )
-    connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
     connection.execute(
         "CREATE TABLE synthetic_private(event_id TEXT PRIMARY KEY, content TEXT)"
     )
@@ -1350,6 +1347,18 @@ def test_backup_rejects_malformed_database_and_verification_faults(
     with pytest.raises(BackupError, match="schema"):
         create_sqlite_backup(empty_schema, tmp_path / "empty-out.sqlite3", 3, NOW)
 
+    unrelated_schema = tmp_path / "unrelated-schema.sqlite3"
+    with sqlite3.connect(unrelated_schema) as connection:
+        connection.execute(
+            "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
+        )
+        connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
+        connection.execute("PRAGMA user_version=3")
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(
+            unrelated_schema, tmp_path / "unrelated-out.sqlite3", 3, NOW
+        )
+
     mismatched_schema = tmp_path / "mismatched-schema.sqlite3"
     make_source(mismatched_schema).close()
     with sqlite3.connect(mismatched_schema) as connection:
@@ -1377,6 +1386,15 @@ def test_backup_rejects_malformed_database_and_verification_faults(
     )
     with pytest.raises(BackupError, match="consistency"):
         create_sqlite_backup(source, tmp_path / "bad-integrity.sqlite3", 3, NOW)
+
+
+def test_backup_rejects_a_copied_schema_version_mismatch(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    monkeypatch.setattr(recovery_module, "_schema_version", lambda *_args, **_kwargs: 2)
+
+    with pytest.raises(BackupError, match="schema verification"):
+        create_sqlite_backup(source, tmp_path / "backup.sqlite3", 3, NOW)
 
 
 def test_backup_rejects_an_unfinalized_wal_snapshot():
@@ -2460,7 +2478,17 @@ def test_restore_rechecks_integrity_after_reconciliation(
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
-@pytest.mark.parametrize("schema_mutation", ["change", "drop", "pragma"])
+@pytest.mark.parametrize(
+    "schema_mutation",
+    [
+        "change",
+        "drop",
+        "pragma",
+        "application_table",
+        "application_index",
+        "application_constraint",
+    ],
+)
 def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -2476,8 +2504,22 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
                     connection.execute("PRAGMA user_version=4")
                 elif schema_mutation == "drop":
                     connection.execute("DROP TABLE schema_metadata")
-                else:
+                elif schema_mutation == "pragma":
                     connection.execute("PRAGMA user_version=4")
+                elif schema_mutation == "application_table":
+                    connection.execute("DROP TABLE provider_spend_suspensions")
+                elif schema_mutation == "application_index":
+                    connection.execute("DROP INDEX provider_usage_correlation")
+                else:
+                    connection.execute(
+                        "ALTER TABLE schema_metadata RENAME TO old_schema_metadata"
+                    )
+                    connection.execute(
+                        "CREATE TABLE schema_metadata("
+                        "singleton INTEGER PRIMARY KEY, version INTEGER)"
+                    )
+                    connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
+                    connection.execute("DROP TABLE old_schema_metadata")
             return True
 
     quarantine = tmp_path / f"quarantine-{schema_mutation}.sqlite3"
@@ -2499,18 +2541,11 @@ def test_restore_validates_the_pinned_backup_schema_before_adapters(
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
     create_sqlite_backup(source, backup, 3, NOW)
-    with sqlite3.connect(backup) as connection:
-        connection.execute("UPDATE schema_metadata SET version=4")
-        connection.execute("PRAGMA user_version=4")
-
-    real_schema_version = recovery_module._schema_version
     validated_targets = []
 
     def schema_version(target, **kwargs):
         validated_targets.append(target)
-        if target == backup:
-            return 3
-        return real_schema_version(target, **kwargs)
+        return 2
 
     adapter_called = False
 
@@ -2528,6 +2563,31 @@ def test_restore_validates_the_pinned_backup_schema_before_adapters(
 
     assert len(validated_targets) == 1
     assert type(validated_targets[0]) is int
+    assert adapter_called is False
+
+
+def test_restore_rejects_a_backup_without_the_full_application_schema(
+    tmp_path,
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    with sqlite3.connect(backup) as connection:
+        connection.execute("DROP INDEX provider_usage_correlation")
+    adapter_called = False
+
+    def adapter_factory(path):
+        nonlocal adapter_called
+        adapter_called = True
+        return RestoreAdapter(path)
+
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    with pytest.raises(BackupError, match="unsupported backup schema"):
+        QuarantinedRestore(ledger, 3, adapter_factory).restore(
+            backup, tmp_path / "quarantine.sqlite3", NOW
+        )
+
     assert adapter_called is False
 
 
@@ -3457,6 +3517,23 @@ def test_ledger_rejects_unauthenticated_direct_notice_acknowledgement(tmp_path):
         )
 
     assert not ledger.has_notice("participant-a", NOTICE_VERSION)
+
+
+def test_ledger_rejects_unsupported_direct_notice_acknowledgement(tmp_path):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+
+    with pytest.raises(ValueError, match="unsupported notice version"):
+        ledger.acknowledge_notice(
+            context(),
+            "participant-a",
+            "privacy-notice-ru-v2",
+            "actor-a",
+            "auth-a",
+            NOW,
+            "notice-direct",
+        )
+
+    assert not ledger.has_notice("participant-a", "privacy-notice-ru-v2")
 
 
 def test_restore_rejects_existing_or_symlink_quarantine(tmp_path):
