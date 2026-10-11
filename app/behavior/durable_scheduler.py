@@ -7,7 +7,7 @@ Expired started work is uncertain and is never automatically called again.
 from collections.abc import Callable
 from contextlib import contextmanager
 from dataclasses import dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import json
 from pathlib import Path
 import sqlite3
@@ -29,6 +29,9 @@ from app.behavior.scheduler import (
     _retention_cutoff,
 )
 from app.core.agent_proposals import AgentDecision
+
+
+MAX_CLAIM_LEASE_SECONDS = 24 * 60 * 60
 
 
 class StopSource(Protocol):
@@ -141,13 +144,15 @@ class SQLiteSchedulerRepository:
             raise ValueError("pending wake-ups exceed the coalescing bound")
         if lease <= timedelta(0):
             raise ValueError("lease must be positive")
-        timestamp = _instant(now).isoformat()
+        now_instant = _instant(now)
+        timestamp = now_instant.isoformat()
         with self._transaction() as db:
             payload, cadence, watermark = db.execute(
                 "SELECT payload, cadence, watermark FROM scheduler_state"
             ).fetchone()
             state = _decode_state(payload)
             if watermark is not None and timestamp < watermark:
+                self._admit(db, pending)
                 return _empty(SchedulerOutcome.EXECUTION_LIMIT)
             db.execute("UPDATE scheduler_state SET watermark=?", (timestamp,))
             db.execute(
@@ -191,22 +196,7 @@ class SQLiteSchedulerRepository:
                         ((identity,) for identity in ids),
                     )
                 db.execute("DELETE FROM scheduler_claim")
-            for item in pending:
-                db.execute(
-                    "INSERT OR IGNORE INTO scheduler_events VALUES(?,?,?,'pending',NULL)",
-                    (
-                        item.event_id,
-                        _instant(item.scheduled_at).isoformat(),
-                        item.trigger,
-                    ),
-                )
-            if (
-                db.execute(
-                    "SELECT count(*) FROM scheduler_events WHERE status IN ('pending','claimed')"
-                ).fetchone()[0]
-                > MAX_PENDING_WAKEUPS
-            ):
-                raise ValueError("pending wake-ups exceed the coalescing bound")
+            self._admit(db, pending)
             if busy:
                 return _empty(SchedulerOutcome.EXECUTION_LIMIT)
             rows = db.execute(
@@ -240,7 +230,10 @@ class SQLiteSchedulerRepository:
                 "INSERT INTO scheduler_claim VALUES(1,?,'claimed',?,NULL,?)",
                 (
                     token,
-                    (_instant(now) + lease).isoformat(),
+                    (
+                        now_instant
+                        + min(lease, datetime.max.replace(tzinfo=UTC) - now_instant)
+                    ).isoformat(),
                     json.dumps([item.event_id for item in events]),
                 ),
             )
@@ -254,6 +247,25 @@ class SQLiteSchedulerRepository:
                 state,
                 None if cadence is None else timedelta(seconds=cadence),
             )
+
+    @staticmethod
+    def _admit(db: sqlite3.Connection, pending: tuple[WakeupEvent, ...]) -> None:
+        for item in pending:
+            db.execute(
+                "INSERT OR IGNORE INTO scheduler_events VALUES(?,?,?,'pending',NULL)",
+                (
+                    item.event_id,
+                    _instant(item.scheduled_at).isoformat(),
+                    item.trigger,
+                ),
+            )
+        if (
+            db.execute(
+                "SELECT count(*) FROM scheduler_events WHERE status IN ('pending','claimed')"
+            ).fetchone()[0]
+            > MAX_PENDING_WAKEUPS
+        ):
+            raise ValueError("pending wake-ups exceed the coalescing bound")
 
     def begin(self, claim: WakeupClaim, now: datetime) -> bool:
         timestamp = _instant(now).isoformat()
@@ -389,7 +401,11 @@ class DurableScheduler:
         claim = self.repository.claim(
             pending,
             self.clock.now(),
-            timedelta(seconds=self.policy.max_execution_seconds + 5),
+            timedelta(
+                seconds=min(
+                    self.policy.max_execution_seconds + 5, MAX_CLAIM_LEASE_SECONDS
+                )
+            ),
             self.policy.duplicate_window,
         )
         if isinstance(claim, SchedulerRun):

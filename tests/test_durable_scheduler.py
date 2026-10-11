@@ -765,3 +765,61 @@ def test_rollback_behind_committed_start_fence_rejects_apparent_success(tmp_path
     )
     assert reopened.run().outcome is SchedulerOutcome.NOTHING_DUE
     assert reopened.repository.outcomes()[-1].outcome is SchedulerOutcome.FAILED
+
+
+def test_one_time_arrival_during_rollback_is_durable_without_resubmission(tmp_path):
+    path = tmp_path / "scheduler.sqlite"
+    clock, controls = MutableClock(NOW), Controls()
+    calls = []
+
+    def deliberate(wakeup, _timeout):
+        calls.append(wakeup.event_id)
+        return AgentDecision.NO_ACTION
+
+    running = scheduler(path, clock, controls, deliberate)
+    assert running.run((event("one"),)).outcome is SchedulerOutcome.NO_ACTION
+    clock.advance(timedelta(seconds=-1))
+    assert (
+        running.run((event("one-time", clock.now()),)).outcome
+        is SchedulerOutcome.EXECUTION_LIMIT
+    )
+    clock.advance(timedelta(minutes=11))
+    reopened = scheduler(path, clock, controls, deliberate)
+    assert reopened.run().outcome is SchedulerOutcome.NO_ACTION
+    assert calls == ["one", "one-time"]
+
+
+@pytest.mark.parametrize("maximum", [1e20, 1e308, 10**308])
+def test_large_valid_execution_limit_has_bounded_runnable_lease(tmp_path, maximum):
+    path = tmp_path / "scheduler.sqlite"
+    clock, controls = MutableClock(NOW), Controls()
+    received = []
+
+    def deliberate(_event, timeout):
+        received.append(timeout)
+        return AgentDecision.NO_ACTION
+
+    running = DurableScheduler(
+        policy(max_execution_seconds=maximum),
+        SQLiteSchedulerRepository(path),
+        clock,
+        deliberate,
+        owner=controls,
+        provider=controls,
+    )
+    assert running.run((event("large-limit"),)).outcome is SchedulerOutcome.NO_ACTION
+    assert received == [maximum]
+
+
+def test_lease_deadline_clamps_at_latest_representable_instant(tmp_path):
+    from datetime import UTC, datetime
+
+    latest = datetime.max.replace(tzinfo=UTC)
+    repo = SQLiteSchedulerRepository(tmp_path / "scheduler.sqlite")
+    claim = repo.claim((event("latest", latest),), latest, timedelta.max)
+    assert claim.events == (event("latest", latest),)
+    assert not repo.begin(claim, latest)
+    # The due event remains recoverable, although there is no representable
+    # later instant in which execution could start with an unexpired lease.
+    recovered = repo.claim((), latest, timedelta(seconds=5))
+    assert recovered.events == claim.events

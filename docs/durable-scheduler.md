@@ -23,7 +23,11 @@ Future events remain durable. Submissions made during a live claim are retained
 within the total 1,024 pending/claimed-event bound. Oversized admission rolls back.
 
 A claim has an opaque owner token and a lease of the policy's maximum execution
-time plus five seconds for bookkeeping. The application adapter must enforce
+time plus five seconds for bookkeeping, capped at 24 hours. This technical lease
+bound preserves accepted policy values, including very large finite execution
+budgets; the callback still receives the policy's original timeout. The lease
+deadline also clamps to the latest representable UTC instant. The application
+adapter must enforce
 the supplied hard model-call timeout. Completion requires the matching token,
 matching claimed event identities and an unexpired lease. A successful decision
 also requires a committed start fence. Repeated starts, stale owners and
@@ -50,8 +54,9 @@ existing 4,096-entry bound. Reuse after normal expiry follows existing scheduler
 semantics; a gateway must still enforce its own durable operation identity.
 
 Wall-clock deadlines use UTC instants. A durable clock watermark includes the
-completed deliberation timestamp, rejects clock rollback, and leaves admission
-eligible when time catches up. Local active-hour policy still uses the injected
+completed deliberation timestamp and rejects execution during clock rollback.
+Arrivals are still admitted transactionally before deferring work, so a one-time
+event survives restart and becomes eligible when the clock catches up. Local active-hour policy still uses the injected
 clock's timezone, including overnight windows and DST folds. The application
 must provide its chosen timezone consistently across restarts.
 
