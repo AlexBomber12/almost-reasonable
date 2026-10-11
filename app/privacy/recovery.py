@@ -67,9 +67,6 @@ def _expected_application_schemas() -> dict[int, dict[tuple[str, str, str], str]
 
 
 _EXPECTED_APPLICATION_SCHEMAS = _expected_application_schemas()
-_KNOWN_APPLICATION_SCHEMA_KEYS = frozenset(
-    key for schema in _EXPECTED_APPLICATION_SCHEMAS.values() for key in schema
-)
 
 
 class BackupError(RuntimeError):
@@ -158,15 +155,7 @@ def _connection_schema_version(connection: sqlite3.Connection) -> int:
         raise BackupError("unable to validate database schema")
     expected_schema = _EXPECTED_APPLICATION_SCHEMAS.get(row[0])
     actual_schema = _schema_objects(connection)
-    if (
-        expected_schema is None
-        or {
-            key: sql
-            for key, sql in actual_schema.items()
-            if key in _KNOWN_APPLICATION_SCHEMA_KEYS
-        }
-        != expected_schema
-    ):
+    if expected_schema is None or actual_schema != expected_schema:
         raise BackupError("unable to validate database schema")
     return row[0]
 
@@ -688,9 +677,10 @@ def create_sqlite_backup(
         pin_sidecars=True,
         expected_schema_version=expected_schema_version,
     )
+    pinned_source_open = True
+    owned: list[_OwnedFile] = []
     try:
         _require_database_identity(pinned_source)
-        owned: list[_OwnedFile] = []
         try:
             for sidecar_path in sidecar_paths:
                 _open_owned_file(sidecar_path, os.O_RDWR, owned)
@@ -744,9 +734,18 @@ def create_sqlite_backup(
         except BaseException:
             _cleanup_created_resumable(owned)
             raise
+        try:
+            try:
+                _close_pinned_database(pinned_source)
+            finally:
+                pinned_source_open = False
+        except BaseException:
+            _cleanup_created_resumable(owned)
+            raise
         _close_owned(owned)
     finally:
-        _close_pinned_database(pinned_source)
+        if pinned_source_open:
+            _close_pinned_database(pinned_source)
     return BackupMetadata(metadata_path, expected_schema_version, created_at)
 
 

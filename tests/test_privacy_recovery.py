@@ -44,16 +44,42 @@ def context():
     )
 
 
+def insert_private_payload(connection, payload_id, content):
+    connection.execute(
+        "INSERT INTO private_payloads("
+        "payload_id, content, audience_type, audience_principal_id, "
+        "provenance_type, verification_status, created_at, retention_status"
+        ") VALUES(?, ?, 'private_participant', 'participant-a', "
+        "'participant_assertion', 'unverified', ?, 'active')",
+        (payload_id, content, NOW.isoformat(timespec="microseconds")),
+    )
+
+
+def insert_event_envelope(connection, event_id, payload_id):
+    connection.execute(
+        "INSERT INTO event_envelopes("
+        "event_id, occurred_at, event_type, channel, correlation_id, "
+        "authenticated_source_ref, source_message_id, audience_type, "
+        "audience_principal_id, provenance_type, verification_status, payload_id"
+        ") VALUES(?, ?, 'participant_input', 'private_chat', ?, ?, ?, "
+        "'private_participant', 'participant-a', 'participant_assertion', "
+        "'unverified', ?)",
+        (
+            event_id,
+            NOW.isoformat(timespec="microseconds"),
+            f"correlation-{event_id}",
+            f"source-{event_id}",
+            f"message-{event_id}",
+            payload_id,
+        ),
+    )
+
+
 def make_source(path, message="synthetic deleted private message CANARY-RESTORE"):
     EventStore(path)
     connection = sqlite3.connect(path)
     connection.execute("PRAGMA journal_mode=WAL")
-    connection.execute(
-        "CREATE TABLE synthetic_private(event_id TEXT PRIMARY KEY, content TEXT)"
-    )
-    connection.execute(
-        "INSERT INTO synthetic_private VALUES('event-001', ?)", (message,)
-    )
+    insert_private_payload(connection, "event-001", message)
     connection.commit()
     return connection
 
@@ -69,7 +95,7 @@ class RestoreAdapter:
             return ErasureReport(False, False, frozenset(), ("integration_blocked",))
         with sqlite3.connect(self.path) as connection:
             connection.execute(
-                "DELETE FROM synthetic_private WHERE event_id = ?",
+                "DELETE FROM private_payloads WHERE payload_id = ?",
                 (record.content_reference,),
             )
         return ErasureReport(
@@ -120,9 +146,8 @@ def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
         index = 0
         connection = sqlite3.connect(source)
         while not stop.is_set():
-            connection.execute(
-                "INSERT OR REPLACE INTO synthetic_private VALUES(?, ?)",
-                (f"event-{index + 2}", f"synthetic-{index}"),
+            insert_private_payload(
+                connection, f"event-{index + 2}", f"synthetic-{index}"
             )
             connection.commit()
             index += 1
@@ -143,8 +168,7 @@ def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
     with sqlite3.connect(destination) as restored:
         assert restored.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
         assert (
-            restored.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
-            >= 1
+            restored.execute("SELECT COUNT(*) FROM private_payloads").fetchone()[0] >= 1
         )
     assert metadata.schema_version == 3
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
@@ -162,7 +186,7 @@ def test_backup_percent_escapes_sqlite_uri_metacharacters(tmp_path):
 
     with sqlite3.connect(destination) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("literal metacharacter source",)
 
 
@@ -285,9 +309,7 @@ def test_backup_rejects_an_unsafe_source_wal_created_after_pinning(
     def create_wal_after_pinning(pinned_source, destination_descriptor):
         writer = sqlite3.connect(source)
         writers.append(writer)
-        writer.execute(
-            "INSERT INTO synthetic_private VALUES('event-late', 'unsafe WAL row')"
-        )
+        insert_private_payload(writer, "event-late", "unsafe WAL row")
         writer.commit()
         Path(f"{source}-wal").chmod(0o666)
         real_copy(pinned_source, destination_descriptor)
@@ -328,7 +350,7 @@ def test_backup_rejects_a_source_swap_during_sidecar_repinning(tmp_path, monkeyp
 
     with sqlite3.connect(source) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("substitute source",)
 
 
@@ -363,11 +385,7 @@ def test_backup_pin_closes_source_and_sidecars_when_validation_errors(
 def test_backup_rejects_foreign_key_violations(tmp_path):
     source = tmp_path / "source.sqlite3"
     with make_source(source) as connection:
-        connection.execute("CREATE TABLE parents(parent_id TEXT PRIMARY KEY)")
-        connection.execute(
-            "CREATE TABLE children(parent_id TEXT REFERENCES parents(parent_id))"
-        )
-        connection.execute("INSERT INTO children VALUES('missing-parent')")
+        insert_event_envelope(connection, "event-orphan", "missing-payload")
 
     destination = tmp_path / "backup.sqlite3"
     with pytest.raises(BackupError, match="consistency verification failed"):
@@ -377,15 +395,11 @@ def test_backup_rejects_foreign_key_violations(tmp_path):
 
 def test_restore_blocks_foreign_key_violations_before_reconciliation(tmp_path):
     source = tmp_path / "source.sqlite3"
-    with make_source(source) as connection:
-        connection.execute("CREATE TABLE parents(parent_id TEXT PRIMARY KEY)")
-        connection.execute(
-            "CREATE TABLE children(parent_id TEXT REFERENCES parents(parent_id))"
-        )
+    make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
     create_sqlite_backup(source, backup, 3, NOW)
     with sqlite3.connect(backup) as connection:
-        connection.execute("INSERT INTO children VALUES('missing-parent')")
+        insert_event_envelope(connection, "event-orphan", "missing-payload")
 
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
@@ -846,6 +860,49 @@ def test_backup_failure_cleanup_resumes_after_an_interrupted_close(
     assert created.path == metadata
 
 
+def test_backup_cleans_outputs_when_pinned_source_teardown_is_interrupted(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    metadata = Path(f"{destination}.metadata.json")
+    real_pin_database = recovery_module._pin_database
+    real_close_pinned_database = recovery_module._close_pinned_database
+    pinned_source = None
+    interrupted = False
+
+    def track_pinned_source(path, label, **kwargs):
+        nonlocal pinned_source
+        pinned = real_pin_database(path, label, **kwargs)
+        if label == "backup source" and pinned_source is None:
+            pinned_source = pinned
+        return pinned
+
+    def close_then_interrupt(database):
+        nonlocal interrupted
+        real_close_pinned_database(database)
+        if database is pinned_source and not interrupted:
+            interrupted = True
+            raise SimulatedInterrupt()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recovery_module, "_pin_database", track_pinned_source)
+        patch.setattr(recovery_module, "_close_pinned_database", close_then_interrupt)
+        with pytest.raises(SimulatedInterrupt):
+            create_sqlite_backup(source, destination, 3, NOW)
+
+    assert interrupted is True
+    assert not destination.exists()
+    assert not metadata.exists()
+    created = create_sqlite_backup(source, destination, 3, NOW)
+    assert destination.exists()
+    assert created.path == metadata
+
+
 @pytest.mark.parametrize("timing", ["before", "after"])
 def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupted(
     tmp_path, monkeypatch, timing
@@ -947,7 +1004,7 @@ def test_backup_copy_cannot_follow_a_replaced_destination_path(tmp_path, monkeyp
 
     with sqlite3.connect(victim) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("unchanged-victim",)
     assert destination.is_symlink()
 
@@ -973,7 +1030,7 @@ def test_backup_copy_cannot_follow_a_replaced_source_path(tmp_path, monkeypatch)
     assert not destination.exists()
     with sqlite3.connect(substitute) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("substitute-source",)
 
 
@@ -1006,11 +1063,11 @@ def test_backup_source_connection_rejects_aba_path_replacement(tmp_path, monkeyp
     assert not destination.exists()
     with sqlite3.connect(source) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("intended-source",)
     with sqlite3.connect(substitute) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("substitute-source",)
 
 
@@ -1075,7 +1132,7 @@ def test_backup_verifies_the_owned_destination_not_a_substitute(tmp_path, mutati
 
     with sqlite3.connect(substitute) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("unchanged-substitute",)
     if mutation == "replace":
         assert destination.is_symlink()
@@ -1577,6 +1634,28 @@ def test_backup_rejects_malformed_database_and_verification_faults(
         create_sqlite_backup(source, tmp_path / "bad-integrity.sqlite3", 3, NOW)
 
 
+@pytest.mark.parametrize("object_type", ["table", "view", "trigger"])
+def test_backup_rejects_unexpected_application_schema_objects(tmp_path, object_type):
+    source = tmp_path / f"source-{object_type}.sqlite3"
+    make_source(source).close()
+    statements = {
+        "table": "CREATE TABLE shadow_private(content TEXT)",
+        "view": (
+            "CREATE VIEW shadow_private AS "
+            "SELECT payload_id, content FROM private_payloads"
+        ),
+        "trigger": (
+            "CREATE TRIGGER shadow_private BEFORE DELETE ON private_payloads "
+            "BEGIN SELECT 1; END"
+        ),
+    }
+    with sqlite3.connect(source) as connection:
+        connection.execute(statements[object_type])
+
+    with pytest.raises(BackupError, match="schema"):
+        create_sqlite_backup(source, tmp_path / f"backup-{object_type}.sqlite3", 3, NOW)
+
+
 def test_backup_rejects_a_copied_schema_version_mismatch(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
@@ -1700,7 +1779,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     assert not Path(f"{quarantine}-shm").exists()
     with sqlite3.connect(quarantine) as connection:
         assert (
-            connection.execute("SELECT COUNT(*) FROM synthetic_private").fetchone()[0]
+            connection.execute("SELECT COUNT(*) FROM private_payloads").fetchone()[0]
             == 0
         )
     assert adapters[0].revocations[0][0] == "consent-001"
@@ -1756,7 +1835,7 @@ def test_restore_seals_away_from_a_long_lived_wal_adapter(tmp_path):
 
         def apply_deletion(self, record):
             self.connection.execute(
-                "DELETE FROM synthetic_private WHERE event_id=?",
+                "DELETE FROM private_payloads WHERE payload_id=?",
                 (record.content_reference,),
             )
             self.connection.commit()
@@ -1787,7 +1866,7 @@ def test_restore_seals_away_from_a_long_lived_wal_adapter(tmp_path):
     assert Path(f"{quarantine}.ready.json").exists()
     with sqlite3.connect(quarantine) as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT COUNT(*) FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == (0,)
     adapters[0].connection.close()
 
@@ -1808,12 +1887,12 @@ def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
             self.connection.execute("PRAGMA journal_mode=WAL")
             self.reader = sqlite3.connect(path)
             self.reader.execute("BEGIN")
-            self.reader.execute("SELECT * FROM synthetic_private").fetchall()
+            self.reader.execute("SELECT * FROM private_payloads").fetchall()
             self.released = False
 
         def apply_deletion(self, record):
             self.connection.execute(
-                "DELETE FROM synthetic_private WHERE event_id=?",
+                "DELETE FROM private_payloads WHERE payload_id=?",
                 (record.content_reference,),
             )
             self.connection.commit()
@@ -1861,9 +1940,9 @@ def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
     try:
         writer.execute("PRAGMA journal_mode=WAL")
         writer.execute("PRAGMA wal_autocheckpoint=0")
-        writer.execute("DELETE FROM synthetic_private")
+        writer.execute("DELETE FROM private_payloads")
         writer.commit()
-        assert writer.execute("SELECT COUNT(*) FROM synthetic_private").fetchone() == (
+        assert writer.execute("SELECT COUNT(*) FROM private_payloads").fetchone() == (
             0,
         )
         assert Path(f"{backup}-wal").exists()
@@ -1918,7 +1997,7 @@ def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
 
         def apply_deletion(self, record):
             self.connection.execute(
-                "DELETE FROM synthetic_private WHERE event_id=?",
+                "DELETE FROM private_payloads WHERE payload_id=?",
                 (record.content_reference,),
             )
             self.connection.commit()
@@ -1942,9 +2021,8 @@ def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
         if adapters and not retained_write_attempted:
             retained_write_attempted = True
             try:
-                adapters[0].connection.execute(
-                    "INSERT INTO synthetic_private VALUES"
-                    "('event-001', 'retained-write')"
+                insert_private_payload(
+                    adapters[0].connection, "event-001", "retained-write"
                 )
                 adapters[0].connection.commit()
             except sqlite3.Error:
@@ -1966,7 +2044,7 @@ def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
     assert retained_write_attempted is True
     with sqlite3.connect(quarantine) as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT COUNT(*) FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == (0,)
     marker = json.loads(Path(f"{quarantine}.ready.json").read_text())
     assert (
@@ -1990,7 +2068,7 @@ def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatc
 
         def apply_deletion(self, record):
             self.connection.execute(
-                "DELETE FROM synthetic_private WHERE event_id=?",
+                "DELETE FROM private_payloads WHERE payload_id=?",
                 (record.content_reference,),
             )
             self.connection.commit()
@@ -2016,8 +2094,8 @@ def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatc
         nonlocal retained_write_blocked
         if adapters and not retained_write_blocked:
             try:
-                adapters[0].connection.execute(
-                    "INSERT INTO synthetic_private VALUES('event-001', 'late write')"
+                insert_private_payload(
+                    adapters[0].connection, "event-001", "late write"
                 )
                 adapters[0].connection.commit()
             except sqlite3.Error:
@@ -2042,7 +2120,7 @@ def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatc
     assert retained_write_blocked is True
     with sqlite3.connect(quarantine) as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT COUNT(*) FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == (0,)
 
 
@@ -2320,9 +2398,7 @@ def test_restore_cleans_late_adapter_wal_after_sealing(tmp_path, monkeypatch):
     def write_before_staging_cleanup(outputs, *, count=None):
         nonlocal late_write_committed
         if count == 1 and not late_write_committed:
-            adapters[0].connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-late', 'private')"
-            )
+            insert_private_payload(adapters[0].connection, "event-late", "private")
             adapters[0].connection.commit()
             late_write_committed = True
         return real_cleanup(outputs, count=count)
@@ -2340,7 +2416,7 @@ def test_restore_cleans_late_adapter_wal_after_sealing(tmp_path, monkeypatch):
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
     with sqlite3.connect(quarantine) as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-late'"
+            "SELECT COUNT(*) FROM private_payloads WHERE payload_id='event-late'"
         ).fetchone() == (0,)
     adapters[0].connection.close()
 
@@ -2380,9 +2456,7 @@ def test_restore_cleans_wal_created_between_sidecar_scan_and_main_unlink(
         )
         if count == 1 and not late_write_committed:
             adapters[0].connection.execute("PRAGMA journal_mode=WAL")
-            adapters[0].connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-gap', 'private')"
-            )
+            insert_private_payload(adapters[0].connection, "event-gap", "private")
             adapters[0].connection.commit()
             late_write_committed = True
         return result
@@ -2402,7 +2476,7 @@ def test_restore_cleans_wal_created_between_sidecar_scan_and_main_unlink(
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
     with sqlite3.connect(quarantine) as connection:
         assert connection.execute(
-            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-gap'"
+            "SELECT COUNT(*) FROM private_payloads WHERE payload_id='event-gap'"
         ).fetchone() == (0,)
     adapters[0].connection.close()
 
@@ -2446,9 +2520,7 @@ def test_restore_post_unlink_sidecar_sweep_resumes_after_interruption(
         )
         if count == 1 and not late_write_committed:
             adapters[0].connection.execute("PRAGMA journal_mode=WAL")
-            adapters[0].connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-sweep', 'private')"
-            )
+            insert_private_payload(adapters[0].connection, "event-sweep", "private")
             adapters[0].connection.commit()
             late_write_committed = True
         return result
@@ -2713,6 +2785,7 @@ def test_restore_rechecks_integrity_after_reconciliation(
         "application_table",
         "application_index",
         "application_constraint",
+        "application_extra",
     ],
 )
 def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation):
@@ -2736,7 +2809,7 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
                     connection.execute("DROP TABLE provider_spend_suspensions")
                 elif schema_mutation == "application_index":
                     connection.execute("DROP INDEX provider_usage_correlation")
-                else:
+                elif schema_mutation == "application_constraint":
                     connection.execute(
                         "ALTER TABLE schema_metadata RENAME TO old_schema_metadata"
                     )
@@ -2746,6 +2819,11 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
                     )
                     connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
                     connection.execute("DROP TABLE old_schema_metadata")
+                else:
+                    connection.execute(
+                        "CREATE TRIGGER shadow_private BEFORE DELETE ON "
+                        "private_payloads BEGIN SELECT 1; END"
+                    )
             return True
 
     quarantine = tmp_path / f"quarantine-{schema_mutation}.sqlite3"
@@ -3035,7 +3113,7 @@ def test_restore_rejects_a_replaced_quarantine_before_reconciliation(
     staging = next(tmp_path.glob(".privacy-restore-*.sqlite3"))
     with sqlite3.connect(staging) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("substitute-quarantine",)
 
 
@@ -3058,8 +3136,8 @@ def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
             try:
                 with sqlite3.connect(self.path) as connection:
                     content = connection.execute(
-                        "SELECT content FROM synthetic_private "
-                        "WHERE event_id='event-001'"
+                        "SELECT content FROM private_payloads "
+                        "WHERE payload_id='event-001'"
                     ).fetchone()
             finally:
                 staging.rename(substitute)
@@ -3073,7 +3151,7 @@ def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
     with sqlite3.connect(substitute) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("substitute-quarantine",)
 
 
@@ -3087,9 +3165,7 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     def failed_factory(path):
         with sqlite3.connect(path) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
-            connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-init', 'private fault')"
-            )
+            insert_private_payload(connection, "event-init", "private fault")
         raise RuntimeError("synthetic private adapter detail")
 
     quarantine = tmp_path / "quarantine.sqlite3"
@@ -3126,9 +3202,7 @@ def test_restore_adapter_factory_interruption_cleans_wal_staging(tmp_path):
         connection = sqlite3.connect(path)
         connections.append(connection)
         connection.execute("PRAGMA journal_mode=WAL")
-        connection.execute(
-            "INSERT INTO synthetic_private VALUES('event-init-interrupt', 'private')"
-        )
+        insert_private_payload(connection, "event-init-interrupt", "private")
         connection.commit()
         raise SimulatedInterrupt()
 
@@ -3172,9 +3246,7 @@ def test_restore_writer_release_failure_does_not_publish_wal_staging(
             self.connection.execute("PRAGMA journal_mode=WAL")
 
         def rebuild_dependencies(self):
-            self.connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-release', 'private')"
-            )
+            insert_private_payload(self.connection, "event-release", "private")
             self.connection.commit()
             return True
 
@@ -3222,9 +3294,7 @@ def test_restore_writer_release_interruption_cleans_wal_staging(tmp_path):
             self.connection.execute("PRAGMA journal_mode=WAL")
 
         def rebuild_dependencies(self):
-            self.connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-interrupt', 'private')"
-            )
+            insert_private_payload(self.connection, "event-interrupt", "private")
             self.connection.commit()
             return True
 
@@ -3270,9 +3340,7 @@ def test_restore_sidecar_cleanup_resumes_after_an_unlink_interruption(
             self.connection.execute("PRAGMA journal_mode=WAL")
 
         def rebuild_dependencies(self):
-            self.connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-cleanup', 'private')"
-            )
+            insert_private_payload(self.connection, "event-cleanup", "private")
             self.connection.commit()
             return True
 
@@ -3331,10 +3399,10 @@ def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
             writer.execute("PRAGMA journal_mode=WAL")
             self.reader = sqlite3.connect(self.staging)
             self.reader.execute("BEGIN")
-            self.reader.execute("SELECT * FROM synthetic_private").fetchall()
+            self.reader.execute("SELECT * FROM private_payloads").fetchall()
             writer.execute(
-                "UPDATE synthetic_private SET content='replacement-wal' "
-                "WHERE event_id='event-001'"
+                "UPDATE private_payloads SET content='replacement-wal' "
+                "WHERE payload_id='event-001'"
             )
             writer.commit()
             writer.close()
@@ -3361,7 +3429,7 @@ def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
     assert Path(f"{adapters[0].staging}-wal").exists()
     with sqlite3.connect(adapters[0].staging) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("replacement-wal",)
     adapters[0].reader.close()
 
@@ -3382,9 +3450,7 @@ def test_restore_cleanup_removes_sidecars_after_adapter_unlinks_main(tmp_path):
             self.connection.execute("PRAGMA journal_mode=WAL")
 
         def rebuild_dependencies(self):
-            self.connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-unlinked', 'private')"
-            )
+            insert_private_payload(self.connection, "event-unlinked", "private")
             self.connection.commit()
             self.staging.unlink()
             return False
@@ -3430,9 +3496,7 @@ def test_restore_cleans_sidecars_when_factory_returns_after_unlinking_main(tmp_p
             self.staging = Path(os.readlink(path))
             self.connection = sqlite3.connect(path)
             self.connection.execute("PRAGMA journal_mode=WAL")
-            self.connection.execute(
-                "INSERT INTO synthetic_private VALUES('event-factory', 'private')"
-            )
+            insert_private_payload(self.connection, "event-factory", "private")
             self.connection.commit()
             self.staging.unlink()
 
@@ -3522,7 +3586,7 @@ def test_restore_cleanup_preserves_main_replaced_during_repin(tmp_path, monkeypa
     assert replaced is True
     with sqlite3.connect(staging) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("replacement-main",)
     assert sidecar.read_text() == "replacement-sidecar"
 
@@ -3555,7 +3619,7 @@ def test_restore_cleanup_preserves_sidecar_if_main_reappears(tmp_path, monkeypat
     assert replaced is True
     with sqlite3.connect(staging) as connection:
         assert connection.execute(
-            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+            "SELECT content FROM private_payloads WHERE payload_id='event-001'"
         ).fetchone() == ("replacement-main",)
     assert sidecar.read_text() == "replacement-sidecar"
 
