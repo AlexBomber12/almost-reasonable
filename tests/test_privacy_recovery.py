@@ -1575,8 +1575,8 @@ def test_restore_seals_away_from_a_long_lived_wal_adapter(tmp_path):
         "reconciliation_complete",
     )
     assert quarantine.exists()
-    assert list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
-    assert list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-wal"))
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
     assert Path(f"{quarantine}.ready.json").exists()
     with sqlite3.connect(quarantine) as connection:
         assert connection.execute(
@@ -2018,23 +2018,25 @@ def test_restore_tracks_sealed_inode_before_releasing_adapter_staging(
     create_sqlite_backup(source, backup, 3, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
-    real_cleanup = recovery_module._cleanup_created
+    real_cleanup = recovery_module._cleanup_created_database
     interrupted = False
 
-    def interrupt_adapter_staging_cleanup(outputs):
+    def interrupt_adapter_staging_cleanup(outputs, *, count=None):
         nonlocal interrupted
         if (
             not interrupted
-            and len(outputs) == 1
+            and count == 1
             and outputs[0].path.name.startswith(".privacy-restore-")
             and list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
         ):
             interrupted = True
             raise SimulatedInterrupt()
-        real_cleanup(outputs)
+        real_cleanup(outputs, count=count)
 
     monkeypatch.setattr(
-        recovery_module, "_cleanup_created", interrupt_adapter_staging_cleanup
+        recovery_module,
+        "_cleanup_created_database",
+        interrupt_adapter_staging_cleanup,
     )
 
     with pytest.raises(SimulatedInterrupt):
@@ -2042,7 +2044,61 @@ def test_restore_tracks_sealed_inode_before_releasing_adapter_staging(
 
     assert interrupted is True
     assert not quarantine.exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
     assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
+
+
+def test_restore_cleans_late_adapter_wal_after_sealing(tmp_path, monkeypatch):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class RetainedWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+
+        def release_writers(self):
+            return True
+
+    def adapter_factory(path):
+        adapter = RetainedWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    real_cleanup = recovery_module._cleanup_created_database
+    late_write_committed = False
+
+    def write_before_staging_cleanup(outputs, *, count=None):
+        nonlocal late_write_committed
+        if count == 1 and not late_write_committed:
+            adapters[0].connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-late', 'private')"
+            )
+            adapters[0].connection.commit()
+            late_write_committed = True
+        return real_cleanup(outputs, count=count)
+
+    monkeypatch.setattr(
+        recovery_module, "_cleanup_created_database", write_before_staging_cleanup
+    )
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert result.activation_eligible is True
+    assert late_write_committed is True
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    with sqlite3.connect(quarantine) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM synthetic_private WHERE event_id='event-late'"
+        ).fetchone() == (0,)
+    adapters[0].connection.close()
 
 
 def test_restore_never_blesses_a_public_path_created_before_publication(
@@ -2916,6 +2972,50 @@ def test_restore_cleanup_removes_sidecars_after_adapter_unlinks_main(tmp_path):
     assert (result.disposition, result.reason) == (
         RestoreDisposition.BLOCKED,
         "dependency_rebuild_incomplete",
+    )
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    adapters[0].connection.close()
+
+
+def test_restore_cleans_sidecars_when_factory_returns_after_unlinking_main(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class UnlinkedFactoryAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.staging = Path(os.readlink(path))
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-factory', 'private')"
+            )
+            self.connection.commit()
+            self.staging.unlink()
+
+    def adapter_factory(path):
+        adapter = UnlinkedFactoryAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "quarantine_identity_changed",
     )
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()

@@ -198,8 +198,11 @@ def _cleanup_created_resumable(owned: list[_OwnedFile]) -> None:
         _cleanup_created(owned)
 
 
-def _cleanup_created_database_sidecars(owned: list[_OwnedFile]) -> None:
-    for output in owned:
+def _cleanup_created_database_sidecars(
+    owned: list[_OwnedFile], *, count: int | None = None
+) -> None:
+    outputs = owned if count is None else owned[:count]
+    for output in outputs:
         if not _path_matches_descriptor(output.path, output.descriptor):
             try:
                 os.stat(
@@ -258,14 +261,16 @@ def _cleanup_missing_database_sidecars(output: _OwnedFile) -> None:
             os.close(descriptor)
 
 
-def _cleanup_created_database(owned: list[_OwnedFile]) -> None:
+def _cleanup_created_database(
+    owned: list[_OwnedFile], *, count: int | None = None
+) -> None:
     try:
-        _cleanup_created_database_sidecars(owned)
+        _cleanup_created_database_sidecars(owned, count=count)
     except BaseException:
-        _cleanup_created_database_sidecars(owned)
-        _cleanup_created_resumable(owned)
+        _cleanup_created_database_sidecars(owned, count=count)
+        _cleanup_created(owned, count=count)
         raise
-    _cleanup_created(owned)
+    _cleanup_created(owned, count=count)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:
@@ -807,7 +812,13 @@ class QuarantinedRestore:
             except BaseException:
                 _cleanup_created_database(owned)
                 raise
-            self._require_quarantine_identity(staging, quarantine_descriptor)
+            try:
+                self._require_quarantine_identity(staging, quarantine_descriptor)
+            except _QuarantineIdentityError:
+                _cleanup_created_database(owned)
+                return self._blocked_restore(
+                    restore_id, restored_at, "quarantine_identity_changed"
+                )
             try:
                 reason = self._reconcile(adapter, snapshot)
             except BaseException:
@@ -829,8 +840,7 @@ class QuarantinedRestore:
                     restore_id, restored_at, "quarantine_finalization_failed"
                 )
             owned.append(sealed_quarantine)
-            owned.remove(owned_quarantine)
-            _cleanup_created([owned_quarantine])
+            _cleanup_created_database(owned, count=1)
             staging = sealed_staging
             quarantine_descriptor = sealed_quarantine.descriptor
             owned_quarantine = sealed_quarantine
