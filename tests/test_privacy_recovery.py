@@ -569,6 +569,58 @@ def test_restore_copy_cleanup_resumes_after_an_interrupt(tmp_path, monkeypatch):
     assert retried.activation_eligible is True
 
 
+def test_restore_cleans_staging_when_pinned_backup_teardown_is_interrupted(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    real_pin_database = recovery_module._pin_database
+    real_close = recovery_module.os.close
+    pinned_backup = None
+    interrupted = False
+
+    def track_pinned_backup(path, label, **kwargs):
+        nonlocal pinned_backup
+        pinned = real_pin_database(path, label, **kwargs)
+        if label == "backup":
+            pinned_backup = pinned
+        return pinned
+
+    def close_then_interrupt(descriptor):
+        nonlocal interrupted
+        real_close(descriptor)
+        if (
+            pinned_backup is not None
+            and descriptor == pinned_backup.descriptor
+            and not interrupted
+        ):
+            interrupted = True
+            raise SimulatedInterrupt()
+
+    with monkeypatch.context() as patch:
+        patch.setattr(recovery_module, "_pin_database", track_pinned_backup)
+        patch.setattr(recovery_module.os, "close", close_then_interrupt)
+        with pytest.raises(SimulatedInterrupt):
+            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+                backup, quarantine, NOW
+            )
+
+    assert interrupted is True
+    assert not quarantine.exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+
+
 @pytest.mark.parametrize(
     "race_target",
     [

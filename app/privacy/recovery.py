@@ -837,7 +837,12 @@ class QuarantinedRestore:
                 _cleanup_created_resumable(owned)
                 raise
         finally:
-            _close_pinned_database(pinned_backup)
+            try:
+                _close_pinned_database(pinned_backup)
+            except BaseException:
+                _cleanup_created_resumable(owned)
+                owned.clear()
+                raise
         try:
             try:
                 result = self._finish_restore(
