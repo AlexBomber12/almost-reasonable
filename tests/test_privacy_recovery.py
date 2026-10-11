@@ -795,6 +795,44 @@ def test_quarantine_publication_rejects_a_substituted_destination(
     assert not destination.exists()
 
 
+def test_owned_close_attempts_every_descriptor_and_preserves_first_error(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    owned = []
+    recovery_module._open_owned_file(tmp_path / "first", os.O_RDWR, owned)
+    recovery_module._open_owned_file(tmp_path / "second", os.O_RDWR, owned)
+    descriptors = [
+        descriptor
+        for output in owned
+        for descriptor in (output.descriptor, output.parent_descriptor)
+    ]
+    first_error = SimulatedInterrupt("first close interrupted")
+    second_error = RuntimeError("later close interrupted")
+    real_close = recovery_module.os.close
+    attempted = []
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        attempted.append(descriptor)
+        if descriptor == descriptors[0]:
+            raise first_error
+        if descriptor == descriptors[2]:
+            raise second_error
+
+    monkeypatch.setattr(recovery_module.os, "close", close_then_fail)
+    with pytest.raises(SimulatedInterrupt) as caught:
+        recovery_module._close_owned(owned)
+
+    assert caught.value is first_error
+    assert attempted == descriptors
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
 @pytest.mark.parametrize("interrupted_close", ["descriptor", "parent"])
 def test_owned_cleanup_can_resume_after_an_interrupted_close(
     tmp_path, monkeypatch, interrupted_close
@@ -898,6 +936,61 @@ def test_backup_failure_cleanup_resumes_after_an_interrupted_close(
     created = create_sqlite_backup(source, destination, 3, NOW)
     assert destination.exists()
     assert created.path == metadata
+
+
+def test_backup_success_closes_all_owned_descriptors_after_teardown_interrupt(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    metadata = Path(f"{destination}.metadata.json")
+    real_open_owned_file = recovery_module._open_owned_file
+    real_close = recovery_module.os.close
+    final_outputs = []
+    attempted = []
+    interrupted = False
+
+    def track_owned_file(path, access, owned):
+        descriptor = real_open_owned_file(path, access, owned)
+        if path in (destination, metadata):
+            final_outputs.append(owned[-1])
+        return descriptor
+
+    def close_then_interrupt(descriptor):
+        nonlocal interrupted
+        real_close(descriptor)
+        attempted.append(descriptor)
+        if (
+            final_outputs
+            and descriptor == final_outputs[0].descriptor
+            and not interrupted
+        ):
+            interrupted = True
+            raise SimulatedInterrupt()
+
+    monkeypatch.setattr(recovery_module, "_open_owned_file", track_owned_file)
+    monkeypatch.setattr(recovery_module.os, "close", close_then_interrupt)
+
+    with pytest.raises(SimulatedInterrupt):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert interrupted is True
+    assert len(final_outputs) == 2
+    final_descriptors = [
+        descriptor
+        for output in final_outputs
+        for descriptor in (output.descriptor, output.parent_descriptor)
+    ]
+    assert all(descriptor in attempted for descriptor in final_descriptors)
+    for descriptor in final_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    assert destination.exists()
+    assert metadata.exists()
 
 
 def test_backup_cleans_outputs_when_pinned_source_teardown_is_interrupted(

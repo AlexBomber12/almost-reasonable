@@ -347,9 +347,16 @@ def _cleanup_created_database(
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:
+    first_error: BaseException | None = None
     for output in owned:
-        os.close(output.descriptor)
-        os.close(output.parent_descriptor)
+        for descriptor in (output.descriptor, output.parent_descriptor):
+            try:
+                os.close(descriptor)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 def _fsync_owned_parents(owned: list[_OwnedFile]) -> None:
