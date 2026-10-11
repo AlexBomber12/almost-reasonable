@@ -2622,6 +2622,95 @@ def test_restore_writer_release_interruption_cleans_wal_staging(tmp_path):
     adapters[0].connection.close()
 
 
+def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    replacement = tmp_path / "replacement.sqlite3"
+    make_source(replacement, "replacement-main").close()
+    held_staging = tmp_path / "held-staging.sqlite3"
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class ReplacementAdapter(RestoreAdapter):
+        def rebuild_dependencies(self):
+            self.staging = Path(os.readlink(self.path))
+            self.staging.rename(held_staging)
+            replacement.rename(self.staging)
+            writer = sqlite3.connect(self.staging)
+            writer.execute("PRAGMA journal_mode=WAL")
+            self.reader = sqlite3.connect(self.staging)
+            self.reader.execute("BEGIN")
+            self.reader.execute("SELECT * FROM synthetic_private").fetchall()
+            writer.execute(
+                "UPDATE synthetic_private SET content='replacement-wal' "
+                "WHERE event_id='event-001'"
+            )
+            writer.commit()
+            writer.close()
+            return False
+
+        def release_writers(self):
+            return True
+
+    def adapter_factory(path):
+        adapter = ReplacementAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "dependency_rebuild_incomplete",
+    )
+    assert not quarantine.exists()
+    assert Path(f"{adapters[0].staging}-wal").exists()
+    with sqlite3.connect(adapters[0].staging) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("replacement-wal",)
+    adapters[0].reader.close()
+
+
+def test_restore_cleanup_preserves_a_replaced_sidecar(tmp_path, monkeypatch):
+    staging = tmp_path / "staging.sqlite3"
+    make_source(staging).close()
+    sidecar = Path(f"{staging}-wal")
+    sidecar.write_text("owned-sidecar")
+    held_sidecar = tmp_path / "held-wal"
+    replacement_sidecar = tmp_path / "replacement-wal"
+    replacement_sidecar.write_text("replacement-sidecar")
+    descriptor = os.open(staging, os.O_RDWR)
+    parent_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    owned = [recovery_module._OwnedFile(staging, descriptor, parent_descriptor)]
+    real_path_matches = recovery_module._path_matches_descriptor
+    sidecar_checks = 0
+
+    def replace_after_pinning(path, pinned_descriptor):
+        nonlocal sidecar_checks
+        if path == sidecar:
+            sidecar_checks += 1
+            if sidecar_checks == 2:
+                sidecar.rename(held_sidecar)
+                replacement_sidecar.rename(sidecar)
+        return real_path_matches(path, pinned_descriptor)
+
+    monkeypatch.setattr(
+        recovery_module, "_path_matches_descriptor", replace_after_pinning
+    )
+    recovery_module._cleanup_created_database(owned)
+
+    assert sidecar_checks == 2
+    assert sidecar.read_text() == "replacement-sidecar"
+    assert held_sidecar.read_text() == "owned-sidecar"
+    assert not staging.exists()
+
+
 @pytest.mark.parametrize(
     ("method", "behavior", "reason"),
     [

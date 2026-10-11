@@ -190,14 +190,24 @@ def _cleanup_created(owned: list[_OwnedFile]) -> None:
 
 
 def _cleanup_created_database(owned: list[_OwnedFile]) -> None:
-    for output in owned:
-        pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
-        try:
-            for sidecar_path, _descriptor in pinned.sidecars:
-                os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
-        finally:
-            _close_pinned_database(pinned)
-    _cleanup_created(owned)
+    try:
+        for output in owned:
+            pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
+            try:
+                owned_identity = os.fstat(output.descriptor)
+                pinned_identity = os.fstat(pinned.descriptor)
+                if (pinned_identity.st_dev, pinned_identity.st_ino) != (
+                    owned_identity.st_dev,
+                    owned_identity.st_ino,
+                ):
+                    continue
+                for sidecar_path, descriptor in pinned.sidecars:
+                    if _path_matches_descriptor(sidecar_path, descriptor):
+                        os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
+            finally:
+                _close_pinned_database(pinned)
+    finally:
+        _cleanup_created(owned)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:
