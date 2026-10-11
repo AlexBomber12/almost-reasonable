@@ -198,25 +198,32 @@ def _cleanup_created_resumable(owned: list[_OwnedFile]) -> None:
         _cleanup_created(owned)
 
 
+def _cleanup_created_database_sidecars(owned: list[_OwnedFile]) -> None:
+    for output in owned:
+        pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
+        try:
+            owned_identity = os.fstat(output.descriptor)
+            pinned_identity = os.fstat(pinned.descriptor)
+            if (pinned_identity.st_dev, pinned_identity.st_ino) != (
+                owned_identity.st_dev,
+                owned_identity.st_ino,
+            ):
+                continue
+            for sidecar_path, descriptor in pinned.sidecars:
+                if _path_matches_descriptor(sidecar_path, descriptor):
+                    os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
+        finally:
+            _close_pinned_database(pinned)
+
+
 def _cleanup_created_database(owned: list[_OwnedFile]) -> None:
     try:
-        for output in owned:
-            pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
-            try:
-                owned_identity = os.fstat(output.descriptor)
-                pinned_identity = os.fstat(pinned.descriptor)
-                if (pinned_identity.st_dev, pinned_identity.st_ino) != (
-                    owned_identity.st_dev,
-                    owned_identity.st_ino,
-                ):
-                    continue
-                for sidecar_path, descriptor in pinned.sidecars:
-                    if _path_matches_descriptor(sidecar_path, descriptor):
-                        os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
-            finally:
-                _close_pinned_database(pinned)
-    finally:
-        _cleanup_created(owned)
+        _cleanup_created_database_sidecars(owned)
+    except BaseException:
+        _cleanup_created_database_sidecars(owned)
+        _cleanup_created_resumable(owned)
+        raise
+    _cleanup_created(owned)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:

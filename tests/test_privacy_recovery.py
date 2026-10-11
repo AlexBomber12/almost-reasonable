@@ -2682,6 +2682,67 @@ def test_restore_writer_release_interruption_cleans_wal_staging(tmp_path):
     adapters[0].connection.close()
 
 
+def test_restore_sidecar_cleanup_resumes_after_an_unlink_interruption(
+    tmp_path, monkeypatch
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    class FailedReleaseWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+
+        def rebuild_dependencies(self):
+            self.connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-cleanup', 'private')"
+            )
+            self.connection.commit()
+            return True
+
+        def release_writers(self):
+            return False
+
+    def adapter_factory(path):
+        adapter = FailedReleaseWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    real_unlink = recovery_module.os.unlink
+    interrupted = False
+
+    def unlink_then_interrupt(path, *args, **kwargs):
+        nonlocal interrupted
+        result = real_unlink(path, *args, **kwargs)
+        if not interrupted and str(path).endswith("-wal"):
+            interrupted = True
+            raise SimulatedInterrupt()
+        return result
+
+    monkeypatch.setattr(recovery_module.os, "unlink", unlink_then_interrupt)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, adapter_factory).restore(backup, quarantine, NOW)
+
+    assert interrupted is True
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    adapters[0].connection.close()
+
+
 def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
