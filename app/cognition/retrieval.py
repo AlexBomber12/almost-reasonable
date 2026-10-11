@@ -285,7 +285,7 @@ class MemoryContextSelector:
             )
             or type(request.invalidated_event_ids) is not tuple
             or any(
-                not isinstance(item, str) or _TOKEN.fullmatch(item) is None
+                type(item) is not str or _TOKEN.fullmatch(item) is None
                 for item in request.invalidated_event_ids
             )
             or sum(len(item.encode("utf-8")) for item in request.invalidated_event_ids)

@@ -49,6 +49,11 @@ class HostileString(str):
         raise RuntimeError("synthetic hostile string adapter")
 
 
+class HostileHashString(str):
+    def __hash__(self):
+        raise RuntimeError("synthetic hostile hash adapter")
+
+
 def principal(name):
     return TrustedPrincipalContext(
         ParticipantId(f"participant-{name}"),
@@ -386,6 +391,20 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
             100,
             1,
             invalidated_event_ids=([],),
+        ),
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            "topic",
+            100,
+            1,
+            invalidated_event_ids=(HostileString("event-hostile"),),
+        ),
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            "topic",
+            100,
+            1,
+            invalidated_event_ids=(HostileHashString("event-hostile"),),
         ),
         RetrievalRequest(
             RetrievalPurpose.CONVERSATION,
