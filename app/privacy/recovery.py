@@ -303,7 +303,11 @@ def _cleanup_created_database(
     finally:
         for output in post_cleanup_outputs:
             try:
-                _cleanup_missing_database_sidecars(output, preserved_sidecars)
+                try:
+                    _cleanup_missing_database_sidecars(output, preserved_sidecars)
+                except BaseException:
+                    _cleanup_missing_database_sidecars(output, preserved_sidecars)
+                    raise
             finally:
                 os.close(output.parent_descriptor)
 

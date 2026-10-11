@@ -2163,6 +2163,91 @@ def test_restore_cleans_wal_created_between_sidecar_scan_and_main_unlink(
     adapters[0].connection.close()
 
 
+def test_restore_post_unlink_sidecar_sweep_resumes_after_interruption(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class RetainedAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.staging = Path(os.readlink(path))
+            self.connection = sqlite3.connect(path)
+
+        def release_writers(self):
+            return True
+
+    def adapter_factory(path):
+        adapter = RetainedAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    real_sidecar_cleanup = recovery_module._cleanup_created_database_sidecars
+    late_write_committed = False
+
+    def write_after_sidecar_scan(outputs, *, count=None, preserved_sidecars=None):
+        nonlocal late_write_committed
+        result = real_sidecar_cleanup(
+            outputs,
+            count=count,
+            preserved_sidecars=preserved_sidecars,
+        )
+        if count == 1 and not late_write_committed:
+            adapters[0].connection.execute("PRAGMA journal_mode=WAL")
+            adapters[0].connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-sweep', 'private')"
+            )
+            adapters[0].connection.commit()
+            late_write_committed = True
+        return result
+
+    real_unlink = recovery_module.os.unlink
+    interrupted = False
+
+    def unlink_wal_then_interrupt(path, *args, **kwargs):
+        nonlocal interrupted
+        result = real_unlink(path, *args, **kwargs)
+        if (
+            adapters
+            and not interrupted
+            and str(path).endswith("-wal")
+            and not adapters[0].staging.exists()
+        ):
+            interrupted = True
+            raise SimulatedInterrupt()
+        return result
+
+    monkeypatch.setattr(
+        recovery_module,
+        "_cleanup_created_database_sidecars",
+        write_after_sidecar_scan,
+    )
+    monkeypatch.setattr(recovery_module.os, "unlink", unlink_wal_then_interrupt)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, adapter_factory).restore(backup, quarantine, NOW)
+
+    assert late_write_committed is True
+    assert interrupted is True
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3*"))
+    adapters[0].connection.close()
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+
+
 def test_restore_never_blesses_a_public_path_created_before_publication(
     tmp_path, monkeypatch
 ):
