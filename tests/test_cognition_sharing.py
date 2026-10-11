@@ -164,6 +164,7 @@ def test_old_protected_source_remains_exactly_addressable(sharing_setup):
             AbstractReason.IDENTIFIER,
         ),
         ("Read https://private.example.test/profile.", AbstractReason.IDENTIFIER),
+        ("Call 555.123.4567 about uncertainty.", AbstractReason.IDENTIFIER),
         ("Contact ada＠example．test privately.", AbstractReason.IDENTIFIER),
         ("Read https：／／private．example．test/profile.", AbstractReason.IDENTIFIER),
         ("Contact иван@пример。рф privately.", AbstractReason.IDENTIFIER),

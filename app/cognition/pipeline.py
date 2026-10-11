@@ -131,6 +131,15 @@ class CognitionEngine:
             proposal = self._extractor.extract(request)
         except Exception:
             return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        if self._read.retrieve_exact_private_event(
+            context, source_event_id
+        ) != source or any(
+            self._read.retrieve_exact_private_event(context, event_id) != expected
+            for event_id, expected in zip(
+                evidence_event_ids, resolved_evidence, strict=True
+            )
+        ):
+            return self._rejected(CognitionReason.STALE_REVISION)
         if self._state.retrieve_private_candidates(context) != current:
             return self._rejected(CognitionReason.STALE_REVISION)
         decided_at = self._canonical_time(self._clock())

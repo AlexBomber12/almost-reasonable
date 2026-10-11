@@ -34,7 +34,7 @@ _IDENTIFIER = re.compile(
     r"[\w-]+(?:\.[\w-]+)*(?![\w@])|"
     r"(?<!\w)@\w{2,32}\b|"
     r"\b(?:https?://|www\.)\S+|"
-    r"\b(?:\+?\d[\d ()-]{7,}\d)\b)",
+    r"\b(?:\+?\d[\d ().-]{7,}\d)\b)",
     re.IGNORECASE,
 )
 _QUOTATION = re.compile(r"[\"'“”‘’«»]")

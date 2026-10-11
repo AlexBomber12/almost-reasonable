@@ -1353,6 +1353,47 @@ def test_generic_memory_kinds_are_typed_pending_and_not_persisted(
     assert state.retrieve_private_candidates(context) == ()
 
 
+@pytest.mark.parametrize("delete_additional_evidence", [False, True])
+def test_generic_memory_revalidates_evidence_after_extraction(
+    cognition_setup, delete_additional_evidence
+):
+    events, state, context, event_id = cognition_setup
+    additional_event_id = append_event(events, context, "generic-race-evidence")
+    proposal = GenericMemoryProposal(
+        context=proposal_context(
+            event_id,
+            "generic-evidence-race",
+            supporting=(event_id, additional_event_id),
+        ),
+        memory_kind=MemoryKind.CANDIDATE_USEFUL_MEMORY,
+        statement="A bounded candidate derived from concurrently deleted evidence.",
+        confidence=0.4,
+        verification=VerificationStatus.UNVERIFIED,
+    )
+    deleted_event_id = additional_event_id if delete_additional_evidence else event_id
+
+    class DeletingExtractor(FakeExtractor):
+        def extract(self, request):
+            self.requests.append(request)
+            with sqlite3.connect(events.database_path) as connection:
+                connection.execute("PRAGMA foreign_keys = ON")
+                connection.execute(
+                    "DELETE FROM private_payloads WHERE payload_id = "
+                    "(SELECT payload_id FROM event_envelopes WHERE event_id = ?)",
+                    (deleted_event_id,),
+                )
+            return self.proposal
+
+    outcome = CognitionEngine(
+        events, state, extractor=DeletingExtractor(proposal)
+    ).process(context, event_id, evidence_event_ids=(additional_event_id,))
+
+    assert outcome.status is CognitionOutcomeStatus.REJECTED
+    assert outcome.reason is CognitionReason.STALE_REVISION
+    assert outcome.pending_proposal is None
+    assert state.retrieve_private_candidates(context) == ()
+
+
 def test_no_change_is_legitimate_and_has_no_state_effect(cognition_setup):
     events, state, context, event_id = cognition_setup
     proposal = NoChangeProposal(
