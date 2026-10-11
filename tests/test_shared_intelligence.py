@@ -1144,3 +1144,26 @@ def test_graph_rejects_reclassification_even_with_rewritten_child_manifest(share
     with pytest.raises(ValueError, match="protected_shared_graph"):
         app.context(principal("b"))
     assert not gate.reconcile()
+
+
+def test_copied_parent_event_must_retain_inherited_role(shared):
+    events, _, gate, _, b = shared
+    new = append_event(
+        events, principal("b"), "new-role-source", "Synthetic subsequent evidence."
+    )
+    first = approval(b, author="b", counter=(b,))
+    second = approval(new, op="role-child", author="b", revision=1)
+    app = SharedIntelligence(events, gate, approvals=(first, second), clock=lambda: NOW)
+    app.commit(first)
+    app.commit(second)
+    with events._open() as db:
+        db.execute(
+            "UPDATE protected_shared_sources SET role='counter' WHERE operation_id='role-child' AND event_id=?",
+            (b,),
+        )
+        db.execute(
+            "UPDATE protected_shared_manifests SET binding=json_set(binding,'$.sources[0][2]','counter') WHERE operation_id='role-child'"
+        )
+    with pytest.raises(ValueError, match="protected_shared_graph"):
+        app.context(principal("b"))
+    assert not gate.reconcile()

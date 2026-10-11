@@ -45,7 +45,8 @@ sources are rejected before persistence and cannot become screened approvals.
 An item has at most 32 revisions. Each revision has at most 50 distinct material
 sources and 16 explicit conversation audiences. Incoming proposals may not relist
 inherited events; their earlier supporting/counterevidence classification is
-preserved and checked against the parent even if child metadata is rewritten. The new author's source set is
+preserved and checked against the parent even if child metadata is rewritten.
+Copied parent events must retain both the inherited role and their classification. The new author's source set is
 resolved within that author's existing private scope. Earlier material sources
 are inherited in full; a revision may narrow its parent's audience but cannot
 expand it. Exceeding a dependency bound rejects the change rather than dropping

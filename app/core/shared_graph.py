@@ -92,7 +92,7 @@ _CHECKS = (
                     SELECT 1 FROM protected_shared_sources n
                     WHERE n.operation_id=o.operation_id AND n.event_id=s.event_id
                         AND n.source_principal=s.source_principal
-                        AND n.classification=s.classification))
+                        AND n.role='inherited' AND n.classification=s.classification))
             OR EXISTS (SELECT 1 FROM protected_shared_audiences a
                 WHERE a.operation_id=o.operation_id AND NOT EXISTS (
                     SELECT 1 FROM protected_shared_audiences b
