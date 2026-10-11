@@ -647,6 +647,36 @@ def test_quarantine_publication_rejects_a_substituted_destination(
     destination.unlink()
 
 
+def test_owned_cleanup_can_resume_after_an_interrupted_completed_entry(tmp_path):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    class InterruptingOwnership(list):
+        interrupted = False
+
+        def pop(self, index=-1):
+            output = super().pop(index)
+            if not self.interrupted:
+                self.interrupted = True
+                raise SimulatedInterrupt()
+            return output
+
+    owned = InterruptingOwnership()
+    paths = [tmp_path / f"owned-{index}" for index in range(3)]
+    for path in paths:
+        recovery_module._open_owned_file(path, os.O_RDWR, owned)
+
+    with pytest.raises(SimulatedInterrupt):
+        recovery_module._cleanup_created(owned)
+
+    assert not paths[0].exists()
+    assert len(owned) == 2
+    recovery_module._cleanup_created(owned)
+
+    assert owned == []
+    assert not any(path.exists() for path in paths)
+
+
 def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupted(
     tmp_path, monkeypatch
 ):

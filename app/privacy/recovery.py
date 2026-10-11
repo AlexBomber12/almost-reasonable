@@ -161,7 +161,8 @@ def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
 
 
 def _cleanup_created(owned: list[_OwnedFile]) -> None:
-    for output in owned:
+    while owned:
+        output = owned[0]
         paths = (output.path, output.cleanup_alias)
         for path in paths:
             if path is None:
@@ -183,6 +184,7 @@ def _cleanup_created(owned: list[_OwnedFile]) -> None:
                     os.unlink(path.name, dir_fd=output.parent_descriptor)
         os.close(output.descriptor)
         os.close(output.parent_descriptor)
+        owned.pop(0)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:

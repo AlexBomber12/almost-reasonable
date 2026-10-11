@@ -1417,6 +1417,28 @@ def test_privacy_ledger_revalidates_sidecars_before_every_connection(
     assert stat.S_IMODE(sidecar.stat().st_mode) == 0o666
 
 
+def test_privacy_ledger_revalidates_parent_before_every_connection(
+    tmp_path, monkeypatch
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    tmp_path.chmod(0o777)
+    connection_attempted = False
+
+    def reject_connection(_descriptor):
+        nonlocal connection_attempted
+        connection_attempted = True
+        raise AssertionError("connected before revalidating parent")
+
+    monkeypatch.setattr(ledger, "_connect_descriptor", reject_connection)
+    try:
+        with pytest.raises(RuntimeError, match="parent is unsafe"):
+            ledger.control_generation()
+    finally:
+        tmp_path.chmod(0o700)
+
+    assert connection_attempted is False
+
+
 def run_concurrently(operation):
     barrier = threading.Barrier(3)
     results = []
