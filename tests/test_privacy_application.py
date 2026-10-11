@@ -351,10 +351,10 @@ def test_crash_restarts_pending_first_without_authoritative_early_success(
         original = application._validate_graph
         calls = 0
 
-        def fail(db):
+        def fail(db, schema_version):
             nonlocal calls
             calls += 1
-            original(db)
+            original(db, schema_version)
             if calls == 2:
                 raise SystemExit
 

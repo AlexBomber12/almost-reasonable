@@ -85,3 +85,43 @@ def test_exact_schema_and_backup_reject_release_schema_drift(tmp_path, mutation)
         EventStore(store.database_path)
     with pytest.raises(BackupError):
         _schema_version(store.database_path)
+
+
+@pytest.mark.parametrize("deleted", [False, True])
+def test_genuine_v4_quarantine_uses_real_adapter_and_current_deletion_ledger(
+    tmp_path, deleted
+):
+    from app.privacy.application import (
+        EventStoreRestoreAdapter,
+        EventStoreErasureAdapter,
+    )
+    from app.privacy.recovery import QuarantinedRestore
+    from app.privacy.ledger import PrivacyLedger
+    from app.privacy.deletion import DeletionCoordinator
+    from test_privacy_deletion import context, request
+
+    path = tmp_path / "genuine-v4.db"
+    populated_v4(path)
+    backup = tmp_path / "genuine-v4-backup.db"
+    create_sqlite_backup(path, backup, 4, NOW)
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    if deleted:
+        upgraded = EventStore(path)
+        result = DeletionCoordinator(ledger, EventStoreErasureAdapter(upgraded)).delete(
+            context(), request(content_reference="event-a")
+        )
+        assert result.disposition.value == "applied"
+    quarantine = tmp_path / "quarantine.db"
+    restored = QuarantinedRestore(ledger, 4, EventStoreRestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert restored.activation_eligible
+    assert _schema_version(quarantine) == 4
+    with sqlite3.connect(f"file:{quarantine}?immutable=1", uri=True) as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            (0 if deleted else 1),
+        )
+        assert db.execute("SELECT count(*) FROM private_payloads").fetchone() == (
+            (0 if deleted else 1),
+        )
+    assert quarantine.stat().st_mode & 0o777 == 0o400

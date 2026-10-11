@@ -17,7 +17,7 @@ from app.core.agent_output_store import AgentOutputStore
 from app.core.events import TrustedPrincipalContext
 from app.core.self_state import StateType
 from app.core.self_state_store import SelfStateStore
-from app.core.store import EventStore
+from app.core.store import EventStore, SCHEMA_VERSION
 
 from .deletion import DeletionCoordinator
 from .ledger import PrivacyLedger
@@ -158,25 +158,36 @@ _GRAPH_CHECKS = (
 )
 
 
-def _validate_graph(db: sqlite3.Connection) -> None:
-    EventStore._verify_current_schema(db)
+def _validate_graph(
+    db: sqlite3.Connection, schema_version: int = SCHEMA_VERSION
+) -> None:
+    if schema_version == 4:
+        EventStore._verify_schema_version(db, 4)
+        checks = _GRAPH_CHECKS[1:]  # v4 has no resolution/release table.
+    else:
+        EventStore._verify_current_schema(db)
+        checks = _GRAPH_CHECKS
     if db.execute("PRAGMA integrity_check").fetchall() != [("ok",)]:
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    for reason, sql in _GRAPH_CHECKS:
+    for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
 
 
-def _erase(db: sqlite3.Connection, request: DeletionRequest) -> ErasureReport:
+def _erase(
+    db: sqlite3.Connection,
+    request: DeletionRequest,
+    schema_version: int = SCHEMA_VERSION,
+) -> ErasureReport:
     if request.content_category is not ContentCategory.PRIVATE_PAYLOAD:
         raise ApplicationPrivacyError("unsupported_source_category")
     db.execute("PRAGMA secure_delete=ON")
     db.execute("PRAGMA synchronous=FULL")
     with db:
         db.execute("BEGIN IMMEDIATE")
-        _validate_graph(db)
+        _validate_graph(db, schema_version)
         source = db.execute(
             "SELECT audience_principal_id, payload_id FROM event_envelopes WHERE event_id=?",
             (request.content_reference,),
@@ -220,7 +231,7 @@ def _erase(db: sqlite3.Connection, request: DeletionRequest) -> ErasureReport:
                 (operation_id,),
             )
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
-        _validate_graph(db)
+        _validate_graph(db, schema_version)
     # SQLite updates its ordinary indexes in this transaction. No keyed content
     # fingerprints, summaries or generic memory exist in the exact v4 schema.
     # Shared state is provably empty above; any future category/object is blocked.
@@ -266,7 +277,9 @@ class EventStoreRestoreAdapter:
 
     def apply_deletion(self, record: DeletionRecord) -> ErasureReport:
         with closing(self._open()) as db:
-            return _erase(db, record.request)
+            return _erase(
+                db, record.request, db.execute("PRAGMA user_version").fetchone()[0]
+            )
 
     def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool:
         require_token(consent_id, "consent id")
@@ -274,7 +287,7 @@ class EventStoreRestoreAdapter:
         with closing(self._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                _validate_graph(db)
+                _validate_graph(db, db.execute("PRAGMA user_version").fetchone()[0])
         # v4 has no persisted consent grants, disclosure authorization or consent
         # cache. External PrivacyLedger remains the sole current-use authority.
         return True
@@ -283,7 +296,7 @@ class EventStoreRestoreAdapter:
         with closing(self._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                _validate_graph(db)
+                _validate_graph(db, db.execute("PRAGMA user_version").fetchone()[0])
         # All supported indexes are SQLite indexes, maintained atomically above.
         return True
 

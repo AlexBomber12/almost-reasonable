@@ -114,7 +114,9 @@ and, only for `completed`, the unique trusted release ID. It contains no content
 source copies, hashes or provider-attempt state. Migration from exact v1–v4 schemas
 is additive and transactional, with a v5 pre-commit interruption point. Unknown
 schema objects and orphaned references remain rejected. Genuine v4 backups remain
-supported alongside v5 backups.
+supported alongside v5 backups. The real quarantine adapter validates and erases
+v4 against its own exact schema and graph; it does not initialize EventStore or
+upgrade the descriptor-owned quarantine. Live reads/erasure still require v5.
 
 The original v4 draft columns remain `held`. A separate durable completed resolution
 is the reviewed **released-for-response** transition; draft existence alone grants
