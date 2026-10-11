@@ -243,14 +243,25 @@ class Stage0ConversationRuntime(ConversationService):
                         )
                         self._checkpoint("after_extraction")
                         # Deletion or changed controls during extraction block inference.
-                        self._gate.authorized(preflight)
-                    result = self._infer(context, correlation, operation_id)
-                    self._checkpoint("after_model")
-                    persisted = self._gate.authorized(
-                        lambda: self._commit(route, reserved.operation, result)
-                    )
-                    if persisted:
-                        self._checkpoint("after_reply_commit")
+                        caps = self._gate.authorized(preflight)
+                    if self._cognition is not None and (
+                        caps.emergency_stop_active
+                        or caps.provider_spend_suspended
+                        or not caps.private_reply_drafts_enabled
+                    ):
+                        self._gate.authorized(
+                            lambda: self._outputs.resolve_without_reply(
+                                principal, operation_id, "skipped"
+                            )
+                        )
+                    else:
+                        result = self._infer(context, correlation, operation_id)
+                        self._checkpoint("after_model")
+                        persisted = self._gate.authorized(
+                            lambda: self._commit(route, reserved.operation, result)
+                        )
+                        if persisted:
+                            self._checkpoint("after_reply_commit")
         self._checkpoint("before_release")
         return self._gate.authorized(
             lambda: self._response(admission.message_status, route, operation_id)

@@ -688,3 +688,52 @@ def test_concurrent_private_inference_payloads_are_execution_local(setup, monkey
     assert len(fake.calls) == 4
     with pytest.raises(LookupError):
         runtime._memory_bridge.payload.get()
+
+
+@pytest.mark.parametrize("control", ["delivery", "stop", "spend"])
+@pytest.mark.parametrize("point", ["extractor", "after_extraction"])
+def test_capability_changes_during_extraction_skip_before_inference(
+    setup, monkeypatch, control, point
+):
+    from app.core.provider_spend import ProviderStateStore
+
+    store, _, gate, fake, _ = setup
+    changed = [False]
+    original = ProviderStateStore.is_spend_suspended
+    monkeypatch.setattr(
+        ProviderStateStore,
+        "is_spend_suspended",
+        lambda provider: changed[0] if control == "spend" else original(provider),
+    )
+
+    def change(r):
+        if point == "extractor":
+            changed[0] = True
+        return interest(r)
+
+    def checkpoint(current):
+        if current == point:
+            changed[0] = True
+
+    ext = extractor(change)
+    runtime = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        memory_extractor=ext,
+        delivery_enabled=lambda: not (control == "delivery" and changed[0]),
+        emergency_stop=lambda: control == "stop" and changed[0],
+        checkpoint=checkpoint,
+    )
+    first = runtime.submit(principal("a"), "capability", "Астрономия интересна")
+    assert first.model_state.value == "skipped"
+    assert first.response_content is None
+    assert fake.calls == []
+    assert len(ext.requests) == 1
+    assert len(gate.retrieve_private_candidates(principal("a"))) == 1
+    changed[0] = False
+    retry = runtime.submit(principal("a"), "capability", "Астрономия интересна")
+    assert retry.model_state.value == "skipped"
+    assert retry.response_content is None
+    assert fake.calls == []
+    assert len(ext.requests) == 1

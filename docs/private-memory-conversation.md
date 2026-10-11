@@ -32,6 +32,8 @@ new item from copying another item's text without retaining that item's complete
 protected dependencies. Scripted synthetic revisions may target a known item
 and expected revision; model-guided cross-item consolidation is not enabled.
 Supporting and counterevidence are not relabeled to manufacture contextual taint.
+Delivery, stop and spend capabilities are rechecked after extraction; a changed
+capability records a durable skipped outcome before any model contact.
 The runtime's optional `evidence_event_ids` argument is a trusted synthetic API;
 HTTP JSON still accepts only `message_id` and `content`.
 
