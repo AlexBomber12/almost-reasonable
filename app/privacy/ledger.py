@@ -173,10 +173,15 @@ class PrivacyLedger:
             if not regular_file_is_trusted(os.fstat(descriptor)):
                 raise ValueError("privacy ledger file is unsafe")
             self._require_trusted_sidecars()
-            with closing(self._connect_descriptor(descriptor)) as connection:
-                self._require_file_identity(connection, descriptor)
-                fcntl.flock(descriptor, fcntl.LOCK_EX)
-                try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            try:
+                with closing(
+                    self._connect_descriptor_immutable(descriptor)
+                ) as inspection:
+                    self._require_file_identity(inspection, descriptor)
+                    self._has_valid_schema(inspection)
+                with closing(self._connect_descriptor(descriptor)) as connection:
+                    self._require_file_identity(connection, descriptor)
                     self._has_valid_schema(connection)
                     os.fchmod(descriptor, 0o600)
                     self._configure(connection)
@@ -196,8 +201,8 @@ class PrivacyLedger:
                             initialized_schema = True
                     if initialized_schema:
                         os.fsync(parent_descriptor)
-                finally:
-                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                fcntl.flock(descriptor, fcntl.LOCK_UN)
         except BaseException:
             os.close(descriptor)
             os.close(parent_descriptor)
@@ -262,6 +267,14 @@ class PrivacyLedger:
     def _connect_descriptor(descriptor: int) -> sqlite3.Connection:
         return sqlite3.connect(
             f"file:/proc/self/fd/{descriptor}?mode=rw",
+            uri=True,
+            timeout=5.0,
+        )
+
+    @staticmethod
+    def _connect_descriptor_immutable(descriptor: int) -> sqlite3.Connection:
+        return sqlite3.connect(
+            f"file:/proc/self/fd/{descriptor}?mode=ro&immutable=1",
             uri=True,
             timeout=5.0,
         )

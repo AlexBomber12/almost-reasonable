@@ -1133,6 +1133,42 @@ def test_privacy_ledger_rejects_an_unrelated_existing_database(tmp_path):
     assert tables == {"application_events"}
 
 
+def test_privacy_ledger_rejects_unrelated_database_without_recovering_journal(
+    tmp_path,
+):
+    path = tmp_path / "application.sqlite3"
+    with sqlite3.connect(path) as connection:
+        connection.execute(
+            "CREATE TABLE application_events(event_id TEXT PRIMARY KEY, value TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO application_events VALUES('event-001', 'before')"
+        )
+    child = os.fork()
+    if child == 0:
+        connection = sqlite3.connect(path)
+        connection.execute("PRAGMA journal_mode=DELETE")
+        connection.execute("PRAGMA synchronous=FULL")
+        connection.execute("BEGIN IMMEDIATE")
+        connection.execute(
+            "UPDATE application_events SET value='after' WHERE event_id='event-001'"
+        )
+        os._exit(0)
+    os.waitpid(child, 0)
+    journal = Path(f"{path}-journal")
+    assert journal.exists()
+    with journal.open("r+b") as journal_file:
+        journal_file.write(bytes.fromhex("d9d505f920a163d7"))
+    main_before = path.read_bytes()
+    journal_before = journal.read_bytes()
+
+    with pytest.raises(RuntimeError, match="unrelated tables"):
+        PrivacyLedger(path)
+
+    assert path.read_bytes() == main_before
+    assert journal.read_bytes() == journal_before
+
+
 @pytest.mark.parametrize(
     "schema",
     [
