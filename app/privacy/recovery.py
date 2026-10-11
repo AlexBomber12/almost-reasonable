@@ -307,7 +307,7 @@ def _cleanup_missing_database_sidecars(
 def _cleanup_created_database(
     owned: list[_OwnedFile], *, count: int | None = None
 ) -> None:
-    outputs = owned if count is None else owned[:count]
+    outputs = list(owned if count is None else owned[:count])
     post_cleanup_outputs: list[_OwnedFile] = []
     preserved_sidecars: set[Path] = set()
 
@@ -340,7 +340,19 @@ def _cleanup_created_database(
                     )
                 )
         except BaseException:
-            cleanup_owned_database()
+            retained_count = len(post_cleanup_outputs)
+            try:
+                cleanup_owned_database()
+            finally:
+                for output in outputs[retained_count:]:
+                    post_cleanup_outputs.append(
+                        _OwnedFile(
+                            output.path,
+                            output.descriptor,
+                            _open_directory_chain(output.path.parent),
+                            output.cleanup_alias,
+                        )
+                    )
             raise
         cleanup_owned_database()
     finally:
@@ -355,17 +367,27 @@ def _cleanup_created_database(
                 os.close(output.parent_descriptor)
 
 
-def _close_owned(owned: list[_OwnedFile]) -> None:
-    first_error: BaseException | None = None
-    for output in owned:
-        for descriptor in (output.descriptor, output.parent_descriptor):
-            try:
-                os.close(descriptor)
-            except BaseException as error:
-                if first_error is None:
-                    first_error = error
+def _close_descriptors(
+    descriptors: tuple[int, ...], first_error: BaseException | None = None
+) -> None:
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
     if first_error is not None:
         raise first_error
+
+
+def _close_owned(owned: list[_OwnedFile]) -> None:
+    _close_descriptors(
+        tuple(
+            descriptor
+            for output in owned
+            for descriptor in (output.descriptor, output.parent_descriptor)
+        )
+    )
 
 
 def _fsync_owned_parents(owned: list[_OwnedFile]) -> None:
@@ -451,33 +473,26 @@ def _pin_database(
         if not trusted:
             raise BackupError(f"{label} identity changed")
     except OSError as error:
-        for opened_descriptor in opened_descriptors:
-            os.close(opened_descriptor)
+        _close_descriptors(tuple(opened_descriptors))
         raise BackupError(f"{label} identity changed") from error
     except BaseException:
-        for opened_descriptor in opened_descriptors:
-            os.close(opened_descriptor)
+        _close_descriptors(tuple(opened_descriptors))
         raise
     finally:
-        os.close(parent_descriptor)
+        try:
+            os.close(parent_descriptor)
+        except BaseException as error:
+            _close_descriptors(tuple(opened_descriptors), error)
     return _PinnedDatabase(
         path, descriptor, immutable, tuple(sidecars), expected_schema_version
     )
 
 
 def _close_pinned_database(database: _PinnedDatabase) -> None:
-    first_error: BaseException | None = None
-    descriptors = (database.descriptor,) + tuple(
-        descriptor for _sidecar_path, descriptor in database.sidecars
+    _close_descriptors(
+        (database.descriptor,)
+        + tuple(descriptor for _sidecar_path, descriptor in database.sidecars)
     )
-    for descriptor in descriptors:
-        try:
-            os.close(descriptor)
-        except BaseException as error:
-            if first_error is None:
-                first_error = error
-    if first_error is not None:
-        raise first_error
 
 
 def _require_database_identity(source: _PinnedDatabase) -> None:

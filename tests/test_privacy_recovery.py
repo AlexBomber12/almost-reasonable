@@ -422,6 +422,65 @@ def test_pinned_database_close_attempts_every_descriptor_and_preserves_first_err
             os.fstat(descriptor)
 
 
+def test_database_pin_closes_files_when_parent_teardown_is_interrupted(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    writer = make_source(source)
+    insert_private_payload(writer, "event-wal", "private WAL payload")
+    writer.commit()
+    sidecar_paths = {
+        Path(f"{source}{suffix}") for suffix in recovery_module._SQLITE_SIDECAR_SUFFIXES
+    }
+    database_names = {source.name, *(path.name for path in sidecar_paths)}
+    assert Path(f"{source}-wal").exists()
+    real_open = recovery_module.os.open
+    real_close = recovery_module.os.close
+    real_open_directory_chain = recovery_module._open_directory_chain
+    parent_descriptors = []
+    database_descriptors = []
+    attempted = []
+    parent_error = SimulatedInterrupt("parent close interrupted")
+
+    def track_parent(path):
+        descriptor = real_open_directory_chain(path)
+        parent_descriptors.append(descriptor)
+        return descriptor
+
+    def track_database_open(path, *args, **kwargs):
+        descriptor = real_open(path, *args, **kwargs)
+        if Path(path).name in database_names:
+            database_descriptors.append(descriptor)
+        return descriptor
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        attempted.append(descriptor)
+        if parent_descriptors and descriptor == parent_descriptors[0]:
+            raise parent_error
+        if database_descriptors and descriptor == database_descriptors[0]:
+            raise RuntimeError("database close interrupted")
+
+    monkeypatch.setattr(recovery_module, "_open_directory_chain", track_parent)
+    monkeypatch.setattr(recovery_module.os, "open", track_database_open)
+    monkeypatch.setattr(recovery_module.os, "close", close_then_fail)
+
+    with pytest.raises(SimulatedInterrupt) as caught:
+        recovery_module._pin_database(source, "source", pin_sidecars=True)
+
+    assert caught.value is parent_error
+    assert len(parent_descriptors) == 1
+    assert len(database_descriptors) >= 2
+    assert all(descriptor in attempted for descriptor in database_descriptors)
+    for descriptor in parent_descriptors + database_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    writer.close()
+
+
 def test_backup_rejects_foreign_key_violations(tmp_path):
     source = tmp_path / "source.sqlite3"
     with make_source(source) as connection:
@@ -3769,11 +3828,9 @@ def test_restore_cleanup_removes_sidecars_when_parent_duplication_fails(
     tmp_path, monkeypatch
 ):
     paths = [tmp_path / f"staging-{index}.sqlite3" for index in range(2)]
-    writers = [make_source(path) for path in paths]
-    for index, writer in enumerate(writers):
-        insert_private_payload(writer, f"event-wal-{index}", "private")
-        writer.commit()
-    assert all(Path(f"{path}-wal").exists() for path in paths)
+    for path in paths:
+        make_source(path).close()
+    writers = [sqlite3.connect(path) for path in paths]
 
     owned = []
     original_descriptors = []
@@ -3784,7 +3841,9 @@ def test_restore_cleanup_removes_sidecars_when_parent_duplication_fails(
         original_descriptors.extend((descriptor, parent_descriptor))
 
     real_dup = recovery_module.os.dup
+    real_sidecar_cleanup = recovery_module._cleanup_created_database_sidecars
     duplicated_descriptors = []
+    late_write_committed = False
 
     def fail_second_dup(descriptor):
         if duplicated_descriptors:
@@ -3793,12 +3852,34 @@ def test_restore_cleanup_removes_sidecars_when_parent_duplication_fails(
         duplicated_descriptors.append(duplicated)
         return duplicated
 
+    def write_after_sidecar_scan(outputs, *, count=None, preserved_sidecars=None):
+        nonlocal late_write_committed
+        result = real_sidecar_cleanup(
+            outputs,
+            count=count,
+            preserved_sidecars=preserved_sidecars,
+        )
+        if not late_write_committed:
+            for index, writer in enumerate(writers):
+                writer.execute("PRAGMA journal_mode=WAL")
+                insert_private_payload(writer, f"event-late-{index}", "private")
+                writer.commit()
+            assert all(Path(f"{path}-wal").exists() for path in paths)
+            late_write_committed = True
+        return result
+
     monkeypatch.setattr(recovery_module.os, "dup", fail_second_dup)
+    monkeypatch.setattr(
+        recovery_module,
+        "_cleanup_created_database_sidecars",
+        write_after_sidecar_scan,
+    )
 
     with pytest.raises(OSError, match="parent duplication"):
         recovery_module._cleanup_created_database(owned)
 
     assert owned == []
+    assert late_write_committed is True
     assert not any(tmp_path.glob("staging-*.sqlite3*"))
     for descriptor in original_descriptors + duplicated_descriptors:
         with pytest.raises(OSError):
