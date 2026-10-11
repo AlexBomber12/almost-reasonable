@@ -17,7 +17,7 @@ _CHECKS = (
             WHERE NOT EXISTS (SELECT 1 FROM protected_mission_shared m
                 WHERE m.proposal_id=json_extract(j.value,'$.proposal.proposal_id')
                     AND m.phase='proposal'
-                    AND m.shared_operation=json_extract(j.value,'$.proposal.initiating_source_id'))
+                    AND m.shared_operation=json_extract(j.value,'$.proposal.initiating_event_id'))
             OR (json_extract(j.value,'$.confirmation') IS NOT NULL AND NOT EXISTS (
                 SELECT 1 FROM protected_mission_shared m
                 WHERE m.proposal_id=json_extract(j.value,'$.proposal.proposal_id')

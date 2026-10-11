@@ -683,7 +683,7 @@ def test_mission_authority_rejects_owner_claims_early_or_same_participant_eviden
                 ),
             ),
         ):
-            assert not adapter._authority(db, "shared-a", evidence)
+            assert not adapter._authority(db, adapter._source_identity("mp"), evidence)
     tick[0] += timedelta(seconds=1)
     c = append_event(events, principal("a"), "new-a", "Synthetic new viewpoint.")
     same = replace(
@@ -695,7 +695,7 @@ def test_mission_authority_rejects_owner_claims_early_or_same_participant_eviden
     with events._open() as db:
         assert not adapter._authority(
             db,
-            "shared-a",
+            adapter._source_identity("mp"),
             (
                 MissionEvidenceSource(
                     "shared-c", "shared-c", EvidenceProvenance.AGENT_OBSERVATION

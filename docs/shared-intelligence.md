@@ -87,13 +87,22 @@ requires the separate `allow_mission_evidence=True` application grant, bound in
 the protected immutable manifest. Conversation authorization alone grants no
 mission use. A proposal uses a current shared revision and leaves the current mission unchanged.
 
+Each proposal has a distinct protected source-binding identity derived from its
+trusted operation ID. Authority revalidation uses that exact proposal timestamp,
+so a later proposal reusing an intellectual origin cannot change an earlier
+confirmation's cutoff. Unique historical bindings from the earlier adapter remain
+readable and replayable; missing, ambiguous or forged bindings grant no authority.
+
 A separate constructor-bound `SyntheticMissionConfirmationApproval` grants only
 one exact proposal/evidence/outcome combination. Confirmation requires later
 shared evidence and material private events arriving after the original proposal,
 from principals outside the original material source set. Original evidence,
 old assertions repackaged later, synthetic owner claims, forged verification,
 stale parents, changed operational invariants and absent counterevidence checks
-cannot establish independent authority. Rejection and `no_change` are valid
+cannot establish independent authority. New confirmation also requires the
+selected evidence to be the shared item's current revision. Already persisted
+confirmations and exact retries retain their historical evidence and remain
+authorized until invalidation. Rejection and `no_change` are valid
 results. Trusted decision timestamps are retained on replay.
 
 Mission document and evidence bindings commit atomically in EventStore. The
@@ -148,6 +157,7 @@ full M5 acceptance.
 | Two-phase mission activation and restart | Completed: `test_mission_two_phase_restart_and_deletion_reassessment` |
 | Independent rejection and no_change | Completed: mission rejection and missing-check tests |
 | Self-confirmation, stale evidence/parent, owner/verification claims, changed invariants | Completed: mission authority, current revision and invariant tests |
+| Reused proposal origin and superseded confirmation evidence | Completed: `test_shared_mission_feedback.py`; exact cutoff, current-head confirmation, historical/restart/legacy replay |
 | Mission invalidation after deletion | Completed: mission restart/deletion test |
 | Source deletion during screening, after intent, after capture | Completed: deletion during screen, after durable intent and capture/commit tests |
 | Multiple material revision sources and complete inheritance | Completed: exact approval replay and dependency bound tests |

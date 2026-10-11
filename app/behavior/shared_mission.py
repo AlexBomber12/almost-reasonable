@@ -9,6 +9,7 @@ from contextlib import closing
 from dataclasses import dataclass, replace
 from datetime import datetime
 import json
+import hashlib
 
 from app.core.shared_graph import validate_shared_graph
 from app.core.store import EventStore
@@ -112,31 +113,54 @@ class SharedMissionAdapter:
             raise ValueError("mission shared evidence unavailable")
         return datetime.fromisoformat(row[0].replace("Z", "+00:00"))
 
+    @staticmethod
+    def _source_identity(operation_id):
+        EventStore._require_token("mission operation", operation_id)
+        return "mission-source:" + hashlib.sha256(operation_id.encode()).hexdigest()
+
+    @staticmethod
+    def _require_current(db, shared_operation):
+        if (
+            db.execute(
+                "SELECT 1 FROM shared_operations o WHERE o.operation_id=? AND o.revision=(SELECT MAX(h.revision) FROM shared_operations h WHERE h.item_id=o.item_id AND h.status='active')",
+                (shared_operation,),
+            ).fetchone()
+            is None
+        ):
+            raise ValueError("mission requires current shared revision")
+
     def _authority(self, db, original, evidence):
-        self._active(db, original)
+        document = _Repository(db, self._initial).load()
+        matches = [
+            r.proposal
+            for r in document.proposals
+            if r.proposal.initiating_source_id == original
+        ]
+        if len(matches) != 1:
+            return False
+        proposal = matches[0]
+        if proposal.initiating_source_id not in (
+            self._source_identity(proposal.proposal_id),
+            proposal.initiating_event_id,
+        ):
+            return False
+        original_operation = proposal.initiating_event_id
+        self._active(db, original_operation)
         original_events = {
             e[0]
             for e in db.execute(
                 "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
-                (original,),
+                (original_operation,),
             )
         }
         original_principals = {
             e[0]
             for e in db.execute(
                 "SELECT source_principal FROM protected_shared_sources WHERE operation_id=?",
-                (original,),
+                (original_operation,),
             )
         }
-        document = _Repository(db, self._initial).load()
-        proposed_at = max(
-            (
-                r.proposal.decided_at
-                for r in document.proposals
-                if r.proposal.initiating_source_id == original
-            ),
-            default=self._active(db, original),
-        )
+        proposed_at = proposal.decided_at
         for source in evidence:
             if (
                 source.evidence_id != source.source_id
@@ -203,16 +227,6 @@ class SharedMissionAdapter:
 
         def propose(db, repository, machine):
             self._active(db, shared_operation)
-            current = db.execute(
-                "SELECT MAX(revision) FROM shared_operations WHERE item_id=(SELECT item_id FROM shared_operations WHERE operation_id=?) AND status='active'",
-                (shared_operation,),
-            ).fetchone()[0]
-            revision = db.execute(
-                "SELECT revision FROM shared_operations WHERE operation_id=?",
-                (shared_operation,),
-            ).fetchone()[0]
-            if current != revision:
-                raise ValueError("mission requires current shared revision")
             now = self._clock()
             if now < self._active(db, shared_operation):
                 raise ValueError("mission proposal predates shared evidence")
@@ -230,7 +244,7 @@ class SharedMissionAdapter:
                 "shared-mission-stage0-v1",
                 self._invariants,
                 purpose,
-                shared_operation,
+                self._source_identity(operation_id),
             )
             existing = [
                 r
@@ -238,9 +252,22 @@ class SharedMissionAdapter:
                 if r.proposal.proposal_id == operation_id
             ]
             if existing:
-                if replace(existing[0].proposal, decided_at=now) != proposal:
+                if (
+                    replace(
+                        existing[0].proposal,
+                        decided_at=now,
+                        initiating_source_id=(
+                            proposal.initiating_source_id
+                            if existing[0].proposal.initiating_source_id
+                            == existing[0].proposal.initiating_event_id
+                            else existing[0].proposal.initiating_source_id
+                        ),
+                    )
+                    != proposal
+                ):
                     raise ValueError("mission operation identity conflict")
                 return existing[0]
+            self._require_current(db, shared_operation)
             result = machine.propose(proposal)
             db.execute(
                 "INSERT INTO protected_mission_shared VALUES (?, 'proposal', ?, 1)",
@@ -292,6 +319,7 @@ class SharedMissionAdapter:
                 ):
                     raise ValueError("mission confirmation identity conflict")
                 return existing[0]
+            self._require_current(db, approval.shared_operation)
             result = machine.confirm(confirmation)
             db.execute(
                 "INSERT INTO protected_mission_shared VALUES (?, 'confirmation', ?, 1)",
