@@ -245,6 +245,8 @@ class PrivacyLedger:
             os.fstat(self._parent_descriptor), has_descendant=False
         ):
             raise RuntimeError("privacy ledger parent is unsafe")
+        if not regular_file_is_trusted(os.fstat(self._descriptor)):
+            raise RuntimeError("privacy ledger file is unsafe")
         self._require_path_identity(self._descriptor)
         self._require_trusted_sidecars()
         connection = self._connect_descriptor(self._descriptor)

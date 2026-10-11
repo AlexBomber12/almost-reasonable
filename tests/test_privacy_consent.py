@@ -1439,6 +1439,28 @@ def test_privacy_ledger_revalidates_parent_before_every_connection(
     assert connection_attempted is False
 
 
+def test_privacy_ledger_revalidates_main_file_before_every_connection(
+    tmp_path, monkeypatch
+):
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    ledger.path.chmod(0o666)
+    connection_attempted = False
+
+    def reject_connection(_descriptor):
+        nonlocal connection_attempted
+        connection_attempted = True
+        raise AssertionError("connected before revalidating ledger")
+
+    monkeypatch.setattr(ledger, "_connect_descriptor", reject_connection)
+    try:
+        with pytest.raises(RuntimeError, match="file is unsafe"):
+            ledger.control_generation()
+    finally:
+        ledger.path.chmod(0o600)
+
+    assert connection_attempted is False
+
+
 def run_concurrently(operation):
     barrier = threading.Barrier(3)
     results = []

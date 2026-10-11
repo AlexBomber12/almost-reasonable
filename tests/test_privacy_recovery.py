@@ -647,30 +647,45 @@ def test_quarantine_publication_rejects_a_substituted_destination(
     destination.unlink()
 
 
-def test_owned_cleanup_can_resume_after_an_interrupted_completed_entry(tmp_path):
+@pytest.mark.parametrize("interrupted_close", ["descriptor", "parent"])
+def test_owned_cleanup_can_resume_after_an_interrupted_close(
+    tmp_path, monkeypatch, interrupted_close
+):
     class SimulatedInterrupt(BaseException):
         pass
 
-    class InterruptingOwnership(list):
-        interrupted = False
-
-        def pop(self, index=-1):
-            output = super().pop(index)
-            if not self.interrupted:
-                self.interrupted = True
-                raise SimulatedInterrupt()
-            return output
-
-    owned = InterruptingOwnership()
+    owned = []
     paths = [tmp_path / f"owned-{index}" for index in range(3)]
     for path in paths:
         recovery_module._open_owned_file(path, os.O_RDWR, owned)
+    first = owned[0]
+    interrupted_descriptor = (
+        first.descriptor
+        if interrupted_close == "descriptor"
+        else first.parent_descriptor
+    )
+    real_close = recovery_module.os.close
+    interrupted = False
+
+    def close_then_interrupt(descriptor):
+        nonlocal interrupted
+        real_close(descriptor)
+        if not interrupted and descriptor == interrupted_descriptor:
+            interrupted = True
+            raise SimulatedInterrupt()
+
+    monkeypatch.setattr(recovery_module.os, "close", close_then_interrupt)
 
     with pytest.raises(SimulatedInterrupt):
         recovery_module._cleanup_created(owned)
 
+    assert interrupted is True
     assert not paths[0].exists()
     assert len(owned) == 2
+    with pytest.raises(OSError):
+        os.fstat(first.descriptor)
+    with pytest.raises(OSError):
+        os.fstat(first.parent_descriptor)
     recovery_module._cleanup_created(owned)
 
     assert owned == []

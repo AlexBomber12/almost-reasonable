@@ -182,9 +182,11 @@ def _cleanup_created(owned: list[_OwnedFile]) -> None:
                     identity.st_ino,
                 ):
                     os.unlink(path.name, dir_fd=output.parent_descriptor)
-        os.close(output.descriptor)
-        os.close(output.parent_descriptor)
         owned.pop(0)
+        try:
+            os.close(output.descriptor)
+        finally:
+            os.close(output.parent_descriptor)
 
 
 def _close_owned(owned: list[_OwnedFile]) -> None:
