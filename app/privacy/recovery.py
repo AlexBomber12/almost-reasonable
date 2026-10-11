@@ -308,17 +308,10 @@ def _cleanup_created_database(
     owned: list[_OwnedFile], *, count: int | None = None
 ) -> None:
     outputs = owned if count is None else owned[:count]
-    post_cleanup_outputs = [
-        _OwnedFile(
-            output.path,
-            output.descriptor,
-            os.dup(output.parent_descriptor),
-            output.cleanup_alias,
-        )
-        for output in outputs
-    ]
+    post_cleanup_outputs: list[_OwnedFile] = []
     preserved_sidecars: set[Path] = set()
-    try:
+
+    def cleanup_owned_database() -> None:
         try:
             _cleanup_created_database_sidecars(
                 owned,
@@ -334,6 +327,22 @@ def _cleanup_created_database(
             _cleanup_created(owned, count=count)
             raise
         _cleanup_created(owned, count=count)
+
+    try:
+        try:
+            for output in outputs:
+                post_cleanup_outputs.append(
+                    _OwnedFile(
+                        output.path,
+                        output.descriptor,
+                        os.dup(output.parent_descriptor),
+                        output.cleanup_alias,
+                    )
+                )
+        except BaseException:
+            cleanup_owned_database()
+            raise
+        cleanup_owned_database()
     finally:
         for output in post_cleanup_outputs:
             try:

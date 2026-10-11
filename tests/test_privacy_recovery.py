@@ -3765,6 +3765,48 @@ def test_restore_cleanup_retry_preserves_a_replaced_sidecar_when_main_disappears
     assert not staging.exists()
 
 
+def test_restore_cleanup_removes_sidecars_when_parent_duplication_fails(
+    tmp_path, monkeypatch
+):
+    paths = [tmp_path / f"staging-{index}.sqlite3" for index in range(2)]
+    writers = [make_source(path) for path in paths]
+    for index, writer in enumerate(writers):
+        insert_private_payload(writer, f"event-wal-{index}", "private")
+        writer.commit()
+    assert all(Path(f"{path}-wal").exists() for path in paths)
+
+    owned = []
+    original_descriptors = []
+    for path in paths:
+        descriptor = os.open(path, os.O_RDWR)
+        parent_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+        owned.append(recovery_module._OwnedFile(path, descriptor, parent_descriptor))
+        original_descriptors.extend((descriptor, parent_descriptor))
+
+    real_dup = recovery_module.os.dup
+    duplicated_descriptors = []
+
+    def fail_second_dup(descriptor):
+        if duplicated_descriptors:
+            raise OSError("synthetic parent duplication failure")
+        duplicated = real_dup(descriptor)
+        duplicated_descriptors.append(duplicated)
+        return duplicated
+
+    monkeypatch.setattr(recovery_module.os, "dup", fail_second_dup)
+
+    with pytest.raises(OSError, match="parent duplication"):
+        recovery_module._cleanup_created_database(owned)
+
+    assert owned == []
+    assert not any(tmp_path.glob("staging-*.sqlite3*"))
+    for descriptor in original_descriptors + duplicated_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+    for writer in writers:
+        writer.close()
+
+
 def test_restore_cleanup_preserves_main_replaced_during_repin(tmp_path, monkeypatch):
     staging = tmp_path / "staging.sqlite3"
     make_source(staging, "owned-main").close()
