@@ -253,8 +253,9 @@ def _publish_owned_file(source: Path, destination: Path, output: _OwnedFile) -> 
         raise BackupError("quarantine publication failed") from error
     if not _path_matches_descriptor(destination, output.descriptor):
         raise BackupError("quarantine publication identity changed")
-    os.unlink(source.name, dir_fd=output.parent_descriptor)
     output.path = destination
+    output.cleanup_alias = source
+    os.unlink(source.name, dir_fd=output.parent_descriptor)
     output.cleanup_alias = None
     os.fsync(output.parent_descriptor)
 
@@ -761,6 +762,9 @@ class QuarantinedRestore:
                 return self._blocked_restore(
                     restore_id, restored_at, "adapter_initialization_failure"
                 )
+            except BaseException:
+                _cleanup_created_database(owned)
+                raise
             self._require_quarantine_identity(staging, quarantine_descriptor)
             try:
                 reason = self._reconcile(adapter, snapshot)

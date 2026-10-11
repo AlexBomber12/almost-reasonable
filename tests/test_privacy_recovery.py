@@ -753,8 +753,9 @@ def test_backup_failure_cleanup_resumes_after_an_interrupted_close(
     assert created.path == metadata
 
 
+@pytest.mark.parametrize("timing", ["before", "after"])
 def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupted(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, timing
 ):
     class SimulatedInterrupt(BaseException):
         pass
@@ -772,6 +773,8 @@ def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupte
     def interrupt_sealed_staging_unlink(path, *args, **kwargs):
         nonlocal interrupted
         if not interrupted and str(path).startswith(".privacy-sealed-"):
+            if timing == "after":
+                real_unlink(path, *args, **kwargs)
             interrupted = True
             raise SimulatedInterrupt()
         return real_unlink(path, *args, **kwargs)
@@ -2617,6 +2620,43 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
+
+
+def test_restore_adapter_factory_interruption_cleans_wal_staging(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    connections = []
+
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    def interrupted_factory(path):
+        connection = sqlite3.connect(path)
+        connections.append(connection)
+        connection.execute("PRAGMA journal_mode=WAL")
+        connection.execute(
+            "INSERT INTO synthetic_private VALUES('event-init-interrupt', 'private')"
+        )
+        connection.commit()
+        raise SimulatedInterrupt()
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    with pytest.raises(SimulatedInterrupt):
+        QuarantinedRestore(ledger, 3, interrupted_factory).restore(
+            backup, quarantine, NOW
+        )
+
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    connections[0].close()
 
 
 @pytest.mark.parametrize(
