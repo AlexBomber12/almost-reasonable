@@ -489,10 +489,11 @@ def test_legacy_ambiguous_input_identity_is_rejected(setup):
     assert not fake.calls
 
 
-def test_unreserved_original_outside_context_window_does_not_use_latest_event(setup):
+def test_delayed_unreserved_original_has_its_own_bounded_snapshot_after_many_inputs(
+    setup,
+):
     from app.private_web.conversation import ConversationService
     from app.core.context import PrivateContextAssembler, ContextLimits
-    from app.privacy.application import PrivacyReadBlocked
 
     store, _, gate, fake, _ = setup
     clock = Clock()
@@ -503,9 +504,14 @@ def test_unreserved_original_outside_context_window_does_not_use_latest_event(se
     for number in range(100):
         legacy.submit(principal("a"), f"later-{number}", "Поздний синтетический запрос")
     runtime = Stage0ConversationRuntime(store, gate, fake, clock=clock)
-    with pytest.raises(PrivacyReadBlocked, match="context_window"):
-        runtime.submit(principal("a"), "old", "Старый синтетический запрос")
-    assert not fake.calls
+    assert runtime.submit(
+        principal("a"), "old", "Старый синтетический запрос"
+    ).response_content
+    assert len(fake.calls) == 1
+    payload = json.loads(fake.calls[0].request.input_text)
+    assert [item["content"] for item in payload["conversation"]] == [
+        "Старый синтетический запрос"
+    ]
 
 
 @pytest.mark.parametrize("point", ["after_reservation", "before_release"])
@@ -763,3 +769,114 @@ def test_long_legacy_identity_survives_crash_without_duplicate_inference(
         == state
     )
     assert len(fake.calls) == calls
+
+
+@pytest.mark.parametrize("backward", [False, True])
+def test_delayed_context_uses_commit_boundary_under_equal_or_backward_clocks(
+    setup, backward
+):
+    from datetime import timedelta
+    from test_event_store import private_input
+
+    store, _, _, fake, runtime = setup
+    original = replace(
+        private_input("original", "Первоначальный запрос"),
+        event_id="z",
+        occurred_at=NOW,
+    )
+    later = replace(
+        private_input("later", "Поздний посторонний запрос"),
+        event_id="a",
+        occurred_at=NOW - timedelta(seconds=int(backward)),
+    )
+    store.append_private_input(principal("a"), original)
+    store.append_private_input(principal("a"), later)
+    assert runtime.submit(
+        principal("a"), original.source_message_id, original.content
+    ).response_content
+    payload = json.loads(fake.calls[0].request.input_text)
+    assert [item["content"] for item in payload["conversation"]] == [original.content]
+    assert [
+        item.content
+        for item in runtime.history(principal("a"))
+        if item.role == "participant"
+    ] == [original.content, later.content]
+
+
+def test_commit_boundary_survives_restart_backup_and_vacuum(setup, tmp_path):
+    import os
+    import shutil
+    import sqlite3
+    from app.privacy.recovery import create_sqlite_backup, QuarantinedRestore
+    from app.privacy.application import EventStoreRestoreAdapter
+    from test_event_store import private_input
+
+    store, ledger, _, fake, _ = setup
+    original = replace(
+        private_input("original", "Первоначальный запрос"),
+        event_id="z",
+        occurred_at=NOW,
+    )
+    later = replace(
+        private_input("later", "Поздний посторонний запрос"),
+        event_id="a",
+        occurred_at=NOW,
+    )
+    store.append_private_input(principal("a"), original)
+    store.append_private_input(principal("a"), later)
+    backup = tmp_path / "snapshot.db"
+    create_sqlite_backup(store.database_path, backup, 5, NOW)
+    quarantine = tmp_path / "quarantine.db"
+    assert (
+        QuarantinedRestore(ledger, 5, EventStoreRestoreAdapter)
+        .restore(backup, quarantine, NOW)
+        .activation_eligible
+    )
+    # Isolated synthetic copy for restart testing; quarantine stays sealed.
+    test_copy = tmp_path / "restored-synthetic-copy.db"
+    shutil.copyfile(quarantine, test_copy)
+    os.chmod(test_copy, 0o600)
+    restored = EventStore(test_copy)
+    with sqlite3.connect(test_copy) as db:
+        before = db.execute(
+            "SELECT sequence, event_id FROM event_input_sequences ORDER BY sequence"
+        ).fetchall()
+        db.execute("VACUUM")
+        assert (
+            db.execute(
+                "SELECT sequence, event_id FROM event_input_sequences ORDER BY sequence"
+            ).fetchall()
+            == before
+        )
+    gate = PrivacyReadGate(ledger, restored)
+    assert gate.reconcile()
+    runtime = Stage0ConversationRuntime(restored, gate, fake)
+    assert runtime.submit(
+        principal("a"), original.source_message_id, original.content
+    ).response_content
+    payload = json.loads(fake.calls[0].request.input_text)
+    assert [item["content"] for item in payload["conversation"]] == [original.content]
+    assert [
+        item.event_id
+        for item in runtime.history(principal("a"))
+        if item.role == "participant"
+    ] == ["z", "a"]
+
+
+def test_missing_commit_sequence_fails_closed_before_inference(setup):
+    from app.privacy.application import PrivacyReadBlocked
+    from test_event_store import private_input
+
+    store, _, gate, fake, runtime = setup
+    event = private_input("sequence", "Синтетический запрос")
+    store.append_private_input(principal("a"), event)
+    with store._open() as db:
+        db.execute(
+            "DELETE FROM event_input_sequences WHERE event_id=?", (event.event_id,)
+        )
+    with pytest.raises(PrivacyReadBlocked, match="context_window"):
+        runtime.submit(principal("a"), event.source_message_id, event.content)
+    assert not fake.calls
+    assert not gate.reconcile()
+    with pytest.raises(PrivacyReadBlocked):
+        runtime.history(principal("a"))

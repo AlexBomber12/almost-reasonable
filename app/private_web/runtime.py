@@ -153,11 +153,12 @@ class Stage0ConversationRuntime(ConversationService):
                 previous = self._outputs.read_reply(principal, operation_id)
                 if previous is not None:
                     return previous, None
-                events = self._event_store.retrieve_private_events(principal)
+                events = self._event_store.retrieve_private_events_in_commit_order(
+                    principal, event_id
+                )
                 event_ids = tuple(event.event_id for event in events)
                 if event_id not in event_ids:
                     raise PrivacyReadBlocked("original_input_outside_context_window")
-                events = events[: event_ids.index(event_id) + 1]
                 context = PrivateContextAssembler(
                     _Snapshot(events), self._limits
                 ).build(principal)
@@ -280,7 +281,9 @@ class Stage0ConversationRuntime(ConversationService):
     def history(self, principal) -> tuple[HistoryItem, ...]:
         def read():
             items = []
-            for event in self._event_store.retrieve_private_events(principal):
+            for event in self._event_store.retrieve_private_events_in_commit_order(
+                principal
+            ):
                 items.append(
                     HistoryItem(event.event_id, event.occurred_at, event.content)
                 )

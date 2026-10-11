@@ -159,3 +159,8 @@ context/reservation, result commit, release and history boundaries. Normal disab
 configuration and live restore activation remain unchanged. See
 [Private conversation runtime](private-conversation-runtime.md) and
 `tests/test_private_conversation_runtime.py` for actual connected erasure evidence.
+
+`event_input_sequences` is retained event identity/order metadata. Its required
+one-to-one event binding is checked by the v5 graph validator. Payload erasure
+retains this sequence with the tombstone; v4 quarantine validation omits both
+v5-only metadata checks while still verifying the exact v4 schema and graph.

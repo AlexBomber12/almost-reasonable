@@ -41,6 +41,13 @@ class ApplicationPrivacyError(RuntimeError):
 # Provider records contain usage/control metadata, never prompts or model results.
 _GRAPH_CHECKS = (
     (
+        "missing_input_sequence",
+        """
+        SELECT 1 FROM event_envelopes e LEFT JOIN event_input_sequences s USING(event_id)
+        WHERE s.event_id IS NULL
+        """,
+    ),
+    (
         "invalid_reply_resolution",
         """
         SELECT 1 FROM agent_reply_resolutions r JOIN agent_reply_operations o USING(operation_id)
@@ -163,7 +170,7 @@ def _validate_graph(
 ) -> None:
     if schema_version == 4:
         EventStore._verify_schema_version(db, 4)
-        checks = _GRAPH_CHECKS[1:]  # v4 has no resolution/release table.
+        checks = _GRAPH_CHECKS[2:]  # v4 has no resolution or commit-sequence tables.
     else:
         EventStore._verify_current_schema(db)
         checks = _GRAPH_CHECKS

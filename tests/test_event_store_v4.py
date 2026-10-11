@@ -28,6 +28,8 @@ def populated_v3(path):
     )
     ProviderStateStore(store).record_attempt(attempt())
     with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER event_input_sequence_append")
+        db.execute("DROP TABLE event_input_sequences")
         for table in (
             "agent_reply_resolutions",
             "agent_reply_sources",

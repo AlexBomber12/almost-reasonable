@@ -16,6 +16,8 @@ def populated_v4(path):
     outputs.reserve_reply(principal("a"), operation())
     reply = persist(outputs)
     with sqlite3.connect(path) as db:
+        db.execute("DROP TRIGGER event_input_sequence_append")
+        db.execute("DROP TABLE event_input_sequences")
         db.execute("DROP TABLE agent_reply_resolutions")
         db.execute("UPDATE schema_metadata SET version=4")
         db.execute("PRAGMA user_version=4")
@@ -125,3 +127,84 @@ def test_genuine_v4_quarantine_uses_real_adapter_and_current_deletion_ledger(
             (0 if deleted else 1),
         )
     assert quarantine.stat().st_mode & 0o777 == 0o400
+
+
+def test_commit_sequence_migration_and_scoped_snapshot_boundary(tmp_path):
+    from app.core.events import EventAudience
+
+    path = tmp_path / "v4.db"
+    populated_v4(path)
+    with sqlite3.connect(path) as db:
+        original_rowids = db.execute(
+            "SELECT event_id FROM event_envelopes ORDER BY rowid"
+        ).fetchall()
+    store = EventStore(path)
+    with store._open() as db:
+        assert (
+            db.execute(
+                "SELECT event_id FROM event_input_sequences ORDER BY sequence"
+            ).fetchall()
+            == original_rowids
+        )
+    store.append_private_input(
+        principal("b"),
+        private_input(
+            "b",
+            "Synthetic private B",
+            audience=EventAudience.private_for(principal("b").principal_id),
+        ),
+    )
+    assert [
+        event.event_id
+        for event in store.retrieve_private_events_in_commit_order(
+            principal("a"), "event-a"
+        )
+    ] == ["event-a"]
+    assert (
+        store.retrieve_private_events_in_commit_order(principal("a"), "event-b") == ()
+    )
+    assert store.retrieve_private_events_in_commit_order(principal("a"), "absent") == ()
+    with pytest.raises(ValueError):
+        store.retrieve_private_events_in_commit_order(principal("a"), "invalid token")
+
+
+def test_sequence_allocation_rolls_back_with_input_and_keeps_deleted_tombstones(
+    tmp_path,
+):
+    from app.privacy.application import EventStoreErasureAdapter
+    from app.privacy.deletion import DeletionCoordinator
+    from app.privacy.ledger import PrivacyLedger
+    from test_privacy_deletion import context, request
+
+    store = EventStore(tmp_path / "events.db")
+
+    def crash(point):
+        if point is FaultPoint.AFTER_INPUT_ENVELOPE_INSERT:
+            raise RuntimeError("synthetic sequence transaction interruption")
+
+    # Interrupt after the envelope trigger assigns its sequence, before commit.
+    store._fault_injector = crash
+    with pytest.raises(RuntimeError):
+        store.append_private_input(
+            principal("a"), private_input("a", "Synthetic private input")
+        )
+    with store._open() as db:
+        assert db.execute("SELECT * FROM event_input_sequences").fetchall() == []
+    store._fault_injector = None
+    store.append_private_input(
+        principal("a"), private_input("a", "Synthetic private input")
+    )
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    assert (
+        DeletionCoordinator(ledger, EventStoreErasureAdapter(store))
+        .delete(context(), request(content_reference="event-a"))
+        .disposition.value
+        == "applied"
+    )
+    store.append_private_input(
+        principal("a"), private_input("a2", "Next synthetic input")
+    )
+    with store._open() as db:
+        assert db.execute(
+            "SELECT sequence, event_id FROM event_input_sequences ORDER BY sequence"
+        ).fetchall() == [(1, "event-a"), (2, "event-a2")]

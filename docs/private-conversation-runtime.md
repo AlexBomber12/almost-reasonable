@@ -59,8 +59,10 @@ This ensures a delayed request cannot infer from a newer unrelated message. It p
 Core Self, trust labels, whole-message truncation and byte bounds. All retrieved
 source events are recorded conservatively as dependencies, including events
 omitted by the assembler. This can invalidate more replies than strictly necessary
-but cannot omit an exposed input. The original event must remain in the bounded
-100-event retrieval window; an unreserved older operation fails closed. Existing
+but cannot omit an exposed input. A durable event commit sequence bounds retrieval at the initiating event before
+the 100-event limit is applied. Later inputs cannot displace a delayed original
+event or enter its context, even with equal timestamps or a backward clock.
+Missing sequence/source metadata fails closed. Existing
 context is participant-input-only: persisted replies appear in participant history,
 but agent replies and private memory/revision text are not model-context roles in
 this contract. Shared influence and memory-inclusive conversation remain blockers.
@@ -110,11 +112,22 @@ an honest operational state, not success or permission to execute a replacement.
 
 ## Release lifecycle and HTTP contract
 
-EventStore v5 adds exactly one metadata-only table, `agent_reply_resolutions`,
-keyed by the existing reply reservation. It stores one immutable terminal outcome
+EventStore v5 adds metadata-only reply resolutions and input commit sequences.
+`agent_reply_resolutions` is keyed by the existing reply reservation. It stores one immutable terminal outcome
 and, only for `completed`, the unique trusted release ID. It contains no content,
-source copies, hashes or provider-attempt state. Migration from exact v1–v4 schemas
-is additive and transactional, with a v5 pre-commit interruption point. Unknown
+source copies, private-content hashes or provider-attempt state.
+
+`event_input_sequences` stores an event ID and monotonically increasing integer
+commit sequence. Migration seeds the sequence in existing envelope row order.
+An exact-schema trigger assigns new sequences inside the input transaction;
+rollback removes the allocation, while deletion retains envelope/sequence
+identity. The declared integer key survives restart, SQLite backup and VACUUM.
+It is neither model-visible nor returned by HTTP. Runtime context retrieval
+uses the authenticated initiating event's sequence as a snapshot boundary;
+history uses commit order. Ordinary disabled-service timestamp ordering remains
+unchanged. Neither sequence nor timestamps can confer participant authority.
+
+Migration from exact v1–v4 schemas is additive and transactional, with a v5 pre-commit interruption point. Unknown
 schema objects and orphaned references remain rejected. Genuine v4 backups remain
 supported alongside v5 backups. The real quarantine adapter validates and erases
 v4 against its own exact schema and graph; it does not initialize EventStore or
@@ -143,7 +156,7 @@ Privacy/storage failure returns a payload-free error, never model internals.
 
 `GET /api/history` returns `messages`, each with existing `event_id`, `occurred_at`,
 `content` and an additive `role` (`participant` or `agent`). A released reply
-immediately follows its exact source input in event timestamp/ID order. HTML
+immediately follows its exact source input in durable input commit order. HTML
 escapes both participant and agent content; JSON remains `application/json`
 with `nosniff`, no-store and existing restrictive security headers. Versions,
 protected dependency edges, provider results, prompts and configuration are not
