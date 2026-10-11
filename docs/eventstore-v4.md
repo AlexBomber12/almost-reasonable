@@ -48,19 +48,21 @@ copied into a competing general provenance system. This API accepts event-only
 context. Memory/revision-derived output is not supported until its complete
 revision-chain dependencies can be recorded and validated by integration.
 
-INT-03 must implement the full erasure adapter: follow both existing state edges
-and reply source edges, remove payloads, invalidate dependent outputs/revisions,
-erase duplicate material and reconcile the external privacy ledger before reads.
-Direct SQL removal in regression tests demonstrates visibility boundaries, not a
-complete erasure operation. INT-04 must bind conversation routing at ingress and
+INT-03 now implements the reviewed v4 event erasure and quarantine adapters in
+`app/privacy/application.py`: it follows complete declared state revision chains
+and reply edges, removes affected payloads and invalidates retained provenance.
+The trusted startup gate reconciles the external ledger before scoped reads.
+See [the table inventory and coverage limits](privacy-eventstore-integration.md).
+Raw storage APIs remain internal capabilities; participant routes are unchanged.
+INT-04 must bind conversation routing at ingress and
 implement delivery admission, durable dispatch evidence and uncertain-outcome
 reconciliation. Reservations or held drafts never authorize transmission.
 
 Privacy backup validation recognizes exact schemas v1–v4, including the new
 objects; its copy, restore, WAL cleanup and sealing algorithms are unchanged.
-A v4 backup is structurally supported. Complete v4 restore activation remains
-blocked until INT-03 covers agent replies and all existing derivatives, and the
-existing ledger-generation/writer/activation fence is implemented. A readiness
+A v4 backup is structurally supported. Production v4 restore activation remains
+blocked until the ledger-generation/writer/activation fence and recoverable
+database-switch protocol are implemented and independently validated. A readiness
 marker or a fake adapter's eligible result is not activation authority. No
 activation API, real participant enrollment, provider call, deployment change or
 external effect is introduced here.
