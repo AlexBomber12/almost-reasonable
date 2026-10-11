@@ -27,7 +27,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -72,6 +72,7 @@ class FaultPoint(StrEnum):
     BEFORE_V2_MIGRATION_COMMIT = "before_v2_migration_commit"
     BEFORE_V3_MIGRATION_COMMIT = "before_v3_migration_commit"
     BEFORE_V4_MIGRATION_COMMIT = "before_v4_migration_commit"
+    BEFORE_V5_MIGRATION_COMMIT = "before_v5_migration_commit"
     AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
     AFTER_REPLY_COMMIT = "after_reply_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
@@ -567,6 +568,20 @@ _SCHEMA_V4 = (
 )
 
 
+_SCHEMA_V5 = (
+    """
+    CREATE TABLE agent_reply_resolutions (
+        operation_id TEXT PRIMARY KEY REFERENCES agent_reply_operations(operation_id),
+        outcome TEXT NOT NULL CHECK (outcome IN
+            ('completed', 'no_action', 'failed', 'invalid', 'unsupported', 'skipped')),
+        release_id TEXT UNIQUE,
+        CHECK ((outcome = 'completed' AND release_id IS NOT NULL)
+            OR (outcome <> 'completed' AND release_id IS NULL))
+    )
+    """,
+)
+
+
 def schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
     """Exact application objects, including explicit indexes and triggers."""
     return {
@@ -581,7 +596,7 @@ def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
     expected = {}
     with sqlite3.connect(":memory:") as connection:
         for version, statements in enumerate(
-            (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4), start=1
+            (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5), start=1
         ):
             for statement in statements:
                 connection.execute(statement)
@@ -710,7 +725,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -719,7 +734,7 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
+                if version not in {0, 1, 2, 3, 4, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if (
                     connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -734,6 +749,7 @@ class EventStore:
                         *_SCHEMA_V2,
                         *_SCHEMA_V3,
                         *_SCHEMA_V4,
+                        *_SCHEMA_V5,
                     ):
                         connection.execute(statement)
                     connection.execute(
@@ -746,6 +762,7 @@ class EventStore:
                         (2, _SCHEMA_V2, FaultPoint.BEFORE_V2_MIGRATION_COMMIT),
                         (3, _SCHEMA_V3, FaultPoint.BEFORE_V3_MIGRATION_COMMIT),
                         (4, _SCHEMA_V4, FaultPoint.BEFORE_V4_MIGRATION_COMMIT),
+                        (5, _SCHEMA_V5, FaultPoint.BEFORE_V5_MIGRATION_COMMIT),
                     )
                     for target, statements, fault_point in migrations:
                         if target > version:

@@ -1,4 +1,4 @@
-"""Reviewed Stage 0 EventStore v4 erasure and quarantine boundaries.
+"""Reviewed Stage 0 EventStore v5 erasure and quarantine boundaries.
 
 Only event references with PRIVATE_PAYLOAD category are accepted. Metadata and
 invalidated protected edges remain for identity/replay checks, never for model or
@@ -36,10 +36,18 @@ class ApplicationPrivacyError(RuntimeError):
     """A fixed, payload-free application validation reason."""
 
 
-# Every v4 table is either validated here, mutated below, or metadata-only:
+# Every v5 table is either validated here, mutated below, or metadata-only:
 # schema_metadata and provider_{spend_suspensions,attempt_reservations,usage_attempts}.
 # Provider records contain usage/control metadata, never prompts or model results.
 _GRAPH_CHECKS = (
+    (
+        "invalid_reply_resolution",
+        """
+        SELECT 1 FROM agent_reply_resolutions r JOIN agent_reply_operations o USING(operation_id)
+        WHERE (r.outcome='completed') <> (o.result_state='persisted')
+           OR (r.outcome='completed' AND r.release_id <> 'release:' || r.operation_id)
+        """,
+    ),
     (
         "unsupported_shared_state",
         "SELECT 1 FROM state_items WHERE scope <> 'private_candidate'",
@@ -296,7 +304,8 @@ class PrivacyReadGate:
 
     Starts closed, replays even APPLIED records against this database, and fences
     participant reads against newly committed privacy controls. This Stage 0
-    boundary is deliberately not installed in participant or owner WSGI routes.
+    boundary is installed by the explicit synthetic private conversation runtime;
+    ordinary disabled web and owner routes retain their existing configuration.
     Callers must never expose raw stores or an eligible quarantine to participants.
     """
 
@@ -364,6 +373,14 @@ class PrivacyReadGate:
                 if self._database_identity() != self._identity:
                     raise PrivacyReadBlocked("application_database_changed")
                 return result
+
+    def authorized(self, callback: Callable[[], _T]) -> _T:
+        """Run a short application read/write boundary under the privacy fence.
+
+        Never hold this fence over model execution. Authorization is rechecked
+        at subsequent persistence and response boundaries.
+        """
+        return self._read(callback)
 
     def retrieve_private_events(self, context: TrustedPrincipalContext):
         return self._read(lambda: self._store.retrieve_private_events(context))

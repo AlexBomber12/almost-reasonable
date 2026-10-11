@@ -147,3 +147,15 @@ source/reply text, state text, rationale, alternatives and constraints and are
 absent from application logical dumps and eligible quarantine logical dumps.
 Existing `test_privacy_deletion.py` and `test_privacy_recovery.py` retain their
 ledger monotonicity, generation race, filesystem identity and sealing coverage.
+
+## INT-04 additive v5 release compatibility
+
+`agent_reply_resolutions` retains only an immutable outcome and release identity,
+never content. Its result/release consistency joins are included in graph
+validation. Existing reply payload deletion and provenance invalidation also hide
+released replies; retained release metadata cannot grant retrieval after deletion.
+The explicit synthetic runtime now installs `PrivacyReadGate` at admission, model
+context/reservation, result commit, release and history boundaries. Normal disabled
+configuration and live restore activation remain unchanged. See
+[Private conversation runtime](private-conversation-runtime.md) and
+`tests/test_private_conversation_runtime.py` for actual connected erasure evidence.

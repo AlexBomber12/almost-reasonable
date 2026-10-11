@@ -76,12 +76,12 @@ def test_v1_migrates_atomically_and_preserves_event_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == 4
-    assert reopened.diagnostics().schema_version == 4
+    assert store.diagnostics().schema_version == 5
+    assert reopened.diagnostics().schema_version == 5
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (5,)
         assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
-            4,
+            5,
         )
         assert connection.execute(
             "SELECT content, audience_principal_id FROM private_payloads"
@@ -125,7 +125,7 @@ def test_failed_v1_migration_leaves_recoverable_v1_database(tmp_path):
         assert "state_items" not in tables
 
     recovered = EventStore(database)
-    assert recovered.diagnostics().schema_version == 4
+    assert recovered.diagnostics().schema_version == 5
 
 
 def test_failed_v3_step_rolls_back_the_combined_v1_migration(tmp_path):
@@ -162,11 +162,11 @@ def test_failed_v3_step_rolls_back_the_combined_v1_migration(tmp_path):
 def test_migration_rejects_future_versions(tmp_path):
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 5")
+        connection.execute("PRAGMA user_version = 6")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 5",
+        match="unsupported event store schema version: 6",
     ):
         EventStore(database)
 
@@ -230,9 +230,9 @@ def test_concurrent_v1_initialization_serializes_one_migration(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [4, 4]
+    assert outcomes == [5, 5]
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
-            4,
+            5,
         )
         assert connection.execute("SELECT COUNT(*) FROM state_items").fetchone() == (0,)

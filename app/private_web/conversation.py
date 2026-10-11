@@ -29,6 +29,12 @@ _MESSAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 class ModelState(StrEnum):
     UNAVAILABLE = "unavailable"
     PENDING = "pending"
+    COMPLETED = "completed"
+    NO_ACTION = "no_action"
+    FAILED = "failed"
+    INVALID = "invalid"
+    UNSUPPORTED = "unsupported"
+    SKIPPED = "skipped"
 
 
 class MessageStatus(StrEnum):
@@ -72,7 +78,7 @@ class SyntheticInferenceAdapter:
 class SubmittedMessage:
     message_status: MessageStatus
     model_state: ModelState
-    response_content: None = None
+    response_content: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,6 +86,7 @@ class HistoryItem:
     event_id: str
     occurred_at: datetime
     content: str
+    role: str = "participant"
 
 
 def _utc_now() -> datetime:

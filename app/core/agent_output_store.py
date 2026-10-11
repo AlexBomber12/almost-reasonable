@@ -1,11 +1,11 @@
-"""Durable application-authorized private drafts; no delivery capability.
+"""Durable application-authorized private drafts and response-release metadata.
 
 All operation fields are supplied by trusted application code, never inferred
 from a proposal. A reservation survives interruption but grants no provider
 retry or external effect. Conversation IDs are opaque application routing IDs.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 import sqlite3
 
@@ -54,6 +54,7 @@ class PrivateReply:
     result_state: ResultState
     delivery_state: str
     content: str | None
+    reservation_created: bool = dataclass_field(default=False, compare=False)
 
 
 class AgentOutputStore:
@@ -197,7 +198,7 @@ class AgentOutputStore:
                     ),
                 )
                 return PrivateReply(
-                    operation, "pending", ResultState.PENDING, "held", None
+                    operation, "pending", ResultState.PENDING, "held", None, True
                 )
         except sqlite3.Error as error:
             raise self._store._translated_error(error) from None
@@ -246,6 +247,14 @@ class AgentOutputStore:
                             "reply result identity conflict"
                         )
                     return previous
+                if (
+                    db.execute(
+                        "SELECT 1 FROM agent_reply_resolutions WHERE operation_id=?",
+                        (operation.operation_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise EventValidationError("reply already resolved")
                 db.execute(
                     "INSERT INTO agent_reply_payloads(operation_id, content) VALUES (?, ?)",
                     (operation.operation_id, content),
@@ -343,6 +352,115 @@ class AgentOutputStore:
         return PrivateReply(
             op, "accepted_internal", ResultState.PERSISTED, "held", payload[0]
         )
+
+    def resolution(self, context: TrustedPrincipalContext, operation_id: str):
+        """Return content-free terminal/release metadata only for live scoped sources."""
+        EventStore._validate_context(context)
+        EventStore._require_token("operation id", operation_id)
+        db = self._store._open()
+        try:
+            with db:
+                db.execute("BEGIN")
+                self._store._verify_current_schema(db)
+                if self._read(db, context, operation_id) is None:
+                    return None
+                return db.execute(
+                    "SELECT outcome, release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+        finally:
+            db.close()
+
+    def resolve_without_reply(
+        self, context: TrustedPrincipalContext, operation_id: str, outcome: str
+    ) -> None:
+        """Commit a bounded terminal decision without fabricating reply text."""
+        if outcome not in {"no_action", "failed", "invalid", "unsupported", "skipped"}:
+            raise EventValidationError("invalid conversation outcome")
+        self._resolve(context, operation_id, outcome, None)
+
+    def release_reply(
+        self,
+        route: TrustedActionContext,
+        operation: ReplyOperation,
+        decision: PolicyDecision,
+        capabilities: CapabilityState,
+        release_id: str,
+    ) -> None:
+        """Durably release an exact Russian draft for response; never claim receipt.
+
+        Application callers must hold the current PrivacyReadGate fence. This
+        storage boundary independently checks the route, current controls and
+        every source in the same transaction as the release record.
+        """
+        from app.behavior.russian_gate import RussianOutputPolicy
+
+        self._validate(route.principal, operation)
+        EventStore._require_token("release id", release_id)
+        if release_id != f"release:{operation.operation_id}":
+            raise EventValidationError("private release identity mismatch")
+        validated = ActionPolicy().revalidate(
+            decision, decision.proposal, route, capabilities
+        )
+        if (
+            not validated.dispatchable
+            or not isinstance(validated.proposal, ReplyProposal)
+            or capabilities.provider_spend_suspended
+            or route.correlation_id != operation.correlation_id
+            or RussianOutputPolicy(max_regenerations=0)
+            .deliver(validated.proposal.content)
+            .text
+            != validated.proposal.content
+        ):
+            raise EventValidationError("private release not authorized")
+        self._resolve(
+            route.principal,
+            operation.operation_id,
+            "completed",
+            release_id,
+            operation=operation,
+            content=validated.proposal.content,
+        )
+
+    def _resolve(
+        self,
+        context,
+        operation_id,
+        outcome,
+        release_id,
+        *,
+        operation=None,
+        content=None,
+    ) -> None:
+        EventStore._validate_context(context)
+        EventStore._require_token("operation id", operation_id)
+        db = self._store._open()
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                self._store._verify_current_schema(db)
+                reply = self._read(db, context, operation_id)
+                if reply is None:
+                    raise EventValidationError("reply reservation unavailable")
+                if outcome == "completed":
+                    if reply.operation != operation or reply.content != content:
+                        raise EventIdentityConflictError("private release mismatch")
+                elif reply.result_state is not ResultState.PENDING:
+                    raise EventValidationError("reply already persisted")
+                previous = db.execute(
+                    "SELECT outcome, release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if previous is not None:
+                    if previous != (outcome, release_id):
+                        raise EventIdentityConflictError("reply resolution conflict")
+                    return
+                db.execute(
+                    "INSERT INTO agent_reply_resolutions VALUES (?, ?, ?)",
+                    (operation_id, outcome, release_id),
+                )
+        finally:
+            db.close()
 
     def _fault(self, point: FaultPoint) -> None:
         if self._store._fault_injector is not None:
