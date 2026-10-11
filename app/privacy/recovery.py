@@ -160,8 +160,9 @@ def _open_owned_file(path: Path, access: int, owned: list[_OwnedFile]) -> int:
     return descriptor
 
 
-def _cleanup_created(owned: list[_OwnedFile]) -> None:
-    while owned:
+def _cleanup_created(owned: list[_OwnedFile], *, count: int | None = None) -> None:
+    remaining = len(owned) if count is None else count
+    while owned and remaining:
         output = owned[0]
         paths = (output.path, output.cleanup_alias)
         for path in paths:
@@ -187,6 +188,14 @@ def _cleanup_created(owned: list[_OwnedFile]) -> None:
             os.close(output.descriptor)
         finally:
             os.close(output.parent_descriptor)
+        remaining -= 1
+
+
+def _cleanup_created_resumable(owned: list[_OwnedFile]) -> None:
+    try:
+        _cleanup_created(owned)
+    finally:
+        _cleanup_created(owned)
 
 
 def _cleanup_created_database(owned: list[_OwnedFile]) -> None:
@@ -543,14 +552,12 @@ def create_sqlite_backup(
     try:
         _require_database_identity(pinned_source)
         owned: list[_OwnedFile] = []
-        sidecar_reservations: list[_OwnedFile] = []
         try:
             for sidecar_path in sidecar_paths:
-                _open_owned_file(sidecar_path, os.O_RDWR, sidecar_reservations)
+                _open_owned_file(sidecar_path, os.O_RDWR, owned)
             destination_descriptor = _open_owned_file(destination, os.O_RDWR, owned)
             _sqlite_copy(pinned_source, destination_descriptor)
-            _cleanup_created(sidecar_reservations)
-            sidecar_reservations.clear()
+            _cleanup_created(owned, count=len(sidecar_paths))
             for sidecar_path in sidecar_paths:
                 _validate_new_file(sidecar_path, "destination sidecar")
             if after_copy is not None:
@@ -585,18 +592,18 @@ def create_sqlite_backup(
                 _validate_new_file(sidecar_path, "destination sidecar")
             _fsync_owned_parents(owned)
         except sqlite3.OperationalError as error:
-            _cleanup_created([*sidecar_reservations, *owned])
+            _cleanup_created_resumable(owned)
             if _is_busy(error):
                 raise BackupBusyError("SQLite source is busy") from error
             raise BackupError("SQLite backup failed") from error
         except BackupError:
-            _cleanup_created([*sidecar_reservations, *owned])
+            _cleanup_created_resumable(owned)
             raise
         except Exception as error:
-            _cleanup_created([*sidecar_reservations, *owned])
+            _cleanup_created_resumable(owned)
             raise BackupError("SQLite backup failed") from error
         except BaseException:
-            _cleanup_created([*sidecar_reservations, *owned])
+            _cleanup_created_resumable(owned)
             raise
         _close_owned(owned)
     finally:

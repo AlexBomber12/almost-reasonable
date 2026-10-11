@@ -692,6 +692,66 @@ def test_owned_cleanup_can_resume_after_an_interrupted_close(
     assert not any(path.exists() for path in paths)
 
 
+def test_backup_failure_cleanup_resumes_after_an_interrupted_close(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    destination = tmp_path / "backup.sqlite3"
+    metadata = Path(f"{destination}.metadata.json")
+    sidecars = [
+        Path(f"{destination}{suffix}")
+        for suffix in recovery_module._SQLITE_SIDECAR_SUFFIXES
+    ]
+    real_open_owned_file = recovery_module._open_owned_file
+    opened = []
+
+    def track_owned_file(path, access, owned):
+        descriptor = real_open_owned_file(path, access, owned)
+        opened.append(owned[-1])
+        return descriptor
+
+    real_copy = recovery_module._sqlite_copy
+
+    def fail_copy(_source, _destination_descriptor):
+        raise recovery_module.BackupError("synthetic copy failure")
+
+    real_close = recovery_module.os.close
+    interrupted = False
+
+    def close_then_interrupt(descriptor):
+        nonlocal interrupted
+        real_close(descriptor)
+        if opened and not interrupted and descriptor == opened[0].descriptor:
+            interrupted = True
+            raise SimulatedInterrupt()
+
+    monkeypatch.setattr(recovery_module, "_open_owned_file", track_owned_file)
+    monkeypatch.setattr(recovery_module, "_sqlite_copy", fail_copy)
+    monkeypatch.setattr(recovery_module.os, "close", close_then_interrupt)
+
+    with pytest.raises(SimulatedInterrupt):
+        create_sqlite_backup(source, destination, 3, NOW)
+
+    assert interrupted is True
+    assert not destination.exists()
+    assert not metadata.exists()
+    assert not any(sidecar.exists() for sidecar in sidecars)
+    for output in opened:
+        with pytest.raises(OSError):
+            os.fstat(output.descriptor)
+        with pytest.raises(OSError):
+            os.fstat(output.parent_descriptor)
+
+    monkeypatch.setattr(recovery_module, "_sqlite_copy", real_copy)
+    created = create_sqlite_backup(source, destination, 3, NOW)
+    assert destination.exists()
+    assert created.path == metadata
+
+
 def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupted(
     tmp_path, monkeypatch
 ):
