@@ -33,9 +33,9 @@ metadata and avoid logging request bodies or Cookie/CSRF headers. Proxy client
 IP handling reuses private-web's explicit trusted-proxy allowlist.
 
 The store composes the existing scrypt, throttling, hashed session and revocation
-primitives. Owner accounts receive random owner actor references. Password hashes
-have an owner domain prefix in addition to separate storage; original passwords
-must meet the existing password length policy. Owner sessions expire after one
+primitives. Owner accounts receive random owner actor references. Dedicated
+protected storage and the owner schema marker supply independent authority;
+passwords retain the existing full 12–1024 UTF-8 byte policy. Owner sessions expire after one
 hour, and a new login revokes prior account sessions. `OwnerStore.revoke(token)`
 allows trusted local revocation. Participant sessions, participant `is_owner`,
 chat claims and model output never supply owner authorization or conversational

@@ -674,3 +674,25 @@ def test_anonymous_challenge_flood_does_not_block_owner_login(boundary):
     assert not reopened.consume_login_challenge(challenge["csrf"], "127.0.0.1")
     fresh = store.login_challenge("127.0.0.1")
     assert reopened.consume_login_challenge(fresh, "127.0.0.1")
+
+
+@pytest.mark.parametrize(
+    "password",
+    ["x" * 1011, "x" * 1024, "é" * 512],
+    ids=["ascii-1011", "ascii-1024", "utf8-1024"],
+)
+def test_full_password_byte_range_is_preserved(boundary, password):
+    from app.private_web.auth import ProvisioningError
+
+    store, _, _, _ = boundary
+    store.provision("long-password-owner", password)
+    assert (
+        store.login("long-password-owner", password, "local").status
+        is LoginStatus.SUCCESS
+    )
+    assert (
+        store.login("long-password-owner", password + "x", "local").status
+        is LoginStatus.INVALID
+    )
+    with pytest.raises(ProvisioningError):
+        store.provision("oversized-owner", "x" * 1025)

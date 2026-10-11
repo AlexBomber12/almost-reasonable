@@ -18,7 +18,7 @@ class OwnerStore:
     """Local OS-authenticated provisioning; never accept a participant AuthStore.
 
     The dedicated directory and owner schema marker prevent accidental reuse of
-    a participant database. Password domain separation supplies another boundary.
+    a participant database. Only this protected store supplies owner authority.
     SQLite immediate transactions serialize stop, replay and audit commits.
     """
 
@@ -162,14 +162,12 @@ class OwnerStore:
 
     def provision(self, username, password):
         # No supplied conversational principal or owner flag is accepted.
-        AuthStore._password_bytes(password)
         self._auth.provision_account(
-            username, "owner-control:" + password, "owner:" + secrets.token_hex(16)
+            username, password, "owner:" + secrets.token_hex(16)
         )
 
     def login(self, username, password, client):
-        secret = "owner-control:" + password if type(password) is str else None
-        return self._auth.login(username, secret, client)
+        return self._auth.login(username, password, client)
 
     def authenticate(self, token):
         return self._auth.authenticate(token)
