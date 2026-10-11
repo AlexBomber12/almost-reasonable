@@ -192,6 +192,30 @@ def test_candidate_snapshot_read_malformed_state_is_translated(read_setup):
         CognitionReadStore(events, state).retrieve_all_private_candidate_reads(context)
 
 
+@pytest.mark.parametrize("invalid_pointer", [0, 2])
+def test_all_candidate_read_modes_reject_missing_current_revision_pointers(
+    read_setup, invalid_pointer
+):
+    events, state, context = read_setup
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute("PRAGMA ignore_check_constraints = ON")
+        connection.execute(
+            "UPDATE state_items SET current_revision = ?",
+            (invalid_pointer,),
+        )
+    read_store = CognitionReadStore(events, state)
+
+    reads = (
+        lambda: state.retrieve_private_candidates(context),
+        lambda: read_store.retrieve_exact_private_candidate(context, "interest-a"),
+        lambda: read_store.retrieve_all_private_candidates(context),
+        lambda: read_store.retrieve_all_private_candidate_reads(context),
+    )
+    for read in reads:
+        with pytest.raises(EventStoreError, match="event store operation failed"):
+            read()
+
+
 def test_candidate_reads_accept_valid_model_and_deterministic_revision_metadata(
     read_setup,
 ):
