@@ -189,6 +189,17 @@ def _cleanup_created(owned: list[_OwnedFile]) -> None:
             os.close(output.parent_descriptor)
 
 
+def _cleanup_created_database(owned: list[_OwnedFile]) -> None:
+    for output in owned:
+        pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
+        try:
+            for sidecar_path, _descriptor in pinned.sidecars:
+                os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
+        finally:
+            _close_pinned_database(pinned)
+    _cleanup_created(owned)
+
+
 def _close_owned(owned: list[_OwnedFile]) -> None:
     for output in owned:
         os.close(output.descriptor)
@@ -722,13 +733,18 @@ class QuarantinedRestore:
                     Path(f"/proc/self/fd/{quarantine_descriptor}")
                 )
             except Exception:
-                _cleanup_created(owned)
+                _cleanup_created_database(owned)
                 return self._blocked_restore(
                     restore_id, restored_at, "adapter_initialization_failure"
                 )
             self._require_quarantine_identity(staging, quarantine_descriptor)
             reason = self._reconcile(adapter, snapshot)
             if reason is not None:
+                if reason in {
+                    "adapter_writer_release_incomplete",
+                    "adapter_writer_release_failure",
+                }:
+                    _cleanup_created_database(owned)
                 return self._blocked_restore(restore_id, restored_at, reason)
             self._require_quarantine_identity(staging, quarantine_descriptor)
             sealed_staging = quarantine.with_name(f".privacy-sealed-{uuid4()}.sqlite3")

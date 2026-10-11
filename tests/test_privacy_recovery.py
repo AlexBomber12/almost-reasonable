@@ -2509,6 +2509,62 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
 
 
 @pytest.mark.parametrize(
+    ("behavior", "reason"),
+    [
+        ("false", "adapter_writer_release_incomplete"),
+        ("raise", "adapter_writer_release_failure"),
+    ],
+)
+def test_restore_writer_release_failure_does_not_publish_wal_staging(
+    tmp_path, behavior, reason
+):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class FailedReleaseWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+
+        def rebuild_dependencies(self):
+            self.connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-release', 'private')"
+            )
+            self.connection.commit()
+            return True
+
+        def release_writers(self):
+            if behavior == "raise":
+                raise RuntimeError("private release failure")
+            return False
+
+    def adapter_factory(path):
+        adapter = FailedReleaseWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (RestoreDisposition.BLOCKED, reason)
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    adapters[0].connection.close()
+
+
+@pytest.mark.parametrize(
     ("method", "behavior", "reason"),
     [
         ("apply_deletion", "raise", "deletion_adapter_failure"),
