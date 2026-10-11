@@ -216,6 +216,16 @@ Public posting requires all of the following: production capability enabled by a
 
 Threads publishing is a side-effecting, provider-specific multi-step operation. Its exact container/creation/publication sequence and available reconciliation evidence MUST be verified against current official documentation and smoke tests. Provider idempotency-key support MUST NOT be assumed. The durable outbox uses the closed outcomes `proposed`, `awaiting_policy_or_operator_approval`, `ready`, `sending`, `confirmed`, `unknown`, `unknown_abandoned`, `cancelled`, and `failed_terminal`.
 
+Every inbound polling action requires an explicit correlation ID. A policy denial is recorded before returning with the configured account's pseudonymous authenticated actor reference, stream, sanitized reason, and timestamp; it contains no inbound payload or credential material.
+
+A bounded multi-page poll stages its verified pages in memory and commits all inbound events plus the final cursor in one transaction. A timeout, provider failure, policy change, validation failure, or interruption before that commit leaves the prior cursor and event set unchanged so the entire batch remains replayable.
+
+Committed inbound events remain in a durable pending queue until a conversation outcome is recorded. Recording that outcome and acknowledging the inbound event occur in the same transaction, so a crash or lost poll response cannot make an unprocessed reply or mention disappear behind an advanced cursor.
+
+Administrative abandonment and reconciliation-claim recovery revalidate their purpose-bound approval after acquiring the durable write transaction and before changing outbox state, locks, or decision records. Revocation or expiry during database-lock wait therefore rolls the transaction back without applying the administrative change.
+
+The trusted authorization provider supplies approval and per-draft privacy as one atomic publication snapshot. Mutable account policy is rechecked after that snapshot at every external-effect boundary. Exact replacement-proposal retries are identified by their persisted immutable operation data before mutable target state or acknowledgement expiry is evaluated; conflicting operation-ID reuse still fails closed.
+
 Failure classification depends on the external-dispatch boundary:
 
 - **proven pre-dispatch failure:** no external request was transmitted and no side effect occurred; keep or return the item to `ready` for a bounded safe retry, or use `cancelled`/`failed_terminal` as appropriate;
