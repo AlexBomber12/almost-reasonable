@@ -1065,8 +1065,9 @@ def test_revision_target_omitted_from_extractor_context_is_rejected(
     assert stored.revision == 1
 
 
-def test_invalidated_candidate_is_excluded_from_extraction_and_revision(
-    cognition_setup,
+@pytest.mark.parametrize("retention_status", ["invalidated", "deleted"])
+def test_tainted_candidate_is_excluded_from_extraction_and_revision(
+    cognition_setup, retention_status
 ):
     events, state, context, invalidated_event = cognition_setup
     new_event = append_event(events, context, "after-invalidation")
@@ -1087,8 +1088,8 @@ def test_invalidated_candidate_is_excluded_from_extraction_and_revision(
     with sqlite3.connect(events.database_path) as connection:
         connection.execute(
             "UPDATE protected_state_provenance "
-            "SET retention_status = 'invalidated' WHERE event_id = ?",
-            (invalidated_event,),
+            "SET retention_status = ? WHERE event_id = ?",
+            (retention_status, invalidated_event),
         )
     revision = replace(
         created,

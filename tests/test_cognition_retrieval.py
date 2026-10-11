@@ -246,6 +246,27 @@ def test_deletion_invalidation_boundary_is_pending_and_filters_retrieval(
     assert [record.item_id for record in selected.records] == ["interest-a-art"]
 
 
+def test_deleted_provenance_remains_tainted_until_state_payload_removal(
+    retrieval_setup,
+):
+    events, state, context, _, event_id, _ = retrieval_setup
+    with sqlite3.connect(events.database_path) as connection:
+        connection.execute(
+            "UPDATE protected_state_provenance "
+            "SET retention_status = 'deleted' WHERE event_id = ?",
+            (event_id,),
+        )
+
+    plan = CognitionEngine(events, state).plan_source_invalidation(context, event_id)
+    selected = MemoryContextSelector(events, state).select(
+        context,
+        RetrievalRequest(RetrievalPurpose.CONVERSATION, "orbital", 4096, 5),
+    )
+
+    assert plan.affected_items == (("interest", "interest-a-space", 1),)
+    assert [record.item_id for record in selected.records] == ["interest-a-art"]
+
+
 def test_invalidation_filter_checks_the_complete_revision_chain(retrieval_setup):
     events, state, context, _, old_event, new_event = retrieval_setup
     proposal = InterestMemoryProposal(

@@ -243,7 +243,6 @@ class CognitionReadStore:
                     WHERE item.scope = 'private_candidate'
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
-                      AND source.retention_status IN ('active', 'invalidated')
                     ORDER BY revision.item_key, source.event_id,
                              source.retention_status
                     """,
@@ -302,7 +301,7 @@ class CognitionReadStore:
                 invalidated_items: set[int] = set()
                 for item_key, event_id, retention_status in evidence_rows:
                     evidence_by_item.setdefault(item_key, set()).add(event_id)
-                    if retention_status == "invalidated":
+                    if retention_status != "active":
                         invalidated_items.add(item_key)
                 payloads: dict[tuple[str, int], list[tuple[str]]] = {}
                 for table, revision_key, _ordinal, value in payload_rows:
@@ -376,7 +375,6 @@ class CognitionReadStore:
                       AND item.audience_type = 'private_participant'
                       AND item.audience_principal_id = ?
                       AND source.event_id = ?
-                      AND source.retention_status IN ('active', 'invalidated')
                     ORDER BY item.state_type, item.item_id, revision.revision_number
                     """,
                     (context.principal_id.value, event_id),
@@ -407,12 +405,10 @@ class CognitionReadStore:
                 )
                 if revision_key is None:
                     return None
-                if self._state._revision_chain_has_invalidated_provenance(
+                if self._state._revision_chain_has_tainted_provenance(
                     connection, revision_key
                 ):
-                    raise SelfStateValidationError(
-                        "operation provenance is invalidated"
-                    )
+                    raise SelfStateValidationError("operation provenance is not active")
                 stored = self._state._stored_change(connection, revision_key)
                 normalized = replace(
                     change,

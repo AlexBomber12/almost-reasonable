@@ -244,7 +244,7 @@ class SelfStateStore:
                             ON tainted_source.revision_key =
                                tainted_revision.revision_key
                           WHERE tainted_revision.item_key = item.item_key
-                            AND tainted_source.retention_status = 'invalidated'
+                            AND tainted_source.retention_status <> 'active'
                       )
                     ORDER BY revision.revision_key DESC, item.item_id DESC
                     LIMIT ?
@@ -480,11 +480,11 @@ class SelfStateStore:
                     change.revision.operation_id,
                 )
                 if duplicate is not None:
-                    if self._revision_chain_has_invalidated_provenance(
+                    if self._revision_chain_has_tainted_provenance(
                         connection, duplicate
                     ):
                         raise SelfStateValidationError(
-                            "operation provenance is invalidated"
+                            "operation provenance is not active"
                         )
                     if self._logical_change(
                         self._stored_change(connection, duplicate)
@@ -672,7 +672,7 @@ class SelfStateStore:
                   JOIN protected_state_provenance AS tainted_source
                     ON tainted_source.revision_key = tainted_revision.revision_key
                   WHERE tainted_revision.item_key = item.item_key
-                    AND tainted_source.retention_status = 'invalidated'
+                    AND tainted_source.retention_status <> 'active'
               )
             ORDER BY head_revision.revision_key DESC, item.item_id DESC
             LIMIT ?
@@ -688,7 +688,7 @@ class SelfStateStore:
             raise SelfStateConflictError("candidate snapshot conflict")
 
     @staticmethod
-    def _revision_chain_has_invalidated_provenance(
+    def _revision_chain_has_tainted_provenance(
         connection: sqlite3.Connection, revision_key: int
     ) -> bool:
         row = connection.execute(
@@ -700,7 +700,7 @@ class SelfStateStore:
             JOIN protected_state_provenance AS source
               ON source.revision_key = item_revision.revision_key
             WHERE replayed_revision.revision_key = ?
-              AND source.retention_status = 'invalidated'
+              AND source.retention_status <> 'active'
             LIMIT 1
             """,
             (revision_key,),

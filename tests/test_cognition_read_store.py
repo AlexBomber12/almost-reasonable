@@ -317,7 +317,7 @@ def test_candidate_snapshot_batches_provenance_reads(read_setup, monkeypatch):
     provenance_queries = [
         statement
         for statement in statements
-        if "source.retention_status IN ('active', 'invalidated')" in statement
+        if "revision.item_key, source.event_id, source.retention_status" in statement
     ]
     assert len(reads) == 2
     assert len(provenance_queries) == 1
