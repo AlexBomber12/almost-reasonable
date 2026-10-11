@@ -1567,3 +1567,163 @@ def test_failed_publication_handoff_does_not_starve_independent_inbound_inactivi
     assert len(app.recover()) == 1
     assert len(model.requests) == 3
     assert app.simulator.network_calls == 0
+
+
+def test_concurrent_conversation_control_cannot_poison_independent_recovery(tmp_path):
+    from app.threads.domain import ConversationOutcome
+
+    app, model, _, _ = setup(
+        tmp_path,
+        [
+            {"decision": "no_action", "reason_category": "low_value"},
+            {"decision": "no_action", "reason_category": "not_warranted"},
+        ],
+    )
+    inbound(app, name="first", conversation="controlled")
+    control_source = inbound(app, name="second", conversation="controlled")
+
+    def concurrent_control(at):
+        if at == "after_intent":
+            app.checkpoint = lambda _point: None
+            app.service.store.record_conversation_outcome(
+                outcome_id="concurrent-control",
+                correlation_id=control_source.correlation_id,
+                account_ref=app.account,
+                stream=control_source.kind,
+                inbound_event_id=control_source.event_id,
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="synthetic",
+                resume_condition=None,
+                now=NOW,
+            )
+
+    app.checkpoint = concurrent_control
+    assert app.process_inbound(InboundKind.REPLY) == ()
+    assert len(app.recover()) == 1
+    inbound(app, name="independent", conversation="independent")
+    assert len(app.process_inbound(InboundKind.REPLY)) == 1
+    assert len(model.requests) == 2
+    assert app.simulator.network_calls == 0
+
+
+@pytest.mark.parametrize(
+    "boundary", ["before_outbox", "before_ready", "before_container", "before_publish"]
+)
+def test_current_conversation_control_blocks_reply_handoff_and_each_effect(
+    tmp_path, monkeypatch, boundary
+):
+    from app.threads.domain import ConversationOutcome
+    from app.threads.service import PolicyDeniedError
+
+    app, model, clock, operator = setup(
+        tmp_path, [{"decision": "reply", "content": DRAFT}]
+    )
+    first = inbound(app, name="first", conversation="controlled")
+    control_source = inbound(app, name="second", conversation="controlled")
+
+    def control():
+        app.service.store.record_conversation_outcome(
+            outcome_id="current-control",
+            correlation_id=control_source.correlation_id,
+            account_ref=app.account,
+            stream=control_source.kind,
+            inbound_event_id=control_source.event_id,
+            outcome=ConversationOutcome.COOLDOWN,
+            reason="synthetic",
+            resume_condition=None,
+            now=NOW,
+            control_expires_at=NOW + timedelta(seconds=30),
+        )
+
+    if boundary == "before_outbox":
+
+        def checkpoint(at):
+            if at == "after_intent":
+                control()
+
+        app.checkpoint = checkpoint
+        assert app.process_inbound(InboundKind.REPLY) == ()
+        assert len(app.recover()) == 1
+        with sqlite3.connect(app.service.store.database) as db:
+            assert db.execute("SELECT count(*) FROM threads_outbox").fetchone()[0] == 0
+        clock.advance(timedelta(seconds=31))
+        app.checkpoint = lambda _at: None
+        assert app.recover() == ()
+    else:
+        # Select just the first event; the second is an independent control source.
+        operation = app.process_inbound(InboundKind.REPLY, limit=1)[0]
+        approval = app.approve(operation, operator, expires_at=NOW + timedelta(hours=1))
+        if boundary == "before_ready":
+            control()
+            with pytest.raises(PolicyDeniedError):
+                app.service.authorize(operation, approval, now=NOW)
+        else:
+            app.service.authorize(operation, approval, now=NOW)
+            if boundary == "before_container":
+                control()
+            else:
+                create = app.simulator.create_container
+
+                def control_after_container(item):
+                    container = create(item)
+                    control()
+                    return container
+
+                monkeypatch.setattr(
+                    app.simulator, "create_container", control_after_container
+                )
+            with pytest.raises(PolicyDeniedError):
+                app.service.dispatch(operation, approval, now=NOW)
+        effects = [
+            step
+            for step in app.simulator.trace
+            if step[0] in ("create_container", "publish_container")
+        ]
+        assert effects == (
+            [("create_container", operation)] if boundary == "before_publish" else []
+        )
+    assert len(model.requests) == 1
+    assert model.requests[0]["authorized_context"] == (first.content,)
+
+
+@pytest.mark.parametrize("purpose", ["ABANDON_UNKNOWN", "RECOVER_RECONCILIATION"])
+@pytest.mark.parametrize("operator_state", ["disabled", "different_actor"])
+def test_removed_operator_cannot_use_prior_administrative_approval(
+    tmp_path, purpose, operator_state
+):
+    from app.threads.domain import ApprovalPurpose
+    from app.threads.simulator import Fault
+    from app.threads.service import PolicyDeniedError
+
+    app, _, _, operator = setup(
+        tmp_path, [{"decision": "propose_publication", "draft": DRAFT}]
+    )
+    operation, publication_approval = ready(app, operator)
+    app.simulator.set_fault(operation, "publish", Fault.AFTER_PUBLISH_SUCCESS)
+    app.service.dispatch(operation, publication_approval, now=NOW)
+    admin = app.approve(
+        operation,
+        operator,
+        expires_at=NOW + timedelta(hours=1),
+        purpose=ApprovalPurpose[purpose],
+    )
+    if purpose == "RECOVER_RECONCILIATION":
+        app.service.store.claim_reconciliation(
+            operation_id=operation,
+            correlation_id="interrupted-claim",
+            account_ref=app.account,
+            actor_reference="synthetic-account-actor",
+            now=NOW,
+        )
+    current = (
+        SyntheticOperator(operator.actor, enabled=False)
+        if operator_state == "disabled"
+        else SyntheticOperator("replacement-operator", enabled=True)
+    )
+    restarted = construct_from(app, operator=current)
+    with pytest.raises(PolicyDeniedError, match="current approval"):
+        if purpose == "ABANDON_UNKNOWN":
+            restarted.service.abandon_unknown(operation, admin, now=NOW)
+        else:
+            restarted.service.recover_reconciliation_claim(operation, admin, now=NOW)
+    assert restarted.service.store.get(operation).state is OutboxState.UNKNOWN

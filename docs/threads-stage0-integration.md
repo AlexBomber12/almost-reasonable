@@ -51,7 +51,9 @@ public provenance, correlation, source eligibility and the configured synthetic
 operator actor. The current approval's purpose, expiry and revocation are
 validated by the existing service. Source-catalog revocation/deletion is durable
 and is not restored on restart. Inbound source lookup must retain the exact
-reviewed metadata; missing or changed sources block later effects.
+reviewed metadata; missing or changed sources block later effects. Reply
+provenance also rechecks the current scoped conversation control before handoff,
+READY and each provider effect; an active termination or cooldown holds the reply.
 
 The real `PrivacyLedger.control_generation()` is checked, not a model Boolean
 or `SimulationAuthorizationProvider.set_privacy(True)`. Only synthetic public
@@ -73,7 +75,9 @@ JSON, public text or model output is parsed into operator authority. Revocation
 is permanent for a reference; repeating approval cannot resurrect it. A changed
 expiry yields a separate approval identity. The fixture also supplies explicit
 purpose-bound abandonment/reconciliation-recovery approvals through the existing
-service; it does not grant replacement or autonomous resend authority.
+service; it does not grant replacement or autonomous resend authority. Current
+administrative lookup also requires the configured operator to remain enabled
+and match the original approval actor after restart.
 
 Owner stop and provider suspension are sampled through `OwnerStore.active()`
 and `ProviderStateStore.is_spend_suspended()` before model work and in every

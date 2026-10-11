@@ -53,7 +53,7 @@ from app.threads.domain import (
 )
 from app.threads.service import PolicyDeniedError, ThreadsService
 from app.threads.simulator import ThreadsSimulator
-from app.threads.store import ThreadsStore, UnknownPublicationRiskError
+from app.threads.store import ThreadsStore, ThreadsStoreError
 
 
 PUBLIC_DRAFTS = (
@@ -247,7 +247,11 @@ class Stage0Authorization:
                 "SELECT * FROM approvals WHERE reference=? AND operation=?",
                 (approval_reference, operation_id),
             ).fetchone()
-        if row is None:
+        if (
+            row is None
+            or row["actor"] != self.app.operator.actor
+            or not self.app.operator.enabled
+        ):
             return None
         return issue_approval(
             reference=approval_reference,
@@ -517,12 +521,22 @@ class ThreadsStage0:
         event = self.service.store.inbound_event(
             self.account, InboundKind(payload["kind"]), payload["event"]
         )
-        return event is not None and self._origin(
+        if event is None or self._origin(
             event, resumed=payload.get("resumed", False)
-        ) == {
+        ) != {
             key: payload[key]
             for key in self._origin(event, resumed=payload.get("resumed", False))
-        }
+        }:
+            return False
+        # A source may remain valid while its public conversation becomes
+        # suppressed. Reply permission is rechecked at handoff and every effect.
+        return (
+            payload.get("decision") != "reply"
+            or self.service.store.conversation_control(
+                self.account, event.kind, event.conversation_id, now=self.clock.now()
+            )
+            is None
+        )
 
     def _origin(self, event, *, resumed=False):
         return {
@@ -552,7 +566,7 @@ class ThreadsStage0:
                 continue  # Intent held until durable scheduler acceptance; never infer success.
             try:
                 self._materialize(operation, payload)
-            except (PolicyDeniedError, UnknownPublicationRiskError):
+            except (PolicyDeniedError, ThreadsStoreError):
                 blocked.append(operation)
         return tuple(blocked)
 
@@ -690,7 +704,7 @@ class ThreadsStage0:
             if payload["phase"] == "intent":
                 try:
                     self._materialize(operation, payload)
-                except (PolicyDeniedError, UnknownPublicationRiskError):
+                except (PolicyDeniedError, ThreadsStoreError):
                     continue  # Hold this intent; independent conversation work remains eligible.
                 operations.append(operation)
         return tuple(operations)
