@@ -45,6 +45,7 @@ def boundary(tmp_path):
             frozenset({"https://owner.test"}),
             max_body_bytes=8192,
         ),
+        allowed_clients=frozenset({"127.0.0.1", "127.0.0.2"}),
     )
     return store, app, now, events
 
@@ -696,3 +697,73 @@ def test_full_password_byte_range_is_preserved(boundary, password):
     )
     with pytest.raises(ProvisioningError):
         store.provision("oversized-owner", "x" * 1025)
+
+
+def test_unlisted_sources_cannot_allocate_authentication_state(boundary):
+    import sqlite3
+
+    store, app, _, _ = boundary
+    _, challenge, headers, _ = request(app, "/login")
+    cookie = next(value.split(";")[0] for key, value in headers if key == "Set-Cookie")
+    payload = {"username": "operator", "password": "wrong", "csrf": challenge["csrf"]}
+    for index in range(128):
+        address = f"2001:db8::{index + 1:x}"
+        assert request(app, "/login", REMOTE_ADDR=address)[0] == 403
+        assert (
+            request(
+                app,
+                "/login",
+                "POST",
+                payload=payload,
+                HTTP_COOKIE=cookie,
+                REMOTE_ADDR=address,
+            )[0]
+            == 403
+        )
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM owner_login_replays"
+        ).fetchone() == (0,)
+        assert connection.execute("SELECT count(*) FROM login_attempts").fetchone() == (
+            0,
+        )
+    payload["password"] = "synthetic-owner-password"
+    assert request(app, "/login", "POST", payload=payload, HTTP_COOKIE=cookie)[0] == 200
+
+
+@pytest.mark.parametrize(
+    "clients",
+    [
+        [],
+        frozenset(),
+        frozenset({None}),
+        frozenset({"127.0.0.01"}),
+        frozenset(f"2001:db8::{index:x}" for index in range(17)),
+    ],
+)
+def test_owner_admission_configuration_is_finite_and_exact(boundary, clients):
+    store, app, _, events = boundary
+    with pytest.raises(ValueError, match="admission"):
+        OwnerApplication(store, events, app.config, allowed_clients=clients)
+
+
+def test_owner_admission_defaults_and_proxy_source_binding(boundary):
+    store, app, _, events = boundary
+    local = OwnerApplication(store, events, app.config)
+    assert request(local, "/login", REMOTE_ADDR="::1")[0] == 200
+    assert request(local, "/login", REMOTE_ADDR="127.0.0.2")[0] == 403
+    proxy_config = PrivateWebConfig(
+        frozenset({"owner.test"}),
+        frozenset({"https://owner.test"}),
+        trusted_proxy_addresses=frozenset({"127.0.0.1"}),
+    )
+    proxied = OwnerApplication(
+        store, events, proxy_config, allowed_clients=frozenset({"127.0.0.2"})
+    )
+    assert request(proxied, "/login", HTTP_X_FORWARDED_FOR="127.0.0.2")[0] == 200
+    assert request(proxied, "/login", HTTP_X_FORWARDED_FOR="2001:db8::1")[0] == 403
+    assert (
+        request(proxied, "/login", HTTP_X_FORWARDED_FOR="127.0.0.2,127.0.0.1")[0] == 400
+    )
+    # Source admission does not authorize private reads or administrative controls.
+    assert request(proxied, HTTP_X_FORWARDED_FOR="127.0.0.2")[0] == 401

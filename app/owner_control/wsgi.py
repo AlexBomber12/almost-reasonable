@@ -7,7 +7,7 @@ import secrets
 
 from app.core.provider_spend import ProviderStateStore
 from app.private_web.auth import LoginStatus
-from app.private_web.wsgi import PrivateWebApplication, _RequestError
+from app.private_web.wsgi import PrivateWebApplication, _RequestError, _canonical_ip
 
 
 class OwnerApplication:
@@ -18,7 +18,27 @@ class OwnerApplication:
     and returns protected references. No privacy mutation authority is invented.
     """
 
-    def __init__(self, store, events, config, *, privacy_ledger=None):
+    def __init__(
+        self,
+        store,
+        events,
+        config,
+        *,
+        privacy_ledger=None,
+        allowed_clients=frozenset({"127.0.0.1", "::1"}),
+    ):
+        if (
+            type(allowed_clients) is not frozenset
+            or not 0 < len(allowed_clients) <= 16
+            or any(
+                type(address) is not str or _canonical_ip(address) != address
+                for address in allowed_clients
+            )
+        ):
+            raise ValueError(
+                "owner admission requires 1–16 exact canonical client addresses"
+            )
+        self._allowed_clients = allowed_clients
         if not config.secure_cookies:
             raise ValueError("owner interface requires secure cookies")
         self.store = store
@@ -50,6 +70,9 @@ class OwnerApplication:
             "QUERY_STRING", ""
         ):
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid request target.")
+        client = self._http._client_key(env)
+        if client not in self._allowed_clients:
+            raise _RequestError(HTTPStatus.FORBIDDEN, "Client admission denied.")
         path, method = env.get("PATH_INFO"), env.get("REQUEST_METHOD")
         routes = {
             "/login": {"GET", "POST"},
@@ -65,7 +88,7 @@ class OwnerApplication:
         token = self._http._cookie_value(env, "ar_owner_session")
         if path == "/login":
             if method == "GET":
-                csrf = self.store.login_challenge(self._http._client_key(env))
+                csrf = self.store.login_challenge(client)
                 return (
                     200,
                     {"csrf": csrf},
@@ -74,7 +97,6 @@ class OwnerApplication:
             self._http._require_origin(env)
             payload = self._body(env, {"username", "password", "csrf"})
             cookie = self._http._cookie_value(env, "ar_owner_login")
-            client = self._http._client_key(env)
             if (
                 type(payload["csrf"]) is not str
                 or not cookie

@@ -26,11 +26,20 @@ requires local operator inspection rather than automatic schema repair.
 An authorized local composition can construct `OwnerStore(directory)` and
 `OwnerApplication(store, event_store, PrivateWebConfig(...),
 privacy_ledger=ledger)` with existing local stores. Use an exact HTTPS owner
-origin and exact Host allowlist. Secure cookies are mandatory; there is no
+origin and exact Host allowlist. Owner WSGI admission additionally requires an
+explicit finite `allowed_clients` frozenset of canonical source addresses, with
+a maximum of 16 and a numeric-loopback default. Admission grants no owner
+authority: credentials and sessions remain mandatory. Unlisted sources fail
+before any authentication or replay-state allocation. Secure cookies are mandatory; there is no
 insecure HTTP mode, server-launch command, new listening port or deployment
 service in this change. The TLS-facing WSGI host must supply correct request
 metadata and avoid logging request bodies or Cookie/CSRF headers. Proxy client
-IP handling reuses private-web's explicit trusted-proxy allowlist.
+IP handling reuses private-web's explicit trusted-proxy allowlist. A reverse proxy
+must overwrite forwarded metadata and be explicitly trusted so admission checks
+the actual canonical client address, rather than treating arbitrary remote
+callers as the proxy's loopback address. Configure only approved operator source
+addresses; broad networks and user-supplied identity headers are not accepted.
+No deployment/edge configuration is created by this package.
 
 The store composes the existing scrypt, throttling, hashed session and revocation
 primitives. Owner accounts receive random owner actor references. Dedicated
@@ -53,7 +62,7 @@ malformed JSON, duplicate keys, unknown fields and invalid types fail safely.
 | Endpoint | Contract |
 | --- | --- |
 | `GET /login` | Obtain a signed five-minute login CSRF challenge and its cookie, bound to the validated client address. Issuance is read-only and cannot exhaust or evict another client's challenge. |
-| `POST /login` | Exact `username`, `password`, `csrf` fields; matching login cookie and Origin required. Challenge is consumed once, including failed credential attempts. Protected signing key and replay markers survive restart; expired markers are removed during consumption. At most 32 live consumed markers per client, with no global admission quota or eviction of unrelated live evidence. Returns session cookie and session CSRF token on success; generic 401/429 failures. |
+| `POST /login` | Exact `username`, `password`, `csrf` fields; matching login cookie and Origin required. Challenge is consumed once, including failed credential attempts. Protected signing key and replay markers survive restart; expired markers are removed during consumption. At most 32 live consumed markers per admitted client; the fixed maximum of 16 source addresses bounds anonymous durable replay state to 512 live markers. No unrelated live replay evidence is evicted. Expired rows are reclaimed before the next admitted consumption, so anonymous callers cannot cause an unbounded SQLite high-water mark through source-identity churn. Returns session cookie and session CSRF token on success; generic 401/429 failures. |
 | `GET /status` | Owner session and Origin required. Stage 0 capability status, durable stop, provider suspension/count/evidence, EventStore diagnostics, privacy readiness and at most 50 recent owner audit records. |
 | `POST /operation` | Owner session, Origin and `X-CSRF-Token` required. Issue a server-generated stop operation ID bound to this session, expiring after five minutes or session expiry. At most 32 pending IDs per session. |
 | `POST /stop` | Owner session, Origin, CSRF and exact `operation_id`, boolean `active` fields required. `true` stops; `false` explicitly clears only this stop state. |
