@@ -18,7 +18,7 @@ from app.cognition import (
 )
 from app.core.action_policy import ActionPolicy, CapabilityState, TrustedActionContext
 from app.core.context import ContextLimits, PrivateContextAssembler
-from app.core.model_contract import build_model_request
+from app.core.model_contract import build_model_request, serialize_model_request
 from app.core.provider_contract import DeploymentStage, default_openai_provider_config
 from app.core.provider_spend import ProviderStateStore
 from app.core.self_state import InterestStatus
@@ -288,12 +288,19 @@ def test_two_participants_restart_duplicate_and_secretless_provider_context(stac
     assert "A-PRIVATE-CANARY" in kwargs["input"] and "A-CONTINUITY" in kwargs["input"]
     decision = ActionPolicy().evaluate(result.validation, trusted, capabilities())
     assert decision.dispatchable  # Only an in-memory private draft grant.
-    assert json.loads(a.submit("last-id", "still no delivery")[1])["response"] is None
     stack.restart()
-    repeated, _, transport, store = submit_to_gateway(stack, a, [])
+    repeated, retried_trusted, transport, store = submit_to_gateway(stack, a, [])
+    assert retried_trusted.correlation_id == trusted.correlation_id
+    assert (
+        serialize_model_request(
+            build_model_request(stack.assembler.build(a.principal()))
+        )
+        == kwargs["input"]
+    )
     assert repeated.outcome is GatewayOutcome.DUPLICATE_OPERATION
     assert repeated.validation is None and transport.calls == []
     assert store.usage_attempt_count() == 1
+    assert json.loads(a.submit("last-id", "still no delivery")[1])["response"] is None
 
 
 def test_post_commit_failure_restart_does_not_repeat_inference(stack):
