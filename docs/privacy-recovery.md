@@ -130,10 +130,10 @@ an operation ID and suppress a later authenticated request.
 
 ## Application erasure adapter and migration specification
 
-EventStore schema v3 is the known source model, but it exposes no reviewed public
-API that can atomically remove a private payload and invalidate every dependent
-memory, summary, revision, index, abstraction, and duplicate key. This branch
-therefore does not mutate EventStore tables and does not present partial SQL as a
+EventStore schema v4 adds durable private drafts (see
+[storage contracts](eventstore-v4.md)), but it exposes no reviewed public API that can atomically remove a private payload and invalidate every dependent
+memory, summary, revision, index, abstraction, and duplicate key. The privacy
+foundation therefore does not mutate EventStore tables and does not present partial SQL as a
 complete deletion. `ErasureAdapter` is the strict integration boundary.
 
 For one `DeletionRequest`, an integrated adapter must make an idempotent
@@ -154,15 +154,18 @@ process crash. After reconciliation it must explicitly release every database
 writer and return success from `release_writers`; failure or an exception blocks
 the restore before sealing.
 
-If integration needs EventStore schema v4, its reviewed migration must add
+The INT-03 erasure integration must cover the v4 reply source edges as well as
+existing protected state provenance. Further integration must add
 protected source-to-derived edges for every memory/summary/revision/index/shared
 abstraction, explicit retention/invalidation states, and references to
 destroyable duplicate-key material. It must preserve v3 event identities,
 principal audiences, and content-free tombstones; migrate in one application-DB
 transaction; reject orphaned or untyped provenance; support rollback before
 commit; and include v3-to-v4, interrupted-migration, cascade, concurrency, and
-restore tests. The privacy ledger remains separately versioned. No such shared
-schema migration is performed here.
+restore tests. The privacy ledger remains separately versioned. The narrowly
+additive v4 migration does not implement this complete cascade.
+V4 restore activation remains blocked until the INT-03 adapter and activation
+fence are reviewed; exact backup schema recognition is not restore readiness.
 
 ## WAL-consistent backup
 

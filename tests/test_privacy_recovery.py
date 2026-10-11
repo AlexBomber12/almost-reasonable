@@ -157,7 +157,7 @@ def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
     thread.start()
     destination = tmp_path / "backup.sqlite3"
     try:
-        metadata = create_sqlite_backup(source, destination, 3, NOW)
+        metadata = create_sqlite_backup(source, destination, 4, NOW)
     finally:
         stop.set()
         thread.join()
@@ -170,7 +170,7 @@ def test_wal_consistent_backup_under_writes_and_owner_only_files(tmp_path):
         assert (
             restored.execute("SELECT COUNT(*) FROM private_payloads").fetchone()[0] >= 1
         )
-    assert metadata.schema_version == 3
+    assert metadata.schema_version == 4
     assert stat.S_IMODE(destination.stat().st_mode) == 0o600
     assert stat.S_IMODE(metadata.path.stat().st_mode) == 0o600
 
@@ -182,7 +182,7 @@ def test_backup_percent_escapes_sqlite_uri_metacharacters(tmp_path):
     make_source(decoy, "wrong database").close()
     destination = tmp_path / "escaped-backup.sqlite3"
 
-    create_sqlite_backup(source, destination, 3, NOW)
+    create_sqlite_backup(source, destination, 4, NOW)
 
     with sqlite3.connect(destination) as connection:
         assert connection.execute(
@@ -194,7 +194,7 @@ def test_schema_version_accepts_a_database_path(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
 
-    assert recovery_module._schema_version(source) == 3
+    assert recovery_module._schema_version(source) == 4
 
 
 @pytest.mark.parametrize(
@@ -225,7 +225,7 @@ def test_backup_rejects_direct_or_ancestor_writable_by_other_accounts(tmp_path):
 
     for destination in (unsafe / "direct.sqlite3", nested / "nested.sqlite3"):
         with pytest.raises(BackupError, match="parent is unsafe"):
-            create_sqlite_backup(source, destination, 3, NOW)
+            create_sqlite_backup(source, destination, 4, NOW)
 
 
 @pytest.mark.parametrize("input_kind", ["source", "backup", "metadata"])
@@ -239,18 +239,18 @@ def test_backup_and_restore_reject_inputs_writable_by_other_accounts(
     if input_kind == "source":
         source.chmod(0o620)
         with pytest.raises(BackupError, match="source file is unsafe"):
-            create_sqlite_backup(source, backup, 3, NOW)
+            create_sqlite_backup(source, backup, 4, NOW)
         assert not backup.exists()
         return
 
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     target = backup if input_kind == "backup" else Path(f"{backup}.metadata.json")
     target.chmod(0o602)
     quarantine = tmp_path / "quarantine.sqlite3"
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
     with pytest.raises(BackupError, match=f"{input_kind} file is unsafe"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert not quarantine.exists()
 
@@ -276,7 +276,7 @@ def test_backup_pin_rejects_a_source_owned_by_another_account(tmp_path, monkeypa
     monkeypatch.setattr(recovery_module.os, "fstat", report_foreign_owner)
 
     with pytest.raises(BackupError, match="source identity"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert not destination.exists()
 
@@ -290,7 +290,7 @@ def test_backup_rejects_an_unsafe_source_wal_before_copying(tmp_path):
 
     try:
         with pytest.raises(BackupError, match="source identity"):
-            create_sqlite_backup(source, destination, 3, NOW)
+            create_sqlite_backup(source, destination, 4, NOW)
     finally:
         writer.close()
 
@@ -317,7 +317,7 @@ def test_backup_rejects_an_unsafe_source_wal_created_after_pinning(
     monkeypatch.setattr(recovery_module, "_sqlite_copy", create_wal_after_pinning)
     try:
         with pytest.raises(BackupError, match="source identity"):
-            create_sqlite_backup(source, destination, 3, NOW)
+            create_sqlite_backup(source, destination, 4, NOW)
     finally:
         for writer in writers:
             writer.close()
@@ -375,7 +375,7 @@ def test_backup_pin_closes_source_and_sidecars_when_validation_errors(
     monkeypatch.setattr(recovery_module.os, "fstat", fail_source_fstat)
     try:
         with pytest.raises(BackupError, match="source identity"):
-            create_sqlite_backup(source, destination, 3, NOW)
+            create_sqlite_backup(source, destination, 4, NOW)
     finally:
         writer.close()
 
@@ -488,7 +488,7 @@ def test_backup_rejects_foreign_key_violations(tmp_path):
 
     destination = tmp_path / "backup.sqlite3"
     with pytest.raises(BackupError, match="consistency verification failed"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
     assert not destination.exists()
 
 
@@ -496,12 +496,12 @@ def test_restore_blocks_foreign_key_violations_before_reconciliation(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     with sqlite3.connect(backup) as connection:
         insert_event_envelope(connection, "event-orphan", "missing-payload")
 
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, tmp_path / "quarantine.sqlite3", NOW
     )
 
@@ -513,13 +513,13 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     with pytest.raises(BackupError, match="absolute"):
-        create_sqlite_backup(Path("relative.sqlite3"), tmp_path / "x.sqlite3", 3, NOW)
+        create_sqlite_backup(Path("relative.sqlite3"), tmp_path / "x.sqlite3", 4, NOW)
     with pytest.raises(BackupError, match="absolute"):
-        create_sqlite_backup(source, Path("relative.sqlite3"), 3, NOW)
+        create_sqlite_backup(source, Path("relative.sqlite3"), 4, NOW)
     symlink = tmp_path / "source-link.sqlite3"
     symlink.symlink_to(source)
     with pytest.raises(BackupError, match="symbolic"):
-        create_sqlite_backup(symlink, tmp_path / "x.sqlite3", 3, NOW)
+        create_sqlite_backup(symlink, tmp_path / "x.sqlite3", 4, NOW)
     source_directory = tmp_path / "source-directory"
     source_directory.mkdir()
     nested_source = source_directory / "source.sqlite3"
@@ -530,28 +530,28 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
         create_sqlite_backup(
             source_parent_link / nested_source.name,
             tmp_path / "ancestor-source.sqlite3",
-            3,
+            4,
             NOW,
         )
     dangling = tmp_path / "dangling.sqlite3"
     dangling.symlink_to(tmp_path / "missing-target")
     with pytest.raises(BackupError, match="symbolic"):
-        create_sqlite_backup(source, dangling, 3, NOW)
+        create_sqlite_backup(source, dangling, 4, NOW)
     directory = tmp_path / "directory.sqlite3"
     directory.mkdir()
     with pytest.raises(BackupError, match="regular"):
-        create_sqlite_backup(directory, tmp_path / "x.sqlite3", 3, NOW)
+        create_sqlite_backup(directory, tmp_path / "x.sqlite3", 4, NOW)
     missing_source = tmp_path / "missing-source.sqlite3"
     with pytest.raises(BackupError, match="regular"):
-        create_sqlite_backup(missing_source, tmp_path / "x.sqlite3", 3, NOW)
+        create_sqlite_backup(missing_source, tmp_path / "x.sqlite3", 4, NOW)
     with pytest.raises(BackupError, match="parent"):
-        create_sqlite_backup(source, tmp_path / "missing" / "x.sqlite3", 3, NOW)
+        create_sqlite_backup(source, tmp_path / "missing" / "x.sqlite3", 4, NOW)
     existing = tmp_path / "existing.sqlite3"
     existing.touch()
     with pytest.raises(BackupError, match="exists"):
-        create_sqlite_backup(source, existing, 3, NOW)
+        create_sqlite_backup(source, existing, 4, NOW)
     with pytest.raises(BackupError, match="schema"):
-        create_sqlite_backup(source, tmp_path / "wrong.sqlite3", 4, NOW)
+        create_sqlite_backup(source, tmp_path / "wrong.sqlite3", 5, NOW)
 
     interrupted = tmp_path / "interrupted.sqlite3"
 
@@ -559,7 +559,7 @@ def test_backup_rejects_unsafe_paths_schema_overwrite_and_interruptions(tmp_path
         raise RuntimeError("private backup content")
 
     with pytest.raises(BackupError, match="backup failed") as caught:
-        create_sqlite_backup(source, interrupted, 3, NOW, after_copy=interrupt)
+        create_sqlite_backup(source, interrupted, 4, NOW, after_copy=interrupt)
     assert "private backup content" not in str(caught.value)
     assert not interrupted.exists()
     assert not Path(f"{interrupted}.metadata.json").exists()
@@ -585,7 +585,7 @@ def test_backup_interrupt_cleans_owned_files_and_descriptors(tmp_path, monkeypat
         create_sqlite_backup(
             source,
             destination,
-            3,
+            4,
             NOW,
             after_copy=lambda _: (_ for _ in ()).throw(SimulatedInterrupt()),
         )
@@ -608,7 +608,7 @@ def test_restore_copy_interrupt_cleans_quarantine_and_descriptors(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     quarantine = tmp_path / "quarantine.sqlite3"
     opened = []
     real_open_owned_file = recovery_module._open_owned_file
@@ -627,7 +627,7 @@ def test_restore_copy_interrupt_cleans_quarantine_and_descriptors(
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
@@ -645,7 +645,7 @@ def test_restore_copy_cleanup_resumes_after_an_interrupt(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     quarantine = tmp_path / "quarantine.sqlite3"
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     real_cleanup_created = recovery_module._cleanup_created
@@ -669,14 +669,14 @@ def test_restore_copy_cleanup_resumes_after_an_interrupt(tmp_path, monkeypatch):
             lambda *_args: (_ for _ in ()).throw(BackupError("copy failed")),
         )
         with pytest.raises(SimulatedInterrupt):
-            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
                 backup, quarantine, NOW
             )
 
     assert cleanup_attempts == 2
     assert not quarantine.exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -691,7 +691,7 @@ def test_restore_cleans_staging_when_pinned_backup_teardown_is_interrupted(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     quarantine = tmp_path / "quarantine.sqlite3"
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     real_pin_database = recovery_module._pin_database
@@ -721,14 +721,14 @@ def test_restore_cleans_staging_when_pinned_backup_teardown_is_interrupted(
         patch.setattr(recovery_module, "_pin_database", track_pinned_backup)
         patch.setattr(recovery_module.os, "close", close_then_interrupt)
         with pytest.raises(SimulatedInterrupt):
-            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
                 backup, quarantine, NOW
             )
 
     assert interrupted is True
     assert not quarantine.exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -767,7 +767,7 @@ def test_backup_race_never_deletes_a_concurrently_created_file(
 
     monkeypatch.setattr(recovery_module, "_open_owned_file", race)
     with pytest.raises(BackupError, match="backup failed"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert raced_path.read_text() == f"concurrent-{race_target}"
     if race_target != "destination":
@@ -784,7 +784,7 @@ def test_backup_rechecks_sidecars_after_the_copy_hook(tmp_path):
         sidecar.write_text("concurrent-sidecar")
 
     with pytest.raises(BackupError, match="sidecar"):
-        create_sqlite_backup(source, destination, 3, NOW, after_copy=create_sidecar)
+        create_sqlite_backup(source, destination, 4, NOW, after_copy=create_sidecar)
 
     assert sidecar.read_text() == "concurrent-sidecar"
     assert not destination.exists()
@@ -804,7 +804,7 @@ def test_backup_cleanup_only_unlinks_the_inode_it_created(tmp_path, mutation):
         raise RuntimeError("interrupted")
 
     with pytest.raises(BackupError, match="backup failed"):
-        create_sqlite_backup(source, destination, 3, NOW, after_copy=interrupt)
+        create_sqlite_backup(source, destination, 4, NOW, after_copy=interrupt)
 
     if mutation == "replace":
         assert destination.read_text() == "concurrent-replacement"
@@ -979,7 +979,7 @@ def test_backup_failure_cleanup_resumes_after_an_interrupted_close(
     monkeypatch.setattr(recovery_module.os, "close", close_then_interrupt)
 
     with pytest.raises(SimulatedInterrupt):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert interrupted is True
     assert not destination.exists()
@@ -992,7 +992,7 @@ def test_backup_failure_cleanup_resumes_after_an_interrupted_close(
             os.fstat(output.parent_descriptor)
 
     monkeypatch.setattr(recovery_module, "_sqlite_copy", real_copy)
-    created = create_sqlite_backup(source, destination, 3, NOW)
+    created = create_sqlite_backup(source, destination, 4, NOW)
     assert destination.exists()
     assert created.path == metadata
 
@@ -1035,7 +1035,7 @@ def test_backup_success_closes_all_owned_descriptors_after_teardown_interrupt(
     monkeypatch.setattr(recovery_module.os, "close", close_then_interrupt)
 
     with pytest.raises(SimulatedInterrupt):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert interrupted is True
     assert len(final_outputs) == 2
@@ -1094,7 +1094,7 @@ def test_backup_cleans_outputs_when_pinned_source_teardown_is_interrupted(
         patch.setattr(recovery_module, "_pin_database", track_pinned_source)
         patch.setattr(recovery_module.os, "close", close_then_interrupt)
         with pytest.raises(SimulatedInterrupt):
-            create_sqlite_backup(source, destination, 3, NOW)
+            create_sqlite_backup(source, destination, 4, NOW)
 
     assert interrupted is True
     assert pinned_source is not None
@@ -1109,7 +1109,7 @@ def test_backup_cleans_outputs_when_pinned_source_teardown_is_interrupted(
     assert not destination.exists()
     assert not metadata.exists()
     writer.close()
-    created = create_sqlite_backup(source, destination, 3, NOW)
+    created = create_sqlite_backup(source, destination, 4, NOW)
     assert destination.exists()
     assert created.path == metadata
 
@@ -1124,9 +1124,9 @@ def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupte
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    manager = QuarantinedRestore(ledger, 4, RestoreAdapter)
     quarantine = tmp_path / "quarantine.sqlite3"
     real_unlink = recovery_module.os.unlink
     interrupted = False
@@ -1165,9 +1165,9 @@ def test_restore_cleans_publication_alias_when_link_succeeds_then_interrupts(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    manager = QuarantinedRestore(ledger, 4, RestoreAdapter)
     quarantine = tmp_path / "quarantine.sqlite3"
     real_link = recovery_module.os.link
     interrupted = False
@@ -1211,7 +1211,7 @@ def test_backup_copy_cannot_follow_a_replaced_destination_path(tmp_path, monkeyp
 
     monkeypatch.setattr(recovery_module, "_sqlite_copy", replace_before_copy)
     with pytest.raises(BackupError, match="backup failed"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     with sqlite3.connect(victim) as connection:
         assert connection.execute(
@@ -1235,7 +1235,7 @@ def test_backup_copy_cannot_follow_a_replaced_source_path(tmp_path, monkeypatch)
 
     monkeypatch.setattr(recovery_module, "_sqlite_copy", replace_before_copy)
     with pytest.raises(BackupError, match="source identity"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert source.is_symlink()
     assert not destination.exists()
@@ -1269,7 +1269,7 @@ def test_backup_source_connection_rejects_aba_path_replacement(tmp_path, monkeyp
 
     monkeypatch.setattr(recovery_module.sqlite3, "connect", replace_during_connect)
     with pytest.raises(BackupError, match="connection identity"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert not destination.exists()
     with sqlite3.connect(source) as connection:
@@ -1304,7 +1304,7 @@ def test_backup_source_pin_rejects_path_races(tmp_path, monkeypatch, race):
 
     monkeypatch.setattr(recovery_module.os, "open", race_open)
     with pytest.raises(BackupError, match="identity"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
     assert not destination.exists()
 
 
@@ -1319,7 +1319,7 @@ def test_backup_source_pin_rejects_an_ancestor_race(tmp_path, monkeypatch):
     monkeypatch.setattr(recovery_module, "_validate_parent_chain", lambda *_: None)
     monkeypatch.setattr(recovery_module, "_open_directory_chain", race_parent)
     with pytest.raises(BackupError, match="identity"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
     assert not destination.exists()
 
 
@@ -1338,7 +1338,7 @@ def test_backup_verifies_the_owned_destination_not_a_substitute(tmp_path, mutati
 
     with pytest.raises(BackupError, match="identity"):
         create_sqlite_backup(
-            source, destination, 3, NOW, after_copy=substitute_after_copy
+            source, destination, 4, NOW, after_copy=substitute_after_copy
         )
 
     with sqlite3.connect(substitute) as connection:
@@ -1365,7 +1365,7 @@ def test_backup_verifies_owned_metadata_before_success(tmp_path, monkeypatch):
 
     monkeypatch.setattr(recovery_module.os, "fsync", replace_metadata)
     with pytest.raises(BackupError, match="identity"):
-        create_sqlite_backup(source, destination, 3, NOW)
+        create_sqlite_backup(source, destination, 4, NOW)
 
     assert metadata.read_text() == "concurrent-metadata"
     assert not destination.exists()
@@ -1384,12 +1384,12 @@ def test_backup_and_readiness_marker_retry_short_writes(tmp_path, monkeypatch):
         return real_write(descriptor, payload[:count])
 
     monkeypatch.setattr(recovery_module.os, "write", short_write)
-    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    metadata = create_sqlite_backup(source, backup, 4, NOW)
     assert json.loads(metadata.path.read_text())["database_filename"] == backup.name
 
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert result.activation_eligible is True
@@ -1412,9 +1412,9 @@ def test_backup_restore_and_readiness_fsync_parent_directories(tmp_path, monkeyp
         real_fsync(descriptor)
 
     monkeypatch.setattr(recovery_module.os, "fsync", track_fsync)
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, tmp_path / "quarantine.sqlite3", NOW
     )
 
@@ -1430,7 +1430,7 @@ def test_zero_length_writes_fail_closed_and_remove_partial_outputs(
     failed_backup = tmp_path / "failed.sqlite3"
     monkeypatch.setattr(recovery_module.os, "write", lambda _descriptor, _data: 0)
     with pytest.raises(BackupError, match="backup failed"):
-        create_sqlite_backup(source, failed_backup, 3, NOW)
+        create_sqlite_backup(source, failed_backup, 4, NOW)
     assert not failed_backup.exists()
     assert not Path(f"{failed_backup}.metadata.json").exists()
     assert not Path(f"{failed_backup}-wal").exists()
@@ -1438,12 +1438,12 @@ def test_zero_length_writes_fail_closed_and_remove_partial_outputs(
 
     monkeypatch.undo()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     monkeypatch.setattr(recovery_module.os, "write", lambda _descriptor, _data: 0)
     with pytest.raises(BackupError, match="readiness marker write failed"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
 
@@ -1452,7 +1452,7 @@ def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkey
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
@@ -1466,7 +1466,7 @@ def test_restore_verifies_owned_readiness_marker_before_success(tmp_path, monkey
 
     monkeypatch.setattr(recovery_module.os, "fsync", replace_marker)
     with pytest.raises(BackupError, match="readiness marker write failed"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
     assert marker.read_text() == "concurrent-marker"
 
 
@@ -1474,7 +1474,7 @@ def test_readiness_failure_preserves_a_replaced_quarantine(tmp_path, monkeypatch
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
 
@@ -1486,7 +1486,7 @@ def test_readiness_failure_preserves_a_replaced_quarantine(tmp_path, monkeypatch
     monkeypatch.setattr(recovery_module, "_write_all", replace_quarantine_and_fail)
 
     with pytest.raises(BackupError, match="readiness marker write failed"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert quarantine.read_text() == "concurrent-quarantine"
     assert not Path(f"{quarantine}.ready.json").exists()
@@ -1497,7 +1497,7 @@ def test_readiness_revalidates_every_bound_input(tmp_path, monkeypatch, mutation
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
@@ -1543,7 +1543,7 @@ def test_readiness_revalidates_every_bound_input(tmp_path, monkeypatch, mutation
 
     monkeypatch.setattr(recovery_module.os, "fsync", mutate_after_marker_write)
     with pytest.raises(BackupError, match="readiness marker write failed"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert mutated is True
     assert not marker.exists()
@@ -1564,7 +1564,7 @@ def test_restore_generation_check_is_atomic_with_eligibility_record(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     real_record_restore = ledger._record_restore
@@ -1593,7 +1593,7 @@ def test_restore_generation_check_is_atomic_with_eligibility_record(
         return real_record_restore(*args, **kwargs)
 
     monkeypatch.setattr(ledger, "_record_restore", advance_before_record)
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -1616,7 +1616,7 @@ def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
@@ -1643,7 +1643,7 @@ def test_readiness_marker_interrupt_cleans_marker_and_descriptors(
     )
 
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert not marker.exists()
     for owned_file in opened:
@@ -1658,7 +1658,7 @@ def test_readiness_marker_cleanup_resumes_after_an_interrupt(tmp_path, monkeypat
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
@@ -1683,14 +1683,14 @@ def test_readiness_marker_cleanup_resumes_after_an_interrupt(tmp_path, monkeypat
             lambda *_args: (_ for _ in ()).throw(OSError("marker write failed")),
         )
         with pytest.raises(SimulatedInterrupt):
-            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
                 backup, quarantine, NOW
             )
 
     assert marker_cleanup_attempts == 2
     assert not quarantine.exists()
     assert not marker.exists()
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -1703,7 +1703,7 @@ def test_published_quarantine_cleanup_resumes_after_an_interrupt(tmp_path, monke
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
@@ -1728,14 +1728,14 @@ def test_published_quarantine_cleanup_resumes_after_an_interrupt(tmp_path, monke
             lambda *_args: (_ for _ in ()).throw(OSError("marker write failed")),
         )
         with pytest.raises(SimulatedInterrupt):
-            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
                 backup, quarantine, NOW
             )
 
     assert quarantine_cleanup_attempts == 2
     assert not quarantine.exists()
     assert not marker.exists()
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -1748,7 +1748,7 @@ def test_readiness_close_interrupt_preserves_committed_artifacts(tmp_path, monke
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     marker = Path(f"{quarantine}.ready.json")
@@ -1765,7 +1765,7 @@ def test_readiness_close_interrupt_preserves_committed_artifacts(tmp_path, monke
     monkeypatch.setattr(recovery_module, "_close_owned", interrupt_after_marker_close)
 
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert interrupted is True
     assert quarantine.exists()
@@ -1782,7 +1782,7 @@ def test_backup_rejects_malformed_database_and_verification_faults(
     missing_schema = tmp_path / "missing-schema.sqlite3"
     sqlite3.connect(missing_schema).close()
     with pytest.raises(BackupError, match="schema"):
-        create_sqlite_backup(missing_schema, tmp_path / "missing-out.sqlite3", 3, NOW)
+        create_sqlite_backup(missing_schema, tmp_path / "missing-out.sqlite3", 4, NOW)
 
     malformed_schema = tmp_path / "malformed-schema.sqlite3"
     with sqlite3.connect(malformed_schema) as connection:
@@ -1792,7 +1792,7 @@ def test_backup_rejects_malformed_database_and_verification_faults(
         connection.execute("INSERT INTO schema_metadata VALUES(1, 'three')")
     with pytest.raises(BackupError, match="schema"):
         create_sqlite_backup(
-            malformed_schema, tmp_path / "malformed-out.sqlite3", 3, NOW
+            malformed_schema, tmp_path / "malformed-out.sqlite3", 4, NOW
         )
 
     empty_schema = tmp_path / "empty-schema.sqlite3"
@@ -1800,29 +1800,29 @@ def test_backup_rejects_malformed_database_and_verification_faults(
         connection.execute(
             "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
         )
-        connection.execute("PRAGMA user_version=3")
+        connection.execute("PRAGMA user_version=4")
     with pytest.raises(BackupError, match="schema"):
-        create_sqlite_backup(empty_schema, tmp_path / "empty-out.sqlite3", 3, NOW)
+        create_sqlite_backup(empty_schema, tmp_path / "empty-out.sqlite3", 4, NOW)
 
     unrelated_schema = tmp_path / "unrelated-schema.sqlite3"
     with sqlite3.connect(unrelated_schema) as connection:
         connection.execute(
             "CREATE TABLE schema_metadata(singleton INTEGER PRIMARY KEY, version INTEGER)"
         )
-        connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
-        connection.execute("PRAGMA user_version=3")
+        connection.execute("INSERT INTO schema_metadata VALUES(1, 4)")
+        connection.execute("PRAGMA user_version=4")
     with pytest.raises(BackupError, match="schema"):
         create_sqlite_backup(
-            unrelated_schema, tmp_path / "unrelated-out.sqlite3", 3, NOW
+            unrelated_schema, tmp_path / "unrelated-out.sqlite3", 4, NOW
         )
 
     mismatched_schema = tmp_path / "mismatched-schema.sqlite3"
     make_source(mismatched_schema).close()
     with sqlite3.connect(mismatched_schema) as connection:
-        connection.execute("PRAGMA user_version=4")
+        connection.execute("PRAGMA user_version=5")
     with pytest.raises(BackupError, match="schema"):
         create_sqlite_backup(
-            mismatched_schema, tmp_path / "mismatched-out.sqlite3", 3, NOW
+            mismatched_schema, tmp_path / "mismatched-out.sqlite3", 4, NOW
         )
 
     source = tmp_path / "source.sqlite3"
@@ -1830,19 +1830,19 @@ def test_backup_rejects_malformed_database_and_verification_faults(
 
     def alter_schema(destination):
         with sqlite3.connect(destination) as connection:
-            connection.execute("UPDATE schema_metadata SET version=4")
-            connection.execute("PRAGMA user_version=4")
+            connection.execute("UPDATE schema_metadata SET version=5")
+            connection.execute("PRAGMA user_version=5")
 
     with pytest.raises(BackupError, match="schema"):
         create_sqlite_backup(
-            source, tmp_path / "changed.sqlite3", 3, NOW, after_copy=alter_schema
+            source, tmp_path / "changed.sqlite3", 4, NOW, after_copy=alter_schema
         )
 
     monkeypatch.setattr(
         recovery_module, "_integrity_ok", lambda _path, **_kwargs: False
     )
     with pytest.raises(BackupError, match="consistency"):
-        create_sqlite_backup(source, tmp_path / "bad-integrity.sqlite3", 3, NOW)
+        create_sqlite_backup(source, tmp_path / "bad-integrity.sqlite3", 4, NOW)
 
 
 @pytest.mark.parametrize("object_type", ["table", "view", "trigger"])
@@ -1864,7 +1864,7 @@ def test_backup_rejects_unexpected_application_schema_objects(tmp_path, object_t
         connection.execute(statements[object_type])
 
     with pytest.raises(BackupError, match="schema"):
-        create_sqlite_backup(source, tmp_path / f"backup-{object_type}.sqlite3", 3, NOW)
+        create_sqlite_backup(source, tmp_path / f"backup-{object_type}.sqlite3", 4, NOW)
 
 
 def test_backup_rejects_a_copied_schema_version_mismatch(tmp_path, monkeypatch):
@@ -1873,7 +1873,7 @@ def test_backup_rejects_a_copied_schema_version_mismatch(tmp_path, monkeypatch):
     monkeypatch.setattr(recovery_module, "_schema_version", lambda *_args, **_kwargs: 2)
 
     with pytest.raises(BackupError, match="schema verification"):
-        create_sqlite_backup(source, tmp_path / "backup.sqlite3", 3, NOW)
+        create_sqlite_backup(source, tmp_path / "backup.sqlite3", 4, NOW)
 
 
 def test_backup_rejects_an_unfinalized_wal_snapshot():
@@ -1922,7 +1922,7 @@ def test_backup_classifies_busy_without_leaking_sqlite_details(
 
     monkeypatch.setattr("app.privacy.recovery.sqlite3.connect", connect)
     with pytest.raises(BackupBusyError, match="busy") as caught:
-        create_sqlite_backup(source, tmp_path / "busy.sqlite3", 3, NOW)
+        create_sqlite_backup(source, tmp_path / "busy.sqlite3", 4, NOW)
     assert "private-canary" not in str(caught.value)
 
     def io_failure(_source, _destination):
@@ -1934,7 +1934,7 @@ def test_backup_classifies_busy_without_leaking_sqlite_details(
         monkeypatch.setattr(recovery_module, "_sqlite_copy", io_failure)
         monkeypatch.setattr(recovery_module.sqlite3, "connect", real_connect)
         with pytest.raises(BackupError, match="backup failed") as nonbusy:
-            create_sqlite_backup(source, tmp_path / "io-error.sqlite3", 3, NOW)
+            create_sqlite_backup(source, tmp_path / "io-error.sqlite3", 4, NOW)
         assert "private-canary" not in str(nonbusy.value)
 
 
@@ -1942,7 +1942,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "old.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
 
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
@@ -1980,7 +1980,7 @@ def test_old_snapshot_is_reconciled_in_quarantine_before_eligibility(tmp_path):
         adapters.append(adapter)
         return adapter
 
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW + timedelta(minutes=20)
     )
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
@@ -2031,7 +2031,7 @@ def test_restore_seals_away_from_a_long_lived_wal_adapter(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
     adapters = []
@@ -2063,7 +2063,7 @@ def test_restore_seals_away_from_a_long_lived_wal_adapter(tmp_path):
         return adapter
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -2086,7 +2086,7 @@ def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
     adapters = []
@@ -2120,7 +2120,7 @@ def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
         return adapter
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -2133,7 +2133,7 @@ def test_restore_releases_wal_writers_after_incomplete_reconciliation(tmp_path):
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3-shm"))
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -2144,7 +2144,7 @@ def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     quarantine = tmp_path / "quarantine.sqlite3"
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     writer = sqlite3.connect(backup)
@@ -2159,7 +2159,7 @@ def test_restore_rejects_a_backup_with_committed_wal_state(tmp_path):
         assert Path(f"{backup}-wal").exists()
 
         with pytest.raises(BackupError, match="sidecar"):
-            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
                 backup, quarantine, NOW
             )
     finally:
@@ -2173,14 +2173,14 @@ def test_restore_rejects_a_backup_with_a_rollback_journal(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     journal = Path(f"{backup}-journal")
     journal.write_bytes(b"unrecovered rollback journal")
     quarantine = tmp_path / "quarantine.sqlite3"
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
     with pytest.raises(BackupError, match="sidecar"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert journal.read_bytes() == b"unrecovered rollback journal"
     assert not quarantine.exists()
@@ -2193,7 +2193,7 @@ def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
     adapters = []
@@ -2245,7 +2245,7 @@ def test_restore_seals_an_inode_never_exposed_to_a_retained_adapter(
     )
     quarantine = tmp_path / "quarantine.sqlite3"
     try:
-        result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
             backup, quarantine, NOW
         )
         assert result.activation_eligible is True
@@ -2267,7 +2267,7 @@ def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatc
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
     adapters = []
@@ -2321,7 +2321,7 @@ def test_restore_has_no_write_gap_before_the_exclusive_seal(tmp_path, monkeypatc
     )
     quarantine = tmp_path / "quarantine.sqlite3"
     try:
-        result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
             backup, quarantine, NOW
         )
     finally:
@@ -2339,7 +2339,7 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     real_use_rollback_journal = recovery_module._use_rollback_journal
@@ -2356,7 +2356,7 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
             Path(f"{database_path}-wal").write_text("concurrent-sidecar")
 
     monkeypatch.setattr(recovery_module, "_use_rollback_journal", create_sidecar)
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -2367,7 +2367,7 @@ def test_restore_rejects_a_sidecar_created_during_finalization(tmp_path, monkeyp
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -2548,7 +2548,7 @@ def test_restore_tracks_sealed_inode_before_releasing_adapter_staging(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     real_cleanup = recovery_module._cleanup_created_database
@@ -2573,7 +2573,7 @@ def test_restore_tracks_sealed_inode_before_releasing_adapter_staging(
     )
 
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert interrupted is True
     assert not quarantine.exists()
@@ -2585,7 +2585,7 @@ def test_restore_cleans_late_adapter_wal_after_sealing(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -2618,7 +2618,7 @@ def test_restore_cleans_late_adapter_wal_after_sealing(tmp_path, monkeypatch):
         recovery_module, "_cleanup_created_database", write_before_staging_cleanup
     )
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -2638,7 +2638,7 @@ def test_restore_cleans_wal_created_between_sidecar_scan_and_main_unlink(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -2678,7 +2678,7 @@ def test_restore_cleans_wal_created_between_sidecar_scan_and_main_unlink(
         write_after_sidecar_scan,
     )
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -2701,7 +2701,7 @@ def test_restore_post_unlink_sidecar_sweep_resumes_after_interruption(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -2760,7 +2760,7 @@ def test_restore_post_unlink_sidecar_sweep_resumes_after_interruption(
     monkeypatch.setattr(recovery_module.os, "unlink", unlink_wal_then_interrupt)
     quarantine = tmp_path / "quarantine.sqlite3"
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, adapter_factory).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, adapter_factory).restore(backup, quarantine, NOW)
 
     assert late_write_committed is True
     assert interrupted is True
@@ -2769,7 +2769,7 @@ def test_restore_post_unlink_sidecar_sweep_resumes_after_interruption(
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
     assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3*"))
     adapters[0].connection.close()
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -2781,7 +2781,7 @@ def test_restore_never_blesses_a_public_path_created_before_publication(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
     real_seal = recovery_module._seal_fresh_snapshot
@@ -2798,7 +2798,7 @@ def test_restore_never_blesses_a_public_path_created_before_publication(
         create_public_path_before_publish,
     )
     with pytest.raises(BackupError, match="publication"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
 
     assert quarantine.read_text() == "concurrent-public-file"
     assert not Path(f"{quarantine}.ready.json").exists()
@@ -2809,7 +2809,7 @@ def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_pa
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
     class RacingAdapter(RestoreAdapter):
@@ -2832,7 +2832,7 @@ def test_restore_blocks_when_privacy_ledger_changes_during_reconciliation(tmp_pa
             return True
 
     quarantine = tmp_path / "quarantine-race.sqlite3"
-    result = QuarantinedRestore(ledger, 3, RacingAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RacingAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -2847,13 +2847,13 @@ def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "old.sqlite3"
-    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    metadata = create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
 
     blocked_path = tmp_path / "blocked.sqlite3"
     blocked = QuarantinedRestore(
-        ledger, 3, lambda path: RestoreAdapter(path, fail=True)
+        ledger, 4, lambda path: RestoreAdapter(path, fail=True)
     ).restore(backup, blocked_path, NOW + timedelta(minutes=20))
     assert blocked.disposition is RestoreDisposition.BLOCKED
     assert blocked.activation_eligible is False
@@ -2862,14 +2862,14 @@ def test_restore_fails_closed_for_adapter_or_metadata_problem(tmp_path):
     valid_metadata = metadata.path.read_bytes()
     metadata.path.write_bytes(b"x" * (recovery_module.MAX_BACKUP_METADATA_BYTES + 1))
     with pytest.raises(BackupError, match="metadata"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
             backup, tmp_path / "oversized-metadata.sqlite3", NOW
         )
 
     metadata.path.write_bytes(valid_metadata)
     metadata.path.write_text("{}")
     with pytest.raises(BackupError, match="metadata"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
             backup, tmp_path / "bad-metadata.sqlite3", NOW
         )
 
@@ -2878,7 +2878,7 @@ def test_restore_metadata_read_rejects_a_replaced_path(tmp_path, monkeypatch):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    metadata = create_sqlite_backup(source, backup, 4, NOW)
     replacement = tmp_path / "replacement.metadata.json"
     replacement.write_bytes(metadata.path.read_bytes())
     held_metadata = tmp_path / "held.metadata.json"
@@ -2897,7 +2897,7 @@ def test_restore_metadata_read_rejects_a_replaced_path(tmp_path, monkeypatch):
     monkeypatch.setattr(recovery_module.os, "read", replace_before_read)
     quarantine = tmp_path / "quarantine.sqlite3"
     with pytest.raises(BackupError, match="metadata"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
     assert not quarantine.exists()
 
 
@@ -2907,7 +2907,7 @@ def test_restore_does_not_publish_readiness_when_outcome_recording_fails(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     quarantine = tmp_path / "quarantine.sqlite3"
 
@@ -2916,7 +2916,7 @@ def test_restore_does_not_publish_readiness_when_outcome_recording_fails(
 
     monkeypatch.setattr(ledger, "_record_restore", fail_record)
     with pytest.raises(RuntimeError, match="outcome unavailable"):
-        QuarantinedRestore(ledger, 3, RestoreAdapter).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, RestoreAdapter).restore(backup, quarantine, NOW)
     assert not Path(f"{quarantine}.ready.json").exists()
 
 
@@ -2927,7 +2927,7 @@ def test_restore_checks_quarantine_integrity_before_adapter_or_readiness(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapter_called = False
 
@@ -2943,7 +2943,7 @@ def test_restore_checks_quarantine_integrity_before_adapter_or_readiness(
 
     monkeypatch.setattr(recovery_module, "_integrity_ok", integrity)
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -2964,7 +2964,7 @@ def test_restore_rechecks_integrity_after_reconciliation(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     outcomes = iter((True, post_integrity_outcome))
 
@@ -2976,7 +2976,7 @@ def test_restore_rechecks_integrity_after_reconciliation(
 
     monkeypatch.setattr(recovery_module, "_integrity_ok", integrity)
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -3003,19 +3003,19 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
     class SchemaMutatingAdapter(RestoreAdapter):
         def rebuild_dependencies(self):
             with sqlite3.connect(self.path) as connection:
                 if schema_mutation == "change":
-                    connection.execute("UPDATE schema_metadata SET version=4")
-                    connection.execute("PRAGMA user_version=4")
+                    connection.execute("UPDATE schema_metadata SET version=5")
+                    connection.execute("PRAGMA user_version=5")
                 elif schema_mutation == "drop":
                     connection.execute("DROP TABLE schema_metadata")
                 elif schema_mutation == "pragma":
-                    connection.execute("PRAGMA user_version=4")
+                    connection.execute("PRAGMA user_version=5")
                 elif schema_mutation == "application_table":
                     connection.execute("DROP TABLE provider_spend_suspensions")
                 elif schema_mutation == "application_index":
@@ -3028,7 +3028,7 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
                         "CREATE TABLE schema_metadata("
                         "singleton INTEGER PRIMARY KEY, version INTEGER)"
                     )
-                    connection.execute("INSERT INTO schema_metadata VALUES(1, 3)")
+                    connection.execute("INSERT INTO schema_metadata VALUES(1, 4)")
                     connection.execute("DROP TABLE old_schema_metadata")
                 else:
                     connection.execute(
@@ -3038,7 +3038,7 @@ def test_restore_rechecks_schema_after_reconciliation(tmp_path, schema_mutation)
             return True
 
     quarantine = tmp_path / f"quarantine-{schema_mutation}.sqlite3"
-    result = QuarantinedRestore(ledger, 3, SchemaMutatingAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, SchemaMutatingAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -3055,7 +3055,7 @@ def test_restore_validates_the_pinned_backup_schema_before_adapters(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     validated_targets = []
 
     def schema_version(target, **kwargs):
@@ -3072,7 +3072,7 @@ def test_restore_validates_the_pinned_backup_schema_before_adapters(
     monkeypatch.setattr(recovery_module, "_schema_version", schema_version)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     with pytest.raises(BackupError, match="unsupported backup schema"):
-        QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        QuarantinedRestore(ledger, 4, adapter_factory).restore(
             backup, tmp_path / "quarantine.sqlite3", NOW
         )
 
@@ -3087,7 +3087,7 @@ def test_restore_rejects_a_backup_without_the_full_application_schema(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     with sqlite3.connect(backup) as connection:
         connection.execute("DROP INDEX provider_usage_correlation")
     adapter_called = False
@@ -3099,7 +3099,7 @@ def test_restore_rejects_a_backup_without_the_full_application_schema(
 
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     with pytest.raises(BackupError, match="unsupported backup schema"):
-        QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        QuarantinedRestore(ledger, 4, adapter_factory).restore(
             backup, tmp_path / "quarantine.sqlite3", NOW
         )
 
@@ -3258,9 +3258,9 @@ def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    metadata = create_sqlite_backup(source, backup, 3, NOW)
+    metadata = create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    manager = QuarantinedRestore(ledger, 4, RestoreAdapter)
 
     raw = json.loads(metadata.path.read_text())
     raw["database_filename"] = "wrong.sqlite3"
@@ -3271,14 +3271,14 @@ def test_restore_schema_copy_and_reconciliation_failures_are_closed(
     raw["database_filename"] = backup.name
     metadata.path.write_text(json.dumps(raw))
     with sqlite3.connect(backup) as connection:
-        connection.execute("UPDATE schema_metadata SET version=4")
-        connection.execute("PRAGMA user_version=4")
+        connection.execute("UPDATE schema_metadata SET version=5")
+        connection.execute("PRAGMA user_version=5")
     with pytest.raises(BackupError, match="schema"):
         manager.restore(backup, tmp_path / "wrong-schema.sqlite3", NOW)
 
     with sqlite3.connect(backup) as connection:
-        connection.execute("UPDATE schema_metadata SET version=3")
-        connection.execute("PRAGMA user_version=3")
+        connection.execute("UPDATE schema_metadata SET version=4")
+        connection.execute("PRAGMA user_version=4")
 
     def copy_failure(_source, _destination_descriptor):
         raise sqlite3.OperationalError("private restore content")
@@ -3296,7 +3296,7 @@ def test_restore_rejects_a_replaced_quarantine_before_reconciliation(
     source = tmp_path / "source.sqlite3"
     make_source(source, "intended-backup").close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     substitute = tmp_path / "substitute.sqlite3"
     make_source(substitute, "substitute-quarantine").close()
     quarantine = tmp_path / "quarantine.sqlite3"
@@ -3311,7 +3311,7 @@ def test_restore_rejects_a_replaced_quarantine_before_reconciliation(
         substitute.rename(staging)
 
     monkeypatch.setattr(recovery_module, "_sqlite_copy", replace_after_copy)
-    result = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -3332,7 +3332,7 @@ def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source, "intended-backup").close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     substitute = tmp_path / "substitute.sqlite3"
     make_source(substitute, "substitute-quarantine").close()
     quarantine = tmp_path / "quarantine.sqlite3"
@@ -3355,7 +3355,7 @@ def test_restore_adapter_uses_the_owned_quarantine_during_an_aba_swap(tmp_path):
                 held_quarantine.rename(staging)
             return content == ("intended-backup",)
 
-    result = QuarantinedRestore(ledger, 3, SwappingAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, SwappingAdapter).restore(
         backup, quarantine, NOW
     )
 
@@ -3370,7 +3370,7 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
     def failed_factory(path):
@@ -3380,7 +3380,7 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
         raise RuntimeError("synthetic private adapter detail")
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, failed_factory).restore(
+    result = QuarantinedRestore(ledger, 4, failed_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -3392,7 +3392,7 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
 
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3402,7 +3402,7 @@ def test_restore_adapter_factory_interruption_cleans_wal_staging(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     connections = []
 
@@ -3419,14 +3419,14 @@ def test_restore_adapter_factory_interruption_cleans_wal_staging(tmp_path):
 
     quarantine = tmp_path / "quarantine.sqlite3"
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, interrupted_factory).restore(
+        QuarantinedRestore(ledger, 4, interrupted_factory).restore(
             backup, quarantine, NOW
         )
 
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3446,7 +3446,7 @@ def test_restore_writer_release_failure_does_not_publish_wal_staging(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -3472,7 +3472,7 @@ def test_restore_writer_release_failure_does_not_publish_wal_staging(
         return adapter
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -3480,7 +3480,7 @@ def test_restore_writer_release_failure_does_not_publish_wal_staging(
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3491,7 +3491,7 @@ def test_restore_writer_release_interruption_cleans_wal_staging(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -3519,12 +3519,12 @@ def test_restore_writer_release_interruption_cleans_wal_staging(tmp_path):
 
     quarantine = tmp_path / "quarantine.sqlite3"
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, adapter_factory).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, adapter_factory).restore(backup, quarantine, NOW)
 
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3537,7 +3537,7 @@ def test_restore_sidecar_cleanup_resumes_after_an_unlink_interruption(
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -3577,13 +3577,13 @@ def test_restore_sidecar_cleanup_resumes_after_an_unlink_interruption(
     monkeypatch.setattr(recovery_module.os, "unlink", unlink_then_interrupt)
     quarantine = tmp_path / "quarantine.sqlite3"
     with pytest.raises(SimulatedInterrupt):
-        QuarantinedRestore(ledger, 3, adapter_factory).restore(backup, quarantine, NOW)
+        QuarantinedRestore(ledger, 4, adapter_factory).restore(backup, quarantine, NOW)
 
     assert interrupted is True
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3594,7 +3594,7 @@ def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     replacement = tmp_path / "replacement.sqlite3"
     make_source(replacement, "replacement-main").close()
     held_staging = tmp_path / "held-staging.sqlite3"
@@ -3628,7 +3628,7 @@ def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
         return adapter
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -3649,7 +3649,7 @@ def test_restore_cleanup_removes_sidecars_after_adapter_unlinks_main(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -3675,7 +3675,7 @@ def test_restore_cleanup_removes_sidecars_after_adapter_unlinks_main(tmp_path):
         return adapter
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -3686,7 +3686,7 @@ def test_restore_cleanup_removes_sidecars_after_adapter_unlinks_main(tmp_path):
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3697,7 +3697,7 @@ def test_restore_cleans_sidecars_when_factory_returns_after_unlinking_main(tmp_p
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     adapters = []
 
@@ -3717,7 +3717,7 @@ def test_restore_cleans_sidecars_when_factory_returns_after_unlinking_main(tmp_p
         return adapter
 
     quarantine = tmp_path / "quarantine.sqlite3"
-    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+    result = QuarantinedRestore(ledger, 4, adapter_factory).restore(
         backup, quarantine, NOW
     )
 
@@ -3728,7 +3728,7 @@ def test_restore_cleans_sidecars_when_factory_returns_after_unlinking_main(tmp_p
     assert not quarantine.exists()
     assert not Path(f"{quarantine}.ready.json").exists()
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
-    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+    retried = QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert retried.activation_eligible is True
@@ -3974,7 +3974,7 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     pending_deletion(ledger)
     consent = ConsentService(ledger)
@@ -4032,7 +4032,7 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
                 return "false" if behavior == "string_false" else False
             return super().release_writers()
 
-    result = QuarantinedRestore(ledger, 3, FaultAdapter).restore(
+    result = QuarantinedRestore(ledger, 4, FaultAdapter).restore(
         backup, tmp_path / f"quarantine-{method}-{behavior}.sqlite3", NOW
     )
     assert (result.disposition, result.reason) == (RestoreDisposition.BLOCKED, reason)
@@ -4160,11 +4160,11 @@ def test_restore_rejects_existing_or_symlink_quarantine(tmp_path):
     source = tmp_path / "source.sqlite3"
     make_source(source).close()
     backup = tmp_path / "old.sqlite3"
-    create_sqlite_backup(source, backup, 3, NOW)
+    create_sqlite_backup(source, backup, 4, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
     existing = tmp_path / "existing.sqlite3"
     existing.touch()
-    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    manager = QuarantinedRestore(ledger, 4, RestoreAdapter)
     with pytest.raises(BackupError, match="exists"):
         manager.restore(backup, existing, NOW)
     link = tmp_path / "link.sqlite3"
@@ -4179,7 +4179,7 @@ def test_recovery_rejects_symlinked_output_ancestors(tmp_path, operation):
     make_source(source).close()
     backup = tmp_path / "backup.sqlite3"
     if operation == "restore":
-        create_sqlite_backup(source, backup, 3, NOW)
+        create_sqlite_backup(source, backup, 4, NOW)
     target_directory = tmp_path / "redirected"
     nested_target = target_directory / "nested"
     nested_target.mkdir(parents=True)
@@ -4189,10 +4189,10 @@ def test_recovery_rejects_symlinked_output_ancestors(tmp_path, operation):
 
     with pytest.raises(BackupError, match="parent"):
         if operation == "backup":
-            create_sqlite_backup(source, redirected_output, 3, NOW)
+            create_sqlite_backup(source, redirected_output, 4, NOW)
         else:
             ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
-            QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+            QuarantinedRestore(ledger, 4, RestoreAdapter).restore(
                 backup, redirected_output, NOW
             )
 
