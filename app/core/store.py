@@ -1,6 +1,7 @@
 """Application-owned SQLite storage for participant-private input events."""
 
 from collections.abc import Callable
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -989,13 +990,17 @@ class EventStore:
         return self._retrieve_private_events(context)
 
     def retrieve_private_events_in_commit_order(
-        self, context: TrustedPrincipalContext, through_event_id: str | None = None
+        self,
+        context: TrustedPrincipalContext,
+        through_event_id: str | None = None,
+        *,
+        _connection: sqlite3.Connection | None = None,
     ) -> tuple[PrivateConversationEvent, ...]:
         """Read a scoped prefix of durable input commits, bounded before selection."""
         if through_event_id is not None:
             self._require_token("through event id", through_event_id)
         return self._retrieve_private_events(
-            context, through_event_id, commit_order=True
+            context, through_event_id, commit_order=True, _connection=_connection
         )
 
     def _retrieve_private_events(
@@ -1004,6 +1009,7 @@ class EventStore:
         through_event_id: str | None = None,
         *,
         commit_order: bool = False,
+        _connection: sqlite3.Connection | None = None,
     ) -> tuple[PrivateConversationEvent, ...]:
         self._validate_context(context)
         ordering = (
@@ -1011,10 +1017,11 @@ class EventStore:
             if commit_order
             else "event.occurred_at DESC, event.event_id DESC"
         )
-        connection = self._open()
+        connection = _connection if _connection is not None else self._open()
         try:
-            with connection:
-                connection.execute("BEGIN")
+            with nullcontext() if _connection is not None else connection:
+                if _connection is None:
+                    connection.execute("BEGIN")
                 self._verify_current_schema(connection)
                 rows = connection.execute(
                     f"""
@@ -1074,7 +1081,8 @@ class EventStore:
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
         finally:
-            connection.close()
+            if _connection is None:
+                connection.close()
 
     @staticmethod
     def _conversation_event(row: tuple[object, ...]) -> PrivateConversationEvent:

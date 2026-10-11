@@ -72,12 +72,16 @@ class CognitionEngine:
         extractor: MemoryExtractor | None = None,
         capabilities: CognitionCapabilities = CognitionCapabilities(),
         clock: Callable[[], datetime] | None = None,
+        authorize: Callable = lambda callback: callback(),
+        expose_current_candidates: bool = True,
     ):
         self._events = event_store
         self._state = state_store
         self._read = CognitionReadStore(event_store, state_store)
         self._extractor = extractor
         self._capabilities = capabilities
+        self._authorize_boundary = authorize
+        self._expose_current_candidates = expose_current_candidates
         self._clock = clock or (lambda: datetime.now(UTC))
 
     def process(
@@ -89,6 +93,30 @@ class CognitionEngine:
     ) -> CognitionOutcome:
         """Explicitly extract from one authorized experience and validate the result."""
 
+        prepared = self._authorize_boundary(
+            lambda: self._prepare(context, source_event_id, evidence_event_ids)
+        )
+        if isinstance(prepared, CognitionOutcome):
+            return prepared
+        request, source, current, resolved_evidence, identity = prepared
+        try:
+            proposal = self._extractor.extract(request)
+        except Exception:
+            return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        return self._authorize_boundary(
+            lambda: self._finish(
+                context,
+                source_event_id,
+                evidence_event_ids,
+                source,
+                current,
+                resolved_evidence,
+                identity,
+                proposal,
+            )
+        )
+
+    def _prepare(self, context, source_event_id, evidence_event_ids):
         if not self._capabilities.memory_extraction:
             return self._rejected(CognitionReason.CAPABILITY_DISABLED)
         if self._extractor is None:
@@ -121,16 +149,25 @@ class CognitionEngine:
         current = self._state.retrieve_private_candidates(context)
         request = ExtractionRequest(
             experience=self._experience(source),
-            current_candidates=current,
+            current_candidates=current if self._expose_current_candidates else (),
             core_self_version=CORE_SELF_VERSION,
             additional_evidence=tuple(
                 self._experience(item) for item in resolved_evidence
             ),
         )
-        try:
-            proposal = self._extractor.extract(request)
-        except Exception:
-            return self._rejected(CognitionReason.EXTRACTOR_FAILED)
+        return request, source, current, resolved_evidence, identity
+
+    def _finish(
+        self,
+        context,
+        source_event_id,
+        evidence_event_ids,
+        source,
+        current,
+        resolved_evidence,
+        identity,
+        proposal,
+    ):
         if self._read.retrieve_exact_private_event(
             context, source_event_id
         ) != source or any(

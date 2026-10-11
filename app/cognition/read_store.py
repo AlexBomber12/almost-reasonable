@@ -6,6 +6,7 @@ or ranking bounds, so this adapter performs participant-scoped read-only queries
 It creates no tables and exposes no mutation path.
 """
 
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 from datetime import datetime
 import sqlite3
@@ -190,14 +191,16 @@ class CognitionReadStore:
         context: TrustedPrincipalContext,
         *,
         include_belief_history: bool = False,
+        _connection: sqlite3.Connection | None = None,
     ) -> tuple[PrivateCandidateRead, ...]:
         """Read current candidates and optionally every active belief revision."""
 
         self._state._validate_context(context)
-        connection = self._events._open()
+        connection = _connection if _connection is not None else self._events._open()
         try:
-            with connection:
-                connection.execute("BEGIN")
+            with nullcontext() if _connection is not None else connection:
+                if _connection is None:
+                    connection.execute("BEGIN")
                 self._events._verify_current_schema(connection)
                 self._state._validate_current_revision_pointers(
                     connection, context.principal_id.value
@@ -330,7 +333,8 @@ class CognitionReadStore:
         except sqlite3.Error as error:
             raise self._events._translated_error(error) from None
         finally:
-            connection.close()
+            if _connection is None:
+                connection.close()
 
     def retrieve_private_revision_references(
         self,
