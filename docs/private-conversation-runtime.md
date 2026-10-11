@@ -1,5 +1,8 @@
 # INT-04 private conversation runtime
 
+INT-05A adds the opt-in synthetic [private-memory conversation](private-memory-conversation.md).
+The v1 runtime described below remains the default.
+
 This is an explicit, offline Stage 0 path. `Stage0ConversationRuntime` composes
 `ConversationService`, `PrivacyReadGate`, `PrivateContextAssembler`,
 `TrustedOpenAIGateway`, `ProviderStateStore`, `ActionPolicy`,
@@ -65,7 +68,8 @@ event or enter its context, even with equal timestamps or a backward clock.
 Missing sequence/source metadata fails closed. Existing
 context is participant-input-only: persisted replies appear in participant history,
 but agent replies and private memory/revision text are not model-context roles in
-this contract. Shared influence and memory-inclusive conversation remain blockers.
+this contract. Shared influence remains a blocker; INT-05A supplies an explicit offline v2
+memory context while this v1 path remains unchanged.
 
 After the fake gateway parses its closed proposal schema, current policy and
 controls distinguish a reply, successful `no_action`, invalid proposal, unsupported

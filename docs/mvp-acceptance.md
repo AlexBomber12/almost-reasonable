@@ -187,3 +187,13 @@ Also calibrate G assumptions and H/M thresholds, scheduler/technical anti-abuse 
 ## 10. Suggested implementation sequence
 
 After the open decisions above are assigned, the smallest coherent path is one modular Python application: harden/refactor the OAuth callback; add SQLite migrations/WAL plus event-envelope/removable-payload, audience/taint, Core Self, deletion-ledger, and audit records; implement private/owner web authentication and controls; build deterministic policy/decision/spend-suspension and fake-provider harnesses; add bounded context/memory/abstraction and Russian H gates; implement conversation, hosted research, scheduler/inactivity, and two-phase mission revision; then add disabled-by-default Threads polling and the verified multi-step outbox. No product capability is removed from the complete MVP, and no additional service is introduced without demonstrated need.
+
+## INT-05A evidence boundary
+
+The opt-in synthetic [private-memory conversation](private-memory-conversation.md)
+now connects durable private interests/beliefs/goals, bounded memory retrieval,
+memory-aware replies and complete deletion/restart/old-backup provenance. This
+is deterministic private M5 evidence only. Shared abstractions/revisions/context,
+independent mission confirmation, generic memory persistence, real-model
+behavioral evaluation and authorized production validation remain required for
+complete M5 and complete-MVP acceptance.

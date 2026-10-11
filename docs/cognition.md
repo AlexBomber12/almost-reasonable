@@ -1,5 +1,9 @@
 # Cognition: memory extraction and intellectual evolution
 
+INT-05A connects these components to the opt-in synthetic
+[private-memory conversation](private-memory-conversation.md). The component
+description below retains the original standalone pipeline boundaries.
+
 This slice connects participant-private experiences to bounded memory proposals,
 authorized private self-state revisions, and privacy-first retrieval. It uses the
 existing `EventStore`, `SelfStateStore`, Core Self, provenance, and self-state
@@ -186,8 +190,8 @@ The following remain cross-stream work:
 - durable abstraction attempt/quarantine records and a disabled-by-default shared
   intellectual-state commit path;
 - structured consent, revocation, and identifiable-disclosure authorization;
-- authenticated deletion ledger, taint-complete cascade, index rebuild, and
-  quarantine-before-restore handling;
+- production privacy control ingress and restore activation; INT-03/INT-04
+  adapters now cover private state and INT-05A memory-derived replies;
 - two-phase mission revision and its independent confirmation record;
 - independently verified research evidence and public-fact publication gating;
 - durable no-change/rejection audit and application-level model usage linkage;
@@ -196,6 +200,6 @@ The following remain cross-stream work:
 
 This component is evidence toward SCN-01, SCN-02, SCN-07, SCN-08, SCN-09,
 SCN-11, and SCN-12, but it does not by itself satisfy full M5 or SCN-07
-acceptance. In particular, generic memory durability, deletion/restore
-reconciliation, shared-state promotion, mission revision, and real-model
-behavioral evaluation are intentionally incomplete.
+acceptance. In particular, generic memory durability, production restore activation,
+shared-state promotion, mission revision, and real-model behavioral evaluation
+remain incomplete. Private deletion/reconciliation is connected in INT-05A.

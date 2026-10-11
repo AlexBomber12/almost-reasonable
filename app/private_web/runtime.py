@@ -1,10 +1,15 @@
 """Explicit offline Stage 0 composition; no SDK, credentials or live effects."""
 
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import replace
 from datetime import datetime
 import hashlib
 
+from app.cognition.conversation_context import MemoryConversationAssembler
+from app.cognition.pipeline import CognitionEngine
+from app.cognition.synthetic import SyntheticMemoryExtractor
+from app.core.self_state_store import SelfStateStore
 from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.action_policy import ActionPolicy, CapabilityState, TrustedActionContext
 from app.core.agent_output_store import AgentOutputStore, ReplyOperation, ResultState
@@ -54,6 +59,8 @@ class Stage0ConversationRuntime(ConversationService):
         delivery_enabled: Callable[[], bool] = lambda: True,
         clock: Callable[[], datetime] = _utc_now,
         checkpoint: Callable[[str], None] = lambda _point: None,
+        memory_extractor: SyntheticMemoryExtractor | None = None,
+        context_limits: ContextLimits = ContextLimits(32_000, 99),
     ):
         if type(transport) is not FakeOpenAITransport:
             raise TypeError("Stage 0 requires an exact offline fake transport")
@@ -65,16 +72,38 @@ class Stage0ConversationRuntime(ConversationService):
         self._stop = emergency_stop
         self._delivery = delivery_enabled
         self._checkpoint = checkpoint
-        self._limits = ContextLimits(32_000, 99)
+        if (
+            memory_extractor is not None
+            and type(memory_extractor) is not SyntheticMemoryExtractor
+        ):
+            raise TypeError("memory extraction requires an exact synthetic fixture")
+        self._limits = context_limits
+        self._transport = transport
+        self._clock = clock
+        self._cognition = (
+            None
+            if memory_extractor is None
+            else CognitionEngine(
+                event_store,
+                SelfStateStore(event_store),
+                extractor=memory_extractor,
+                clock=clock,
+                authorize=privacy_gate.authorized,
+                expose_current_candidates=False,
+            )
+        )
         self._config = replace(
             default_openai_provider_config(),
             deployment_stage=DeploymentStage.STAGE_1,
             paid_calls_enabled=True,
             max_attempts=1,
         )
+        self._memory_bridge = (
+            None if self._cognition is None else _MemoryFakeBridge(transport)
+        )
         self._gateway = TrustedOpenAIGateway(
             store=self._provider,
-            transport=transport,
+            transport=transport if self._memory_bridge is None else self._memory_bridge,
             config=self._config,
             emergency_stop=emergency_stop,
             utcnow=clock,
@@ -128,7 +157,14 @@ class Stage0ConversationRuntime(ConversationService):
         finally:
             db.close()
 
-    def submit(self, principal, message_id, content) -> SubmittedMessage:
+    def submit(
+        self,
+        principal,
+        message_id,
+        content,
+        *,
+        evidence_event_ids: tuple[str, ...] = (),
+    ) -> SubmittedMessage:
         EventStore._validate_context(principal)
         self._validate_message(message_id, content)
 
@@ -153,6 +189,10 @@ class Stage0ConversationRuntime(ConversationService):
                 previous = self._outputs.read_reply(principal, operation_id)
                 if previous is not None:
                     return previous, None
+                if self._cognition is not None:
+                    return self._reserve_memory(
+                        principal, event_id, correlation, operation_id
+                    )
                 events = self._event_store.retrieve_private_events_in_commit_order(
                     principal, event_id
                 )
@@ -196,21 +236,81 @@ class Stage0ConversationRuntime(ConversationService):
                         )
                     )
                 else:
-                    result = self._gateway.submit(
-                        build_model_request(context),
-                        correlation_id=correlation,
-                        operation_id=operation_id,
-                    )
-                    self._checkpoint("after_model")
-                    persisted = self._gate.authorized(
-                        lambda: self._commit(route, reserved.operation, result)
-                    )
-                    if persisted:
-                        self._checkpoint("after_reply_commit")
+                    if self._cognition is not None:
+                        self._checkpoint("before_extraction")
+                        self._cognition.process(
+                            principal, event_id, evidence_event_ids=evidence_event_ids
+                        )
+                        self._checkpoint("after_extraction")
+                        # Deletion or changed controls during extraction block inference.
+                        caps = self._gate.authorized(preflight)
+                    if self._cognition is not None and (
+                        caps.emergency_stop_active
+                        or caps.provider_spend_suspended
+                        or not caps.private_reply_drafts_enabled
+                    ):
+                        self._gate.authorized(
+                            lambda: self._outputs.resolve_without_reply(
+                                principal, operation_id, "skipped"
+                            )
+                        )
+                    else:
+                        result = self._infer(context, correlation, operation_id)
+                        self._checkpoint("after_model")
+                        persisted = self._gate.authorized(
+                            lambda: self._commit(route, reserved.operation, result)
+                        )
+                        if persisted:
+                            self._checkpoint("after_reply_commit")
         self._checkpoint("before_release")
         return self._gate.authorized(
             lambda: self._response(admission.message_status, route, operation_id)
         )
+
+    def _reserve_memory(self, principal, event_id, correlation, operation_id):
+        db = self._event_store._open()
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                self._event_store._verify_current_schema(db)
+                request, sources = MemoryConversationAssembler(
+                    self._event_store, self._limits
+                ).build(principal, event_id, db)
+                operation = ReplyOperation(
+                    operation_id,
+                    event_id,
+                    "conversation:"
+                    + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
+                    correlation,
+                    self._config.model,
+                    "private-memory-stage0-v2",
+                    request.conversation.core_self_version,
+                    sources,
+                )
+                return self._outputs.reserve_reply(
+                    principal, operation, _connection=db
+                ), request
+        finally:
+            db.close()
+
+    def _infer(self, context, correlation, operation_id):
+        if self._memory_bridge is None:
+            return self._gateway.submit(
+                build_model_request(context),
+                correlation_id=correlation,
+                operation_id=operation_id,
+            )
+        # Per-execution context prevents concurrent payload substitution while the
+        # same gateway retains its fail-closed persistence state across requests.
+        token = self._memory_bridge.payload.set(context.serialize())
+        try:
+            return self._gateway.submit(
+                context.conversation,
+                correlation_id=correlation,
+                operation_id=operation_id,
+            )
+        finally:
+            self._memory_bridge.payload.reset(token)
 
     def _commit(self, route, operation, result):
         caps = self._capabilities()
@@ -306,3 +406,17 @@ class Stage0ConversationRuntime(ConversationService):
             return tuple(items)
 
         return self._gate.authorized(read)
+
+
+class _MemoryFakeBridge:
+    """Private Stage 0 adapter; never installed in the provider or worker protocol."""
+
+    def __init__(self, transport):
+        self._transport = transport
+        self.payload = ContextVar("private_memory_fake_payload")
+
+    def call(self, request, *, timeout_seconds):
+        return self._transport.call(
+            replace(request, input_text=self.payload.get()),
+            timeout_seconds=timeout_seconds,
+        )

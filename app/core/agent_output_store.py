@@ -5,6 +5,7 @@ from a proposal. A reservation survives interruption but grants no provider
 retry or external effect. Conversation IDs are opaque application routing IDs.
 """
 
+from contextlib import nullcontext
 from dataclasses import dataclass, field as dataclass_field
 from enum import StrEnum
 import sqlite3
@@ -148,14 +149,19 @@ class AgentOutputStore:
         return True
 
     def reserve_reply(
-        self, context: TrustedPrincipalContext, operation: ReplyOperation
+        self,
+        context: TrustedPrincipalContext,
+        operation: ReplyOperation,
+        *,
+        _connection: sqlite3.Connection | None = None,
     ) -> PrivateReply:
         """Reserve once before work; conflicting global operation identity fails closed."""
         self._validate(context, operation)
-        db = self._store._open()
+        db = _connection if _connection is not None else self._store._open()
         try:
-            with db:
-                db.execute("BEGIN IMMEDIATE")
+            with nullcontext() if _connection is not None else db:
+                if _connection is None:
+                    db.execute("BEGIN IMMEDIATE")
                 self._store._verify_current_schema(db)
                 if not self._sources_valid(db, context.principal_id.value, operation):
                     raise EventValidationError("reply sources unavailable")
@@ -203,7 +209,8 @@ class AgentOutputStore:
         except sqlite3.Error as error:
             raise self._store._translated_error(error) from None
         finally:
-            db.close()
+            if _connection is None:
+                db.close()
 
     def persist_reply(
         self,

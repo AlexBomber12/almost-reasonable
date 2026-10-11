@@ -12,7 +12,8 @@ INT-04 adds an explicit offline runtime and safe response-release path; see
 component descriptions below describe the ordinary disabled configuration and
 historical harness. Conversation-specific future obligations now have the
 connected synthetic evidence listed in the scenario table; production and
-memory-inclusive context obligations remain open.
+memory-inclusive context now has the opt-in synthetic INT-05A slice documented
+in [Private-memory conversation](private-memory-conversation.md).
 
 ## Component ownership and dependencies
 
@@ -196,14 +197,14 @@ additional test node IDs are supporting component evidence, never E2E completion
 
 | Scenario | Status | Connected Stage 0 evidence / supporting component test | Missing interface or acceptance |
 | --- | --- | --- | --- |
-| SCN-01 Private interview | partially implemented | I1, I2, I3, I8; `tests/test_private_conversation_http.py::test_authenticated_roundtrip_loss_retry_new_session_html_and_json`; `tests/test_private_conversation_runtime.py::test_round_trip_restart_retry_exact_identity_and_isolation` | Real-model Russian response quality, memory-inclusive conversation context, durable safe shared influence, enrollment controls and behavioral continuity evaluation. |
-| SCN-02 Multiuser | partially implemented | I2, I8; `tests/test_private_conversation_runtime.py::test_round_trip_restart_retry_exact_identity_and_isolation` | Interleaved durable shared influence/revisions, combined total-budget context and cross-sink privacy tests beyond private events/requests/state. |
+| SCN-01 Private interview | partially implemented | I1, I2, I3, I8; `tests/test_private_conversation_http.py::test_authenticated_roundtrip_loss_retry_new_session_html_and_json`; `tests/test_private_conversation_runtime.py::test_round_trip_restart_retry_exact_identity_and_isolation` | Real-model Russian response quality, production memory context, durable safe shared influence, enrollment controls and behavioral continuity evaluation. |
+| SCN-02 Multiuser | partially implemented | I2, I8; `tests/test_private_conversation_runtime.py::test_round_trip_restart_retry_exact_identity_and_isolation` | Interleaved durable shared influence/revisions, shared total-budget context and privacy tests beyond the private memory/reply graph. |
 | SCN-03 Research | blocked | I4; `tests/test_research_service.py::test_successful_heuristic_screen_does_not_grant_execution_authority` | Conversation→minimized brief→production trusted authorization→worker→Russian synthesis connection and semantic citation evaluation. Core research remains unavailable. |
 | SCN-04 Publishing | blocked | I4, I7; `tests/test_threads_outbox.py::test_restart_recovery_uses_durable_dispatch_evidence` | Behavior draft→privacy/Russian gate→current authenticated approval→outbox mapping; real transport/deployment remains outside Stage 0. |
 | SCN-05 Disagreement | blocked | `tests/test_behavior_mission.py::test_state_machine_reauthorizes_resolved_evidence_after_restart` | Challenge→deliberation→authorized belief revision or private/public reply; research evidence bridge and non-sycophancy evaluation. |
 | SCN-06 Trolling | partially implemented | I3, I4, I5; `tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply`; `tests/test_private_conversation_runtime.py::test_crash_boundaries_never_repeat_uncertain_inference` | Abuse/cooldown and bounded call suppression across private ingress/Threads/behavior, response/termination routing and semantic evaluation. Duplicate input suppression alone is insufficient. |
 | SCN-07 Consolidation | partially implemented | I8; `tests/test_privacy_application.py::test_real_cascade_history_multisource_replay_and_isolation`; `tests/test_private_conversation_runtime.py::test_old_backup_cannot_resurrect_released_reply` | Generic memory consolidation, authenticated deletion UI, index rebuild and safe live restore activation. Synthetic reply restore exercises the actual application adapter. |
-| SCN-08 Belief revision | blocked | `tests/test_cognition_pipeline.py::test_persisted_recency_uses_trusted_clock_not_model_timestamp` | Evidence/research/behavior→belief update→later conversation context/restart; deletion reassessment and calibrated belief evaluation. I8 proves interest only. |
+| SCN-08 Belief revision | partially implemented | `tests/test_private_memory_runtime.py::test_belief_counterevidence_uncertainty_stale_and_independent_classification`; `tests/test_cognition_pipeline.py::test_persisted_recency_uses_trusted_clock_not_model_timestamp` | Research/behavior evidence bridge, deletion reassessment and calibrated real-model belief evaluation. INT-05A connects synthetic belief revisions to later private context. |
 | SCN-09 Mission revision | blocked | `tests/test_behavior_mission.py::test_two_phase_confirmation_persists_across_restart` | Deliberation→mission proposal→independent later evidence→confirmation→changed scheduler/Threads behavior. Standalone mission persistence is insufficient. |
 | SCN-10 Inactivity | partially implemented | I5, I6; `tests/test_behavior_scheduler.py::test_scheduler_coalesces_missed_wakeups_and_allows_inactivity` | Production scheduler wiring, application dispatch/outbox metrics connection and cadence evaluation; durable wake-up and later-event recovery have separate component tests in `tests/test_durable_scheduler.py`. |
 | SCN-11 Privacy/deletion | partially implemented | `tests/test_private_conversation_runtime.py::test_deletion_at_each_boundary_and_restart_hides_dependent_replies`; `tests/test_private_conversation_runtime.py::test_old_backup_cannot_resurrect_released_reply`; `tests/test_privacy_application.py::test_real_cascade_history_multisource_replay_and_isolation` | Authenticated notice/consent/revoke/delete UI, exact Threads ledger provider, production enrollment and privacy controls, plus safe live activation. The connected Stage 0 path uses actual erasure and startup fences; it does not establish complete Stage 2 privacy. |
@@ -215,3 +216,8 @@ restore eligibility or internal accepted outcome upgrades these scenario statuse
 INT-04 adds the explicit offline conversation/release slice described in
 [Private conversation runtime](private-conversation-runtime.md). All scenario
 statuses still describe full journeys, not synthetic reply success alone.
+
+INT-05A evidence and the exact shared-state, mission and complete M5 gaps are
+listed in [Private-memory conversation](private-memory-conversation.md). This
+adds scoped private memory and complete memory-derived reply dependencies without
+enabling shared writes or conversational mission transitions.

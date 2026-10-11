@@ -2,6 +2,7 @@
 
 from datetime import datetime
 import re
+import sqlite3
 import unicodedata
 
 from app.core.events import ProvenanceType, TrustedPrincipalContext, VerificationStatus
@@ -39,7 +40,11 @@ class MemoryContextSelector:
         self._read = CognitionReadStore(event_store, state_store)
 
     def select(
-        self, context: TrustedPrincipalContext, request: RetrievalRequest
+        self,
+        context: TrustedPrincipalContext,
+        request: RetrievalRequest,
+        *,
+        _connection: sqlite3.Connection | None = None,
     ) -> MemorySelection:
         self._validate_request(request)
         limits = MemoryRetrievalLimits(request.total_utf8_bytes, request.max_records)
@@ -49,6 +54,7 @@ class MemoryContextSelector:
         authorized = self._read.retrieve_all_private_candidate_reads(
             context,
             include_belief_history=request.purpose is RetrievalPurpose.REVISION,
+            _connection=_connection,
         )
         invalidated = set(request.invalidated_event_ids)
         ranked: list[tuple[tuple[object, ...], MemoryRecord]] = []
