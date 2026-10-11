@@ -110,10 +110,10 @@ def test_v2_to_v3_migration_is_atomic_and_preserves_existing_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == SCHEMA_VERSION == 3
-    assert reopened.diagnostics().schema_version == 3
+    assert store.diagnostics().schema_version == SCHEMA_VERSION == 4
+    assert reopened.diagnostics().schema_version == 4
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (3,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (4,)
         assert connection.execute(
             "SELECT event_id FROM event_envelopes"
         ).fetchone() == ("event-v2",)
@@ -162,7 +162,7 @@ def test_failed_v3_migration_rolls_back_to_recoverable_v2(tmp_path):
             "WHERE type = 'table' AND name = 'provider_usage_attempts'"
         ).fetchone() == (0,)
 
-    assert EventStore(database).diagnostics().schema_version == 3
+    assert EventStore(database).diagnostics().schema_version == 4
 
 
 def test_concurrent_v2_initialization_is_safe(tmp_path):
@@ -185,7 +185,7 @@ def test_concurrent_v2_initialization_is_safe(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [3, 3]
+    assert outcomes == [4, 4]
 
 
 def test_confirmed_spend_suspension_and_telemetry_are_atomic_and_durable(tmp_path):
@@ -458,26 +458,31 @@ def test_busy_database_fails_closed_without_partial_attempt(tmp_path):
     assert state.usage_attempt_count() == 0
 
 
-def test_failed_suspension_insert_rolls_back_telemetry_atomically(tmp_path):
+def test_failed_suspension_insert_rolls_back_telemetry_atomically(
+    tmp_path, monkeypatch
+):
     database = tmp_path / "events.sqlite3"
     state = ProviderStateStore(EventStore(database))
-    with sqlite3.connect(database) as connection:
-        connection.execute(
-            """
-            CREATE TRIGGER synthetic_suspension_failure
-            BEFORE INSERT ON provider_spend_suspensions
-            BEGIN
-                SELECT RAISE(ABORT, 'synthetic private failure');
-            END
-            """
-        )
+    original_connect = sqlite3.connect
 
+    class FailingConnection(sqlite3.Connection):
+        def execute(self, statement, parameters=()):
+            if "INSERT OR IGNORE INTO provider_spend_suspensions" in statement:
+                raise sqlite3.IntegrityError("synthetic private failure")
+            return super().execute(statement, parameters)
+
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: original_connect(
+            *args, **kwargs, factory=FailingConnection
+        ),
+    )
     with pytest.raises(ProviderPersistenceError):
         state.record_attempt(
             attempt(outcome="confirmed_spend_limit"),
             confirmed_spend_limit_code="project_spend_limit_exceeded",
         )
-
     assert state.usage_attempt_count() == 0
     assert state.is_spend_suspended() is False
 

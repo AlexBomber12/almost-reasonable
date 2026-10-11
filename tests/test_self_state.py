@@ -1142,21 +1142,32 @@ def test_conflicting_create_and_wrong_type_revision_fail_closed(state_setup):
         )
 
 
-def test_compare_and_swap_failure_rolls_back_the_whole_transition(tmp_path):
+def test_compare_and_swap_failure_rolls_back_the_whole_transition(
+    tmp_path, monkeypatch
+):
     events = EventStore(tmp_path / "events.sqlite3")
     context = principal("a")
     event_id = append_evidence(events, context, "cas")
-    with sqlite3.connect(events.database_path) as connection:
-        connection.execute(
-            """
-            CREATE TRIGGER ignore_state_cas
-            BEFORE UPDATE OF current_revision ON state_items
-            BEGIN
-                SELECT RAISE(IGNORE);
-            END
-            """
-        )
+    original_connect = sqlite3.connect
 
+    class IgnoringCasConnection(sqlite3.Connection):
+        def execute(self, statement, parameters=()):
+            if (
+                "UPDATE state_items" in statement
+                and "SET current_revision" in statement
+            ):
+                return super().execute(
+                    "UPDATE state_items SET current_revision=current_revision WHERE 0"
+                )
+            return super().execute(statement, parameters)
+
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: original_connect(
+            *args, **kwargs, factory=IgnoringCasConnection
+        ),
+    )
     state = SelfStateStore(events)
     with pytest.raises(SelfStateConflictError, match="state revision conflict"):
         state.create_interest_candidate(context, interest_change(event_id))
@@ -1211,14 +1222,29 @@ def test_shared_state_presence_fails_closed_instead_of_exposing_an_unsupported_v
         ("transition", "state_items"),
     ],
 )
-def test_sqlite_failures_at_state_boundaries_are_sanitized(tmp_path, operation, table):
+def test_sqlite_failures_at_state_boundaries_are_sanitized(
+    tmp_path, operation, table, monkeypatch
+):
     database = tmp_path / f"{operation}.sqlite3"
     events = EventStore(database)
     state = SelfStateStore(events)
     context = principal("a")
     event_id = append_evidence(events, context, operation)
-    with sqlite3.connect(database) as connection:
-        connection.execute(f"DROP TABLE {table}")
+    original_connect = sqlite3.connect
+
+    class FailingQueryConnection(sqlite3.Connection):
+        def execute(self, statement, parameters=()):
+            if table in statement:
+                raise sqlite3.OperationalError("synthetic private query failure")
+            return super().execute(statement, parameters)
+
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: original_connect(
+            *args, **kwargs, factory=FailingQueryConnection
+        ),
+    )
 
     calls = {
         "candidates": lambda: state.retrieve_private_candidates(context),

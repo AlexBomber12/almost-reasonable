@@ -110,7 +110,7 @@ def test_first_initialization_creates_versioned_wal_database(tmp_path):
     store = EventStore(database, busy_timeout_ms=321)
 
     assert database.is_file()
-    assert store.diagnostics().schema_version == 3
+    assert store.diagnostics().schema_version == 4
     assert store.diagnostics().journal_mode == "wal"
     assert store.diagnostics().foreign_keys_enabled is True
     assert store.diagnostics().busy_timeout_ms == 321
@@ -395,11 +395,11 @@ def test_schema_version_changed_before_initialization_lock_fails_closed(tmp_path
     def install_future_version(point):
         assert point is FaultPoint.BEFORE_INITIALIZATION_LOCK
         with sqlite3.connect(database) as connection:
-            connection.execute("PRAGMA user_version = 4")
+            connection.execute("PRAGMA user_version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         EventStore(database, fault_injector=install_future_version)
 
@@ -477,11 +477,11 @@ def test_wal_transition_rejects_an_unchanged_journal_mode():
 def test_future_schema_version_is_not_silently_interpreted(tmp_path):
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute("PRAGMA user_version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         EventStore(database)
 
@@ -499,11 +499,11 @@ def test_metadata_version_mismatch_fails_closed(tmp_path):
     database = tmp_path / "events.sqlite3"
     EventStore(database)
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE schema_metadata SET version = 4")
+        connection.execute("UPDATE schema_metadata SET version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         EventStore(database)
 
@@ -544,11 +544,11 @@ def test_append_rechecks_future_schema_version_before_writing(tmp_path):
     database = tmp_path / "events.sqlite3"
     store = EventStore(database)
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute("PRAGMA user_version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         store.append_private_input(
             principal("a"), private_input("future-write", "not persisted")
@@ -563,11 +563,11 @@ def test_append_rechecks_schema_metadata_before_writing(tmp_path):
     database = tmp_path / "events.sqlite3"
     store = EventStore(database)
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE schema_metadata SET version = 4")
+        connection.execute("UPDATE schema_metadata SET version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         store.append_private_input(
             principal("a"), private_input("metadata-write", "not persisted")
@@ -585,11 +585,11 @@ def test_retrieval_rechecks_future_schema_version_before_reading(tmp_path):
         principal("a"), private_input("future-read", "private canary")
     )
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 4")
+        connection.execute("PRAGMA user_version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         store.retrieve_private_events(principal("a"))
 
@@ -601,11 +601,11 @@ def test_retrieval_rechecks_schema_metadata_before_reading(tmp_path):
         principal("a"), private_input("metadata-read", "private canary")
     )
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE schema_metadata SET version = 4")
+        connection.execute("UPDATE schema_metadata SET version = 5")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 4",
+        match="unsupported event store schema version: 5",
     ):
         store.retrieve_private_events(principal("a"))
 
@@ -972,11 +972,24 @@ def test_database_errors_are_sanitized_without_private_content(tmp_path):
     assert secret not in repr(captured.value)
 
 
-def test_retrieval_database_errors_are_sanitized(tmp_path):
+def test_retrieval_database_errors_are_sanitized(tmp_path, monkeypatch):
     database = tmp_path / "events.sqlite3"
     store = EventStore(database)
-    with sqlite3.connect(database) as connection:
-        connection.execute("DROP TABLE event_envelopes")
+    original_connect = sqlite3.connect
+
+    class FailingReadConnection(sqlite3.Connection):
+        def execute(self, statement, parameters=()):
+            if "FROM event_envelopes AS event" in statement:
+                raise sqlite3.OperationalError("synthetic private query failure")
+            return super().execute(statement, parameters)
+
+    monkeypatch.setattr(
+        sqlite3,
+        "connect",
+        lambda *args, **kwargs: original_connect(
+            *args, **kwargs, factory=FailingReadConnection
+        ),
+    )
 
     with pytest.raises(EventStoreError, match="event store operation failed"):
         store.retrieve_private_events(principal("a"))

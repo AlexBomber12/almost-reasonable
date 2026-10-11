@@ -27,7 +27,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -71,6 +71,9 @@ class FaultPoint(StrEnum):
     BEFORE_INITIALIZATION_LOCK = "before_initialization_lock"
     BEFORE_V2_MIGRATION_COMMIT = "before_v2_migration_commit"
     BEFORE_V3_MIGRATION_COMMIT = "before_v3_migration_commit"
+    BEFORE_V4_MIGRATION_COMMIT = "before_v4_migration_commit"
+    AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
+    AFTER_REPLY_COMMIT = "after_reply_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
 
 
@@ -514,6 +517,81 @@ _SCHEMA_V3 = (
 )
 
 
+_SCHEMA_V4 = (
+    """
+    CREATE TABLE agent_reply_operations (
+        operation_id TEXT PRIMARY KEY,
+        audience_principal_id TEXT NOT NULL,
+        initiating_event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        conversation_id TEXT NOT NULL,
+        correlation_id TEXT NOT NULL,
+        model_identifier TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        core_self_version TEXT NOT NULL,
+        source_count INTEGER NOT NULL CHECK (source_count BETWEEN 1 AND 100),
+        internal_decision TEXT NOT NULL DEFAULT 'pending'
+            CHECK (internal_decision IN ('pending', 'accepted_internal')),
+        result_state TEXT NOT NULL DEFAULT 'pending'
+            CHECK (result_state IN ('pending', 'persisted')),
+        delivery_state TEXT NOT NULL DEFAULT 'held' CHECK (delivery_state = 'held'),
+        retention_status TEXT NOT NULL DEFAULT 'active'
+            CHECK (retention_status IN ('active', 'invalidated', 'deleted')),
+        CHECK ((internal_decision = 'pending' AND result_state = 'pending')
+            OR (internal_decision = 'accepted_internal' AND result_state = 'persisted'))
+    )
+    """,
+    f"""
+    CREATE TABLE agent_reply_payloads (
+        operation_id TEXT PRIMARY KEY
+            REFERENCES agent_reply_operations(operation_id) ON DELETE CASCADE,
+        content TEXT NOT NULL CHECK (typeof(content) = 'text'
+            AND length(CAST(content AS BLOB)) BETWEEN 1 AND {MAX_PRIVATE_PAYLOAD_BYTES}),
+        retention_status TEXT NOT NULL DEFAULT 'active'
+            CHECK (retention_status IN ('active', 'deleted'))
+    )
+    """,
+    """
+    CREATE TABLE agent_reply_sources (
+        operation_id TEXT NOT NULL
+            REFERENCES agent_reply_operations(operation_id) ON DELETE CASCADE,
+        event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        source_principal_id TEXT NOT NULL,
+        retention_status TEXT NOT NULL DEFAULT 'active'
+            CHECK (retention_status IN ('active', 'invalidated', 'deleted')),
+        PRIMARY KEY (operation_id, event_id)
+    )
+    """,
+    """
+    CREATE INDEX agent_reply_sources_event ON agent_reply_sources(event_id, operation_id)
+    """,
+)
+
+
+def schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
+    """Exact application objects, including explicit indexes and triggers."""
+    return {
+        (kind, name, table): " ".join(sql.split())
+        for kind, name, table, sql in connection.execute(
+            "SELECT type, name, tbl_name, sql FROM sqlite_master WHERE sql IS NOT NULL"
+        )
+    }
+
+
+def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
+    expected = {}
+    with sqlite3.connect(":memory:") as connection:
+        for version, statements in enumerate(
+            (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4), start=1
+        ):
+            for statement in statements:
+                connection.execute(statement)
+            expected[version] = schema_objects(connection)
+    return expected
+
+
+_EXPECTED_SCHEMAS = _expected_schemas()
+
+
 class EventStore:
     """Purpose-specific private event persistence and retrieval boundary."""
 
@@ -632,7 +710,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -641,45 +719,45 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, 1, 2, SCHEMA_VERSION}:
+                if version not in {0, 1, 2, 3, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
+                if (
+                    connection.execute("PRAGMA foreign_key_check").fetchone()
+                    is not None
+                ):
+                    raise EventStoreError("event store operation failed")
                 if version == 0:
-                    for statement in (*_SCHEMA_V1, *_SCHEMA_V2, *_SCHEMA_V3):
+                    if schema_objects(connection):
+                        raise EventStoreError("event store operation failed")
+                    for statement in (
+                        *_SCHEMA_V1,
+                        *_SCHEMA_V2,
+                        *_SCHEMA_V3,
+                        *_SCHEMA_V4,
+                    ):
                         connection.execute(statement)
                     connection.execute(
                         "INSERT INTO schema_metadata(singleton, version) VALUES (1, ?)",
                         (SCHEMA_VERSION,),
                     )
-                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    return
-                if version == 1:
-                    self._verify_schema_version(connection, 1)
-                    for statement in _SCHEMA_V2:
-                        connection.execute(statement)
-                    if self._fault_injector is not None:
-                        self._fault_injector(FaultPoint.BEFORE_V2_MIGRATION_COMMIT)
-                    for statement in _SCHEMA_V3:
-                        connection.execute(statement)
-                    if self._fault_injector is not None:
-                        self._fault_injector(FaultPoint.BEFORE_V3_MIGRATION_COMMIT)
+                elif version < SCHEMA_VERSION:
+                    self._verify_schema_version(connection, version)
+                    migrations = (
+                        (2, _SCHEMA_V2, FaultPoint.BEFORE_V2_MIGRATION_COMMIT),
+                        (3, _SCHEMA_V3, FaultPoint.BEFORE_V3_MIGRATION_COMMIT),
+                        (4, _SCHEMA_V4, FaultPoint.BEFORE_V4_MIGRATION_COMMIT),
+                    )
+                    for target, statements, fault_point in migrations:
+                        if target > version:
+                            for statement in statements:
+                                connection.execute(statement)
+                            if self._fault_injector is not None:
+                                self._fault_injector(fault_point)
                     connection.execute(
                         "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
                         (SCHEMA_VERSION,),
                     )
-                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    return
-                if version == 2:
-                    self._verify_schema_version(connection, 2)
-                    for statement in _SCHEMA_V3:
-                        connection.execute(statement)
-                    if self._fault_injector is not None:
-                        self._fault_injector(FaultPoint.BEFORE_V3_MIGRATION_COMMIT)
-                    connection.execute(
-                        "UPDATE schema_metadata SET version = ? WHERE singleton = 1",
-                        (SCHEMA_VERSION,),
-                    )
-                    connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
-                    return
+                connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
                 self._verify_current_schema(connection)
         except sqlite3.Error as error:
             raise self._translated_error(error) from None
@@ -723,6 +801,8 @@ class EventStore:
             raise EventStoreError("event store operation failed")
         if metadata_version != expected_version:
             raise UnsupportedSchemaVersionError(metadata_version)
+        if schema_objects(connection) != _EXPECTED_SCHEMAS[expected_version]:
+            raise EventStoreError("event store operation failed")
 
     def diagnostics(self) -> StoreDiagnostics:
         connection = self._open()
