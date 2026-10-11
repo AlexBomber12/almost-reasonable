@@ -240,6 +240,7 @@ def _fsync_owned_parents(owned: list[_OwnedFile]) -> None:
 def _publish_owned_file(source: Path, destination: Path, output: _OwnedFile) -> None:
     if not _path_matches_descriptor(source, output.descriptor):
         raise BackupError("quarantine staging identity changed")
+    output.cleanup_alias = destination
     try:
         os.link(
             source.name,
@@ -252,9 +253,8 @@ def _publish_owned_file(source: Path, destination: Path, output: _OwnedFile) -> 
         raise BackupError("quarantine publication failed") from error
     if not _path_matches_descriptor(destination, output.descriptor):
         raise BackupError("quarantine publication identity changed")
-    output.cleanup_alias = source
-    output.path = destination
     os.unlink(source.name, dir_fd=output.parent_descriptor)
+    output.path = destination
     output.cleanup_alias = None
     os.fsync(output.parent_descriptor)
 

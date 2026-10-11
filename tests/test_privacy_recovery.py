@@ -644,7 +644,8 @@ def test_quarantine_publication_rejects_a_substituted_destination(
     assert staging.exists()
     assert destination.exists()
     recovery_module._cleanup_created(owned)
-    destination.unlink()
+    assert not staging.exists()
+    assert not destination.exists()
 
 
 @pytest.mark.parametrize("interrupted_close", ["descriptor", "parent"])
@@ -786,6 +787,44 @@ def test_restore_cleans_both_publication_links_when_staging_unlink_is_interrupte
     assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
     assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
 
+    result = manager.restore(backup, quarantine, NOW)
+    assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
+
+
+def test_restore_cleans_publication_when_link_succeeds_then_interrupts(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    manager = QuarantinedRestore(ledger, 3, RestoreAdapter)
+    quarantine = tmp_path / "quarantine.sqlite3"
+    real_link = recovery_module.os.link
+    interrupted = False
+
+    def link_then_interrupt(*args, **kwargs):
+        nonlocal interrupted
+        result = real_link(*args, **kwargs)
+        if not interrupted:
+            interrupted = True
+            raise SimulatedInterrupt()
+        return result
+
+    monkeypatch.setattr(recovery_module.os, "link", link_then_interrupt)
+
+    with pytest.raises(SimulatedInterrupt):
+        manager.restore(backup, quarantine, NOW)
+
+    assert interrupted is True
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3"))
+    assert not list(tmp_path.glob(".privacy-sealed-*.sqlite3"))
     result = manager.restore(backup, quarantine, NOW)
     assert result.disposition is RestoreDisposition.ELIGIBLE_FOR_ACTIVATION
 
