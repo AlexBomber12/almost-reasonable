@@ -248,7 +248,7 @@ def _cleanup_created_database_sidecars(
                     follow_symlinks=False,
                 )
             except FileNotFoundError:
-                _cleanup_missing_database_sidecars(output)
+                _cleanup_missing_database_sidecars(output, preserved_sidecars)
             continue
         pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
         try:

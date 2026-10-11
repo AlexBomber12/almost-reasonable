@@ -3710,6 +3710,61 @@ def test_restore_cleanup_preserves_a_replaced_sidecar(tmp_path, monkeypatch):
     assert not staging.exists()
 
 
+def test_restore_cleanup_retry_preserves_a_replaced_sidecar_when_main_disappears(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    staging = tmp_path / "staging.sqlite3"
+    make_source(staging).close()
+    sidecar = Path(f"{staging}-wal")
+    sidecar.write_text("owned-sidecar")
+    held_sidecar = tmp_path / "held-wal"
+    replacement_sidecar = tmp_path / "replacement-wal"
+    replacement_sidecar.write_text("replacement-sidecar")
+    descriptor = os.open(staging, os.O_RDWR)
+    parent_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    owned = [recovery_module._OwnedFile(staging, descriptor, parent_descriptor)]
+    real_path_matches = recovery_module._path_matches_descriptor
+    real_close_pinned_database = recovery_module._close_pinned_database
+    sidecar_checks = 0
+    interrupted = False
+
+    def replace_after_pinning(path, pinned_descriptor):
+        nonlocal sidecar_checks
+        if path == sidecar:
+            sidecar_checks += 1
+            if sidecar_checks == 2:
+                sidecar.rename(held_sidecar)
+                replacement_sidecar.rename(sidecar)
+        return real_path_matches(path, pinned_descriptor)
+
+    def close_then_remove_main(database):
+        nonlocal interrupted
+        real_close_pinned_database(database)
+        if database.path == staging and not interrupted:
+            interrupted = True
+            staging.unlink()
+            raise SimulatedInterrupt()
+
+    monkeypatch.setattr(
+        recovery_module, "_path_matches_descriptor", replace_after_pinning
+    )
+    monkeypatch.setattr(
+        recovery_module, "_close_pinned_database", close_then_remove_main
+    )
+
+    with pytest.raises(SimulatedInterrupt):
+        recovery_module._cleanup_created_database(owned)
+
+    assert interrupted is True
+    assert sidecar_checks == 2
+    assert sidecar.read_text() == "replacement-sidecar"
+    assert held_sidecar.read_text() == "owned-sidecar"
+    assert not staging.exists()
+
+
 def test_restore_cleanup_preserves_main_replaced_during_repin(tmp_path, monkeypatch):
     staging = tmp_path / "staging.sqlite3"
     make_source(staging, "owned-main").close()
