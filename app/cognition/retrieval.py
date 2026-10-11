@@ -266,7 +266,7 @@ class MemoryContextSelector:
 
     @staticmethod
     def _validate_request(request: object) -> None:
-        if not isinstance(request, RetrievalRequest):
+        if type(request) is not RetrievalRequest:
             raise ValueError("invalid retrieval request")
         if type(request.relevant_topic) is not str:
             raise ValueError("invalid retrieval request")

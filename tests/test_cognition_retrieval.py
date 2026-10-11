@@ -54,6 +54,20 @@ class HostileHashString(str):
         raise RuntimeError("synthetic hostile hash adapter")
 
 
+class HostileRetrievalRequest(RetrievalRequest):
+    def __getattribute__(self, name):
+        if name in {
+            "purpose",
+            "relevant_topic",
+            "total_utf8_bytes",
+            "max_records",
+            "invalidated_event_ids",
+            "include_terminal",
+        }:
+            raise RuntimeError("synthetic hostile request adapter")
+        return super().__getattribute__(name)
+
+
 def principal(name):
     return TrustedPrincipalContext(
         ParticipantId(f"participant-{name}"),
@@ -391,6 +405,12 @@ def test_prompt_like_memory_is_only_data_and_terminal_items_are_excluded(
 @pytest.mark.parametrize(
     "retrieval_request",
     [
+        HostileRetrievalRequest(
+            RetrievalPurpose.CONVERSATION,
+            "topic",
+            100,
+            1,
+        ),
         RetrievalRequest(RetrievalPurpose.CONVERSATION, "topic", 0, 1),
         RetrievalRequest(RetrievalPurpose.CONVERSATION, "topic", 100, 0),
         RetrievalRequest(
