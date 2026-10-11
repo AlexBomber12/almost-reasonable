@@ -250,6 +250,10 @@ _RETRYABLE = {
 }
 
 _ERROR_OUTCOMES = {
+    "authorization_denied": ResearchOutcome.AUTHORIZATION_DENIED,
+    "disabled": ResearchOutcome.DISABLED,
+    "emergency_stop": ResearchOutcome.EMERGENCY_STOP,
+    "spend_suspended": ResearchOutcome.SPEND_SUSPENDED,
     "rate_limit": ResearchOutcome.RATE_LIMIT,
     "server_error": ResearchOutcome.SERVER_ERROR,
     "timeout": ResearchOutcome.TIMEOUT,
