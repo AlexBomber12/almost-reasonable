@@ -150,9 +150,13 @@ Duplicate and action entries expire when their age reaches the configured
 window, and cutoff calculation clamps safely for durations that would underflow
 the injected clock's datetime range.
 
-The in-memory store and mutable clock exist for deterministic tests. Production
-wiring still needs an application-owned durable scheduler repository and actual
-policy snapshots. No provider or Threads execution is enabled here.
+The in-memory store and mutable clock remain deterministic test adapters.
+`app.behavior.durable_scheduler` adds `DurableScheduler` and a purpose-specific
+`SQLiteSchedulerRepository` in a separate application-owned database. It reuses
+these exact policy decisions and does not change EventStore or Privacy schemas.
+See [durable scheduler recovery](durable-scheduler.md) for claims, guards and
+reproducible process tests. Production background-process wiring, current policy
+snapshots and effect dispatch remain application integration work.
 
 ## Two-phase mission revision and recovery
 

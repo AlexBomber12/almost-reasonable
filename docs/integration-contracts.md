@@ -130,14 +130,19 @@ ActionPolicy rechecks stop for actionable proposals; `no_action` remains accepte
 The gateway checks stop before new calls and between retries. Confirmed provider
 spend-limit errors durably suspend later paid calls, including after restart;
 ambiguous quota/rate errors do not establish confirmed suspension. Research
-has injected stop/spend callbacks and a suspension hook; scheduler uses explicit
-stop/spend inputs. There is no single authenticated application control store
+has injected stop/spend callbacks and a suspension hook; the durable scheduler
+composes current `OwnerStore.active()` and provider-state suspension accessors
+through narrow protocols, with checks before work and after deliberation. There
+is no single authenticated application control store
 feeding all components, or integrated authenticated reset UI. Future composition
 must provide current trusted state to every call/effect boundary. An in-flight
 external call cannot be retroactively revoked.
 
-EventStore/auth/provider state survive reopening. Scheduler state and policy
-grants do not supply durable recovery. Cross-database privacy commits are not
+EventStore/auth/provider state survive reopening. The dedicated
+[durable scheduler repository](durable-scheduler.md) also survives reopening,
+with transactional claims and no automatic replay of uncertain started work.
+Policy grants remain in-memory and supply no durable effect recovery.
+Cross-database privacy commits are not
 atomic: record pending deletion before erasure, reconcile all pending/blocked
 entries before participant reads, and keep restores quarantined. Restore must
 replay the current ledger and rebuild dependencies before eligibility. A ready
@@ -193,7 +198,7 @@ additional test node IDs are supporting component evidence, never E2E completion
 | SCN-07 Consolidation | partially implemented | I8; `tests/test_privacy_recovery.py::test_old_snapshot_is_reconciled_in_quarantine_before_eligibility` | Generic memory persistence, EventStore-complete erasure adapter, authenticated deletion wiring, index rebuild and combined old-backup restore. Recovery test uses its own adapter. |
 | SCN-08 Belief revision | blocked | `tests/test_cognition_pipeline.py::test_persisted_recency_uses_trusted_clock_not_model_timestamp` | Evidence/research/behavior→belief update→later conversation context/restart; deletion reassessment and calibrated belief evaluation. I8 proves interest only. |
 | SCN-09 Mission revision | blocked | `tests/test_behavior_mission.py::test_two_phase_confirmation_persists_across_restart` | Deliberation→mission proposal→independent later evidence→confirmation→changed scheduler/Threads behavior. Standalone mission persistence is insufficient. |
-| SCN-10 Inactivity | partially implemented | I5, I6; `tests/test_behavior_scheduler.py::test_scheduler_coalesces_missed_wakeups_and_allows_inactivity` | Durable scheduler and application dispatch/outbox metrics connection, later valuable event after downtime/suspension and cadence evaluation. |
+| SCN-10 Inactivity | partially implemented | I5, I6; `tests/test_behavior_scheduler.py::test_scheduler_coalesces_missed_wakeups_and_allows_inactivity` | Production scheduler wiring, application dispatch/outbox metrics connection and cadence evaluation; durable wake-up and later-event recovery have separate component tests in `tests/test_durable_scheduler.py`. |
 | SCN-11 Privacy/deletion | blocked | `tests/test_privacy_deletion.py::test_deletion_writes_pending_first_then_applies_idempotently`; `tests/test_privacy_recovery.py::test_old_snapshot_is_reconciled_in_quarantine_before_eligibility` | Authenticated notice/consent/revoke/delete UI, exact Threads ledger provider, production wiring of the INT-03 application erasure/restore adapters and startup read fence, plus the activation transaction. Synthetic reports do not establish real cascade. |
 | SCN-12 Injection | partially implemented | I2, I4, I7, I8; `tests/test_cognition_sharing.py::test_uncertain_h_screen_quarantines_and_allowing_malicious_text_grants_no_authority` | Combined hosted-tool, delayed-memory, mission and multilingual/encoded attack journeys across restart/model change. Model output cannot grant permissions in the tested slice; full containment requires each future connection's tests. |
 
