@@ -83,6 +83,11 @@ class Stage0ConversationRuntime(ConversationService):
             event_store, PrivateContextAssembler(event_store, self._limits), clock=clock
         )
 
+    @staticmethod
+    def _operation_id(event_id: str) -> str:
+        """Bound opaque event identity, never hash private message content."""
+        return "reply:" + hashlib.sha256(event_id.encode()).hexdigest()
+
     def _capabilities(self):
         return CapabilityState(
             "private-runtime-stage0-v1",
@@ -138,7 +143,7 @@ class Stage0ConversationRuntime(ConversationService):
         event_id, correlation = self._gate.authorized(
             lambda: self._input(principal, message_id, content)
         )
-        operation_id = f"reply:{event_id}"
+        operation_id = self._operation_id(event_id)
         route = TrustedActionContext(correlation, principal)
         existing = self._gate.read_reply(principal, operation_id)
         if existing is None:
@@ -279,7 +284,7 @@ class Stage0ConversationRuntime(ConversationService):
                 items.append(
                     HistoryItem(event.event_id, event.occurred_at, event.content)
                 )
-                operation_id = f"reply:{event.event_id}"
+                operation_id = self._operation_id(event.event_id)
                 resolution = self._outputs.resolution(principal, operation_id)
                 if resolution == ("completed", f"release:{operation_id}"):
                     route = TrustedActionContext(event.correlation_id, principal)

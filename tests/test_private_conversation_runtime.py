@@ -535,7 +535,7 @@ def test_provider_duplicate_and_record_failure_preserve_pending(setup, monkeypat
         if point == "after_reservation":
             event = gate.retrieve_private_events(principal("a"))[-1]
             ProviderStateStore(store).reserve_attempt(
-                f"reply:{event.event_id}:1", event.correlation_id, NOW
+                runtime._operation_id(event.event_id) + ":1", event.correlation_id, NOW
             )
 
     runtime = Stage0ConversationRuntime(
@@ -629,7 +629,7 @@ def test_delayed_unreserved_request_context_ends_at_exact_original_event(setup):
     ]
     event = gate.retrieve_private_events(principal("a"))[0]
     op = runtime._outputs.read_reply(
-        principal("a"), f"reply:{event.event_id}"
+        principal("a"), runtime._operation_id(event.event_id)
     ).operation
     assert op.initiating_event_id == event.event_id
     assert op.source_event_ids == (event.event_id,)
@@ -642,7 +642,9 @@ def test_maximum_valid_principal_has_bounded_durable_conversation_route(setup):
     who = replace(principal("a"), principal_id=ParticipantId("p" * 128))
     assert runtime.submit(who, "bounded-route", "Синтетический запрос").response_content
     event = gate.retrieve_private_events(who)[0]
-    operation = runtime._outputs.read_reply(who, f"reply:{event.event_id}").operation
+    operation = runtime._outputs.read_reply(
+        who, runtime._operation_id(event.event_id)
+    ).operation
     assert len(operation.conversation_id) < 128
     assert who.principal_id.value not in fake.calls[0].request.input_text
 
@@ -682,3 +684,82 @@ def test_concurrent_deletion_during_actual_inference_blocks_commit(setup, monkey
         runtime.submit(
             principal("a"), "inflight-deletion", "Удаляемый синтетический запрос"
         )
+
+
+def legacy_input(setup, length):
+    from test_event_store import private_input
+
+    store, _, _, _, _ = setup
+    event = replace(
+        private_input("legacy", "Синтетический старый запрос"), event_id="e" * length
+    )
+    store.append_private_input(principal("a"), event)
+    return event
+
+
+@pytest.mark.parametrize("length", [115, 120, 121, 122, 128])
+def test_valid_legacy_event_ids_have_bounded_inference_and_release_identity(
+    setup, length
+):
+    store, _, gate, fake, runtime = setup
+    event = legacy_input(setup, length)
+    result = runtime.submit(principal("a"), event.source_message_id, event.content)
+    assert result.model_state.value == "completed"
+    assert result.response_content
+    with store._open() as db:
+        operation_id, initiating, correlation = db.execute(
+            "SELECT operation_id, initiating_event_id, correlation_id FROM agent_reply_operations"
+        ).fetchone()
+        outcome, release_id = db.execute(
+            "SELECT outcome, release_id FROM agent_reply_resolutions"
+        ).fetchone()
+        attempt_id = db.execute(
+            "SELECT attempt_id FROM provider_usage_attempts"
+        ).fetchone()[0]
+    assert initiating == event.event_id and correlation == event.correlation_id
+    assert outcome == "completed"
+    assert (
+        len(operation_id) <= 126 and len(release_id) <= 128 and len(attempt_id) <= 128
+    )
+    assert gate.read_reply(principal("a"), operation_id).operation.source_event_ids == (
+        event.event_id,
+    )
+    retry = reopened(setup).submit(
+        principal("a"), event.source_message_id, event.content
+    )
+    assert retry.response_content == result.response_content
+    assert [item.role for item in reopened(setup).history(principal("a"))] == [
+        "participant",
+        "agent",
+    ]
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("point", "state", "calls"),
+    [
+        ("after_reservation", "pending", 0),
+        ("after_model", "pending", 1),
+        ("after_reply_commit", "completed", 1),
+    ],
+)
+def test_long_legacy_identity_survives_crash_without_duplicate_inference(
+    setup, point, state, calls
+):
+    store, _, gate, fake, _ = setup
+    event = legacy_input(setup, 128)
+
+    def crash(current):
+        if current == point:
+            raise RuntimeError("synthetic long-id interruption")
+
+    runtime = Stage0ConversationRuntime(store, gate, fake, checkpoint=crash)
+    with pytest.raises(RuntimeError, match="long-id interruption"):
+        runtime.submit(principal("a"), event.source_message_id, event.content)
+    assert (
+        reopened(setup)
+        .submit(principal("a"), event.source_message_id, event.content)
+        .model_state.value
+        == state
+    )
+    assert len(fake.calls) == calls

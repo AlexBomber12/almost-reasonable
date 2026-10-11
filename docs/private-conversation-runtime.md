@@ -83,9 +83,11 @@ operation; conflicting text is rejected. Deleted envelopes still suppress reuse.
 Legacy ambiguous participant/message identities fail closed. Replay never binds
 to the latest history event.
 
-Trusted routing derives `reply:<event_id>` for the reply operation,
+Trusted routing derives `reply:<sha256(event_id)>` for the reply operation,
 `conversation:<sha256(participant_id)>` for the bounded private conversation route, and
-`release:<operation_id>` for release. Model, prompt and approved Core Self versions
+`release:<operation_id>` for release. These remain bounded for every valid legacy
+event ID. Only opaque routing identifiers are hashed; no private-content
+fingerprint is stored. Model, prompt and approved Core Self versions
 and sorted complete source-event dependencies are bound in `ReplyOperation`.
 Reservation precedes model execution. A newly created reservation alone owns
 inference; racing requests see pending or the committed result. The gateway uses
