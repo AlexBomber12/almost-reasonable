@@ -10,6 +10,7 @@ import threading
 import pytest
 
 from app.core.store import EventStore
+from shared_schema_helpers import remove_v6
 from app.privacy import recovery as recovery_module
 
 from app.privacy import (
@@ -79,6 +80,7 @@ def make_source(path, message="synthetic deleted private message CANARY-RESTORE"
     EventStore(path)
     connection = sqlite3.connect(path)
     # Keep these legacy backup contract fixtures at genuine v4.
+    remove_v6(connection)
     connection.execute("DROP TRIGGER event_input_sequence_append")
     connection.execute("DROP TABLE event_input_sequences")
     connection.execute("DROP TABLE agent_reply_resolutions")

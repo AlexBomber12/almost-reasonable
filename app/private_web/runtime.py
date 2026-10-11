@@ -9,12 +9,18 @@ import hashlib
 from app.cognition.conversation_context import MemoryConversationAssembler
 from app.cognition.pipeline import CognitionEngine
 from app.cognition.synthetic import SyntheticMemoryExtractor
+from app.cognition.shared import SharedIntelligence
+from app.cognition.shared_context import assemble_shared
 from app.core.self_state_store import SelfStateStore
 from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.action_policy import ActionPolicy, CapabilityState, TrustedActionContext
 from app.core.agent_output_store import AgentOutputStore, ReplyOperation, ResultState
 from app.core.agent_proposals import NoActionProposal, ProposalValidation, ReplyProposal
-from app.core.context import ContextLimits, PrivateContextAssembler
+from app.core.context import (
+    ContextLimits,
+    PrivateContextAssembler,
+    minimum_context_utf8_bytes,
+)
 from app.core.model_contract import build_model_request
 from app.core.provider_contract import DeploymentStage, default_openai_provider_config
 from app.core.provider_spend import ProviderStateStore
@@ -60,6 +66,7 @@ class Stage0ConversationRuntime(ConversationService):
         clock: Callable[[], datetime] = _utc_now,
         checkpoint: Callable[[str], None] = lambda _point: None,
         memory_extractor: SyntheticMemoryExtractor | None = None,
+        shared_intelligence: SharedIntelligence | None = None,
         context_limits: ContextLimits = ContextLimits(32_000, 99),
     ):
         if type(transport) is not FakeOpenAITransport:
@@ -77,6 +84,15 @@ class Stage0ConversationRuntime(ConversationService):
             and type(memory_extractor) is not SyntheticMemoryExtractor
         ):
             raise TypeError("memory extraction requires an exact synthetic fixture")
+        if shared_intelligence is not None and (
+            type(shared_intelligence) is not SharedIntelligence
+            or shared_intelligence._events is not event_store
+            or shared_intelligence._gate is not privacy_gate
+        ):
+            raise ValueError(
+                "shared intelligence must bind the same synthetic application"
+            )
+        self._shared = shared_intelligence
         self._limits = context_limits
         self._transport = transport
         self._clock = clock
@@ -99,7 +115,9 @@ class Stage0ConversationRuntime(ConversationService):
             max_attempts=1,
         )
         self._memory_bridge = (
-            None if self._cognition is None else _MemoryFakeBridge(transport)
+            None
+            if self._cognition is None and self._shared is None
+            else _MemoryFakeBridge(transport)
         )
         self._gateway = TrustedOpenAIGateway(
             store=self._provider,
@@ -189,7 +207,7 @@ class Stage0ConversationRuntime(ConversationService):
                 previous = self._outputs.read_reply(principal, operation_id)
                 if previous is not None:
                     return previous, None
-                if self._cognition is not None:
+                if self._memory_bridge is not None:
                     return self._reserve_memory(
                         principal, event_id, correlation, operation_id
                     )
@@ -273,9 +291,28 @@ class Stage0ConversationRuntime(ConversationService):
             with db:
                 db.execute("BEGIN IMMEDIATE")
                 self._event_store._verify_current_schema(db)
+                private_limits = self._limits
+                if self._shared is not None:
+                    private_limits = replace(
+                        self._limits,
+                        max_utf8_bytes=max(
+                            minimum_context_utf8_bytes(),
+                            self._limits.max_utf8_bytes - 200,
+                        ),
+                    )
                 request, sources = MemoryConversationAssembler(
-                    self._event_store, self._limits
+                    self._event_store, private_limits
                 ).build(principal, event_id, db)
+                shared_operations = ()
+                if self._shared is not None:
+                    request, shared_operations = assemble_shared(
+                        request,
+                        sources,
+                        self._shared,
+                        principal,
+                        db,
+                        self._limits.max_utf8_bytes,
+                    )
                 operation = ReplyOperation(
                     operation_id,
                     event_id,
@@ -283,9 +320,12 @@ class Stage0ConversationRuntime(ConversationService):
                     + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
                     correlation,
                     self._config.model,
-                    "private-memory-stage0-v2",
+                    "private-memory-stage0-v2"
+                    if self._shared is None
+                    else "shared-stage0-v3",
                     request.conversation.core_self_version,
                     sources,
+                    shared_operations,
                 )
                 return self._outputs.reserve_reply(
                     principal, operation, _connection=db

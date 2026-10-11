@@ -221,3 +221,7 @@ INT-05A evidence and the exact shared-state, mission and complete M5 gaps are
 listed in [Private-memory conversation](private-memory-conversation.md). This
 adds scoped private memory and complete memory-derived reply dependencies without
 enabling shared writes or conversational mission transitions.
+
+INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence. The
+older component description above does not authorize production sharing.

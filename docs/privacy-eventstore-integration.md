@@ -164,3 +164,7 @@ configuration and live restore activation remain unchanged. See
 one-to-one event binding is checked by the v5 graph validator. Payload erasure
 retains this sequence with the tombstone; v4 quarantine validation omits both
 v5-only metadata checks while still verifying the exact v4 schema and graph.
+
+INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence. The
+older component description above does not authorize production sharing.
