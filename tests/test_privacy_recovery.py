@@ -382,6 +382,46 @@ def test_backup_pin_closes_source_and_sidecars_when_validation_errors(
     assert not destination.exists()
 
 
+def test_pinned_database_close_attempts_every_descriptor_and_preserves_first_error(
+    tmp_path, monkeypatch
+):
+    class SimulatedInterrupt(BaseException):
+        pass
+
+    main_path = tmp_path / "main.sqlite3"
+    sidecar_path = tmp_path / "main.sqlite3-wal"
+    main_path.touch()
+    sidecar_path.touch()
+    main_descriptor = os.open(main_path, os.O_RDONLY)
+    sidecar_descriptor = os.open(sidecar_path, os.O_RDONLY)
+    pinned = recovery_module._PinnedDatabase(
+        main_path,
+        main_descriptor,
+        sidecars=((sidecar_path, sidecar_descriptor),),
+    )
+    first_error = SimulatedInterrupt("main close interrupted")
+    second_error = RuntimeError("sidecar close interrupted")
+    real_close = recovery_module.os.close
+    attempted = []
+
+    def close_then_fail(descriptor):
+        real_close(descriptor)
+        attempted.append(descriptor)
+        if descriptor == main_descriptor:
+            raise first_error
+        raise second_error
+
+    monkeypatch.setattr(recovery_module.os, "close", close_then_fail)
+    with pytest.raises(SimulatedInterrupt) as caught:
+        recovery_module._close_pinned_database(pinned)
+
+    assert caught.value is first_error
+    assert attempted == [main_descriptor, sidecar_descriptor]
+    for descriptor in attempted:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
 def test_backup_rejects_foreign_key_violations(tmp_path):
     source = tmp_path / "source.sqlite3"
     with make_source(source) as connection:
@@ -867,13 +907,17 @@ def test_backup_cleans_outputs_when_pinned_source_teardown_is_interrupted(
         pass
 
     source = tmp_path / "source.sqlite3"
-    make_source(source).close()
+    writer = make_source(source)
+    insert_private_payload(writer, "event-wal", "private WAL payload")
+    writer.commit()
+    assert Path(f"{source}-wal").exists()
     destination = tmp_path / "backup.sqlite3"
     metadata = Path(f"{destination}.metadata.json")
     real_pin_database = recovery_module._pin_database
-    real_close_pinned_database = recovery_module._close_pinned_database
+    real_close = recovery_module.os.close
     pinned_source = None
     interrupted = False
+    closed = []
 
     def track_pinned_source(path, label, **kwargs):
         nonlocal pinned_source
@@ -882,22 +926,37 @@ def test_backup_cleans_outputs_when_pinned_source_teardown_is_interrupted(
             pinned_source = pinned
         return pinned
 
-    def close_then_interrupt(database):
+    def close_then_interrupt(descriptor):
         nonlocal interrupted
-        real_close_pinned_database(database)
-        if database is pinned_source and not interrupted:
+        real_close(descriptor)
+        closed.append(descriptor)
+        if (
+            pinned_source is not None
+            and descriptor == pinned_source.descriptor
+            and not interrupted
+        ):
             interrupted = True
             raise SimulatedInterrupt()
 
     with monkeypatch.context() as patch:
         patch.setattr(recovery_module, "_pin_database", track_pinned_source)
-        patch.setattr(recovery_module, "_close_pinned_database", close_then_interrupt)
+        patch.setattr(recovery_module.os, "close", close_then_interrupt)
         with pytest.raises(SimulatedInterrupt):
             create_sqlite_backup(source, destination, 3, NOW)
 
     assert interrupted is True
+    assert pinned_source is not None
+    assert pinned_source.sidecars
+    pinned_descriptors = (pinned_source.descriptor,) + tuple(
+        descriptor for _path, descriptor in pinned_source.sidecars
+    )
+    assert all(descriptor in closed for descriptor in pinned_descriptors)
+    for descriptor in pinned_descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
     assert not destination.exists()
     assert not metadata.exists()
+    writer.close()
     created = create_sqlite_backup(source, destination, 3, NOW)
     assert destination.exists()
     assert created.path == metadata

@@ -450,9 +450,18 @@ def _pin_database(
 
 
 def _close_pinned_database(database: _PinnedDatabase) -> None:
-    os.close(database.descriptor)
-    for _sidecar_path, descriptor in database.sidecars:
-        os.close(descriptor)
+    first_error: BaseException | None = None
+    descriptors = (database.descriptor,) + tuple(
+        descriptor for _sidecar_path, descriptor in database.sidecars
+    )
+    for descriptor in descriptors:
+        try:
+            os.close(descriptor)
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
+    if first_error is not None:
+        raise first_error
 
 
 def _require_database_identity(source: _PinnedDatabase) -> None:
