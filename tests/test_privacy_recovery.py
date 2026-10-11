@@ -2877,6 +2877,56 @@ def test_restore_cleanup_preserves_a_replacement_database_and_its_wal(tmp_path):
     adapters[0].reader.close()
 
 
+def test_restore_cleanup_removes_sidecars_after_adapter_unlinks_main(tmp_path):
+    source = tmp_path / "source.sqlite3"
+    make_source(source).close()
+    backup = tmp_path / "backup.sqlite3"
+    create_sqlite_backup(source, backup, 3, NOW)
+    ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
+    adapters = []
+
+    class UnlinkingWalAdapter(RestoreAdapter):
+        def __init__(self, path):
+            super().__init__(path)
+            self.staging = Path(os.readlink(path))
+            self.connection = sqlite3.connect(path)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+
+        def rebuild_dependencies(self):
+            self.connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-unlinked', 'private')"
+            )
+            self.connection.commit()
+            self.staging.unlink()
+            return False
+
+        def release_writers(self):
+            return True
+
+    def adapter_factory(path):
+        adapter = UnlinkingWalAdapter(path)
+        adapters.append(adapter)
+        return adapter
+
+    quarantine = tmp_path / "quarantine.sqlite3"
+    result = QuarantinedRestore(ledger, 3, adapter_factory).restore(
+        backup, quarantine, NOW
+    )
+
+    assert (result.disposition, result.reason) == (
+        RestoreDisposition.BLOCKED,
+        "dependency_rebuild_incomplete",
+    )
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+    assert not list(tmp_path.glob(".privacy-restore-*.sqlite3*"))
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
+    adapters[0].connection.close()
+
+
 def test_restore_cleanup_preserves_a_replaced_sidecar(tmp_path, monkeypatch):
     staging = tmp_path / "staging.sqlite3"
     make_source(staging).close()
@@ -2909,6 +2959,72 @@ def test_restore_cleanup_preserves_a_replaced_sidecar(tmp_path, monkeypatch):
     assert sidecar.read_text() == "replacement-sidecar"
     assert held_sidecar.read_text() == "owned-sidecar"
     assert not staging.exists()
+
+
+def test_restore_cleanup_preserves_main_replaced_during_repin(tmp_path, monkeypatch):
+    staging = tmp_path / "staging.sqlite3"
+    make_source(staging, "owned-main").close()
+    sidecar = Path(f"{staging}-wal")
+    sidecar.write_text("replacement-sidecar")
+    replacement = tmp_path / "replacement.sqlite3"
+    make_source(replacement, "replacement-main").close()
+    held_staging = tmp_path / "held-staging.sqlite3"
+    descriptor = os.open(staging, os.O_RDWR)
+    parent_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    owned = [recovery_module._OwnedFile(staging, descriptor, parent_descriptor)]
+    real_pin_database = recovery_module._pin_database
+    replaced = False
+
+    def replace_before_repin(path, label, **kwargs):
+        nonlocal replaced
+        if label == "staging database" and not replaced:
+            replaced = True
+            staging.rename(held_staging)
+            replacement.rename(staging)
+        return real_pin_database(path, label, **kwargs)
+
+    monkeypatch.setattr(recovery_module, "_pin_database", replace_before_repin)
+    recovery_module._cleanup_created_database(owned)
+
+    assert replaced is True
+    with sqlite3.connect(staging) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("replacement-main",)
+    assert sidecar.read_text() == "replacement-sidecar"
+
+
+def test_restore_cleanup_preserves_sidecar_if_main_reappears(tmp_path, monkeypatch):
+    staging = tmp_path / "staging.sqlite3"
+    make_source(staging, "owned-main").close()
+    descriptor = os.open(staging, os.O_RDWR)
+    parent_descriptor = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    owned = [recovery_module._OwnedFile(staging, descriptor, parent_descriptor)]
+    staging.unlink()
+    sidecar = Path(f"{staging}-wal")
+    sidecar.write_text("replacement-sidecar")
+    replacement = tmp_path / "replacement.sqlite3"
+    make_source(replacement, "replacement-main").close()
+    real_open = recovery_module.os.open
+    replaced = False
+
+    def replace_main_after_sidecar_open(path, *args, **kwargs):
+        nonlocal replaced
+        opened_descriptor = real_open(path, *args, **kwargs)
+        if str(path).endswith("-wal") and not replaced:
+            replaced = True
+            replacement.rename(staging)
+        return opened_descriptor
+
+    monkeypatch.setattr(recovery_module.os, "open", replace_main_after_sidecar_open)
+    recovery_module._cleanup_created_database(owned)
+
+    assert replaced is True
+    with sqlite3.connect(staging) as connection:
+        assert connection.execute(
+            "SELECT content FROM synthetic_private WHERE event_id='event-001'"
+        ).fetchone() == ("replacement-main",)
+    assert sidecar.read_text() == "replacement-sidecar"
 
 
 @pytest.mark.parametrize(

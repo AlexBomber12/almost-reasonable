@@ -200,6 +200,16 @@ def _cleanup_created_resumable(owned: list[_OwnedFile]) -> None:
 
 def _cleanup_created_database_sidecars(owned: list[_OwnedFile]) -> None:
     for output in owned:
+        if not _path_matches_descriptor(output.path, output.descriptor):
+            try:
+                os.stat(
+                    output.path.name,
+                    dir_fd=output.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                _cleanup_missing_database_sidecars(output)
+            continue
         pinned = _pin_database(output.path, "staging database", pin_sidecars=True)
         try:
             owned_identity = os.fstat(output.descriptor)
@@ -214,6 +224,38 @@ def _cleanup_created_database_sidecars(owned: list[_OwnedFile]) -> None:
                     os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
         finally:
             _close_pinned_database(pinned)
+
+
+def _cleanup_missing_database_sidecars(output: _OwnedFile) -> None:
+    for suffix in _SQLITE_SIDECAR_SUFFIXES:
+        sidecar_path = Path(f"{output.path}{suffix}")
+        try:
+            descriptor = os.open(
+                sidecar_path.name,
+                os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
+                dir_fd=output.parent_descriptor,
+            )
+        except FileNotFoundError:
+            continue
+        try:
+            try:
+                os.stat(
+                    output.path.name,
+                    dir_fd=output.parent_descriptor,
+                    follow_symlinks=False,
+                )
+            except FileNotFoundError:
+                main_path_absent = True
+            else:
+                main_path_absent = False
+            if (
+                main_path_absent
+                and _regular_file_is_trusted(os.fstat(descriptor))
+                and _path_matches_descriptor(sidecar_path, descriptor)
+            ):
+                os.unlink(sidecar_path.name, dir_fd=output.parent_descriptor)
+        finally:
+            os.close(descriptor)
 
 
 def _cleanup_created_database(owned: list[_OwnedFile]) -> None:
