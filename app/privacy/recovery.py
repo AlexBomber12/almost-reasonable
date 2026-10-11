@@ -682,6 +682,7 @@ class QuarantinedRestore:
                 )
                 if (
                     not result.activation_eligible
+                    and owned
                     and owned[0].path != quarantine
                     and _path_matches_descriptor(owned[0].path, owned[0].descriptor)
                 ):
@@ -721,6 +722,7 @@ class QuarantinedRestore:
                     Path(f"/proc/self/fd/{quarantine_descriptor}")
                 )
             except Exception:
+                _cleanup_created(owned)
                 return self._blocked_restore(
                     restore_id, restored_at, "adapter_initialization_failure"
                 )

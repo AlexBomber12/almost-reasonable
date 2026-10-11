@@ -2481,11 +2481,17 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
     create_sqlite_backup(source, backup, 3, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.sqlite3")
 
-    def failed_factory(_path):
+    def failed_factory(path):
+        with sqlite3.connect(path) as connection:
+            connection.execute("PRAGMA journal_mode=WAL")
+            connection.execute(
+                "INSERT INTO synthetic_private VALUES('event-init', 'private fault')"
+            )
         raise RuntimeError("synthetic private adapter detail")
 
+    quarantine = tmp_path / "quarantine.sqlite3"
     result = QuarantinedRestore(ledger, 3, failed_factory).restore(
-        backup, tmp_path / "quarantine.sqlite3", NOW
+        backup, quarantine, NOW
     )
 
     assert (result.disposition, result.reason) == (
@@ -2493,6 +2499,13 @@ def test_restore_adapter_factory_failure_is_sanitized_and_recorded(tmp_path):
         "adapter_initialization_failure",
     )
     assert "synthetic private adapter detail" not in repr(result)
+    assert not quarantine.exists()
+    assert not Path(f"{quarantine}.ready.json").exists()
+
+    retried = QuarantinedRestore(ledger, 3, RestoreAdapter).restore(
+        backup, quarantine, NOW
+    )
+    assert retried.activation_eligible is True
 
 
 @pytest.mark.parametrize(
