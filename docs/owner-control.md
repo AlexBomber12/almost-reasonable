@@ -52,7 +52,7 @@ malformed JSON, duplicate keys, unknown fields and invalid types fail safely.
 
 | Endpoint | Contract |
 | --- | --- |
-| `GET /login` | Obtain a server-held five-minute login CSRF challenge and its cookie. At most 128 pending challenges; expired entries are removed on issuance. |
+| `GET /login` | Obtain a server-held five-minute login CSRF challenge and its cookie. At most 128 pending challenges; expired entries are removed and oldest entries evicted on issuance so anonymous requests cannot fill a global admission gate. |
 | `POST /login` | Exact `username`, `password`, `csrf` fields; matching login cookie and Origin required. Challenge is consumed once, including failed credential attempts. Returns session cookie and session CSRF token on success; generic 401/429 failures. |
 | `GET /status` | Owner session and Origin required. Stage 0 capability status, durable stop, provider suspension/count/evidence, EventStore diagnostics, privacy readiness and at most 50 recent owner audit records. |
 | `POST /operation` | Owner session, Origin and `X-CSRF-Token` required. Issue a server-generated stop operation ID bound to this session, expiring after five minutes or session expiry. At most 32 pending IDs per session. |

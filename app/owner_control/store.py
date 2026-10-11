@@ -112,13 +112,11 @@ class OwnerStore:
             connection.execute(
                 "DELETE FROM owner_login_challenges WHERE expires_at <= ?", (now,)
             )
-            if (
-                connection.execute(
-                    "SELECT count(*) FROM owner_login_challenges"
-                ).fetchone()[0]
-                >= 128
-            ):
-                raise ValueError("login challenge capacity reached")
+            connection.execute(
+                "DELETE FROM owner_login_challenges WHERE rowid IN "
+                "(SELECT rowid FROM owner_login_challenges ORDER BY rowid "
+                "LIMIT max(0, (SELECT count(*) FROM owner_login_challenges) - 127))"
+            )
             token = secrets.token_urlsafe(32)
             connection.execute(
                 "INSERT INTO owner_login_challenges VALUES (?,?)",

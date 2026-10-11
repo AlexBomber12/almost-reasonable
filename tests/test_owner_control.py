@@ -506,8 +506,7 @@ def test_login_challenges_bounded_expiring_and_single_use(boundary):
     assert not store.consume_login_challenge(challenge)
     for _ in range(128):
         store.login_challenge()
-    with pytest.raises(ValueError):
-        store.login_challenge()
+    assert store.login_challenge()
     now[0] += timedelta(minutes=5)
     assert store.login_challenge()
 
@@ -622,3 +621,31 @@ def test_missing_stop_row_fails_closed_without_false_success(boundary):
         == 503
     )
     assert store.audit() == []
+
+
+def test_anonymous_challenge_flood_does_not_block_owner_login(boundary):
+    import sqlite3
+
+    store, app, _, _ = boundary
+    oldest = store.login_challenge()
+    for _ in range(128):
+        assert request(app, "/login")[0] == 200
+    assert not store.consume_login_challenge(oldest)
+    with sqlite3.connect(store.path) as connection:
+        assert connection.execute(
+            "SELECT count(*) FROM owner_login_challenges"
+        ).fetchone() == (128,)
+    status, challenge, headers, _ = request(app, "/login")
+    assert status == 200
+    cookie = next(value.split(";")[0] for key, value in headers if key == "Set-Cookie")
+    payload = {
+        "username": "operator",
+        "password": "synthetic-owner-password",
+        "csrf": challenge["csrf"],
+    }
+    status, body, _, _ = request(
+        app, "/login", "POST", payload=payload, HTTP_COOKIE=cookie
+    )
+    assert status == 200
+    assert body["authenticated"] is True
+    assert request(app, "/login", "POST", payload=payload, HTTP_COOKIE=cookie)[0] == 403
