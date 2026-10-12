@@ -264,6 +264,9 @@ without a durable reply is `research_uncertain`. Both remain held after restart;
 there is no automatic resolver or resend. A result record committed before a lost
 reply transaction is also uncertain. The worker's fixed two-operations-per-database
 rule is unchanged even after response loss, crashes, restart or handle reissuance.
+History JSON and chat HTML install the same current-session callback as POST,
+check it before private retrieval and recheck it before rendering the captured
+history. Revocation/expiry during either read path yields a payload-free denial.
 A completed reply reuses its original payload and release identity after current
 application grant, session, stop/spend/delivery, privacy and source checks. Trusted
 bootstrap must explicitly restore/reissue application retrieval authority after

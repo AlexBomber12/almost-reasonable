@@ -1325,3 +1325,83 @@ def test_actual_client_rejects_unpaired_unicode_in_completed_report(connected):
     report["report"]["main_finding"] = "\ud800"
     payload = json.dumps(report, ensure_ascii=True).encode()
     test_actual_client_decoder_rejects_malformed_worker_response(connected, payload)
+
+
+@pytest.mark.parametrize("path", ["/api/history", "/chat"])
+@pytest.mark.parametrize("point", ["before_read", "during_read", "after_read"])
+@pytest.mark.parametrize("control", ["revoke", "expire"])
+def test_current_session_revalidated_before_history_and_html_research_release(
+    connected, tmp_path, monkeypatch, path, point, control
+):
+    from app.private_web.auth import AuthStore
+    from app.private_web.wsgi import PrivateWebApplication, PrivateWebConfig
+    from app.core.agent_output_store import AgentOutputStore
+    from test_private_web_http import Browser, Clock
+
+    runtime, _, server, _, _, _, _ = connected
+    clock = Clock(NOW.timestamp())
+    auth = AuthStore(tmp_path / "auth.db", clock=clock, session_ttl_seconds=60)
+    auth.provision_account("a", "synthetic-password-a", "participant-a")
+    browser = Browser(
+        PrivateWebApplication(
+            auth,
+            runtime,
+            PrivateWebConfig(
+                frozenset({"chat.test"}), frozenset({"https://chat.test"})
+            ),
+        )
+    )
+    assert browser.login("a", "synthetic-password-a")[0] == "303 See Other"
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    assert (
+        browser.submit("history", "Приватный вопрос CANARY-HISTORY-11")[0]
+        == "201 Created"
+    )
+    thread.join(5)
+    assert not thread.is_alive()
+
+    def invalidate():
+        if control == "revoke":
+            auth.revoke(browser.cookies["ar_session"])
+        else:
+            clock.timestamp += 61
+
+    if point == "before_read":
+        original = auth.authenticate
+
+        def stale(token):
+            result = original(token)
+            invalidate()
+            return result
+
+        monkeypatch.setattr(auth, "authenticate", stale)
+
+        def forbidden(*args):
+            raise AssertionError("history read after session became invalid")
+
+        monkeypatch.setattr(Stage0ConversationRuntime, "history", forbidden)
+    elif point == "during_read":
+        original = AgentOutputStore.read_reply_and_resolution
+
+        def revoke_inside(self, *args):
+            result = original(self, *args)
+            invalidate()
+            return result
+
+        monkeypatch.setattr(
+            AgentOutputStore, "read_reply_and_resolution", revoke_inside
+        )
+    else:
+        original = Stage0ConversationRuntime.history
+
+        def revoke_after(self, who):
+            result = original(self, who)
+            invalidate()
+            return result
+
+        monkeypatch.setattr(Stage0ConversationRuntime, "history", revoke_after)
+    status, _, body = browser.request("GET", path)
+    assert status == "401 Unauthorized"
+    assert "Синтетический результат".encode() not in body
+    assert b"CANARY-HISTORY-11" not in body
