@@ -35,6 +35,14 @@ class ModelState(StrEnum):
     INVALID = "invalid"
     UNSUPPORTED = "unsupported"
     SKIPPED = "skipped"
+    RESEARCH_PENDING = "research_pending"
+    RESEARCH_DENIED = "research_denied"
+    RESEARCH_UNAVAILABLE = "research_unavailable"
+    RESEARCH_SUSPENDED = "research_suspended"
+    RESEARCH_STOPPED = "research_stopped"
+    RESEARCH_REJECTED = "research_rejected"
+    RESEARCH_FAILED = "research_failed"
+    RESEARCH_UNCERTAIN = "research_uncertain"
 
 
 class MessageStatus(StrEnum):

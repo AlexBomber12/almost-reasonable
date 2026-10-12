@@ -2,7 +2,7 @@
 
 Stage 0 readiness is **BLOCKED**. The acceptance package executes all 12 scenario
 mappings and distinguishes connected synthetic checks from remaining requirements.
-Missing private research handoff, generic consolidation, authenticated participant
+Missing generic consolidation, authenticated participant
 privacy controls, complete cross-channel attack coverage and fluent-human calibration prevent Stage 0 acceptance. Complete
 MVP acceptance is also BLOCKED. Synthetic success does not grant rollout authority.
 
@@ -61,7 +61,7 @@ event/provider, privacy, owner, scheduler, Threads and journal commits are indep
 Generic consolidation and production restore activation remain absent.
 
 Scoped guards reject Internet sockets, DNS, HTTP and production credential factories
-for mapped acceptance tests. Only mapped research-worker AF_UNIX IPC is permitted.
+for mapped acceptance tests. Only mapped research-worker and INT-11 private-bridge AF_UNIX fixtures are permitted.
 The new journeys reject sockets/HTTP explicitly and assert simulator network_calls
 is zero. The new spawned exit fixtures install their own guards. Existing spawned scheduler
 fixtures remain separately scoped. These are application-test guards, not OS egress containment.
@@ -141,3 +141,26 @@ authorize model, control or publishing effects. Their collection, aggregation,
 fixture controls, stale-artifact rejection and failure handling have dedicated
 tests in `test_stage0_acceptance_evidence.py`; crash fixtures are test-only code.
 No production coverage scope or threshold was reduced to accommodate this package.
+
+## INT-11 connected synthetic research
+
+SCN-03 now maps independently authenticated WSGI input through an explicitly
+constructed application bridge to the actual worker in a separate interpreter.
+Trusted bootstrap grants an exact existing input and an exact public fixture;
+the model nominates only its fixture name. Worker-local authorization builds and
+screens the fixed public question. No private motivation, history or identity is
+serialized into IPC or hosted search. The report retains recorded source views,
+uncertainty, `claim_status=unverified` and `semantic_support=not_evaluated`.
+
+Tests distinguish unstarted held intent from conservative dispatch uncertainty,
+cover real process exits, consumed worker restart/reissuance, concurrent duplicates,
+response loss, renewed-session replay, material-source deletion and old-backup
+quarantine erasure. Source eligibility is separate from production restore activation.
+The worker database still permits only two fixed operations in its entire lifetime.
+There is no automatic inference/research recovery resolver.
+
+Only this synthetic connection is complete. Arbitrary privately motivated briefs,
+production authorization/bootstrap, real providers and semantic source-support
+evaluation remain unavailable. SCN-07 generic consolidation, SCN-11 authenticated
+participant privacy controls, SCN-12 combined adversarial coverage and human
+calibration continue to block Stage 0 and complete-MVP acceptance.

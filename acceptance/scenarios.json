@@ -1,6 +1,6 @@
 {
   "version": "stage0-scenario-manifest-v1",
-  "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11",
+  "base_sha": "e9a77d4887f7002c8f3f80b5def2e9627e99856f",
   "baseline": {
     "command": "scripts/ci.sh",
     "tests_passed": 2792,
@@ -15,7 +15,8 @@
     "coverage": "7.11.0",
     "ruff": "0.12.11",
     "duration_seconds": 271.63,
-    "environment": "Linux local workspace; synthetic fixtures only"
+    "environment": "Linux local workspace; synthetic fixtures only",
+    "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11"
   },
   "configuration": {
     "event_store": 6,
@@ -30,7 +31,8 @@
     "ordinary_runtime": "disabled",
     "provider_fixture_model": "gpt-6.1-sol (fake only; no availability claim)",
     "recorded_behavior_model": "RecordedBehaviorModel; no real model",
-    "research_transport": "FakeHostedSearchTransport; no credentials"
+    "research_transport": "FakeHostedSearchTransport; no credentials",
+    "private_research": "private-research-stage0-v1 (trusted bootstrap only; disabled by default)"
   },
   "scenarios": [
     {
@@ -210,9 +212,9 @@
         "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
         "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
       },
-      "stage0_connection": "BLOCKED",
+      "stage0_connection": "PASS",
       "complete_mvp": "BLOCKED",
-      "synthetic_scope": "Authenticated private research proposal remains unsupported; separate trusted worker exercises public-only fixtures, provenance and Russian synthesis.",
+      "synthetic_scope": "Independently authenticated private input, exact application grant for one of two fixed public auroral fixtures, authenticated separate-interpreter worker, bounded unverified Russian result, durable authorized reply/replay and source erasure. Arbitrary private-topic and production research remain unavailable.",
       "evidence": [
         {
           "layer": "connected integration",
@@ -230,7 +232,45 @@
           "risks": [],
           "scope": "Synthetic fixtures only; no live authority.",
           "node_ids": [
-            "tests/test_stage0_acceptance_journeys.py::test_private_research_handoff_is_explicitly_unsupported"
+            "tests/test_stage0_acceptance_journeys.py::test_private_research_handoff_is_default_disabled",
+            "tests/test_private_research_bridge.py::test_research_disabled_preserves_unsupported",
+            "tests/test_private_research_bridge.py::test_missing_grant_never_contacts_worker"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI -> SyntheticResearchBridge -> ResearchWorkerServer in separate interpreter",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "PrivacyReadGate",
+            "SyntheticResearchBridge",
+            "SyntheticResearchClient",
+            "ResearchWorkerServer",
+            "ResearchWorkerBoundary",
+            "ResearchService",
+            "FakeHostedSearchTransport",
+            "ProviderStateStore",
+            "AgentOutputStore"
+          ],
+          "sink": "Authorized Russian durable reply, recorded source references/statuses, fixed public-only IPC/hosted request, restarted history and replay; deletion and old-quarantine erasure",
+          "risks": [
+            "restart",
+            "concurrency",
+            "adversarial"
+          ],
+          "scope": "Only two reviewed public fixture names and trusted local input/worker grants. No production issuer, real provider or semantic source-support verification.",
+          "node_ids": [
+            "tests/test_private_research_bridge.py::test_authenticated_wsgi_process_worker_restart_replay_delete_and_quarantine",
+            "tests/test_private_research_bridge.py::test_material_prior_source_deletion_erases_research_reply_and_old_backup",
+            "tests/test_private_research_bridge.py::test_concurrent_duplicate_uses_one_inference_and_worker_without_fences",
+            "tests/test_private_research_bridge.py::test_response_loss_preserves_uncertainty_and_fixed_consumption",
+            "tests/test_private_research_bridge.py::test_wsgi_guards_precede_private_retrieval_and_research[auth]",
+            "tests/test_private_research_bridge.py::test_wsgi_guards_precede_private_retrieval_and_research[host]",
+            "tests/test_private_research_bridge.py::test_wsgi_guards_precede_private_retrieval_and_research[origin]",
+            "tests/test_private_research_bridge.py::test_wsgi_guards_precede_private_retrieval_and_research[csrf]",
+            "tests/test_private_research_bridge.py::test_current_wsgi_session_checked_before_research_persistence[after_model]",
+            "tests/test_private_research_bridge.py::test_current_wsgi_session_checked_before_research_persistence[after_research_ipc]"
           ]
         },
         {
@@ -265,13 +305,39 @@
             "tests/test_research_worker.py::test_confirmed_limit_is_durably_suspended[organization_spend_limit_exceeded]",
             "tests/test_research_worker.py::test_stop_before_admission_and_before_retry"
           ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "Authenticated WSGI application and worker in separate spawned interpreters; os._exit(23)",
+          "components": [
+            "EventStore",
+            "PrivacyReadGate",
+            "ProviderStateStore",
+            "AgentOutputStore",
+            "ResearchWorkerBoundary",
+            "SyntheticResearchBridge"
+          ],
+          "sink": "Durable pending versus started/uncertain markers; no inference/worker replay; consumed fixed fixture survives reissuance/restart; persisted result releases after fresh authorization",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Controlled process exits at intent, dispatch, worker consumption, returned response, reply persistence and release. Both interpreters install Internet/DNS/HTTP/credential guards.",
+          "node_ids": [
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[after_research_intent-research_pending]",
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[after_research_started-research_uncertain]",
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[after_research_ipc-research_uncertain]",
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[after_research_result_record-research_uncertain]",
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[after_reply_commit-completed]",
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[before_release-completed]",
+            "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[worker_consumption-research_uncertain]"
+          ]
         }
       ],
-      "missing_connections": [
-        "Private runtime returns unsupported for research; no private decision-to-minimized-brief-to-worker handoff or durable result release. Exact public-only grants cannot authorize an arbitrary privately motivated brief."
-      ],
+      "missing_connections": [],
       "later_stage_requirements": [
-        "Stage 1 production issuer, credentialed adapter/provider schemas and bounded separately approved research smoke; semantic citation support and multilingual usefulness calibration."
+        "Stage 1 production issuer, credentialed adapter/provider schemas and bounded separately approved research smoke; semantic citation support and multilingual usefulness calibration.",
+        "Arbitrary privately motivated abstraction, recurring research/recovery resolver, production authority/bootstrap and real provider validation are unavailable. Fixed two-operation consumption is unchanged; structurally recorded citations do not establish factual or semantic truth."
       ]
     },
     {
@@ -1122,7 +1188,6 @@
     }
   ],
   "release_blockers": [
-    "SCN-03: implement a reviewed closed synthetic private research handoff with exact independent grants and durable result/replay policy; do not broaden worker fixture authorization.",
     "SCN-07: define supported generic consolidation persistence and complete cross-item dependency/erasure semantics, or narrow the approved Stage 0 exit scope explicitly.",
     "SCN-11: implement authenticated participant notice/consent/revoke/delete ingress with exact content/audience/purpose/validity, CSRF and replay checks.",
     "SCN-12: extend the same cross-channel adversarial corpus through research output and delayed mission retrieval across restart; current mapped slices cannot establish that combined journey.",
@@ -1134,7 +1199,7 @@
     "Stage 0": {
       "private": "synthetic AuthStore/WSGI plus fake runtime",
       "shared": "four reviewed literal abstractions only",
-      "research": "two public worker fixtures; private handoff BLOCKED",
+      "research": "explicit authenticated private handoff to two public worker fixtures; exact independent application/worker grants; arbitrary topics and production disabled",
       "Threads": "two catalog drafts and simulator only",
       "privacy": "real coordinator/quarantine; authenticated control ingress BLOCKED",
       "calibration": "BLOCKED; recorded anchors only"

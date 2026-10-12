@@ -128,7 +128,7 @@ def test_even_all_green_synthetic_fixtures_cannot_declare_release_ready():
         row["id"]
         for row in report["scenarios"]
         if row["stage0_connection"] == "BLOCKED"
-    } == {"SCN-03", "SCN-07", "SCN-11", "SCN-12"}
+    } == {"SCN-07", "SCN-11", "SCN-12"}
     assert "human calibration absent" in readable(report)
 
 

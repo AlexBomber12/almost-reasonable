@@ -1,6 +1,6 @@
 # Integration contracts and Stage 0 evidence
 
-This inventory follows the executable INT-01 through INT-09 implementation,
+This inventory follows the executable INT-01 through INT-11 implementation,
 including EventStore v6, ThreadsStore v10 and the independent INT-09 journal v1.
 Ordinary runtime defaults remain disabled. Explicit offline compositions use
 synthetic identities, temporary SQLite/WAL stores, fake responses and ThreadsSimulator.
@@ -14,7 +14,7 @@ No fixture, H screen or recorded answer grants production authority.
 | Private cognition | Runtime synthetic extractor -> CognitionEngine/SelfStateStore -> memory selector -> bounded private-memory v2 context and complete reply dependencies | Generic memory consolidation, research evidence bridge and real-model extraction remain absent. |
 | Shared intelligence | Closed constructor-bound approval -> screened/quarantined EventStore v6 revision -> authorized v3 context -> protected cross-participant reply edges | Four reviewed literal abstractions only; arbitrary prose and production approval are absent. |
 | Mission | SharedMissionAdapter -> independent later exact confirmation -> durable current mission; INT-10 test composition supplies it to DeliberationEngine's existing mutable-state interface | No ordinary daemon/scheduler/Threads mission consumption or generic reassessment policy. |
-| Research | Locally granted public-only fixture -> OS-authenticated AF_UNIX ResearchWorkerServer -> ResearchWorkerBoundary -> ResearchService -> fake search/provenance -> Russian synthesis | Private research decisions return unsupported. No private handoff, production issuer, real search adapter or belief bridge. |
+| Research | Authenticated private input -> sealed exact-input application grant -> fixed public fixture/worker-local handle -> OS-authenticated AF_UNIX ResearchWorkerServer -> fake search/provenance -> bounded durable Russian reply and authorized replay | Default-disabled; no arbitrary private-topic research, production issuer, real search adapter, semantic verification or belief bridge. |
 | Behavior/scheduler | SQLiteSchedulerRepository/DurableScheduler -> bounded DeliberationEngine -> closed intent/outcome -> ThreadsStage0 | A wakeup authorizes deliberation only. Uncertain started inference is held, never blindly replayed. |
 | Threads | Verified simulator polling/autonomous decision -> exact public route/catalog -> journal -> durable outbox -> separately installed operator approval -> current snapshot -> simulator dispatch/reconciliation | Two literal drafts only; no general private-derived publishing, production approval or Meta transport. |
 | Privacy | Pending-first separate ledger -> real v4/v5/v6 erasure adapter -> gated startup replay; consistent backup -> current-ledger replay -> sealed read-only quarantine | No authenticated participant control ingress or production restore activation. Eligibility is not activation. |
@@ -77,7 +77,7 @@ a PASS for a named synthetic connection is not complete scenario/MVP acceptance.
 Run `python -m acceptance.run`. It invokes the complete `scripts/ci.sh` gate,
 records actual setup/call/teardown outcomes and OAuth-inclusive coverage, runs frozen
 recorded assessment controls, and emits JSON plus a readable report. Stage 0 remains
-BLOCKED on private research handoff, generic consolidation, authenticated privacy
+BLOCKED on generic consolidation, authenticated privacy
 control ingress, complete cross-channel adversarial coverage and human calibration. All complete-MVP scenarios remain BLOCKED.
 
 See [private runtime](private-conversation-runtime.md),

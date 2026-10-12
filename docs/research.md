@@ -214,3 +214,16 @@ remain unavailable.
 
 No private-participant research, deployment change, credential access, or live
 provider call is part of this implementation.
+
+### INT-11 synthetic private handoff
+
+The opt-in [private runtime bridge](private-conversation-runtime.md#int-11-opt-in-private-research)
+connects an independently authenticated private input to one of the two existing
+public auroral fixtures through separate exact application and worker grants.
+Private motivation stays in the application; model brief text is never forwarded.
+Russian results retain recorded source views and explicit unverified/unevaluated
+status in the existing durable private reply, with source deletion and quarantined
+old-backup reconciliation. This completes only the demonstrated synthetic SCN-03
+connection. Arbitrary private-topic research, production authority/providers and
+semantic source-support evaluation remain unavailable; Stage 0 and complete-MVP
+readiness retain their unrelated blockers.

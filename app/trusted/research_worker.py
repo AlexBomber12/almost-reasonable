@@ -346,6 +346,9 @@ class ResearchWorkerBoundary:
             ).run(grant.brief, grant.authorization)
             if result.outcome is not ResearchOutcome.COMPLETED:
                 return _response(result.outcome.value, guarded.attempts)
+            blocked = self._guard(grant)
+            if blocked is not None:
+                return _response(blocked, guarded.attempts)
             evidence = result.evidence
             values = [evidence.text, evidence.response_id]
             for source in evidence.sources:

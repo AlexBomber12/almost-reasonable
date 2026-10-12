@@ -1,6 +1,7 @@
 """Small standard-library WSGI application for authenticated private chat."""
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from html import escape
 from http import HTTPStatus
 from ipaddress import ip_address
@@ -365,10 +366,27 @@ class PrivateWebApplication:
             ) from None
         if type(payload) is not dict or set(payload) != {"message_id", "content"}:
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Malformed message request.")
-        try:
-            result = self._conversations.submit(
-                session.trusted_context, payload["message_id"], payload["content"]
+        from .runtime import Stage0ConversationRuntime
+
+        def current_authorized():
+            current = self._auth_store.authenticate(
+                self._cookie_value(environ, SESSION_COOKIE)
             )
+            return (
+                current is not None
+                and current.trusted_context == session.trusted_context
+            )
+
+        scope = (
+            self._conversations.authenticated_request(current_authorized)
+            if isinstance(self._conversations, Stage0ConversationRuntime)
+            else nullcontext()
+        )
+        try:
+            with scope:
+                result = self._conversations.submit(
+                    session.trusted_context, payload["message_id"], payload["content"]
+                )
         except ValueError:
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid message.") from None
         current = self._auth_store.authenticate(

@@ -175,3 +175,11 @@ v5-only metadata checks while still verifying the exact v4 schema and graph.
 INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
 with EventStore v6 protected cross-participant edges and mission evidence. The
 older component description above does not authorize production sharing.
+
+INT-11 research reports use existing `AgentOutputStore` reply payloads and the
+original complete private/shared source edges. There is no additional private
+payload cache or schema version. Originating and materially used source deletion
+remove the dependent research reply; old-backup reconciliation applies the same
+erasure before quarantine eligibility. Research intent/dispatch/outcome metadata
+in existing provider tables contains opaque operation correlations and fixed
+fixture/configuration/outcome values only, never private text, source IDs or handles.
