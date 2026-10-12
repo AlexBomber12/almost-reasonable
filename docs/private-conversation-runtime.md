@@ -276,7 +276,11 @@ Research outcomes distinguish denied, unavailable, stopped, suspended, rejected,
 failed, pending and uncertain work from `no_action`. Operational unavailable/failure
 and suspended states use bounded static Russian handling without another model call.
 Decoded reports remain untrusted. Application screening uses local protected
-identifiers, private comparison texts and trusted canaries; none of that material
+identifiers, private comparison texts and trusted canaries. Its short validated
+reply snapshot includes every material private source (including protected foreign
+sources behind selected shared records), source principal/session identifiers,
+selected shared payloads and their authorized earlier alternatives. This internal
+comparison purpose does not grant participant retrieval of foreign raw data; none of that material
 enters IPC. Every rendered URL must resolve to a recorded source view. Source views
 are retained in the existing bounded Russian reply along with uncertainty,
 `claim_status=unverified` and `semantic_support=not_evaluated`; structural metadata

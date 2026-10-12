@@ -1405,3 +1405,197 @@ def test_current_session_revalidated_before_history_and_html_research_release(
     assert status == "401 Unauthorized"
     assert "Синтетический результат".encode() not in body
     assert b"CANARY-HISTORY-11" not in body
+
+
+@pytest.mark.parametrize(
+    "leak",
+    [
+        "private_source",
+        "source_id",
+        "source_principal",
+        "source_session",
+        "shared_value",
+        "shared_alternative",
+    ],
+)
+def test_selected_shared_sources_are_local_report_screening_material(
+    connected, monkeypatch, leak
+):
+    from app.cognition.shared import SharedIntelligence
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+
+    runtime, bridge, _, worker, transport, fake, setup = connected
+    store, _, gate, _, _ = setup
+    private_text = "Секретная гипотеза другого участника о далёком необычном наблюдении"
+    source = append_event(store, principal("b"), "shared-screen-b", private_text)
+    one = approval(source, author="b", op="screen-shared-one")
+    later = append_event(
+        store,
+        principal("b"),
+        "shared-screen-later",
+        "Собственное наблюдение о разных интерпретациях",
+    )
+    two = approval(
+        later,
+        author="b",
+        op="screen-shared-two",
+        revision=1,
+        value="Consider competing explanations of uncertainty.",
+    )
+    shared = SharedIntelligence(store, gate, approvals=(one, two), clock=lambda: NOW)
+    shared.commit(one)
+    shared.commit(two)
+    shared_runtime = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    values = {
+        "private_source": private_text,
+        "source_id": source,
+        "source_principal": principal("b").principal_id.value,
+        "source_session": principal("b").authenticated_source.value,
+        "shared_value": two.proposal.candidate.value,
+        "shared_alternative": one.proposal.candidate.value,
+    }
+    if leak.startswith("shared_"):
+        # A recorded reference can carry recognizable shared context too; this
+        # keeps the main prose Russian and source structure within the protocol.
+        report["report"]["sources"][0]["url"] = "https://example.org/" + values[
+            leak
+        ].replace(" ", "-")
+    else:
+        report["report"]["main_finding"] += " " + values[leak]
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = shared_runtime.submit(principal("a"), "shared-screen", "Исследуй эту тему")
+    assert result.model_state.value == "research_rejected"
+    assert private_text not in (result.response_content or "")
+    with store._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+    assert len(transport.calls) == 1
+    assert private_text not in str(transport.calls)
+
+
+@pytest.mark.parametrize("content", ["   ", "\u200b"])
+def test_empty_normalized_source_text_does_not_break_local_screening(
+    connected, content
+):
+    from app.core.context import PrivateContextAssembler, ContextLimits
+    from app.private_web.conversation import ConversationService
+
+    runtime, _, server, _, _, _, setup = connected
+    store, _, _, _, _ = setup
+    ConversationService(
+        store,
+        PrivateContextAssembler(store, ContextLimits(32000, 99)),
+        clock=lambda: NOW,
+    ).submit(principal("a"), "empty-source", content)
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    assert (
+        runtime.submit(principal("a"), "normal", "Исследуй эту тему").model_state.value
+        == "completed"
+    )
+    thread.join(5)
+    assert not thread.is_alive()
+
+
+def test_screening_snapshot_rejects_mismatched_reply_reservation(connected):
+    from dataclasses import replace
+    from app.core.action_policy import TrustedActionContext
+    from app.privacy.application import PrivacyReadBlocked
+
+    runtime, _, _, _, _, _, _ = connected
+    runtime._checkpoint = lambda point: None
+    runtime.submit(principal("a"), "denied", "Исследуй эту тему")
+    event = runtime._gate.retrieve_private_events(principal("a"))[0]
+    op = runtime._outputs.read_reply(
+        principal("a"), runtime._operation_id(event.event_id)
+    ).operation
+    with pytest.raises(PrivacyReadBlocked):
+        runtime._gate.authorized(
+            lambda: runtime._research_screening(
+                TrustedActionContext(event.correlation_id, principal("a")),
+                replace(op, prompt_version="forged"),
+            )
+        )
+
+
+def test_shared_research_result_erasure_replays_foreign_dependency_in_old_backup(
+    connected, tmp_path
+):
+    import sqlite3
+    from app.cognition.shared import SharedIntelligence
+    from app.privacy.application import (
+        EventStoreErasureAdapter,
+        EventStoreRestoreAdapter,
+    )
+    from app.privacy.deletion import DeletionCoordinator
+    from app.privacy.recovery import create_sqlite_backup, QuarantinedRestore
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+    from test_privacy_deletion import context, request
+
+    runtime, bridge, server, _, transport, fake, setup = connected
+    store, ledger, gate, _, _ = setup
+    source = append_event(
+        store,
+        principal("b"),
+        "material-shared",
+        "Личная предпосылка для общей гипотезы CANARY-SHARED-B-11",
+    )
+    append_event(
+        store, principal("b"), "unrelated-b", "Несвязанный вопрос CANARY-UNRELATED-B-11"
+    )
+    one = approval(source, author="b", op="material-shared")
+    shared = SharedIntelligence(store, gate, approvals=(one,), clock=lambda: NOW)
+    shared.commit(one)
+    research = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    result = research.submit(principal("a"), "shared-result", "Исследуй эту тему")
+    thread.join(5)
+    assert not thread.is_alive()
+    assert result.model_state.value == "completed"
+    assert "CANARY-SHARED-B-11" not in result.response_content
+    assert "CANARY-SHARED-B-11" not in fake.calls[0].request.input_text
+    assert "CANARY-SHARED-B-11" not in str(transport.calls)
+    backup = tmp_path / "old-shared.db"
+    create_sqlite_backup(store.database_path, backup, 6, NOW)
+    deletion = DeletionCoordinator(ledger, EventStoreErasureAdapter(store)).delete(
+        context("participant-b"),
+        request(principal_id="participant-b", content_reference=source),
+    )
+    assert deletion.disposition.value == "applied" and gate.reconcile()
+    assert [item.role for item in research.history(principal("a"))] == ["participant"]
+    target = tmp_path / "shared-quarantine.db"
+    assert (
+        QuarantinedRestore(ledger, 6, EventStoreRestoreAdapter)
+        .restore(backup, target, NOW)
+        .activation_eligible
+    )
+    with sqlite3.connect(f"file:{target}?immutable=1", uri=True) as db:
+        dump = "\n".join(db.iterdump())
+        assert "CANARY-SHARED-B-11" not in dump
+        assert "CANARY-UNRELATED-B-11" in dump
+        assert result.response_content not in dump
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+    assert len(fake.calls) == len(transport.calls) == 1

@@ -48,7 +48,7 @@ from .research_bridge import (
     render_report,
 )
 from app.research.authorization import SyntheticPublicResearchFixture
-from app.research.brief import ResearchScreeningContext
+from app.research.brief import ResearchScreeningContext, _normalized
 from app.trusted.openai_worker_protocol import WorkerProtocolError
 
 from .conversation import (
@@ -404,6 +404,79 @@ class Stage0ConversationRuntime(ConversationService):
         finally:
             self._memory_bridge.payload.reset(token)
 
+    def _research_screening(self, route, operation):
+        """Capture material dependencies solely for local output rejection.
+
+        A conversation audience authorizes shared abstractions, never foreign raw
+        inputs. This internal snapshot uses the already validated protected graph
+        for privacy comparisons; no value is returned to a participant or worker.
+        """
+        db = self._event_store._open()
+        try:
+            with db:
+                db.execute("BEGIN")
+                self._event_store._verify_current_schema(db)
+                reply = self._outputs._read(db, route.principal, operation.operation_id)
+                if reply is None or reply.operation != operation:
+                    raise PrivacyReadBlocked("reply_sources_unavailable")
+                source_ids = set(operation.source_event_ids)
+                shared_texts = []
+                for shared in operation.shared_operation_ids:
+                    source_ids.update(
+                        row[0]
+                        for row in db.execute(
+                            "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                            (shared,),
+                        )
+                    )
+                    # Include exactly the selected revision's value and the
+                    # authorized prior alternatives exposed in SharedModelRequest.
+                    shared_texts.extend(
+                        row[0]
+                        for row in db.execute(
+                            """SELECT DISTINCT p.value FROM shared_operations selected
+                           JOIN shared_operations history ON history.item_id=selected.item_id
+                             AND history.revision<=selected.revision
+                           JOIN shared_payloads p ON p.operation_id=history.operation_id
+                           JOIN protected_shared_audiences a ON a.operation_id=history.operation_id
+                           WHERE selected.operation_id=? AND history.status='active'
+                             AND a.principal_id=? AND a.purpose='conversation'""",
+                            (shared, route.principal.principal_id.value),
+                        )
+                    )
+                placeholders = ",".join("?" for _source in source_ids)
+                rows = db.execute(
+                    f"""SELECT e.event_id, p.content, e.audience_principal_id,
+                               e.authenticated_source_ref
+                        FROM event_envelopes e JOIN private_payloads p USING(payload_id)
+                        WHERE e.event_id IN ({placeholders}) ORDER BY e.event_id""",
+                    tuple(sorted(source_ids)),
+                ).fetchall()
+                base = self._research._screening
+                return ResearchScreeningContext(
+                    private_canaries=base.private_canaries
+                    + tuple(sorted(source_ids))
+                    + operation.shared_operation_ids,
+                    participant_identifiers=base.participant_identifiers
+                    + tuple(
+                        sorted({identifier for row in rows for identifier in row[2:]})
+                    )
+                    + (
+                        route.principal.principal_id.value,
+                        route.principal.authenticated_source.value,
+                    ),
+                    private_quotations=base.private_quotations,
+                    sensitive_details=base.sensitive_details,
+                    private_texts=base.private_texts
+                    + tuple(
+                        text
+                        for text in [*(row[1] for row in rows), *shared_texts]
+                        if _normalized(text)
+                    ),
+                )
+        finally:
+            db.close()
+
     def _research_turn(self, route, operation, proposal):
         try:
             fixture = SyntheticPublicResearchFixture(proposal.brief)
@@ -414,29 +487,7 @@ class Stage0ConversationRuntime(ConversationService):
         # A short fence captures current authority and sources and commits intent.
         # No privacy fence or SQLite transaction remains held across IPC.
         def admission():
-            if (
-                self._outputs.read_reply(route.principal, operation.operation_id)
-                is None
-            ):
-                raise PrivacyReadBlocked("reply_sources_unavailable")
-            events = self._event_store.retrieve_private_events_in_commit_order(
-                route.principal, operation.initiating_event_id
-            )
-            base = self._research._screening
-            screening = ResearchScreeningContext(
-                private_canaries=base.private_canaries
-                + operation.source_event_ids
-                + operation.shared_operation_ids,
-                participant_identifiers=base.participant_identifiers
-                + (
-                    route.principal.principal_id.value,
-                    route.principal.authenticated_source.value,
-                ),
-                private_quotations=base.private_quotations,
-                sensitive_details=base.sensitive_details,
-                private_texts=base.private_texts
-                + tuple(event.content for event in events),
-            )
+            screening = self._research_screening(route, operation)
             return self._provider.reserve_attempt(
                 intent_id(operation.operation_id), worker_id, self._clock()
             ), screening

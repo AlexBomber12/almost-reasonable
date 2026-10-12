@@ -283,7 +283,14 @@
             "tests/test_private_research_bridge.py::test_current_session_revalidated_before_history_and_html_research_release[expire-during_read-/api/history]",
             "tests/test_private_research_bridge.py::test_current_session_revalidated_before_history_and_html_research_release[expire-during_read-/chat]",
             "tests/test_private_research_bridge.py::test_current_session_revalidated_before_history_and_html_research_release[expire-after_read-/api/history]",
-            "tests/test_private_research_bridge.py::test_current_session_revalidated_before_history_and_html_research_release[expire-after_read-/chat]"
+            "tests/test_private_research_bridge.py::test_current_session_revalidated_before_history_and_html_research_release[expire-after_read-/chat]",
+            "tests/test_private_research_bridge.py::test_selected_shared_sources_are_local_report_screening_material[private_source]",
+            "tests/test_private_research_bridge.py::test_selected_shared_sources_are_local_report_screening_material[source_id]",
+            "tests/test_private_research_bridge.py::test_selected_shared_sources_are_local_report_screening_material[source_principal]",
+            "tests/test_private_research_bridge.py::test_selected_shared_sources_are_local_report_screening_material[source_session]",
+            "tests/test_private_research_bridge.py::test_selected_shared_sources_are_local_report_screening_material[shared_value]",
+            "tests/test_private_research_bridge.py::test_selected_shared_sources_are_local_report_screening_material[shared_alternative]",
+            "tests/test_private_research_bridge.py::test_shared_research_result_erasure_replays_foreign_dependency_in_old_backup"
           ]
         },
         {
