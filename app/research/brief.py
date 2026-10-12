@@ -580,7 +580,11 @@ def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> 
         private_normalized = _normalized(private_text)
         private_compact = _compact_protected(private_normalized)
         if private_compact:
-            if private_compact in public_compact:
+            protected_stream = iter(public_compact)
+            if all(
+                any(char == expected for char in protected_stream)
+                for expected in private_compact
+            ):
                 return True
         else:
             # Punctuation-only protected content is still data. Its complete

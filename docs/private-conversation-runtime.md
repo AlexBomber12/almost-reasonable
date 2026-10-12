@@ -290,7 +290,9 @@ character splitting while preserving the existing in-word normalization; it has
 no source token-count cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected
 punctuation-only sequences receive a separate conservative comparison rather than
-being skipped for having no word tokens. Four-word
+being skipped for having no word tokens. Complete protected character order is
+compared conservatively even across inserted symbols, letters or numbers; the
+comparison requires the whole protected sequence, not a partial fragment. Four-word
 overlap remains an additional check for longer excerpts. Exact matching is deliberately conservative
 and can withhold common short text; it does not prove semantic privacy. None of that material
 enters IPC. Every rendered URL must resolve to a recorded source view. Source views

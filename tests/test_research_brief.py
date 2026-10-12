@@ -1057,3 +1057,25 @@ def test_nonword_protected_content_compares_across_separators(
         screening=ResearchScreeningContext(private_texts=(protected,)),
     )
     assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "protected,question,reason",
+    [
+        ("секрет", "сек🔒рет", "recognizable_private_overlap"),
+        ("🔒🔑", "🔒X🔑", "recognizable_private_overlap"),
+        ("🔒🔑", "🔒1🔑", "recognizable_private_overlap"),
+        ("🔒🔑", "🔑X🔒", None),
+        ("секрет", "секе", None),
+    ],
+)
+def test_inserted_characters_do_not_hide_complete_ordered_source(
+    protected, question, reason
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == reason

@@ -357,7 +357,22 @@
             "tests/test_private_research_bridge.py::test_split_symbol_and_punctuation_sources_are_rejected[base64-\\U0001f512\\U0001f511-\\U0001f512-\\U0001f511]",
             "tests/test_private_research_bridge.py::test_split_symbol_and_punctuation_sources_are_rejected[base64-\\U0001f512\\U0001f511-\\U0001f512/\\U0001f511]",
             "tests/test_private_research_bridge.py::test_split_symbol_and_punctuation_sources_are_rejected[base64-$\\u20ac-$-\\u20ac]",
-            "tests/test_private_research_bridge.py::test_split_symbol_and_punctuation_sources_are_rejected[base64-?!?-?-!-?]"
+            "tests/test_private_research_bridge.py::test_split_symbol_and_punctuation_sources_are_rejected[base64-?!?-?-!-?]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[plain-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435\\u043a\\U0001f512\\u0440\\u0435\\u0442]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[plain-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435X\\u043a1\\u0440\\u0435\\u0442]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[plain-\\U0001f512\\U0001f511-\\U0001f512X\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[plain-\\U0001f512\\U0001f511-\\U0001f5121\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[plain-\\U0001f512\\U0001f511-\\U0001f512\\U0001f4a0\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[percent-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435\\u043a\\U0001f512\\u0440\\u0435\\u0442]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[percent-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435X\\u043a1\\u0440\\u0435\\u0442]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[percent-\\U0001f512\\U0001f511-\\U0001f512X\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[percent-\\U0001f512\\U0001f511-\\U0001f5121\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[percent-\\U0001f512\\U0001f511-\\U0001f512\\U0001f4a0\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435\\u043a\\U0001f512\\u0440\\u0435\\u0442]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435X\\u043a1\\u0440\\u0435\\u0442]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f512X\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f5121\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f512\\U0001f4a0\\U0001f511]"
           ]
         },
         {
