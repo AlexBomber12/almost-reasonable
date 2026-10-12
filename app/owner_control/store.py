@@ -86,14 +86,18 @@ class OwnerStore:
                     raise RuntimeError("unsafe owner store")
                 for suffix in ("-journal", "-wal", "-shm"):
                     sidecar = Path(str(self.path) + suffix)
-                    if sidecar.exists() or sidecar.is_symlink():
+                    try:
                         status = sidecar.lstat()
-                        if (
-                            not stat.S_ISREG(status.st_mode)
-                            or status.st_uid != os.geteuid()
-                            or stat.S_IMODE(status.st_mode) != 0o600
-                        ):
-                            raise RuntimeError("unsafe owner sidecar")
+                    except FileNotFoundError:
+                        # SQLite may remove an optional journal at concurrent commit.
+                        # Other filesystem errors and unsafe present entries fail closed.
+                        continue
+                    if (
+                        not stat.S_ISREG(status.st_mode)
+                        or status.st_uid != os.geteuid()
+                        or stat.S_IMODE(status.st_mode) != 0o600
+                    ):
+                        raise RuntimeError("unsafe owner sidecar")
                 connection = sqlite3.connect(self.path, timeout=2)
                 if (self.path.lstat().st_dev, self.path.lstat().st_ino) != (
                     identity.st_dev,
