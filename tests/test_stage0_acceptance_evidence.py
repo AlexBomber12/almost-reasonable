@@ -263,3 +263,78 @@ def test_runner_uses_only_fresh_execution_and_preserves_failure_status(
     report = json.loads((output / "evidence.json").read_text())
     assert report["readiness"] == ("BLOCKED" if fault == "none" else "FAIL")
     assert (output / "report.md").exists()
+
+
+def test_ci_checkout_fetches_base_ref_for_actual_revision_metadata(
+    tmp_path, monkeypatch
+):
+    """Reproduce SHA-only Actions checkout, then exercise configured full ref fetch."""
+    import os
+    import re
+    import acceptance.run as runner
+
+    workflow = (runner.ROOT / ".github/workflows/ci.yml").read_text()
+    repository = tmp_path / "source"
+    repository.mkdir()
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    env = {**os.environ, "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git_at(path, *args, check=True):
+        return subprocess.run(
+            ["git", *args],
+            cwd=path,
+            env=env,
+            capture_output=True,
+            text=True,
+            check=check,
+        )
+
+    git_at(repository, "init", "-b", "main")
+    (repository / "fixture.txt").write_text("synthetic base")
+    git_at(repository, "add", "fixture.txt")
+    git_at(
+        repository,
+        "-c",
+        "user.name=Synthetic",
+        "-c",
+        "user.email=synthetic@example.test",
+        "commit",
+        "-m",
+        "base",
+    )
+    base = git_at(repository, "rev-parse", "HEAD").stdout.strip()
+    git_at(repository, "switch", "-c", "task")
+    (repository / "fixture.txt").write_text("synthetic task")
+    # Supply committer identity locally; never read a production credential/config.
+    git_at(
+        repository,
+        "-c",
+        "user.name=Synthetic",
+        "-c",
+        "user.email=synthetic@example.test",
+        "commit",
+        "-am",
+        "task",
+    )
+    head = git_at(repository, "rev-parse", "HEAD").stdout.strip()
+    git_at(checkout, "init")
+    git_at(checkout, "remote", "add", "origin", repository.as_uri())
+    git_at(checkout, "fetch", "--depth=1", "origin", head)
+    git_at(checkout, "checkout", "--detach", "FETCH_HEAD")
+    monkeypatch.setattr(runner, "ROOT", checkout)
+    with pytest.raises(subprocess.CalledProcessError):
+        runner.git("rev-parse", "origin/main")
+    depth = re.search(r"fetch-depth:\s*(\d+)", workflow)
+    assert depth is not None and depth.group(1) == "0", (
+        "CI needs complete base refs for evidence metadata"
+    )
+    git_at(
+        checkout,
+        "fetch",
+        "--unshallow",
+        "origin",
+        "+refs/heads/*:refs/remotes/origin/*",
+    )
+    assert runner.git("rev-parse", "origin/main") == base
+    assert runner.git("rev-parse", "HEAD") == head
