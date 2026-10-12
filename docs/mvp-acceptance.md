@@ -197,3 +197,21 @@ is deterministic private M5 evidence only. Shared abstractions/revisions/context
 independent mission confirmation, generic memory persistence, real-model
 behavioral evaluation and authorized production validation remain required for
 complete M5 and complete-MVP acceptance.
+
+## INT-09 synthetic application evidence
+
+The [Threads Stage 0 coordinator](threads-stage0-integration.md) and
+`tests/test_threads_stage0_integration.py` add connected evidence for SCN-04
+(publication proposal/approval/outbox/recovery), SCN-06 (scoped termination and
+expiring cooldown), SCN-10 (durable inactivity and independent later work),
+SCN-11 (current ledger/source/approval invalidation) and SCN-12 (inbound/model
+claims cannot grant effects or route authority). These exercise actual
+first-party components with recorded behavior and verified simulated polling.
+They complement, rather than replace, component outbox/scheduler/privacy tests.
+
+All five scenarios remain partial for release: only two reviewed synthetic
+public-safe literal drafts are authorized, general private-derived publication
+provenance is denied, and real transport, production approval/enrollment, live
+provider evidence and H/M behavioral validation are still absent. Simulator
+confirmation is never evidence of Meta receipt, and coverage is never scenario
+completion.

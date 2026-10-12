@@ -4,6 +4,7 @@ from collections.abc import Callable, Iterable
 from contextlib import contextmanager
 from datetime import UTC, datetime
 import fcntl
+import json
 from pathlib import Path
 import sqlite3
 from typing import Iterator
@@ -1514,6 +1515,74 @@ class ThreadsStore:
                 )
             connection.commit()
 
+    def inbound_event(
+        self, account_ref: str, stream: InboundKind, event_id: str
+    ) -> InboundEvent | None:
+        """Exact durable source lookup for application publication provenance."""
+        self._validate_inbound_query(account_ref, stream, 1)
+        require_reference("inbound event ID", event_id)
+        with self._open() as connection:
+            row = connection.execute(
+                "SELECT * FROM threads_inbound_events WHERE account_ref=? AND kind=? AND event_id=?",
+                (account_ref, stream.value, event_id),
+            ).fetchone()
+        return None if row is None else _inbound_event(row)
+
+    def conversation_outcome_recorded(self, outcome_id: str) -> bool:
+        """Recover an application-owned acknowledgement without inventing a reply outcome."""
+        require_reference("outcome ID", outcome_id)
+        with self._open() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM threads_conversation_outcomes WHERE outcome_id=?",
+                    (outcome_id,),
+                ).fetchone()
+                is not None
+            )
+
+    def acknowledge_reply_proposal(
+        self, operation_id: str, event: InboundEvent, *, now: datetime
+    ) -> None:
+        """Acknowledge a separate durable reply proposal, never publication success.
+
+        The integration journal retains the event-to-operation link. This marker
+        prevents acknowledged replies from starving the bounded pending queue.
+        """
+        require_reference("operation ID", operation_id)
+        require_aware_time("acknowledgement time", now)
+        with self._open() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            row = connection.execute(
+                "SELECT 1 FROM threads_outbox WHERE operation_id=? AND account_ref=? "
+                "AND publication_type='reply' AND parent_message_id=? AND correlation_id=?",
+                (operation_id, event.account_ref, event.event_id, event.correlation_id),
+            ).fetchone()
+            if row is None:
+                raise ThreadsStoreError(
+                    "reply proposal acknowledgement target mismatch"
+                )
+            changed = connection.execute(
+                "UPDATE threads_inbound_events SET processed_at=COALESCE(processed_at,?) "
+                "WHERE account_ref=? AND kind=? AND event_id=? AND correlation_id=?",
+                (
+                    now.astimezone(UTC).isoformat(),
+                    event.account_ref,
+                    event.kind.value,
+                    event.event_id,
+                    event.correlation_id,
+                ),
+            ).rowcount
+            if changed != 1:
+                raise ThreadsStoreError("reply proposal source unavailable")
+
+    @staticmethod
+    def _excluded_events(excluded_event_ids: tuple[str, ...]) -> str:
+        if type(excluded_event_ids) is not tuple or len(excluded_event_ids) > 4096:
+            raise ValueError("invalid inbound exclusions")
+        for event_id in excluded_event_ids:
+            require_reference("excluded event ID", event_id)
+        return json.dumps(excluded_event_ids)
+
     def pending_inbound_events(
         self,
         account_ref: str,
@@ -1521,14 +1590,17 @@ class ThreadsStore:
         *,
         limit: int = 100,
         now: datetime | None = None,
+        excluded_event_ids: tuple[str, ...] = (),
     ) -> tuple[InboundEvent, ...]:
         self._validate_inbound_query(account_ref, stream, limit)
+        exclusions = self._excluded_events(excluded_event_ids)
         as_of = datetime.now(UTC) if now is None else now
         require_aware_time("pending inbound time", as_of)
         with self._open() as connection:
             rows = connection.execute(
                 "SELECT event.* FROM threads_inbound_events AS event "
                 "WHERE event.account_ref=? AND event.kind=? "
+                "AND event.event_id NOT IN (SELECT value FROM json_each(?)) "
                 "AND event.processed_at IS NULL AND NOT EXISTS ("
                 "SELECT 1 FROM threads_conversation_outcomes AS outcome "
                 "WHERE outcome.inbound_account_ref=event.account_ref "
@@ -1546,7 +1618,13 @@ class ThreadsStore:
                 "ORDER BY threads_utc_timestamp(event.received_at), "
                 "threads_utc_timestamp(event.occurred_at), "
                 "event.event_id LIMIT ?",
-                (account_ref, stream.value, as_of.astimezone(UTC).isoformat(), limit),
+                (
+                    account_ref,
+                    stream.value,
+                    exclusions,
+                    as_of.astimezone(UTC).isoformat(),
+                    limit,
+                ),
             ).fetchall()
         return tuple(_inbound_event(row) for row in rows)
 
@@ -1585,8 +1663,10 @@ class ThreadsStore:
         *,
         limit: int = 100,
         now: datetime | None = None,
+        excluded_event_ids: tuple[str, ...] = (),
     ) -> tuple[DeferredInboundEvent, ...]:
         self._validate_inbound_query(account_ref, stream, limit)
+        exclusions = self._excluded_events(excluded_event_ids)
         as_of = datetime.now(UTC) if now is None else now
         require_aware_time("deferred inbound time", as_of)
         with self._open() as connection:
@@ -1602,6 +1682,7 @@ class ThreadsStore:
                 "AND outcome.inbound_kind=event.kind "
                 "AND outcome.inbound_event_id=event.event_id "
                 "WHERE event.account_ref=? AND event.kind=? "
+                "AND event.event_id NOT IN (SELECT value FROM json_each(?)) "
                 "AND event.processed_at IS NULL AND outcome.outcome='defer' "
                 "AND NOT EXISTS ("
                 "SELECT 1 FROM threads_conversation_outcomes AS later "
@@ -1623,7 +1704,13 @@ class ThreadsStore:
                 "threads_utc_timestamp(?))) "
                 "ORDER BY threads_utc_timestamp(outcome.occurred_at), "
                 "outcome.outcome_id LIMIT ?",
-                (account_ref, stream.value, as_of.astimezone(UTC).isoformat(), limit),
+                (
+                    account_ref,
+                    stream.value,
+                    exclusions,
+                    as_of.astimezone(UTC).isoformat(),
+                    limit,
+                ),
             ).fetchall()
         return tuple(
             DeferredInboundEvent(

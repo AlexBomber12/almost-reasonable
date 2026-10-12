@@ -68,6 +68,7 @@ class ThreadsService:
         clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
         authorization_provider: CurrentAuthorizationProvider | None = None,
+        poll_guard: Callable[[], None] | None = None,
     ):
         policy.validate()
         if simulator.account_ref != policy.account_ref:
@@ -79,6 +80,7 @@ class ThreadsService:
         self.clock = clock
         self.utc_now = utc_now
         self.authorization_provider = authorization_provider
+        self.poll_guard = poll_guard
 
     def propose(
         self,
@@ -959,6 +961,8 @@ class ThreadsService:
         )
 
     def _check_poll_policy(self, stream: InboundKind) -> None:
+        if self.poll_guard is not None:
+            self.poll_guard()
         self._require_account_binding()
         self.policy.validate()
         required = (
