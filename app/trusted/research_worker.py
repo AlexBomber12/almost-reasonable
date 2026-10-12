@@ -130,6 +130,9 @@ def decode_research_response(payload: bytes) -> dict[str, object]:
         or not 0 <= value["attempts"] <= 2
     ):
         raise WorkerProtocolError("invalid research response")
+    # JSON escapes can decode to unpaired surrogates. Validate all strings with
+    # the existing bounded serializer before any field-specific UTF-8 sizing.
+    _encode_json(value)
     report = value["report"]
     if value["outcome"] != "completed":
         if report is not None or value["message"] != _FAILURE_RU:

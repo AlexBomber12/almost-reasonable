@@ -270,7 +270,8 @@
             "tests/test_private_research_bridge.py::test_wsgi_guards_precede_private_retrieval_and_research[origin]",
             "tests/test_private_research_bridge.py::test_wsgi_guards_precede_private_retrieval_and_research[csrf]",
             "tests/test_private_research_bridge.py::test_current_wsgi_session_checked_before_research_persistence[after_model]",
-            "tests/test_private_research_bridge.py::test_current_wsgi_session_checked_before_research_persistence[after_research_ipc]"
+            "tests/test_private_research_bridge.py::test_current_wsgi_session_checked_before_research_persistence[after_research_ipc]",
+            "tests/test_private_research_bridge.py::test_actual_client_rejects_unpaired_unicode_in_completed_report"
           ]
         },
         {

@@ -1315,3 +1315,13 @@ def test_actual_client_decoder_rejects_malformed_worker_response(connected, payl
         bridge._client.execute(FIXTURE)
     thread.join(5)
     assert not thread.is_alive()
+
+
+def test_actual_client_rejects_unpaired_unicode_in_completed_report(connected):
+    import json
+
+    _, _, _, worker, _, _, _ = connected
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    report["report"]["main_finding"] = "\ud800"
+    payload = json.dumps(report, ensure_ascii=True).encode()
+    test_actual_client_decoder_rejects_malformed_worker_response(connected, payload)
