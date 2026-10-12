@@ -453,6 +453,11 @@ class Stage0ConversationRuntime(ConversationService):
                     tuple(sorted(source_ids)),
                 ).fetchall()
                 base = self._research._screening
+                protected_texts = tuple(
+                    text
+                    for text in [*(row[1] for row in rows), *shared_texts]
+                    if _normalized(text)
+                )
                 return ResearchScreeningContext(
                     private_canaries=base.private_canaries
                     + tuple(sorted(source_ids))
@@ -465,14 +470,14 @@ class Stage0ConversationRuntime(ConversationService):
                         route.principal.principal_id.value,
                         route.principal.authenticated_source.value,
                     ),
-                    private_quotations=base.private_quotations,
+                    # Exact quotations protect even one-word sources and survive
+                    # the existing percent/base64 decoding screens. Overlap still
+                    # rejects recognizable excerpts of longer protected texts.
+                    private_quotations=base.private_quotations
+                    + base.private_texts
+                    + protected_texts,
                     sensitive_details=base.sensitive_details,
-                    private_texts=base.private_texts
-                    + tuple(
-                        text
-                        for text in [*(row[1] for row in rows), *shared_texts]
-                        if _normalized(text)
-                    ),
+                    private_texts=base.private_texts + protected_texts,
                 )
         finally:
             db.close()

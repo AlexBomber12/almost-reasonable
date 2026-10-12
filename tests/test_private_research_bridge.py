@@ -1599,3 +1599,70 @@ def test_shared_research_result_erasure_replays_foreign_dependency_in_old_backup
             0,
         )
     assert len(fake.calls) == len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "short_text", ["тайна", "секретная гипотеза", "очень секретная гипотеза"]
+)
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_exact_short_foreign_source_quotes_are_rejected(
+    connected, monkeypatch, short_text, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.cognition.shared import SharedIntelligence
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+
+    runtime, bridge, _, worker, transport, fake, setup = connected
+    store, _, gate, _, _ = setup
+    source = append_event(store, principal("b"), "short-shared-source", short_text)
+    one = approval(source, author="b", op="short-shared")
+    shared = SharedIntelligence(store, gate, approvals=(one,), clock=lambda: NOW)
+    shared.commit(one)
+    research = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    if encoding == "plain":
+        report["report"]["main_finding"] += " " + short_text
+    else:
+        encoded = (
+            quote(short_text, safe="")
+            if encoding == "percent"
+            else base64.b64encode(short_text.encode()).decode()
+        )
+        report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = research.submit(principal("a"), "short-quote", "Исследуй эту тему")
+    assert result.model_state.value == "research_rejected"
+    with store._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+    assert short_text not in fake.calls[0].request.input_text
+    assert short_text not in str(transport.calls)
+
+
+def test_trusted_short_comparison_text_is_screened_as_an_exact_quote(
+    connected, monkeypatch
+):
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, _ = connected
+    bridge._screening = ResearchScreeningContext(private_texts=("тайна",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    report["report"]["main_finding"] += " тайна"
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "configured-short", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )

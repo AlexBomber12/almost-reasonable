@@ -280,7 +280,11 @@ identifiers, private comparison texts and trusted canaries. Its short validated
 reply snapshot includes every material private source (including protected foreign
 sources behind selected shared records), source principal/session identifiers,
 selected shared payloads and their authorized earlier alternatives. This internal
-comparison purpose does not grant participant retrieval of foreign raw data; none of that material
+comparison purpose does not grant participant retrieval of foreign raw data. All
+nonempty protected source/shared strings also receive exact quotation screening,
+including short strings and percent/base64 encoded forms; four-word overlap remains
+an additional check for longer excerpts. Exact matching is deliberately conservative
+and can withhold common short text; it does not prove semantic privacy. None of that material
 enters IPC. Every rendered URL must resolve to a recorded source view. Source views
 are retained in the existing bounded Russian reply along with uncertainty,
 `claim_status=unverified` and `semantic_support=not_evaluated`; structural metadata
