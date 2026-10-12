@@ -1014,3 +1014,24 @@ def test_complete_compact_short_text_matches_format_and_character_separators(que
         screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
     )
     assert result.reason == "recognizable_private_overlap"
+
+
+@pytest.mark.parametrize(
+    "protected",
+    [
+        "сек-ретная ги-потеза",
+        "с е к р е т н а я г и п о т е з а",
+        "очень секретная гипотеза другого участника",
+    ],
+)
+def test_complete_compact_matching_has_no_source_token_count_cutoff(protected):
+    import re
+
+    question = "".join(re.findall(r"[^\W_]+", protected))
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == "recognizable_private_overlap"

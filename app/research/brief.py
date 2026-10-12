@@ -577,10 +577,10 @@ def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> 
         if not tokens:
             # Exact quotation screening handles protected non-word strings.
             continue
-        # Preserve existing in-word format-character normalization, while also
-        # recognizing the complete short text when word boundaries are stripped
-        # or punctuation/format separators split its characters differently.
-        if len(tokens) < 4 and "".join(tokens) in public_compact:
+        # Match the complete compact source independently of token count:
+        # punctuation in the protected source must not change its eligibility.
+        # This also preserves existing in-word format-character normalization.
+        if "".join(tokens) in public_compact:
             return True
         # Longer sources retain the four-token excerpt window.
         size = min(4, len(tokens))
