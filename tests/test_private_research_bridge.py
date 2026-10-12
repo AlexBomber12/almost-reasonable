@@ -1718,3 +1718,62 @@ def test_short_foreign_quotes_reject_intervening_separators(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "секретная\u200bгипотеза",
+        "секретная\u2060гипотеза",
+        "секретная\u200dгипотеза",
+        "секретнаягипотеза",
+        "сек-ретная ги-потеза",
+        "с е к р е т н а я г и п о т е з а",
+    ],
+)
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_short_quotes_reject_invisible_joined_and_split_forms(
+    connected, monkeypatch, changed, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.cognition.shared import SharedIntelligence
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+
+    runtime, bridge, _, worker, _, fake, setup = connected
+    store, _, gate, _, _ = setup
+    source = append_event(store, principal("b"), "format-source", "секретная гипотеза")
+    one = approval(source, author="b", op="format-shared")
+    shared = SharedIntelligence(store, gate, approvals=(one,), clock=lambda: NOW)
+    shared.commit(one)
+    research = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    if encoding == "plain":
+        report["report"]["main_finding"] += " " + changed
+    else:
+        encoded = (
+            quote(changed, safe="")
+            if encoding == "percent"
+            else base64.b64encode(changed.encode()).decode()
+        )
+        report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        research.submit(
+            principal("a"), "format-quote", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with store._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

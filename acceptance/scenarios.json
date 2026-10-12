@@ -315,7 +315,25 @@
             "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-\\u2014]",
             "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-/]",
             "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-_]",
-            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-.\\n]"
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-.\\n]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[plain-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u200b\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[plain-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u2060\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[plain-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u200d\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[plain-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[plain-\\u0441\\u0435\\u043a-\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f \\u0433\\u0438-\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[plain-\\u0441 \\u0435 \\u043a \\u0440 \\u0435 \\u0442 \\u043d \\u0430 \\u044f \\u0433 \\u0438 \\u043f \\u043e \\u0442 \\u0435 \\u0437 \\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[percent-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u200b\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[percent-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u2060\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[percent-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u200d\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[percent-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[percent-\\u0441\\u0435\\u043a-\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f \\u0433\\u0438-\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[percent-\\u0441 \\u0435 \\u043a \\u0440 \\u0435 \\u0442 \\u043d \\u0430 \\u044f \\u0433 \\u0438 \\u043f \\u043e \\u0442 \\u0435 \\u0437 \\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u200b\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u2060\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u200d\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f\\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[base64-\\u0441\\u0435\\u043a-\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f \\u0433\\u0438-\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
+            "tests/test_private_research_bridge.py::test_short_quotes_reject_invisible_joined_and_split_forms[base64-\\u0441 \\u0435 \\u043a \\u0440 \\u0435 \\u0442 \\u043d \\u0430 \\u044f \\u0433 \\u0438 \\u043f \\u043e \\u0442 \\u0435 \\u0437 \\u0430]"
           ]
         },
         {

@@ -284,8 +284,10 @@ comparison purpose does not grant participant retrieval of foreign raw data. All
 nonempty protected source/shared strings also receive exact quotation screening,
 including short strings and percent/base64 encoded forms. Short word sequences
 are also compared as normalized tokens so commas, dashes and other intervening
-separators cannot bypass matching; four-word overlap remains an additional check
-for longer excerpts. Exact matching is deliberately conservative
+separators cannot bypass matching. A complete compact-character comparison of
+short protected text also covers stripped format separators, joined words and
+character splitting while preserving the existing in-word normalization. Four-word
+overlap remains an additional check for longer excerpts. Exact matching is deliberately conservative
 and can withhold common short text; it does not prove semantic privacy. None of that material
 enters IPC. Every rendered URL must resolve to a recorded source view. Source views
 are retained in the existing bounded Russian reply along with uncertainty,

@@ -570,14 +570,19 @@ def _normalized_for_encoding(value: str) -> str:
 
 def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> bool:
     public_tokens = _WORDS.findall(_normalized(" ".join(values)))
+    public_compact = "".join(public_tokens)
     public_ngrams = {}
     for private_text in private_texts:
         tokens = _WORDS.findall(_normalized(private_text))
         if not tokens:
             # Exact quotation screening handles protected non-word strings.
             continue
-        # Short sources match their full token sequence regardless of intervening
-        # punctuation. Longer sources retain the four-token excerpt window.
+        # Preserve existing in-word format-character normalization, while also
+        # recognizing the complete short text when word boundaries are stripped
+        # or punctuation/format separators split its characters differently.
+        if len(tokens) < 4 and "".join(tokens) in public_compact:
+            return True
+        # Longer sources retain the four-token excerpt window.
         size = min(4, len(tokens))
         if size not in public_ngrams:
             public_ngrams[size] = {

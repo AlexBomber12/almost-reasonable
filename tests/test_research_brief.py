@@ -995,3 +995,22 @@ def test_short_private_sequences_ignore_separators_without_matching_fragments(
         screening=ResearchScreeningContext(private_texts=(private_text,)),
     )
     assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "секретная\u200bгипотеза",
+        "секретнаягипотеза",
+        "сек-ретная ги-потеза",
+        "с е к р е т н а я г и п о т е з а",
+    ],
+)
+def test_complete_compact_short_text_matches_format_and_character_separators(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
+    )
+    assert result.reason == "recognizable_private_overlap"
