@@ -569,19 +569,36 @@ def _normalized_for_encoding(value: str) -> str:
 
 
 def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> bool:
-    public_tokens = _WORDS.findall(_normalized(" ".join(values)))
-    public_compact = "".join(public_tokens)
+    public_normalized = _normalized(" ".join(values))
+    public_tokens = _WORDS.findall(public_normalized)
+    public_compact = _compact_protected(public_normalized)
+    public_punctuation = "".join(
+        char for char in public_normalized if unicodedata.category(char).startswith("P")
+    )
     public_ngrams = {}
     for private_text in private_texts:
-        tokens = _WORDS.findall(_normalized(private_text))
+        private_normalized = _normalized(private_text)
+        private_compact = _compact_protected(private_normalized)
+        if private_compact:
+            if private_compact in public_compact:
+                return True
+        else:
+            # Punctuation-only protected content is still data. Its complete
+            # punctuation sequence is compared conservatively across separators.
+            private_punctuation = "".join(
+                char
+                for char in private_normalized
+                if unicodedata.category(char).startswith("P")
+            )
+            punctuation_stream = iter(public_punctuation)
+            if private_punctuation and all(
+                any(char == expected for char in punctuation_stream)
+                for expected in private_punctuation
+            ):
+                return True
+        tokens = _WORDS.findall(private_normalized)
         if not tokens:
-            # Exact quotation screening handles protected non-word strings.
             continue
-        # Match the complete compact source independently of token count:
-        # punctuation in the protected source must not change its eligibility.
-        # This also preserves existing in-word format-character normalization.
-        if "".join(tokens) in public_compact:
-            return True
         # Longer sources retain the four-token excerpt window.
         size = min(4, len(tokens))
         if size not in public_ngrams:
@@ -596,3 +613,12 @@ def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> 
         if public_ngrams[size] & private_ngrams:
             return True
     return False
+
+
+def _compact_protected(normalized: str) -> str:
+    # Keep Unicode symbols (including emoji/currency) as meaningful protected
+    # content, alongside letters, numbers and retained marks. Formatting,
+    # whitespace and punctuation are separators rather than a reason to skip.
+    return "".join(
+        char for char in normalized if unicodedata.category(char)[0] in "LMNS"
+    )

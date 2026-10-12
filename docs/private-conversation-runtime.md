@@ -287,7 +287,10 @@ are also compared as normalized tokens so commas, dashes and other intervening
 separators cannot bypass matching. A complete compact-character comparison of
 every protected text also covers stripped format separators, joined words and
 character splitting while preserving the existing in-word normalization; it has
-no source token-count cutoff for punctuation to manipulate. Four-word
+no source token-count cutoff for punctuation to manipulate. Unicode symbols
+(including emoji/currency) remain meaningful in compact comparison, and protected
+punctuation-only sequences receive a separate conservative comparison rather than
+being skipped for having no word tokens. Four-word
 overlap remains an additional check for longer excerpts. Exact matching is deliberately conservative
 and can withhold common short text; it does not prove semantic privacy. None of that material
 enters IPC. Every rendered URL must resolve to a recorded source view. Source views

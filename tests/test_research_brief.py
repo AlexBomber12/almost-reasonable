@@ -1035,3 +1035,25 @@ def test_complete_compact_matching_has_no_source_token_count_cutoff(protected):
         screening=ResearchScreeningContext(private_texts=(protected,)),
     )
     assert result.reason == "recognizable_private_overlap"
+
+
+@pytest.mark.parametrize(
+    "protected,question,reason",
+    [
+        ("🔒🔑", "Публичный вопрос 🔒-🔑", "recognizable_private_overlap"),
+        ("$€", "Публичный вопрос $-€", "recognizable_private_overlap"),
+        ("?!?", "Публичный вопрос ?-!-?", "recognizable_private_overlap"),
+        ("🔒🔑", "Публичный вопрос 🌟", None),
+        ("?!?", "Публичный вопрос.", None),
+    ],
+)
+def test_nonword_protected_content_compares_across_separators(
+    protected, question, reason
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == reason
