@@ -1,5 +1,12 @@
 # INT-05A — Private cognition and memory-aware conversation
 
+Current synthetic integration and exact scenario status are documented in
+[integration-contracts.md](integration-contracts.md) and the validated
+[acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
+below describe those schema versions; current live synthetic storage is EventStore
+v6, with private/shared reply edges and mission erasure. Participant privacy-control
+web ingress and production restore activation remain absent.
+
 `Stage0ConversationRuntime(..., memory_extractor=SyntheticMemoryExtractor(...))`
 connects the actual cognition engine, self-state store, memory selector, privacy
 read gate, reply store and offline model gateway. The constructor accepts only an

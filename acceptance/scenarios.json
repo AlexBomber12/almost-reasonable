@@ -1,0 +1,1164 @@
+{
+  "version": "stage0-scenario-manifest-v1",
+  "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11",
+  "baseline": {
+    "command": "scripts/ci.sh",
+    "tests_passed": 2792,
+    "statements": 12501,
+    "branches": 3804,
+    "missing_lines": 0,
+    "missing_branches": 0,
+    "coverage_percent": 100,
+    "python": "3.12.3",
+    "pytest": "8.4.2",
+    "pytest_cov": "7.0.0",
+    "coverage": "7.11.0",
+    "ruff": "0.12.11",
+    "duration_seconds": 271.63,
+    "environment": "Linux local workspace; synthetic fixtures only"
+  },
+  "configuration": {
+    "event_store": 6,
+    "threads_store": 10,
+    "stage0_journal": 1,
+    "core_self": "core-self-v1",
+    "private_memory": "private-memory-stage0-v2",
+    "shared_context": "model-contract-shared-intelligence-v3",
+    "research": "research-worker-stage0-v1",
+    "behavior": "behavior-deliberation-v1",
+    "behavior_corpus": "stage0-recorded-anchors-v1",
+    "ordinary_runtime": "disabled",
+    "provider_fixture_model": "gpt-6.1-sol (fake only; no availability claim)",
+    "recorded_behavior_model": "RecordedBehaviorModel; no real model",
+    "research_transport": "FakeHostedSearchTransport; no credentials"
+  },
+  "scenarios": [
+    {
+      "id": "SCN-01",
+      "capabilities": [
+        "M1",
+        "M5",
+        "M6"
+      ],
+      "clauses": [
+        "behavior-contract.md §4.1",
+        "behavior-contract.md §4.2",
+        "behavior-contract.md §4.4",
+        "behavior-contract.md §5.2"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Independently authenticated private Russian reply and later memory context.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_authenticated_memory_shared_restart_delete_and_old_quarantine"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "PrivateWebApplication",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime"
+          ],
+          "sink": "unread body and zero inference",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[expired]",
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[revoked]",
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[csrf]",
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[host]",
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[origin]",
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[forged_identity]",
+            "tests/test_private_conversation_http.py::test_authentication_and_request_guards_precede_payload_and_inference[anonymous]"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "Authenticated WSGI then abrupt interpreter exit",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "EventStore",
+            "PrivacyReadGate",
+            "FakeOpenAITransport"
+          ],
+          "sink": "same persisted operation; held pending or safely released; zero new inference",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Separate Python interpreter exits via os._exit(23); its own guards forbid live dependencies.",
+          "node_ids": [
+            "tests/test_stage0_process_acceptance.py::test_real_private_process_exit_preserves_operation_without_model_replay[after_reservation-pending]",
+            "tests/test_stage0_process_acceptance.py::test_real_private_process_exit_preserves_operation_without_model_replay[after_model-pending]",
+            "tests/test_stage0_process_acceptance.py::test_real_private_process_exit_preserves_operation_without_model_replay[after_reply_commit-completed]",
+            "tests/test_stage0_process_acceptance.py::test_real_private_process_exit_preserves_operation_without_model_replay[before_release-completed]"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Stage 1 real-model trials and calibrated H/M review; Stage 2 enrollment/privacy operations and Stage 3 Meta validation where applicable."
+      ]
+    },
+    {
+      "id": "SCN-02",
+      "capabilities": [
+        "M1",
+        "M5"
+      ],
+      "clauses": [
+        "behavior-contract.md §4.4",
+        "behavior-contract.md §4.5",
+        "behavior-contract.md §5.2"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Interleaved authenticated A/B requests and concurrent closed promotion CAS; restarted B receives only approved abstraction.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "restart",
+            "concurrency"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_interleaved_authenticated_shared_cas_and_restart"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "SharedIntelligence.commit/context; SharedMissionAdapter",
+          "components": [
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "SharedMissionAdapter"
+          ],
+          "sink": "shared revisions, bounded context, mission document",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Closed abstraction and mission vocabularies; directly constructed application approval is not authenticated UI evidence.",
+          "node_ids": [
+            "tests/test_shared_intelligence.py::test_exact_approval_replay_cas_and_inherited_sources",
+            "tests/test_shared_intelligence.py::test_permissive_h_screen_cannot_promote_injection_or_private_paraphrase"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Stage 1 real-model trials and calibrated H/M review; Stage 2 enrollment/privacy operations and Stage 3 Meta validation where applicable."
+      ]
+    },
+    {
+      "id": "SCN-03",
+      "capabilities": [
+        "M2",
+        "M3",
+        "M5"
+      ],
+      "clauses": [
+        "behavior-contract.md §6.1",
+        "behavior-contract.md §8.3"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "BLOCKED",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Authenticated private research proposal remains unsupported; separate trusted worker exercises public-only fixtures, provenance and Russian synthesis.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_private_research_handoff_is_explicitly_unsupported"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "ResearchWorkerServer AF_UNIX and ResearchWorkerBoundary.execute",
+          "components": [
+            "ResearchWorkerBoundary",
+            "ResearchService",
+            "FakeHostedSearchTransport",
+            "ProviderStateStore"
+          ],
+          "sink": "Russian report, downgraded annotations, captured public brief and durable usage",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_research_worker.py::test_synthetic_flow_over_os_authenticated_socket_and_restart",
+            "tests/test_research_worker.py::test_source_annotations_are_classified_without_verifying_claims[annotations0-missing_annotation]",
+            "tests/test_research_worker.py::test_source_annotations_are_classified_without_verifying_claims[annotations1-malformed_annotation]",
+            "tests/test_research_worker.py::test_source_annotations_are_classified_without_verifying_claims[annotations2-unsupported_annotation]",
+            "tests/test_research_worker.py::test_source_annotations_are_classified_without_verifying_claims[annotations3-unsupported_annotation]",
+            "tests/test_research_worker.py::test_source_annotations_are_classified_without_verifying_claims[annotations4-malformed_annotation]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[response]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[call]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[message]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[text]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[url]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[title]",
+            "tests/test_research_worker.py::test_confirmed_limit_is_durably_suspended[project_spend_limit_exceeded]",
+            "tests/test_research_worker.py::test_confirmed_limit_is_durably_suspended[organization_spend_limit_exceeded]",
+            "tests/test_research_worker.py::test_stop_before_admission_and_before_retry"
+          ]
+        }
+      ],
+      "missing_connections": [
+        "Private runtime returns unsupported for research; no private decision-to-minimized-brief-to-worker handoff or durable result release. Exact public-only grants cannot authorize an arbitrary privately motivated brief."
+      ],
+      "later_stage_requirements": [
+        "Stage 1 production issuer, credentialed adapter/provider schemas and bounded separately approved research smoke; semantic citation support and multilingual usefulness calibration."
+      ]
+    },
+    {
+      "id": "SCN-04",
+      "capabilities": [
+        "M2",
+        "M4"
+      ],
+      "clauses": [
+        "behavior-contract.md §7",
+        "behavior-contract.md §9"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Autonomous catalog draft to route validation, separate exact fixture approval, durable outbox and simulator.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.run/process_inbound",
+          "components": [
+            "DurableScheduler",
+            "DeliberationEngine",
+            "OwnerStore",
+            "ProviderStateStore",
+            "PrivacyLedger",
+            "Stage0Journal",
+            "ThreadsService",
+            "ThreadsSimulator"
+          ],
+          "sink": "journal/outbox states, scoped controls, simulator trace/network_calls",
+          "risks": [
+            "restart",
+            "crash",
+            "adversarial"
+          ],
+          "scope": "Two catalog drafts, independently installed SyntheticOperator; verified simulator sources only.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_autonomous_post_is_only_a_proposal_until_exact_approval",
+            "tests/test_threads_stage0_integration.py::test_uncertain_effect_requires_explicit_reconciliation_and_never_resends[container-AFTER_CONTAINER]",
+            "tests/test_threads_stage0_integration.py::test_uncertain_effect_requires_explicit_reconciliation_and_never_resends[publish-DURING_PUBLISH]",
+            "tests/test_threads_stage0_integration.py::test_uncertain_effect_requires_explicit_reconciliation_and_never_resends[publish-AFTER_PUBLISH_SUCCESS]",
+            "tests/test_threads_stage0_integration.py::test_uncertain_effect_requires_explicit_reconciliation_and_never_resends[publish-CRASH_AFTER_TRANSMISSION]",
+            "tests/test_threads_stage0_integration.py::test_process_death_uses_existing_dispatch_evidence[sending-ready]",
+            "tests/test_threads_stage0_integration.py::test_process_death_uses_existing_dispatch_evidence[container_created-ready]",
+            "tests/test_threads_stage0_integration.py::test_process_death_uses_existing_dispatch_evidence[publish_started-unknown]",
+            "tests/test_threads_stage0_integration.py::test_process_death_uses_existing_dispatch_evidence[success_before_confirmation-unknown]",
+            "tests/test_threads_stage0_integration.py::test_abandon_unknown_and_stop_reset_never_approve_or_resend"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "ThreadsService.dispatch",
+          "components": [
+            "ThreadsStore",
+            "ThreadsSimulator"
+          ],
+          "sink": "proven no-effect, confirmed rejection/success and unknown states",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[container-before_container-ready-not_transmitted]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[container-during_container-unknown-unknown]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[container-after_container-unknown-response_lost]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[container-container_rejected-failed_terminal-rejected]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[publish-before_publish-ready-not_transmitted]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[publish-during_publish-unknown-unknown]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[publish-after_publish_success-unknown-response_lost]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[publish-response_parse-unknown-malformed]",
+            "tests/test_threads_outbox.py::test_faults_are_classified_at_every_provider_boundary[publish-publish_rejected-failed_terminal-rejected]",
+            "tests/test_threads_outbox.py::test_proven_pre_dispatch_retry_is_bounded_and_reuses_container"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "ThreadsStage0 -> ThreadsService.dispatch then interpreter exit",
+          "components": [
+            "Stage0Journal",
+            "ThreadsStore",
+            "ThreadsSimulator"
+          ],
+          "sink": "durable dispatch marker; READY only if proven safe, UNKNOWN otherwise; no resend",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Separate Python interpreter exits via os._exit(23); its own guards forbid live dependencies.",
+          "node_ids": [
+            "tests/test_stage0_process_acceptance.py::test_real_publication_process_exit_uses_durable_evidence_without_resend[container_dispatch_started-unknown]",
+            "tests/test_stage0_process_acceptance.py::test_real_publication_process_exit_uses_durable_evidence_without_resend[container_created_publish_not_started-ready]",
+            "tests/test_stage0_process_acceptance.py::test_real_publication_process_exit_uses_durable_evidence_without_resend[publish_dispatch_started-unknown]"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Stage 1 real-model trials and calibrated H/M review; Stage 2 enrollment/privacy operations and Stage 3 Meta validation where applicable."
+      ]
+    },
+    {
+      "id": "SCN-05",
+      "capabilities": [
+        "M1",
+        "M4",
+        "M5"
+      ],
+      "clauses": [
+        "behavior-contract.md §3.4",
+        "behavior-contract.md §6.1",
+        "behavior-contract.md §7"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Authenticated substantive private challenge lowers confidence with counterevidence; recorded reply and later memory context. Public reply routing is a separate connected slice.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_authenticated_substantive_challenge_changes_confidence_and_later_context"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.run/process_inbound",
+          "components": [
+            "DurableScheduler",
+            "DeliberationEngine",
+            "OwnerStore",
+            "ProviderStateStore",
+            "PrivacyLedger",
+            "Stage0Journal",
+            "ThreadsService",
+            "ThreadsSimulator"
+          ],
+          "sink": "journal/outbox states, scoped controls, simulator trace/network_calls",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Two catalog drafts, independently installed SyntheticOperator; verified simulator sources only.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_verified_inbound_reply_has_its_own_durable_link[reply]",
+            "tests/test_threads_stage0_integration.py::test_verified_inbound_reply_has_its_own_durable_link[mention]"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Calibrated real-model challenge engagement and paired owner/non-owner tests; general public belief/research bridge remains absent."
+      ]
+    },
+    {
+      "id": "SCN-06",
+      "capabilities": [
+        "M2",
+        "M4"
+      ],
+      "clauses": [
+        "behavior-contract.md §4.3",
+        "behavior-contract.md §7",
+        "behavior-contract.md §8.3"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Scoped termination/cooldown, one bounded deferred resume, separate eligible inbound work.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.run/process_inbound",
+          "components": [
+            "DurableScheduler",
+            "DeliberationEngine",
+            "OwnerStore",
+            "ProviderStateStore",
+            "PrivacyLedger",
+            "Stage0Journal",
+            "ThreadsService",
+            "ThreadsSimulator"
+          ],
+          "sink": "journal/outbox states, scoped controls, simulator trace/network_calls",
+          "risks": [
+            "restart",
+            "crash",
+            "adversarial"
+          ],
+          "scope": "Two catalog drafts, independently installed SyntheticOperator; verified simulator sources only.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_conversation_controls_are_durable_and_scoped[decision0]",
+            "tests/test_threads_stage0_integration.py::test_conversation_controls_are_durable_and_scoped[decision1]",
+            "tests/test_threads_stage0_integration.py::test_conversation_controls_are_durable_and_scoped[decision2]",
+            "tests/test_threads_stage0_integration.py::test_conversation_controls_are_durable_and_scoped[decision3]",
+            "tests/test_threads_stage0_integration.py::test_defer_resume_reply_is_separately_approved_and_bounded",
+            "tests/test_threads_stage0_integration.py::test_resume_cannot_loop_defer",
+            "tests/test_threads_stage0_integration.py::test_failed_publication_handoff_does_not_starve_independent_inbound_inactivity"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Stage0ConversationRuntime.submit",
+          "components": [
+            "EventStore",
+            "FakeOpenAITransport"
+          ],
+          "sink": "distinct no_action/failure/skip resolutions",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal0-no_action]",
+            "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal1-unsupported]",
+            "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal2-unsupported]",
+            "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal3-invalid]",
+            "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal4-invalid]"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Stage 1 real-model trials and calibrated H/M review; Stage 2 enrollment/privacy operations and Stage 3 Meta validation where applicable."
+      ]
+    },
+    {
+      "id": "SCN-07",
+      "capabilities": [
+        "M5",
+        "M6"
+      ],
+      "clauses": [
+        "behavior-contract.md §4.5",
+        "behavior-contract.md §5.3",
+        "behavior-contract.md §9"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "BLOCKED",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Private source, memory and approved shared record bind later replies; current deletion replay erases old quarantine.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_authenticated_memory_shared_restart_delete_and_old_quarantine"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "DeletionCoordinator and PrivacyReadGate",
+          "components": [
+            "PrivacyLedger",
+            "EventStoreErasureAdapter"
+          ],
+          "sink": "pending/applied/incomplete graph and gated reads",
+          "risks": [
+            "restart",
+            "crash",
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_privacy_application.py::test_crash_restarts_pending_first_without_authoritative_early_success[before-commit]",
+            "tests/test_privacy_application.py::test_crash_restarts_pending_first_without_authoritative_early_success[after-commit]",
+            "tests/test_privacy_application.py::test_crash_restarts_pending_first_without_authoritative_early_success[ledger-update]",
+            "tests/test_privacy_application.py::test_crash_restarts_pending_first_without_authoritative_early_success[after-ledger-update]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE state_items SET scope='shared_agent', audience_type='shared_agent', audience_principal_id=''-unsupported_shared_state]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[DELETE FROM protected_event_taints WHERE event_id='event-a'-invalid_event_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE protected_event_taints SET source_event_id='event-a2' WHERE event_id='event-a'-invalid_event_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE private_payloads SET audience_principal_id='participant-b' WHERE payload_id='payload-a'-invalid_private_payload]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE state_items SET current_revision=2-invalid_state_chain]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE state_operations SET audience_principal_id='participant-b'-invalid_state_operation]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[DELETE FROM protected_state_provenance WHERE evidence_role='initiating'-missing_state_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[DELETE FROM protected_state_provenance WHERE evidence_role='supporting'-missing_state_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE protected_state_provenance SET source_principal_id='participant-b'-invalid_state_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[DELETE FROM state_revision_payloads-invalid_state_payload]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[DELETE FROM agent_reply_sources-missing_reply_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE agent_reply_sources SET source_principal_id='participant-b'-invalid_reply_provenance]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[DELETE FROM agent_reply_payloads-invalid_reply_payload]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE private_payloads SET content='' WHERE payload_id='payload-a'-application_integrity_failure]",
+            "tests/test_privacy_application.py::test_missing_corrupt_or_unsupported_graph_is_blocked_without_mutation[UPDATE agent_reply_sources SET event_id='event-missing'-orphaned_application_data]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "SharedIntelligence.commit/context; SharedMissionAdapter",
+          "components": [
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "SharedMissionAdapter"
+          ],
+          "sink": "shared revisions, bounded context, mission document",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Closed abstraction and mission vocabularies; directly constructed application approval is not authenticated UI evidence.",
+          "node_ids": [
+            "tests/test_shared_intelligence.py::test_missing_edges_and_forged_audiences_block_reconciliation"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "DeletionCoordinator intent/application then interpreter exit",
+          "components": [
+            "PrivacyLedger",
+            "EventStoreErasureAdapter",
+            "PrivacyReadGate"
+          ],
+          "sink": "pending ledger survives; private reads blocked until replay; deleted canary absent",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Separate Python interpreter exits via os._exit(23); its own guards forbid live dependencies.",
+          "node_ids": [
+            "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_intent]",
+            "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_application]"
+          ]
+        }
+      ],
+      "missing_connections": [
+        "Generic model-guided consolidation and its complete cross-item persistence/provenance are absent. Connected tested private/shared derivations do not implement generic consolidation."
+      ],
+      "later_stage_requirements": [
+        "Authenticated deletion UI, production retention and encrypted backup/restore activation fences; no forensic or external processor deletion claim."
+      ]
+    },
+    {
+      "id": "SCN-08",
+      "capabilities": [
+        "M5"
+      ],
+      "clauses": [
+        "behavior-contract.md §5.1",
+        "behavior-contract.md §5.2",
+        "behavior-contract.md §6.1"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Competing unverified evidence, lowered confidence, later restarted context and source-deletion invalidation.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_authenticated_substantive_challenge_changes_confidence_and_later_context"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Stage0ConversationRuntime.submit",
+          "components": [
+            "CognitionEngine",
+            "SelfStateStore",
+            "MemoryContextSelector"
+          ],
+          "sink": "revision history, uncertain unverified model context",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_private_memory_runtime.py::test_belief_counterevidence_uncertainty_stale_and_independent_classification"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "SharedIntelligence.commit/context; SharedMissionAdapter",
+          "components": [
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "SharedMissionAdapter"
+          ],
+          "sink": "shared revisions, bounded context, mission document",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Closed abstraction and mission vocabularies; directly constructed application approval is not authenticated UI evidence.",
+          "node_ids": [
+            "tests/test_shared_intelligence.py::test_counterevidence_classification_survives_further_revisions"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Model/prompt-version migration behavioral continuity and calibrated independent source assessment; generic consolidation and research evidence bridge."
+      ]
+    },
+    {
+      "id": "SCN-09",
+      "capabilities": [
+        "M2",
+        "M5"
+      ],
+      "clauses": [
+        "behavior-contract.md §3.4",
+        "behavior-contract.md §5.2"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Closed mission proposal with later independent private source, exact confirmation, restart and composition into actual bounded deliberation.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "SharedMissionAdapter -> DeliberationEngine.deliberate",
+          "components": [
+            "SharedIntelligence",
+            "SharedMissionAdapter",
+            "EventStore",
+            "DeliberationEngine",
+            "RecordedBehaviorModel"
+          ],
+          "sink": "pending inactive, confirmed mission in later model request and no_action",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_confirmed_mission_enters_later_deliberation_without_new_capabilities"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "SharedIntelligence.commit/context; SharedMissionAdapter",
+          "components": [
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "SharedMissionAdapter"
+          ],
+          "sink": "shared revisions, bounded context, mission document",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Closed abstraction and mission vocabularies; directly constructed application approval is not authenticated UI evidence.",
+          "node_ids": [
+            "tests/test_shared_intelligence.py::test_mission_two_phase_restart_and_deletion_reassessment",
+            "tests/test_shared_intelligence.py::test_mission_authority_rejects_owner_claims_early_or_same_participant_evidence",
+            "tests/test_shared_intelligence.py::test_later_independent_mission_rejection_preserves_current_version"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "General autonomous scheduler/Threads mission consumption is not wired; real corroboration and reassessment policy, calibrated two-phase evolution. Test composition is not a daemon."
+      ]
+    },
+    {
+      "id": "SCN-10",
+      "capabilities": [
+        "M2",
+        "M4"
+      ],
+      "clauses": [
+        "behavior-contract.md §4.3",
+        "behavior-contract.md §7",
+        "behavior-contract.md §8.3"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "PASS",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Persistent coalescing, no_action and one independently valuable later proposal without publication quota.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.run/process_inbound",
+          "components": [
+            "DurableScheduler",
+            "DeliberationEngine",
+            "OwnerStore",
+            "ProviderStateStore",
+            "PrivacyLedger",
+            "Stage0Journal",
+            "ThreadsService",
+            "ThreadsSimulator"
+          ],
+          "sink": "journal/outbox states, scoped controls, simulator trace/network_calls",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Two catalog drafts, independently installed SyntheticOperator; verified simulator sources only.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_no_action_preserves_independent_later_work",
+            "tests/test_threads_stage0_integration.py::test_inactivity_does_not_require_publication_capability"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "DurableScheduler.run",
+          "components": [
+            "SQLiteSchedulerRepository",
+            "DurableScheduler"
+          ],
+          "sink": "one callback, durable inactivity and eligible new events",
+          "risks": [
+            "restart",
+            "crash",
+            "concurrency"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_durable_scheduler.py::test_bounded_missed_wakeups_and_stopped_recovery_coalesce",
+            "tests/test_durable_scheduler.py::test_completed_no_action_survives_real_process_exit",
+            "tests/test_durable_scheduler.py::test_two_processes_race_for_one_durable_wakeup",
+            "tests/test_durable_scheduler.py::test_expired_uncertain_batch_releases_capacity_for_new_events"
+          ]
+        }
+      ],
+      "missing_connections": [],
+      "later_stage_requirements": [
+        "Stage 1 real-model trials and calibrated H/M review; Stage 2 enrollment/privacy operations and Stage 3 Meta validation where applicable."
+      ]
+    },
+    {
+      "id": "SCN-11",
+      "capabilities": [
+        "M1",
+        "M5",
+        "M6"
+      ],
+      "clauses": [
+        "behavior-contract.md §4.4",
+        "behavior-contract.md §5.3",
+        "behavior-contract.md §6.2",
+        "behavior-contract.md §8.1"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "BLOCKED",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Structured privacy services use directly constructed trusted control fixtures; these are component authority tests, never authenticated participant UI evidence.",
+      "evidence": [
+        {
+          "layer": "component",
+          "entry_point": "ConsentService",
+          "components": [
+            "PrivacyLedger",
+            "ConsentService"
+          ],
+          "sink": "exact audience/content/purpose/current revocation and dispatch record",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_privacy_consent.py::test_exact_consent_use_and_idempotent_authenticated_revocation",
+            "tests/test_privacy_consent.py::test_chat_model_and_owner_impersonation_cannot_grant_or_revoke"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "NoticeService.acknowledge",
+          "components": [
+            "NoticeService",
+            "PrivacyLedger"
+          ],
+          "sink": "Russian disclosure and versioned acknowledgment",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_privacy_recovery.py::test_russian_notice_and_versioned_acknowledgement_are_explicit"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_authenticated_memory_shared_restart_delete_and_old_quarantine"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.run/process_inbound",
+          "components": [
+            "DurableScheduler",
+            "DeliberationEngine",
+            "OwnerStore",
+            "ProviderStateStore",
+            "PrivacyLedger",
+            "Stage0Journal",
+            "ThreadsService",
+            "ThreadsSimulator"
+          ],
+          "sink": "journal/outbox states, scoped controls, simulator trace/network_calls",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Two catalog drafts, independently installed SyntheticOperator; verified simulator sources only.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[revoke]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[expire]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[remove]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[stop]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[spend]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[ledger]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[source]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[binding]",
+            "tests/test_threads_stage0_integration.py::test_current_authorization_changes_after_ready_prevent_effect[unavailable]",
+            "tests/test_threads_stage0_integration.py::test_real_ledger_deletion_invalidates_old_draft_and_cannot_be_reapproved"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "DeletionCoordinator intent/application then interpreter exit",
+          "components": [
+            "PrivacyLedger",
+            "EventStoreErasureAdapter",
+            "PrivacyReadGate"
+          ],
+          "sink": "pending ledger survives; private reads blocked until replay; deleted canary absent",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Separate Python interpreter exits via os._exit(23); its own guards forbid live dependencies.",
+          "node_ids": [
+            "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_intent]",
+            "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_application]"
+          ]
+        }
+      ],
+      "missing_connections": [
+        "Participant web has no notice/consent/revocation/deletion control ingress. TrustedPrivacyContext CONTROL fixtures are internal pre-authorized objects, not proof of UI authentication. Owner controls and synthetic publication approval cannot supply participant authority."
+      ],
+      "later_stage_requirements": [
+        "Stage 2 reviewed notice, enrollment, purpose/exact content UX, CSRF/replay, retention/legal/processor decisions and separately reviewed activation."
+      ]
+    },
+    {
+      "id": "SCN-12",
+      "capabilities": [
+        "M1",
+        "M3",
+        "M4",
+        "M5",
+        "M6"
+      ],
+      "clauses": [
+        "behavior-contract.md §8.1",
+        "behavior-contract.md §8.2",
+        "behavior-contract.md §8.3"
+      ],
+      "assurance": {
+        "G": "Application-enforced authorization, lifecycle, provenance and bounds in mapped tests.",
+        "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
+        "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
+      },
+      "stage0_connection": "BLOCKED",
+      "complete_mvp": "BLOCKED",
+      "synthetic_scope": "Russian/English/mixed/encoded multi-turn private/public attacks; delayed memory, shared and mission G authority; worker output containment.",
+      "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI",
+          "components": [
+            "AuthStore",
+            "Stage0ConversationRuntime",
+            "CognitionEngine",
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "FakeOpenAITransport"
+          ],
+          "sink": "HTTP response, captured provider input and durable graph",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_stage0_acceptance_journeys.py::test_private_and_public_multiturn_attacks_have_no_cross_scope_effect[ru]",
+            "tests/test_stage0_acceptance_journeys.py::test_private_and_public_multiturn_attacks_have_no_cross_scope_effect[en]",
+            "tests/test_stage0_acceptance_journeys.py::test_private_and_public_multiturn_attacks_have_no_cross_scope_effect[mixed]",
+            "tests/test_stage0_acceptance_journeys.py::test_private_and_public_multiturn_attacks_have_no_cross_scope_effect[encoded]",
+            "tests/test_stage0_acceptance_journeys.py::test_private_and_public_multiturn_attacks_have_no_cross_scope_effect[multiturn]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Stage0ConversationRuntime with synthetic extractor",
+          "components": [
+            "CognitionEngine",
+            "SelfStateStore",
+            "ActionPolicy"
+          ],
+          "sink": "delayed private memory stays untrusted; no shared/admin grant",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_private_memory_runtime.py::test_delayed_memory_instructions_do_not_grant_owner_or_shared_authority"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "SharedIntelligence.commit/context; SharedMissionAdapter",
+          "components": [
+            "EventStore",
+            "PrivacyReadGate",
+            "SharedIntelligence",
+            "SharedMissionAdapter"
+          ],
+          "sink": "shared revisions, bounded context, mission document",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Closed abstraction and mission vocabularies; directly constructed application approval is not authenticated UI evidence.",
+          "node_ids": [
+            "tests/test_shared_intelligence.py::test_permissive_h_screen_cannot_promote_injection_or_private_paraphrase",
+            "tests/test_shared_intelligence.py::test_mission_authority_rejects_owner_claims_early_or_same_participant_evidence"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "ResearchWorkerBoundary.execute",
+          "components": [
+            "ResearchService",
+            "FakeHostedSearchTransport"
+          ],
+          "sink": "no canary release or forged authority",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic fixtures only; no live authority.",
+          "node_ids": [
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[response]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[call]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[message]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[text]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[url]",
+            "tests/test_research_worker.py::test_other_participant_and_source_identifier_canaries_never_leave_worker[title]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change0]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change1]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change2]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change3]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change4]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change5]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change6]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change7]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change8]",
+            "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change9]"
+          ]
+        }
+      ],
+      "missing_connections": [
+        "The combined multilingual/encoded multi-turn corpus is connected through private/public input; research output and delayed memory/mission use separate narrower suites. A unified cross-channel/restart attack matrix with delayed mission retrieval is not yet executed."
+      ],
+      "later_stage_requirements": [
+        "Combined live provider/semantic attacks, hidden adversarial cases, prompt/model change and OS egress validation; no absolute injection-immunity claim."
+      ]
+    }
+  ],
+  "release_blockers": [
+    "SCN-03: implement a reviewed closed synthetic private research handoff with exact independent grants and durable result/replay policy; do not broaden worker fixture authorization.",
+    "SCN-07: define supported generic consolidation persistence and complete cross-item dependency/erasure semantics, or narrow the approved Stage 0 exit scope explicitly.",
+    "SCN-11: implement authenticated participant notice/consent/revoke/delete ingress with exact content/audience/purpose/validity, CSRF and replay checks.",
+    "SCN-12: extend the same cross-channel adversarial corpus through research output and delayed mission retrieval across restart; current mapped slices cannot establish that combined journey.",
+    "Calibrate recorded H/M anchors with fluent human reviewers and approve thresholds; fixture scores alone do not satisfy Stage 0 calibration.",
+    "Review threat model/residual risks and stage promotion criteria with operator. No complete MVP or production enablement follows from this run."
+  ],
+  "owner_concurrency": "Reproduced rollback-journal disappearance between exists() and lstat(); regression failed before fix. One lstat now handles only FileNotFoundError as optional absence. Unsafe entries and actual lock/storage errors remain fail-closed. Controlled writer-lock/revocation test verifies current auth after waiting. 20 unchanged pre-fix stress runs passed; historical CI causality cannot be proven from a generic sanitized error alone. Twenty independent post-fix executions of existing concurrency and both timing regressions also passed without retries.",
+  "stage_capabilities": {
+    "Stage 0": {
+      "private": "synthetic AuthStore/WSGI plus fake runtime",
+      "shared": "four reviewed literal abstractions only",
+      "research": "two public worker fixtures; private handoff BLOCKED",
+      "Threads": "two catalog drafts and simulator only",
+      "privacy": "real coordinator/quarantine; authenticated control ingress BLOCKED",
+      "calibration": "BLOCKED; recorded anchors only"
+    },
+    "Stage 1": {
+      "inference_smoke": "separately authorized fixed read-only synthetic smoke possible after its independent readiness checklist",
+      "research_smoke": "BLOCKED pending separate production issuer/adapter and exact approval",
+      "publishing": "disabled"
+    },
+    "Stage 2": {
+      "participants": "BLOCKED pending privacy/control/retention/processor/restore decisions"
+    },
+    "Stage 3": {
+      "Meta": "BLOCKED pending transport/scopes/App Review/smoke/reconciliation evidence"
+    },
+    "Stage 4": {
+      "autonomy": "BLOCKED pending prior rollout validation and human authorization"
+    }
+  },
+  "release_checks": {
+    "owner_control": [
+      "tests/test_owner_control.py::test_concurrent_operation_is_applied_once",
+      "tests/test_owner_control.py::test_journal_removed_by_concurrent_commit_is_not_store_failure",
+      "tests/test_owner_control.py::test_owner_lock_wait_rechecks_revoked_session"
+    ]
+  }
+}

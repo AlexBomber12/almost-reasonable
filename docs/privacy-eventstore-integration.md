@@ -1,5 +1,12 @@
 # INT-03 EventStore privacy integration
 
+Current synthetic integration and exact scenario status are documented in
+[integration-contracts.md](integration-contracts.md) and the validated
+[acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
+below describe those schema versions; current live synthetic storage is EventStore
+v6, with private/shared reply edges and mission erasure. Participant privacy-control
+web ingress and production restore activation remain absent.
+
 This is Stage 0 synthetic integration. `app/privacy/application.py` implements
 real application erasure and quarantined restore for the exact EventStore v4
 schema. No participant enrollment, inference/provider call, public action,

@@ -1,5 +1,12 @@
 # Privacy consent, deletion, and recovery foundations
 
+Current synthetic integration and exact scenario status are documented in
+[integration-contracts.md](integration-contracts.md) and the validated
+[acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
+below describe those schema versions; current live synthetic storage is EventStore
+v6, with private/shared reply edges and mission erasure. Participant privacy-control
+web ingress and production restore activation remain absent.
+
 Status: foundations plus INT-03 synthetic EventStore v4 erasure and quarantine
 integration. This does **not** enroll participants, activate a private-to-public
 path, switch a production database, or make Stage 2 privacy complete.

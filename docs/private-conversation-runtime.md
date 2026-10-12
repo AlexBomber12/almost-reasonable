@@ -1,5 +1,12 @@
 # INT-04 private conversation runtime
 
+Current synthetic integration and exact scenario status are documented in
+[integration-contracts.md](integration-contracts.md) and the validated
+[acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
+below describe those schema versions; current live synthetic storage is EventStore
+v6, with private/shared reply edges and mission erasure. Participant privacy-control
+web ingress and production restore activation remain absent.
+
 INT-05A adds the opt-in synthetic [private-memory conversation](private-memory-conversation.md).
 The v1 runtime described below remains the default.
 

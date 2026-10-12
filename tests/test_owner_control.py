@@ -767,3 +767,66 @@ def test_owner_admission_defaults_and_proxy_source_binding(boundary):
     )
     # Source admission does not authorize private reads or administrative controls.
     assert request(proxied, HTTP_X_FORWARDED_FOR="127.0.0.2")[0] == 401
+
+
+def test_journal_removed_by_concurrent_commit_is_not_store_failure(
+    boundary, monkeypatch
+):
+    """Force commit exactly between sidecar observation and lstat, without sleep."""
+    from pathlib import Path
+    import sqlite3
+
+    store, _, _, _ = boundary
+    original = Path.lstat
+    journal = Path(str(store.path) + "-journal")
+    with sqlite3.connect(store.path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute("UPDATE owner_stop SET active=0")
+        assert journal.exists()
+        committed = []
+
+        def commit_before_stat(path):
+            if path == journal and not committed:
+                writer.commit()
+                committed.append(True)
+            return original(path)
+
+        monkeypatch.setattr(Path, "lstat", commit_before_stat)
+        assert store.active() is False
+        assert committed == [True]
+        assert store.active() is False
+
+
+def test_owner_lock_wait_rechecks_revoked_session(boundary, monkeypatch):
+    """Hold an actual writer lock until a revoked session is durably committed."""
+    from threading import Event
+    import sqlite3
+
+    store, _, _, _ = boundary
+    owner = login(store)
+    operation = store.issue(owner.session_token)
+    entered = Event()
+    original = sqlite3.connect
+
+    def observed_connect(*args, **kwargs):
+        connection = original(*args, **kwargs)
+        connection.set_trace_callback(
+            lambda sql: entered.set() if sql == "BEGIN IMMEDIATE" else None
+        )
+        return connection
+
+    with original(store.path) as writer:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            "UPDATE sessions SET revoked_at=created_at WHERE token_digest=?",
+            (bytes.fromhex(store._digest(owner.session_token)),),
+        )
+        monkeypatch.setattr(sqlite3, "connect", observed_connect)
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            future = pool.submit(store.change, owner.session_token, operation, False)
+            assert entered.wait(1)
+            writer.commit()
+            with pytest.raises(PermissionError, match="access denied"):
+                future.result(timeout=3)
+    assert store.active()
+    assert store.audit() == []
