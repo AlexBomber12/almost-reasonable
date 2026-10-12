@@ -300,7 +300,22 @@
             "tests/test_private_research_bridge.py::test_exact_short_foreign_source_quotes_are_rejected[base64-\\u0442\\u0430\\u0439\\u043d\\u0430]",
             "tests/test_private_research_bridge.py::test_exact_short_foreign_source_quotes_are_rejected[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f \\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
             "tests/test_private_research_bridge.py::test_exact_short_foreign_source_quotes_are_rejected[base64-\\u043e\\u0447\\u0435\\u043d\\u044c \\u0441\\u0435\\u043a\\u0440\\u0435\\u0442\\u043d\\u0430\\u044f \\u0433\\u0438\\u043f\\u043e\\u0442\\u0435\\u0437\\u0430]",
-            "tests/test_private_research_bridge.py::test_trusted_short_comparison_text_is_screened_as_an_exact_quote"
+            "tests/test_private_research_bridge.py::test_trusted_short_comparison_text_is_screened_as_an_exact_quote",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[plain-, ]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[plain-\\u2014]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[plain-/]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[plain-_]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[plain-.\\n]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[percent-, ]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[percent-\\u2014]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[percent-/]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[percent-_]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[percent-.\\n]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-, ]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-\\u2014]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-/]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-_]",
+            "tests/test_private_research_bridge.py::test_short_foreign_quotes_reject_intervening_separators[base64-.\\n]"
           ]
         },
         {

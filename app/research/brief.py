@@ -456,10 +456,13 @@ def _screen(
         decoded = _decode_base64(candidate)
         if decoded is None:
             continue
-        if any(unicodedata.category(character) == "Cc" for character in decoded):
-            if opaque_is_leakage:
-                return "encoded_leakage"
-            continue
+        if (
+            any(unicodedata.category(character) == "Cc" for character in decoded)
+            and opaque_is_leakage
+        ):
+            return "encoded_leakage"
+        # Untagged base64 can still contain whitespace/control separators in a
+        # protected quotation. Apply the bounded recursive privacy screen too.
         if (
             _screen(
                 [decoded],
@@ -567,17 +570,24 @@ def _normalized_for_encoding(value: str) -> str:
 
 def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> bool:
     public_tokens = _WORDS.findall(_normalized(" ".join(values)))
-    if len(public_tokens) < 4:
-        return False
-    public_ngrams = {
-        tuple(public_tokens[index : index + 4])
-        for index in range(len(public_tokens) - 3)
-    }
+    public_ngrams = {}
     for private_text in private_texts:
         tokens = _WORDS.findall(_normalized(private_text))
+        if not tokens:
+            # Exact quotation screening handles protected non-word strings.
+            continue
+        # Short sources match their full token sequence regardless of intervening
+        # punctuation. Longer sources retain the four-token excerpt window.
+        size = min(4, len(tokens))
+        if size not in public_ngrams:
+            public_ngrams[size] = {
+                tuple(public_tokens[index : index + size])
+                for index in range(len(public_tokens) - size + 1)
+            }
         private_ngrams = {
-            tuple(tokens[index : index + 4]) for index in range(len(tokens) - 3)
+            tuple(tokens[index : index + size])
+            for index in range(len(tokens) - size + 1)
         }
-        if public_ngrams & private_ngrams:
+        if public_ngrams[size] & private_ngrams:
             return True
     return False

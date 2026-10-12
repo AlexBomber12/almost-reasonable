@@ -963,3 +963,35 @@ def test_nested_sensitive_encoding_fails_closed_at_the_screening_depth_limit():
     )
     assert result.disposition is BriefDisposition.DECLINED
     assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "private_text,question,reason",
+    [
+        (
+            "секретная гипотеза",
+            "Как работает секретная, гипотеза?",
+            "recognizable_private_overlap",
+        ),
+        (
+            "секретная гипотеза",
+            "Как работает секретная—гипотеза?",
+            "recognizable_private_overlap",
+        ),
+        ("тайна", "Как раскрывается тайна?", "recognizable_private_overlap"),
+        ("секретная гипотеза", "Полностью другой публичный вопрос", None),
+        ("секретная гипотеза", "секретная", None),
+        ("длинная защищённая фраза с множеством слов", "фраза", None),
+        ("👁", "Публичный вопрос о звёздах", None),
+    ],
+)
+def test_short_private_sequences_ignore_separators_without_matching_fragments(
+    private_text, question, reason
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(private_text,)),
+    )
+    assert result.reason == reason
