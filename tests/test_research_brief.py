@@ -1375,6 +1375,8 @@ def test_embedded_case_equivalent_encoded_repairs_are_screened(question):
         "An optional public question",
         "An in-depth analysis",
         "An on-call analysis",
+        "An en-dash analysis",
+        "An en dash analysis",
     ],
 )
 def test_unrelated_following_word_cannot_finish_a_private_name(question):
@@ -1425,5 +1427,16 @@ def test_leading_insert_is_checked_after_scanning_name_fragment(question):
         result_budget=2,
         trusted_config_version="research-config-v1",
         screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize("question", ["XAlice Brown", "7Alice Brown"])
+def test_one_leading_character_cannot_hide_a_multiword_identifier(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Brown",)),
     )
     assert result.reason == "participant_identifier"

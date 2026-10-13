@@ -2183,7 +2183,13 @@ def test_separator_split_base64_report_fields_are_rejected(
 
 @pytest.mark.parametrize(
     "public",
-    ["An unrelated public question", "An in-depth analysis", "An on-call analysis"],
+    [
+        "An unrelated public question",
+        "An in-depth analysis",
+        "An on-call analysis",
+        "An en-dash analysis",
+        "An en dash analysis",
+    ],
 )
 @pytest.mark.parametrize("encoding", ["percent", "base64"])
 def test_unrelated_public_report_words_do_not_form_a_private_name(
@@ -2266,6 +2272,38 @@ def test_short_word_exception_cannot_complete_a_long_name_in_worker_report(
     report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
     monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
     result = runtime.submit(principal("a"), "long-name-fragment", "Исследуй эту тему")
+    assert result.model_state.value == "research_rejected"
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+
+
+@pytest.mark.parametrize("inserted", ["X", "7"])
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_leading_insert_cannot_hide_multiword_name_in_worker_report(
+    connected, monkeypatch, inserted, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(
+        participant_identifiers=("Alice Brown",)
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    changed = inserted + "Alice Brown"
+    encoded = (
+        changed.replace(" ", "-")
+        if encoding == "plain"
+        else quote(changed, safe="")
+        if encoding == "percent"
+        else base64.b64encode(changed.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = runtime.submit(principal("a"), "leading-multiword", "Исследуй эту тему")
     assert result.model_state.value == "research_rejected"
     with setup[0]._open() as db:
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (

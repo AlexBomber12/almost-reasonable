@@ -418,14 +418,14 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         words = sum(_word_char(char) for char in token)
         next_states = {0}
         for prior in states:
-            # Ordinary two-letter continuations of "An" must not finish
-            # "Ann"; other inserted fragments such as "An Xn" still match.
+            # Vowel-led two-letter continuations of "An" are ambiguous
+            # public words; inserted fragments such as "An Xn" still match.
             if (
                 prior
                 and compact == "ann"
                 and len(compact) - prior == 1
                 and words == 2
-                and token in {"an", "in", "on"}
+                and token[0] in "aeiou"
                 and token[0] != compact[prior]
             ):
                 continue
@@ -440,6 +440,7 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
                     and left_boundary
                     and index
                     and _word_char(token[index - 1])
+                    and not (index == 1 and " " in needle)
                 ):
                     continue
                 if (
