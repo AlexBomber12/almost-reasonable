@@ -460,7 +460,7 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
             # Keep viable prefix alternatives for inserted fragments such as
             # Sx / SmiX, but not unrelated multi-character words.
             recognizable = words - matched_words <= 1
-            if progressed and cursor < len(compact) and (not prior or recognizable):
+            if progressed and cursor < len(compact) and recognizable:
                 next_states.add(cursor)
             if prior and recognizable:
                 next_states.add(prior)

@@ -1440,3 +1440,14 @@ def test_one_leading_character_cannot_hide_a_multiword_identifier(question):
         screening=ResearchScreeningContext(participant_identifiers=("Alice Brown",)),
     )
     assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize("question", ["Annual research", "Annually researched"])
+def test_initial_public_word_with_long_suffix_cannot_start_a_private_name(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann Research",)),
+    )
+    assert result.disposition is BriefDisposition.READY

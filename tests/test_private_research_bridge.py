@@ -2311,6 +2311,36 @@ def test_leading_insert_cannot_hide_multiword_name_in_worker_report(
         )
 
 
+@pytest.mark.parametrize("encoding", ["percent", "base64"])
+def test_public_annual_research_report_does_not_match_private_name(
+    connected, monkeypatch, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(
+        participant_identifiers=("Ann Research",)
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    public = "Annual research"
+    encoded = (
+        quote(public, safe="")
+        if encoding == "percent"
+        else base64.b64encode(public.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = runtime.submit(principal("a"), "public-annual", "Исследуй эту тему")
+    assert result.model_state.value == "completed"
+    assert "https://example.org/" + encoded in result.response_content
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            1,
+        )
+
+
 @pytest.mark.parametrize("inserted", ["A", "x", "7", "+", "-", "_", "/", "AX7"])
 @pytest.mark.parametrize("urlsafe", [True, False])
 def test_inserted_base64_alphabet_characters_cannot_hide_private_text(

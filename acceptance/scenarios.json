@@ -617,7 +617,11 @@
             "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[base64-an]",
             "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[in]",
             "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[on]",
-            "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[an]"
+            "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[an]",
+            "tests/test_private_research_bridge.py::test_public_annual_research_report_does_not_match_private_name[percent]",
+            "tests/test_private_research_bridge.py::test_public_annual_research_report_does_not_match_private_name[base64]",
+            "tests/test_research_brief.py::test_initial_public_word_with_long_suffix_cannot_start_a_private_name[Annual research]",
+            "tests/test_research_brief.py::test_initial_public_word_with_long_suffix_cannot_start_a_private_name[Annually researched]"
           ]
         },
         {
