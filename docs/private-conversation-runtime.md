@@ -295,7 +295,12 @@ ordered comparison across inserted characters and split tokens, preserving word
 boundaries for short names so unrelated public words do not become name matches.
 Unfinished identifier matches survive inserted word suffixes through the final
 character and its word-boundary check, while unrelated multi-character words
-reset the partial name. Individual inserted characters/separator tokens remain
+reset the partial name before they can complete it. Multi-character fragments
+whose first character does not continue the name reset partial state before
+scanning. Opaque identifiers with separators and no whitespace also retain the
+complete character-order comparison within each report field, including
+prefixes/suffixes and inserted characters at segment boundaries. Separate report
+fields do not combine to invent an opaque identifier. Individual inserted characters/separator tokens remain
 eligible between recognizable fragments. Encoded candidates also receive bounded
 raw and decomposed separator-folded views that retain only the base64 alphabet,
 including when inserted Unicode letters/numbers/marks are separators. Original

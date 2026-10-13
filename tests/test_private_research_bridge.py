@@ -2370,3 +2370,65 @@ def test_unrecorded_citation_rejects_independently_of_private_overlap(connected)
     assert render_report(report) is None
     report["main_finding"] = "Синтетический результат. " + report["sources"][0]["url"]
     assert render_report(report) is not None
+
+
+@pytest.mark.parametrize("public", ["An opinion", "An illustration", "An unknown"])
+@pytest.mark.parametrize("encoding", ["percent", "base64"])
+def test_unrelated_word_end_cannot_complete_private_name(
+    connected, monkeypatch, public, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(participant_identifiers=("Ann",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = (
+        quote(public, safe="")
+        if encoding == "percent"
+        else base64.b64encode(public.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "word-end-name", "Исследуй эту тему"
+        ).model_state.value
+        == "completed"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            1,
+        )
+
+
+@pytest.mark.parametrize("protected", ["participant-a", "session-a"])
+@pytest.mark.parametrize("placement", ["prefix", "suffix", "fragment"])
+def test_structured_identifiers_keep_complete_ordered_protection(
+    connected, monkeypatch, protected, placement
+):
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(participant_identifiers=(protected,))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    changed = (
+        "XX" + protected
+        if placement == "prefix"
+        else protected + "XX"
+        if placement == "suffix"
+        else protected[:-1] + "XX" + protected[-1:]
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + changed
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "structured-name", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

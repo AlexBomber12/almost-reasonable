@@ -1349,3 +1349,24 @@ def test_embedded_case_equivalent_encoded_repairs_are_screened(question):
         screening=ResearchScreeningContext(private_texts=("Café",)),
     )
     assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "An opinion",
+        "An illustration",
+        "An unknown",
+        "An organisation",
+        "An ordinary question",
+        "An optional public question",
+    ],
+)
+def test_unrelated_following_word_cannot_finish_a_private_name(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.READY

@@ -415,6 +415,12 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         for character in fragments
     )
     for token in fragments.split():
+        if (
+            cursor
+            and sum(_word_char(char) for char in token) > 1
+            and token[0] != compact[cursor]
+        ):
+            cursor = 0
         matched = False
         for index, character in enumerate(token):
             if character != compact[cursor]:
@@ -539,7 +545,15 @@ def _privacy_reason(
 ) -> str | None:
     if _contains(values, screening.private_canaries):
         return "private_canary"
-    if _contains_at_boundaries(values, screening.participant_identifiers):
+    structured_identifiers = tuple(
+        value
+        for value in screening.participant_identifiers
+        if not any(character.isspace() for character in _normalized(value))
+        and any(not _word_char(character) for character in _normalized(value))
+    )
+    if _contains_at_boundaries(values, screening.participant_identifiers) or any(
+        _recognizable_overlap([value], structured_identifiers) for value in values
+    ):
         return "participant_identifier"
     if _contains(values, screening.private_quotations):
         return "private_quotation"

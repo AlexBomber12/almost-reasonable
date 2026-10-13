@@ -532,7 +532,19 @@
             "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-prefix999-]",
             "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9--bar]",
             "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-foo-/tail]",
-            "tests/test_private_research_bridge.py::test_unrecorded_citation_rejects_independently_of_private_overlap"
+            "tests/test_private_research_bridge.py::test_unrecorded_citation_rejects_independently_of_private_overlap",
+            "tests/test_private_research_bridge.py::test_unrelated_word_end_cannot_complete_private_name[percent-An opinion]",
+            "tests/test_private_research_bridge.py::test_unrelated_word_end_cannot_complete_private_name[percent-An illustration]",
+            "tests/test_private_research_bridge.py::test_unrelated_word_end_cannot_complete_private_name[percent-An unknown]",
+            "tests/test_private_research_bridge.py::test_unrelated_word_end_cannot_complete_private_name[base64-An opinion]",
+            "tests/test_private_research_bridge.py::test_unrelated_word_end_cannot_complete_private_name[base64-An illustration]",
+            "tests/test_private_research_bridge.py::test_unrelated_word_end_cannot_complete_private_name[base64-An unknown]",
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[prefix-participant-a]",
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[prefix-session-a]",
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[suffix-participant-a]",
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[suffix-session-a]",
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[fragment-participant-a]",
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[fragment-session-a]"
           ]
         },
         {
