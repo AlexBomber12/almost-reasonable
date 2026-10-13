@@ -307,7 +307,14 @@ within individual report fields. Longer encodings use complete character order;
 encodings of up to one base64 quartet require delimiters and allow at most one
 inserted character, so unrelated public initials do not become private encodings.
 These comparisons supplement decoding when inserted alphabet characters defeat
-it. Decoded candidates still pass through the same bounded recursive screen. The comparison has no source token-count
+it. With protected comparison material, remaining candidates also undergo
+single-character deletion reconstruction. Decoded variants use the existing
+privacy/depth screen with further reconstruction disabled on that branch. A shared
+16 MiB weighted work budget accounts for candidate decoding and protected-text
+comparison; exhaustion withholds the output. This covers case-equivalent and
+other normalized spellings without enumerating every spelling or deletion
+combination. Decoded candidates still pass through the same bounded recursive
+screen. The comparison has no source token-count
 cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected
 punctuation-only sequences receive a separate conservative comparison rather than

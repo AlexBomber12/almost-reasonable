@@ -507,7 +507,19 @@
             "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFKD-Caf\\xe9]",
             "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFKD-\\xc5ngstr\\xf6m]",
             "tests/test_private_research_bridge.py::test_short_private_identifiers_do_not_reject_unrelated_public_report_letters[Yearly-Questions]",
-            "tests/test_private_research_bridge.py::test_short_private_identifiers_do_not_reject_unrelated_public_report_letters[Yearly%20Questions]"
+            "tests/test_private_research_bridge.py::test_short_private_identifiers_do_not_reject_unrelated_public_report_letters[Yearly%20Questions]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[True-CAF\\xc9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[True-cAf\\xc9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[True-CaF\\xe9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[True-CAFE]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[True-caf\\xeb]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[True-Caf\\u200b\\xc9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-CAF\\xc9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-cAf\\xc9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-CaF\\xe9]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-CAFE]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-caf\\xeb]",
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-Caf\\u200b\\xc9]"
           ]
         },
         {

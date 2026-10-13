@@ -2290,3 +2290,33 @@ def test_short_private_identifiers_do_not_reject_unrelated_public_report_letters
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             1,
         )
+
+
+@pytest.mark.parametrize(
+    "changed", ["CAFÉ", "cAfÉ", "CaFé", "CAFE", "cafë", "Caf\u200bÉ"]
+)
+@pytest.mark.parametrize("urlsafe", [True, False])
+def test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings(
+    connected, monkeypatch, changed, urlsafe
+):
+    import base64
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(private_texts=("Café",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = encode(changed.encode()).decode().rstrip("=")
+    encoded = encoded[:4] + "A" + encoded[4:]
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "repaired-case", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

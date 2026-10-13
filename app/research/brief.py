@@ -92,6 +92,7 @@ _INJECTION_PATTERNS = (
 _BRIEF_AUTHORITY = object()
 _BRIEF_INTEGRITY_KEY = secrets.token_bytes(32)
 _MAX_ENCODED_SCREEN_DEPTH = 4
+_MAX_ENCODED_REPAIR_WORK = 16 * 1024 * 1024
 _NON_SEGMENTED_SCRIPT_PREFIXES = (
     "CJK ",
     "HIRAGANA ",
@@ -448,7 +449,11 @@ def _screen(
     *,
     identifier_values: list[str] | None = None,
     _encoded_depth: int = 0,
+    _allow_repair: bool = True,
+    _repair_budget: list[int] | None = None,
 ) -> str | None:
+    if _repair_budget is None:
+        _repair_budget = [_MAX_ENCODED_REPAIR_WORK]
     reason = _privacy_reason(values, screening, identifier_values)
     if reason is not None:
         return reason
@@ -475,7 +480,13 @@ def _screen(
             )
             if opaque_is_leakage or not has_control:
                 return "encoded_leakage"
-        return None
+        return (
+            _repaired_encoded_reason(
+                encoded_candidates, screening, _encoded_depth, _repair_budget
+            )
+            if _allow_repair
+            else None
+        )
     for decoded in percent_decoded:
         if (
             _screen(
@@ -483,6 +494,8 @@ def _screen(
                 screening,
                 identifier_values=[decoded],
                 _encoded_depth=_encoded_depth + 1,
+                _allow_repair=_allow_repair,
+                _repair_budget=_repair_budget,
             )
             is not None
         ):
@@ -504,11 +517,19 @@ def _screen(
                 screening,
                 identifier_values=[decoded],
                 _encoded_depth=_encoded_depth + 1,
+                _allow_repair=_allow_repair,
+                _repair_budget=_repair_budget,
             )
             is not None
         ):
             return "encoded_leakage"
-    return None
+    return (
+        _repaired_encoded_reason(
+            encoded_candidates, screening, _encoded_depth, _repair_budget
+        )
+        if _allow_repair
+        else None
+    )
 
 
 def _privacy_reason(
@@ -574,6 +595,51 @@ def _decode_base64(value: str) -> str | None:
     except (binascii.Error, UnicodeDecodeError):
         return None
     return decoded
+
+
+def _repaired_encoded_reason(candidates, screening, depth, budget) -> str | None:
+    protected = set(
+        (
+            *screening.private_canaries,
+            *screening.participant_identifiers,
+            *screening.private_quotations,
+            *screening.sensitive_details,
+            *screening.private_texts,
+        )
+    )
+    if not protected:
+        return None
+    comparison_cost = sum(len(value) for value in protected) * 16
+    seen = set()
+    for candidate in dict.fromkeys(value for value, _ in candidates):
+        for index in range(len(candidate)):
+            if budget[0] < len(candidate):
+                return "encoded_leakage"
+            budget[0] -= len(candidate)
+            decoded = _decode_base64(candidate[:index] + candidate[index + 1 :])
+            if decoded is None or decoded in seen:
+                continue
+            seen.add(decoded)
+            cost = len(decoded) * (1 + len(protected)) + comparison_cost
+            if budget[0] < cost:
+                return "encoded_leakage"
+            budget[0] -= cost
+            # A repaired branch uses the existing depth/privacy checks, without
+            # recursively enumerating more character deletions.
+            if (
+                depth >= _MAX_ENCODED_SCREEN_DEPTH
+                or _screen(
+                    [decoded],
+                    screening,
+                    identifier_values=[decoded],
+                    _encoded_depth=depth + 1,
+                    _allow_repair=False,
+                    _repair_budget=budget,
+                )
+                is not None
+            ):
+                return "encoded_leakage"
+    return None
 
 
 def _known_encoded_overlap(

@@ -1291,3 +1291,47 @@ def test_short_known_encoding_allows_one_bounded_insert(encoded):
         screening=ResearchScreeningContext(participant_identifiers=(protected,)),
     )
     assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "changed", ["CAFÉ", "cAfÉ", "CaFé", "CAFE", "cafë", "Caf\u200bÉ"]
+)
+@pytest.mark.parametrize("position", [0, 4, -1])
+def test_repaired_base64_is_screened_after_normalizing_decoded_text(changed, position):
+    import base64
+
+    encoded = base64.b64encode(changed.encode()).decode().rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:position] + "A" + encoded[position:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize("budget", [0, 64])
+def test_repair_work_exhaustion_withholds_output(budget, monkeypatch):
+    from app.research import brief as module
+
+    monkeypatch.setattr(module, "_MAX_ENCODED_REPAIR_WORK", budget)
+    result = build_safe_research_brief(
+        records(ResearchQuestion("YWE=")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+def test_repaired_candidate_at_depth_limit_fails_closed():
+    from app.research import brief as module
+
+    assert (
+        module._screen(
+            ["Q0FGAw4k"],
+            ResearchScreeningContext(private_texts=("Café",)),
+            _encoded_depth=4,
+        )
+        == "encoded_leakage"
+    )
