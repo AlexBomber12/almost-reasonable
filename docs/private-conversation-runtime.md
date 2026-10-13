@@ -308,7 +308,10 @@ encodings of up to one base64 quartet require delimiters and allow at most one
 inserted character, so unrelated public initials do not become private encodings.
 These comparisons supplement decoding when inserted alphabet characters defeat
 it. With protected comparison material, remaining candidates also undergo
-single-character deletion reconstruction. Decoded variants use the existing
+single-character deletion reconstruction, including candidate substrings when
+other alphabet characters surround an encoding. Short participant names retain
+the delimited one-quartet policy for embedded data; private comparison texts and
+canaries still receive substring reconstruction. Decoded variants use the existing
 privacy/depth screen with further reconstruction disabled on that branch. A shared
 16 MiB weighted work budget accounts for candidate decoding and protected-text
 comparison; exhaustion withholds the output. This covers case-equivalent and

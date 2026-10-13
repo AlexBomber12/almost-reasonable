@@ -1335,3 +1335,17 @@ def test_repaired_candidate_at_depth_limit_fails_closed():
         )
         == "encoded_leakage"
     )
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["fooQ0FGAw4k", "fooQ0FGAw4kbar", "AAAAQ0FGAw4kZZZ", "prefix999Q0FGAw4k"],
+)
+def test_embedded_case_equivalent_encoded_repairs_are_screened(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"

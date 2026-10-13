@@ -597,48 +597,74 @@ def _decode_base64(value: str) -> str | None:
     return decoded
 
 
+def _encoded_substrings(candidates):
+    for candidate in candidates:
+        for start in range(len(candidate)):
+            for end in range(start + 3, len(candidate) + 1):
+                if start or end != len(candidate):
+                    yield candidate[start:end]
+
+
 def _repaired_encoded_reason(candidates, screening, depth, budget) -> str | None:
-    protected = set(
-        (
-            *screening.private_canaries,
-            *screening.participant_identifiers,
-            *screening.private_quotations,
-            *screening.sensitive_details,
-            *screening.private_texts,
-        )
+    candidates = tuple(dict.fromkeys(value for value, _ in candidates))
+    embedded = ResearchScreeningContext(
+        private_canaries=screening.private_canaries,
+        participant_identifiers=tuple(
+            value
+            for value in screening.participant_identifiers
+            if len(_normalized(value).encode("utf-8")) > 3
+        ),
+        private_quotations=screening.private_quotations,
+        sensitive_details=screening.sensitive_details,
+        private_texts=screening.private_texts,
     )
-    if not protected:
-        return None
-    comparison_cost = sum(len(value) for value in protected) * 16
-    seen = set()
-    for candidate in dict.fromkeys(value for value, _ in candidates):
-        for index in range(len(candidate)):
-            if budget[0] < len(candidate):
-                return "encoded_leakage"
-            budget[0] -= len(candidate)
-            decoded = _decode_base64(candidate[:index] + candidate[index + 1 :])
-            if decoded is None or decoded in seen:
-                continue
-            seen.add(decoded)
-            cost = len(decoded) * (1 + len(protected)) + comparison_cost
-            if budget[0] < cost:
-                return "encoded_leakage"
-            budget[0] -= cost
-            # A repaired branch uses the existing depth/privacy checks, without
-            # recursively enumerating more character deletions.
-            if (
-                depth >= _MAX_ENCODED_SCREEN_DEPTH
-                or _screen(
-                    [decoded],
-                    screening,
-                    identifier_values=[decoded],
-                    _encoded_depth=depth + 1,
-                    _allow_repair=False,
-                    _repair_budget=budget,
-                )
-                is not None
-            ):
-                return "encoded_leakage"
+    # Short participant names keep their delimited one-quartet policy. Private
+    # comparison texts/canaries still receive embedded reconstruction.
+    for context, views in (
+        (screening, iter(candidates)),
+        (embedded, _encoded_substrings(candidates)),
+    ):
+        protected = set(
+            (
+                *context.private_canaries,
+                *context.participant_identifiers,
+                *context.private_quotations,
+                *context.sensitive_details,
+                *context.private_texts,
+            )
+        )
+        if not protected:
+            continue
+        comparison_cost = sum(len(value) for value in protected) * 16
+        seen = set()
+        for candidate in views:
+            for index in range(len(candidate)):
+                if budget[0] < len(candidate):
+                    return "encoded_leakage"
+                budget[0] -= len(candidate)
+                decoded = _decode_base64(candidate[:index] + candidate[index + 1 :])
+                if decoded is None or decoded in seen:
+                    continue
+                seen.add(decoded)
+                cost = len(decoded) * (1 + len(protected)) + comparison_cost
+                if budget[0] < cost:
+                    return "encoded_leakage"
+                budget[0] -= cost
+                # A repaired branch uses the existing depth/privacy checks,
+                # without recursively enumerating more character deletions.
+                if (
+                    depth >= _MAX_ENCODED_SCREEN_DEPTH
+                    or _screen(
+                        [decoded],
+                        context,
+                        identifier_values=[decoded],
+                        _encoded_depth=depth + 1,
+                        _allow_repair=False,
+                        _repair_budget=budget,
+                    )
+                    is not None
+                ):
+                    return "encoded_leakage"
     return None
 
 

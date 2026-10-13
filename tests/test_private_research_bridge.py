@@ -2320,3 +2320,53 @@ def test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize(
+    "prefix,suffix",
+    [
+        ("foo", ""),
+        ("AAAA", "ZZZ"),
+        ("tag", "tail"),
+        ("prefix999", ""),
+        ("", "bar"),
+        ("foo", "/tail"),
+    ],
+)
+@pytest.mark.parametrize("changed", ["CAFÉ", "cAfÉ"])
+def test_embedded_repaired_encodings_are_rejected(
+    connected, monkeypatch, prefix, suffix, changed
+):
+    import base64
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(private_texts=("Café",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = base64.b64encode(changed.encode()).decode().rstrip("=")
+    encoded = encoded[:4] + "A" + encoded[4:]
+    report["report"]["sources"][0]["url"] = (
+        "https://example.org/" + prefix + encoded + suffix
+    )
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "embedded-repair", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+
+
+def test_unrecorded_citation_rejects_independently_of_private_overlap(connected):
+    from app.private_web.research_bridge import render_report
+
+    _, _, _, worker, _, _, _ = connected
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())["report"]
+    report["main_finding"] = "Синтетический результат. https://invented.example/claim"
+    assert render_report(report) is None
+    report["main_finding"] = "Синтетический результат. " + report["sources"][0]["url"]
+    assert render_report(report) is not None

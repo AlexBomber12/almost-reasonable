@@ -519,7 +519,20 @@
             "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-CaF\\xe9]",
             "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-CAFE]",
             "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-caf\\xeb]",
-            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-Caf\\u200b\\xc9]"
+            "tests/test_private_research_bridge.py::test_decoded_single_delete_candidates_reject_privacy_equivalent_spellings[False-Caf\\u200b\\xc9]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[CAF\\xc9-foo-]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[CAF\\xc9-AAAA-ZZZ]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[CAF\\xc9-tag-tail]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[CAF\\xc9-prefix999-]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[CAF\\xc9--bar]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[CAF\\xc9-foo-/tail]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-foo-]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-AAAA-ZZZ]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-tag-tail]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-prefix999-]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9--bar]",
+            "tests/test_private_research_bridge.py::test_embedded_repaired_encodings_are_rejected[cAf\\xc9-foo-/tail]",
+            "tests/test_private_research_bridge.py::test_unrecorded_citation_rejects_independently_of_private_overlap"
           ]
         },
         {
