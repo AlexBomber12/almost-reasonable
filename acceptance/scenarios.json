@@ -574,7 +574,24 @@
             "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[percent-Alice ASmith]",
             "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice XSmith]",
             "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice 7Smith]",
-            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice ASmith]"
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice ASmith]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[plain-An-Xn]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[plain-An-xn]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[plain-An-7n]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[percent-An-Xn]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[percent-An-xn]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[percent-An-7n]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[base64-An-Xn]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[base64-An-xn]",
+            "tests/test_private_research_bridge.py::test_inserted_short_name_fragment_is_rejected_in_worker_report[base64-An-7n]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[A\\U0001f512nn]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[A X nn]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[A n n]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[A1nn]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An Xn]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An xn]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An 7n]",
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An-Xn]"
           ]
         },
         {

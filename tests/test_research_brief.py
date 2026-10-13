@@ -1123,7 +1123,9 @@ def test_all_protected_collections_reject_split_complete_content(field, question
     assert result.disposition is BriefDisposition.DECLINED
 
 
-@pytest.mark.parametrize("question", ["A🔒nn", "A X nn", "A n n", "A1nn"])
+@pytest.mark.parametrize(
+    "question", ["A🔒nn", "A X nn", "A n n", "A1nn", "An Xn", "An xn", "An 7n", "An-Xn"]
+)
 def test_short_names_reject_separator_or_token_inserts(question):
     result = build_safe_research_brief(
         records(ResearchQuestion(question)),

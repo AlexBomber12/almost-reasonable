@@ -2212,6 +2212,35 @@ def test_unrelated_public_report_words_do_not_form_a_private_name(
         )
 
 
+@pytest.mark.parametrize("changed", ["An-Xn", "An-xn", "An-7n"])
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_inserted_short_name_fragment_is_rejected_in_worker_report(
+    connected, monkeypatch, changed, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(participant_identifiers=("Ann",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = (
+        changed
+        if encoding == "plain"
+        else quote(changed, safe="")
+        if encoding == "percent"
+        else base64.b64encode(changed.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = runtime.submit(principal("a"), "short-name-fragment", "Исследуй эту тему")
+    assert result.model_state.value == "research_rejected"
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+
+
 @pytest.mark.parametrize("inserted", ["A", "x", "7", "+", "-", "_", "/", "AX7"])
 @pytest.mark.parametrize("urlsafe", [True, False])
 def test_inserted_base64_alphabet_characters_cannot_hide_private_text(
