@@ -2235,3 +2235,58 @@ def test_inserted_base64_alphabet_characters_cannot_hide_private_text(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize("protected", ["Café", "Ångström"])
+@pytest.mark.parametrize("form", ["NFC", "NFD", "NFKC", "NFKD"])
+@pytest.mark.parametrize("urlsafe", [True, False])
+def test_canonical_protected_encodings_reject_inserted_alphabet_characters(
+    connected, monkeypatch, protected, form, urlsafe
+):
+    import base64
+    import unicodedata
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(private_texts=(protected,))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = (
+        encode(unicodedata.normalize(form, protected).encode()).decode().rstrip("=")
+    )
+    encoded = encoded[:4] + "A" + encoded[4:]
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "canonical-base64", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+
+
+@pytest.mark.parametrize("path", ["Yearly-Questions", "Yearly%20Questions"])
+def test_short_private_identifiers_do_not_reject_unrelated_public_report_letters(
+    connected, monkeypatch, path
+):
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(participant_identifiers=("a",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    report["report"]["sources"][0]["url"] = "https://example.org/" + path
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "short-encoded-name", "Исследуй эту тему"
+        ).model_state.value
+        == "completed"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            1,
+        )

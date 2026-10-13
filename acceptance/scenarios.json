@@ -489,7 +489,25 @@
             "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False--]",
             "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-_]",
             "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-/]",
-            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-AX7]"
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-AX7]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFC-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFC-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFD-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFD-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFKC-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFKC-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFKD-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[True-NFKD-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFC-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFC-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFD-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFD-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFKC-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFKC-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFKD-Caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_canonical_protected_encodings_reject_inserted_alphabet_characters[False-NFKD-\\xc5ngstr\\xf6m]",
+            "tests/test_private_research_bridge.py::test_short_private_identifiers_do_not_reject_unrelated_public_report_letters[Yearly-Questions]",
+            "tests/test_private_research_bridge.py::test_short_private_identifiers_do_not_reject_unrelated_public_report_letters[Yearly%20Questions]"
           ]
         },
         {

@@ -588,7 +588,19 @@ def _known_encoded_overlap(
         *screening.private_texts,
     )
     for private in dict.fromkeys(protected):
-        for text in dict.fromkeys((private, _normalized(private))):
+        texts = dict.fromkeys(
+            (
+                private,
+                private.casefold(),
+                _normalized(private),
+                *(
+                    unicodedata.normalize(form, value)
+                    for value in (private, private.casefold())
+                    for form in ("NFC", "NFD", "NFKC", "NFKD")
+                ),
+            )
+        )
+        for text in texts:
             raw = text.encode("utf-8")
             encodings = (
                 base64.b64encode(raw).decode("ascii").rstrip("="),
@@ -596,6 +608,10 @@ def _known_encoded_overlap(
             )
             for encoded in dict.fromkeys(encodings):
                 for public in public_views:
+                    if len(encoded) <= 4:
+                        if _short_encoded_match(public, encoded):
+                            return True
+                        continue
                     stream = iter(public)
                     if all(
                         any(character == expected for character in stream)
@@ -603,6 +619,21 @@ def _known_encoded_overlap(
                     ):
                         return True
     return False
+
+
+def _short_encoded_match(public: str, encoded: str) -> bool:
+    # One base64 quartet represents at most three protected bytes. Permit one
+    # inserted character within a delimited candidate, rather than collecting
+    # unrelated initials anywhere in prose. Slash remains a URL-path delimiter.
+    patterns = (
+        re.escape(encoded[:index]) + r".?" + re.escape(encoded[index:])
+        for index in range(len(encoded) + 1)
+    )
+    return any(
+        re.search(rf"(?<![A-Za-z0-9+_-]){pattern}(?![A-Za-z0-9+_-])", public)
+        is not None
+        for pattern in patterns
+    )
 
 
 def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:

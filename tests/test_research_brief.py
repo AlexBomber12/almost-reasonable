@@ -1264,3 +1264,30 @@ def test_known_encoding_also_compares_normalized_protected_text():
         screening=ResearchScreeningContext(private_texts=("Café",)),
     )
     assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "question", ["Yearly Questions", "Yonder Quick examples", "Yearly/Questions"]
+)
+def test_short_encoding_does_not_match_unrelated_public_initials(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("a",)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "encoded", ["AYQ", "YAQ", "YQA", "Y.Q", "Y🔒Q", "Y Q", "QAW5u", "AQW5u", "QW5uA"]
+)
+def test_short_known_encoding_allows_one_bounded_insert(encoded):
+    protected = "a" if len(encoded) <= 3 else "Ann"
+    result = build_safe_research_brief(
+        records(ResearchQuestion("https://example.org/" + encoded)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(protected,)),
+    )
+    assert result.reason == "encoded_leakage"
