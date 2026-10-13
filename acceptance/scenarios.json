@@ -473,7 +473,23 @@
             "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-==]",
             "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-=\\U0001f512=]",
             "tests/test_private_research_bridge.py::test_unrelated_public_report_words_do_not_form_a_private_name[percent]",
-            "tests/test_private_research_bridge.py::test_unrelated_public_report_words_do_not_form_a_private_name[base64]"
+            "tests/test_private_research_bridge.py::test_unrelated_public_report_words_do_not_form_a_private_name[base64]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-A]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-x]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-7]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-+]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True--]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-_]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-/]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[True-AX7]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-A]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-x]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-7]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-+]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False--]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-_]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-/]",
+            "tests/test_private_research_bridge.py::test_inserted_base64_alphabet_characters_cannot_hide_private_text[False-AX7]"
           ]
         },
         {

@@ -452,6 +452,8 @@ def _screen(
     reason = _privacy_reason(values, screening, identifier_values)
     if reason is not None:
         return reason
+    if _known_encoded_overlap(values, screening):
+        return "encoded_leakage"
     try:
         percent_decoded = tuple(
             decoded
@@ -572,6 +574,35 @@ def _decode_base64(value: str) -> str | None:
     except (binascii.Error, UnicodeDecodeError):
         return None
     return decoded
+
+
+def _known_encoded_overlap(
+    values: list[str], screening: ResearchScreeningContext
+) -> bool:
+    public_views = tuple(_normalized_for_encoding(value) for value in values)
+    protected = (
+        *screening.private_canaries,
+        *screening.participant_identifiers,
+        *screening.private_quotations,
+        *screening.sensitive_details,
+        *screening.private_texts,
+    )
+    for private in dict.fromkeys(protected):
+        for text in dict.fromkeys((private, _normalized(private))):
+            raw = text.encode("utf-8")
+            encodings = (
+                base64.b64encode(raw).decode("ascii").rstrip("="),
+                base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+            )
+            for encoded in dict.fromkeys(encodings):
+                for public in public_views:
+                    stream = iter(public)
+                    if all(
+                        any(character == expected for character in stream)
+                        for expected in encoded
+                    ):
+                        return True
+    return False
 
 
 def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:

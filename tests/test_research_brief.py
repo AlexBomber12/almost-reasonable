@@ -1223,3 +1223,44 @@ def test_unrelated_words_do_not_complete_partial_identifier_matches(
         screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
     )
     assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "private_canaries",
+        "participant_identifiers",
+        "private_quotations",
+        "sensitive_details",
+        "private_texts",
+    ],
+)
+@pytest.mark.parametrize("urlsafe", [True, False])
+@pytest.mark.parametrize("inserted", ["A", "AX7"])
+def test_known_encoded_protected_values_match_across_inserted_alphabet_characters(
+    field, urlsafe, inserted
+):
+    import base64
+
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = encode("секретная гипотеза".encode()).decode().rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:12] + inserted + encoded[12:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(**{field: ("секретная гипотеза",)}),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+def test_known_encoding_also_compares_normalized_protected_text():
+    import base64
+
+    encoded = base64.b64encode("cafe".encode()).decode().rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:3] + "X" + encoded[3:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"

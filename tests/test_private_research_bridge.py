@@ -2207,3 +2207,31 @@ def test_unrelated_public_report_words_do_not_form_a_private_name(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             1,
         )
+
+
+@pytest.mark.parametrize("inserted", ["A", "x", "7", "+", "-", "_", "/", "AX7"])
+@pytest.mark.parametrize("urlsafe", [True, False])
+def test_inserted_base64_alphabet_characters_cannot_hide_private_text(
+    connected, monkeypatch, inserted, urlsafe
+):
+    import base64
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(private_texts=("секретная гипотеза",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = encode("секретная гипотеза".encode()).decode().rstrip("=")
+    encoded = encoded[:12] + inserted + encoded[12:]
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "alphabet-base64", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

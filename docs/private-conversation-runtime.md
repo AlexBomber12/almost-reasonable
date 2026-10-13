@@ -300,7 +300,11 @@ eligible between recognizable fragments. Encoded candidates also receive bounded
 raw and decomposed separator-folded views that retain only the base64 alphabet,
 including when inserted Unicode letters/numbers/marks are separators. Original
 views retain valid terminal padding, while folded views reconstruct unpadded
-candidates so interior padding cannot hide a protected value; decoded candidates still pass
+candidates so interior padding cannot hide a protected value. Standard and
+URL-safe base64 encodings of each known protected string and its normalized form
+also receive complete character-order comparison within individual report fields,
+so inserted alphabet characters cannot evade screening merely by defeating the
+decoder; decoded candidates still pass
 through the same bounded recursive screen. The comparison has no source token-count
 cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected
