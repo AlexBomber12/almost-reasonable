@@ -2099,3 +2099,71 @@ def test_accents_inside_base64_cannot_hide_private_text(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize("changed", ["AliceX Smith", "Alice🔒 Smith", "AliceX SmitXh"])
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_multiword_identifiers_survive_inserted_word_end_characters(
+    connected, monkeypatch, changed, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(
+        participant_identifiers=("Alice Smith",)
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = (
+        changed
+        if encoding == "plain"
+        else quote(changed, safe="")
+        if encoding == "percent"
+        else base64.b64encode(changed.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "multiword-id", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+
+
+@pytest.mark.parametrize("separator", [".", ":", ";", "🔒", "#"])
+@pytest.mark.parametrize("encoding", ["raw", "percent"])
+@pytest.mark.parametrize("padded", [True, False])
+def test_separator_split_base64_report_fields_are_rejected(
+    connected, monkeypatch, separator, encoding, padded
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(private_texts=("секретная гипотеза",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = base64.b64encode("секретная гипотеза".encode()).decode()
+    if not padded:
+        encoded = encoded.rstrip("=")
+    encoded = encoded[:12] + separator + encoded[12:]
+    if encoding == "percent":
+        encoded = quote(encoded, safe="")
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "split-base64", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

@@ -292,7 +292,11 @@ from hiding protected base characters, including inside encoded candidates.
 Protected canaries, quotations and sensitive details receive the same complete
 ordered comparison. Participant and session identifiers also receive bounded
 ordered comparison across inserted characters and split tokens, preserving word
-boundaries for short names so unrelated public words do not become name matches. The comparison has no source token-count
+boundaries for short names so unrelated public words do not become name matches.
+Unfinished multiword identifier matches survive inserted word suffixes. Encoded
+candidates also receive a bounded punctuation/symbol separator-folded view that
+retains the base64 alphabet and the original views; decoded candidates still pass
+through the same bounded recursive screen. The comparison has no source token-count
 cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected
 punctuation-only sequences receive a separate conservative comparison rather than

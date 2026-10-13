@@ -1160,3 +1160,31 @@ def test_insert_tolerant_names_still_require_final_word_boundary(question):
         screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
     )
     assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize("question", ["AliceX Smith", "Alice🔒 Smith", "AliceX SmitXh"])
+def test_multiword_identifier_partial_matches_survive_inserted_word_suffixes(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize("separator", [".", ":", ";", "🔒", "#"])
+@pytest.mark.parametrize("padded", [True, False])
+def test_base64_punctuation_and_symbol_separators_are_screened(separator, padded):
+    import base64
+
+    encoded = base64.b64encode("секретная гипотеза".encode()).decode()
+    if not padded:
+        encoded = encoded.rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:12] + separator + encoded[12:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
+    )
+    assert result.reason == "encoded_leakage"

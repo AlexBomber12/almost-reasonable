@@ -428,8 +428,10 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
                 return True
         # Carry matched name fragments across separators/whole inserted tokens,
         # but not a partial name embedded in an unrelated word (Ann / planning).
-        if last_match is not None and any(
-            _word_char(char) for char in token[last_match + 1 :]
+        if (
+            cursor == len(compact) - 1
+            and last_match is not None
+            and any(_word_char(char) for char in token[last_match + 1 :])
         ):
             cursor = 0
     return False
@@ -574,7 +576,13 @@ def _decode_base64(value: str) -> str | None:
 def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
-    views = (raw,) if normalized == raw else (raw, normalized)
+    separator_folded = "".join(
+        " "
+        if unicodedata.category(character)[0] in "PS" and character not in "+/_-="
+        else character
+        for character in normalized
+    )
+    views = tuple(dict.fromkeys((raw, normalized, separator_folded)))
     ordinary_contiguous = tuple(
         (match.group(0), match.group(0).endswith("="))
         for view in views
