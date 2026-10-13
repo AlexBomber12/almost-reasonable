@@ -295,9 +295,10 @@ ordered comparison across inserted characters and split tokens, preserving word
 boundaries for short names so unrelated public words do not become name matches.
 Unfinished identifier matches survive inserted word suffixes through the final
 character and its word-boundary check, while unrelated multi-character words
-reset the partial name before they can complete it. Multi-character fragments
-whose first character does not continue the name reset partial state before
-scanning. Viable earlier prefix states survive inserted partial-name fragments
+cannot complete or preserve the partial name merely through matching an ending.
+Fragments are scanned before deciding whether they are recognizable, including
+one leading inserted character. Viable earlier prefix states survive inserted
+partial-name fragments
 such as Sx/SmiX; partial continuation/fallback requires at most one unmatched
 word character in a fragment, preventing unrelated longer words from completing
 or preserving a partial name. State count is bounded by identifier length.

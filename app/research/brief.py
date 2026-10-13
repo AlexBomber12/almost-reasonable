@@ -418,8 +418,6 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         words = sum(_word_char(char) for char in token)
         next_states = {0}
         for prior in states:
-            if prior and words > 1 and token[0] != compact[prior]:
-                continue
             cursor = prior
             progressed = False
             matched_words = 0

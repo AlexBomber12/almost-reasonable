@@ -553,7 +553,16 @@
             "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[percent-Alice SmitX Smith]",
             "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice Sx Smith]",
             "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice SmiX Smith]",
-            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice SmitX Smith]"
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice SmitX Smith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[plain-Alice XSmith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[plain-Alice 7Smith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[plain-Alice ASmith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[percent-Alice XSmith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[percent-Alice 7Smith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[percent-Alice ASmith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice XSmith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice 7Smith]",
+            "tests/test_private_research_bridge.py::test_leading_inserted_name_characters_are_rejected[base64-Alice ASmith]"
           ]
         },
         {

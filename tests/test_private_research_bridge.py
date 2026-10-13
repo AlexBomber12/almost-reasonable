@@ -2469,3 +2469,38 @@ def test_inserted_prefix_fragments_cannot_consume_a_private_name_match(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize("changed", ["Alice XSmith", "Alice 7Smith", "Alice ASmith"])
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_leading_inserted_name_characters_are_rejected(
+    connected, monkeypatch, changed, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(
+        participant_identifiers=("Alice Smith",)
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = (
+        changed
+        if encoding == "plain"
+        else quote(changed, safe="")
+        if encoding == "percent"
+        else base64.b64encode(changed.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        runtime.submit(
+            principal("a"), "leading-name-insert", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

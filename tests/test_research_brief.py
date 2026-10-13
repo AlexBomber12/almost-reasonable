@@ -1401,3 +1401,14 @@ def test_unrelated_words_are_not_inserted_identifier_fragments(identifier, quest
         screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
     )
     assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize("question", ["Alice XSmith", "Alice 7Smith", "Alice ASmith"])
+def test_leading_insert_is_checked_after_scanning_name_fragment(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
