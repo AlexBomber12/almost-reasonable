@@ -1360,6 +1360,8 @@ def test_embedded_case_equivalent_encoded_repairs_are_screened(question):
         "An organisation",
         "An ordinary question",
         "An optional public question",
+        "An in-depth analysis",
+        "An on-call analysis",
     ],
 )
 def test_unrelated_following_word_cannot_finish_a_private_name(question):

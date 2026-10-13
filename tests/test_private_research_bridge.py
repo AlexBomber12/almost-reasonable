@@ -2181,9 +2181,13 @@ def test_separator_split_base64_report_fields_are_rejected(
         )
 
 
+@pytest.mark.parametrize(
+    "public",
+    ["An unrelated public question", "An in-depth analysis", "An on-call analysis"],
+)
 @pytest.mark.parametrize("encoding", ["percent", "base64"])
 def test_unrelated_public_report_words_do_not_form_a_private_name(
-    connected, monkeypatch, encoding
+    connected, monkeypatch, encoding, public
 ):
     import base64
     from urllib.parse import quote
@@ -2192,7 +2196,6 @@ def test_unrelated_public_report_words_do_not_form_a_private_name(
     runtime, bridge, _, worker, _, _, setup = connected
     bridge._screening = ResearchScreeningContext(participant_identifiers=("Ann",))
     report = worker.execute(grant(worker), peer_uid=os.geteuid())
-    public = "An unrelated public question"
     encoded = (
         quote(public, safe="")
         if encoding == "percent"

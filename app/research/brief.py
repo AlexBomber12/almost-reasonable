@@ -418,6 +418,16 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         words = sum(_word_char(char) for char in token)
         next_states = {0}
         for prior in states:
+            # A two-letter word ending in the sole remaining name character
+            # is too ambiguous to count as a leading insertion ("An in").
+            # Longer fragments still admit an inserted prefix ("Alice XSmith").
+            if (
+                prior
+                and len(compact) - prior == 1
+                and words == 2
+                and token[0] != compact[prior]
+            ):
+                continue
             cursor = prior
             progressed = False
             matched_words = 0
