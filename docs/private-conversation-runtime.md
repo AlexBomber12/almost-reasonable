@@ -294,10 +294,13 @@ ordered comparison. Participant and session identifiers also receive bounded
 ordered comparison across inserted characters and split tokens, preserving word
 boundaries for short names so unrelated public words do not become name matches.
 Unfinished identifier matches survive inserted word suffixes through the final
-character and its word-boundary check. Encoded candidates also receive bounded
+character and its word-boundary check, while unrelated multi-character words
+reset the partial name. Individual inserted characters/separator tokens remain
+eligible between recognizable fragments. Encoded candidates also receive bounded
 raw and decomposed separator-folded views that retain only the base64 alphabet,
 including when inserted Unicode letters/numbers/marks are separators. Original
-views remain available; decoded candidates still pass
+views retain valid terminal padding, while folded views reconstruct unpadded
+candidates so interior padding cannot hide a protected value; decoded candidates still pass
 through the same bounded recursive screen. The comparison has no source token-count
 cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected

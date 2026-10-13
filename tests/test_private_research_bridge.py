@@ -2146,7 +2146,8 @@ def test_multiword_identifiers_survive_inserted_word_end_characters(
 
 
 @pytest.mark.parametrize(
-    "separator", [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः"]
+    "separator",
+    [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः", "=", "==", "=🔒="],
 )
 @pytest.mark.parametrize("encoding", ["raw", "percent"])
 @pytest.mark.parametrize("padded", [True, False])
@@ -2177,4 +2178,32 @@ def test_separator_split_base64_report_fields_are_rejected(
     with setup[0]._open() as db:
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
+        )
+
+
+@pytest.mark.parametrize("encoding", ["percent", "base64"])
+def test_unrelated_public_report_words_do_not_form_a_private_name(
+    connected, monkeypatch, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(participant_identifiers=("Ann",))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    public = "An unrelated public question"
+    encoded = (
+        quote(public, safe="")
+        if encoding == "percent"
+        else base64.b64encode(public.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = runtime.submit(principal("a"), "unrelated-name", "Исследуй эту тему")
+    assert result.model_state.value == "completed"
+    assert "https://example.org/" + encoded in result.response_content
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            1,
         )

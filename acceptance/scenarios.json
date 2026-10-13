@@ -459,7 +459,21 @@
             "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-\\u0661]",
             "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-\\xb2]",
             "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-\\u211d]",
-            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-\\u0903]"
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-\\u0903]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[True-raw-=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[True-raw-==]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[True-raw-=\\U0001f512=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[True-percent-=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[True-percent-==]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[True-percent-=\\U0001f512=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-raw-=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-raw-==]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-raw-=\\U0001f512=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-=]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-==]",
+            "tests/test_private_research_bridge.py::test_separator_split_base64_report_fields_are_rejected[False-percent-=\\U0001f512=]",
+            "tests/test_private_research_bridge.py::test_unrelated_public_report_words_do_not_form_a_private_name[percent]",
+            "tests/test_private_research_bridge.py::test_unrelated_public_report_words_do_not_form_a_private_name[base64]"
           ]
         },
         {

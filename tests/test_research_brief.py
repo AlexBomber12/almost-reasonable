@@ -1183,7 +1183,8 @@ def test_multiword_identifier_partial_matches_survive_inserted_word_suffixes(que
 
 
 @pytest.mark.parametrize(
-    "separator", [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः"]
+    "separator",
+    [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः", "=", "==", "=🔒="],
 )
 @pytest.mark.parametrize("padded", [True, False])
 def test_base64_punctuation_and_symbol_separators_are_screened(separator, padded):
@@ -1199,3 +1200,26 @@ def test_base64_punctuation_and_symbol_separators_are_screened(separator, padded
         screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
     )
     assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "identifier,question",
+    [
+        ("Ann", "An unrelated public question"),
+        ("Ann", "An unrelated question"),
+        ("Ann", "An-unrelated-public-question"),
+        ("Ann", "An/unrelated/public/question"),
+        ("Ann", "An%20unrelated%20public%20question"),
+        ("Alice Smith", "Alice unrelated public Smith"),
+    ],
+)
+def test_unrelated_words_do_not_complete_partial_identifier_matches(
+    identifier, question
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
+    )
+    assert result.disposition is BriefDisposition.READY

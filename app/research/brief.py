@@ -408,7 +408,13 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
         return True
     compact = _compact_protected(needle) or needle
     cursor = 0
-    for token in value.split():
+    fragments = re.sub(r"%[0-9a-f]{2}", " ", value)
+    fragments = "".join(
+        character if character in compact or _word_char(character) else " "
+        for character in fragments
+    )
+    for token in fragments.split():
+        matched = False
         for index, character in enumerate(token):
             if character != compact[cursor]:
                 continue
@@ -422,8 +428,13 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
             ):
                 continue
             cursor += 1
+            matched = True
             if cursor == len(compact):
                 return True
+        # An unrelated word breaks a name; individual inserted characters and
+        # separator tokens can still occur between recognizable name fragments.
+        if cursor and not matched and sum(_word_char(char) for char in token) > 1:
+            cursor = 0
     return False
 
 
@@ -566,7 +577,9 @@ def _decode_base64(value: str) -> str | None:
 def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
-    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-="
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-"
+    # Original views retain terminal padding. Folded views reconstruct an
+    # unpadded candidate, including when invalid padding occurs inside a token.
     separator_folded = tuple(
         "".join(character if character in alphabet else " " for character in view)
         for view in (raw, normalized)
