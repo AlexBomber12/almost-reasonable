@@ -1099,3 +1099,64 @@ def test_decomposed_marks_do_not_hide_protected_text(protected, question):
         screening=ResearchScreeningContext(private_texts=(protected,)),
     )
     assert result.reason == "recognizable_private_overlap"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "private_canaries",
+        "participant_identifiers",
+        "private_quotations",
+        "sensitive_details",
+    ],
+)
+@pytest.mark.parametrize(
+    "question", ["partici🔒pant-a", "particiXpant-a", "p a r t i c i p a n t a"]
+)
+def test_all_protected_collections_reject_split_complete_content(field, question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(**{field: ("participant-a",)}),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+
+
+@pytest.mark.parametrize("question", ["A🔒nn", "A X nn", "A n n", "A1nn"])
+def test_short_names_reject_separator_or_token_inserts(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+
+
+@pytest.mark.parametrize("mark", ["\u0301", "\u0308"])
+def test_base64_candidate_marks_are_decomposed_before_decode(mark):
+    import base64
+
+    encoded = base64.b64encode("секретная гипотеза".encode()).decode()
+    index = encoded.index("N") + 1
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:index] + mark + encoded[index:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "question", ["Annual public reports", "A🔒nnual public reports"]
+)
+def test_insert_tolerant_names_still_require_final_word_boundary(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.READY

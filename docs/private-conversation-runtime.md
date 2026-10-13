@@ -288,7 +288,11 @@ separators cannot bypass matching. A complete compact-character comparison of
 every protected text also covers stripped format separators, joined words and
 character splitting while preserving the existing in-word normalization.
 Compatibility decomposition before stripping marks also prevents composed accents
-from hiding protected base characters. The comparison has no source token-count
+from hiding protected base characters, including inside encoded candidates.
+Protected canaries, quotations and sensitive details receive the same complete
+ordered comparison. Participant and session identifiers also receive bounded
+ordered comparison across inserted characters and split tokens, preserving word
+boundaries for short names so unrelated public words do not become name matches. The comparison has no source token-count
 cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected
 punctuation-only sequences receive a separate conservative comparison rather than

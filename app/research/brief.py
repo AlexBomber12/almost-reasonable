@@ -396,17 +396,47 @@ def _contains_at_boundaries(values: list[str], needles: tuple[str, ...]) -> bool
 
 
 def _participant_identifier_matches(value: str, needle: str) -> bool:
-    if any(
+    nonsegmented = any(
         unicodedata.name(character, "").startswith(_NON_SEGMENTED_SCRIPT_PREFIXES)
         for character in needle
-    ):
-        return needle in value
-    left_boundary = r"(?<![^\W_])" if re.match(r"[^\W_]", needle[0]) else ""
-    right_boundary = r"(?![^\W_])" if re.match(r"[^\W_]", needle[-1]) else ""
-    return (
-        re.search(rf"{left_boundary}{re.escape(needle)}{right_boundary}", value)
-        is not None
     )
+    left_boundary = not nonsegmented and bool(re.match(r"[^\W_]", needle[0]))
+    right_boundary = not nonsegmented and bool(re.match(r"[^\W_]", needle[-1]))
+    exact_left = r"(?<![^\W_])" if left_boundary else ""
+    exact_right = r"(?![^\W_])" if right_boundary else ""
+    if re.search(rf"{exact_left}{re.escape(needle)}{exact_right}", value):
+        return True
+    compact = _compact_protected(needle) or needle
+    cursor = 0
+    for token in value.split():
+        last_match = None
+        for index, character in enumerate(token):
+            if character != compact[cursor]:
+                continue
+            if cursor == 0 and left_boundary and index and _word_char(token[index - 1]):
+                continue
+            if (
+                cursor == len(compact) - 1
+                and right_boundary
+                and index + 1 < len(token)
+                and _word_char(token[index + 1])
+            ):
+                continue
+            cursor += 1
+            last_match = index
+            if cursor == len(compact):
+                return True
+        # Carry matched name fragments across separators/whole inserted tokens,
+        # but not a partial name embedded in an unrelated word (Ann / planning).
+        if last_match is not None and any(
+            _word_char(char) for char in token[last_match + 1 :]
+        ):
+            cursor = 0
+    return False
+
+
+def _word_char(character: str) -> bool:
+    return re.match(r"[^\W_]", character) is not None
 
 
 def _screen(
@@ -500,7 +530,15 @@ def _privacy_reason(
     without_quantities = _PUBLIC_GROUPED_QUANTITY.sub(" ", without_dates)
     if _EMAIL.search(email_view) or _has_phone_number(without_quantities):
         return "direct_identifier"
-    if _recognizable_overlap(values, screening.private_texts):
+    if _recognizable_overlap(
+        values,
+        (
+            *screening.private_texts,
+            *screening.private_canaries,
+            *screening.private_quotations,
+            *screening.sensitive_details,
+        ),
+    ):
         return "recognizable_private_overlap"
     normalized = _normalized(combined)
     if any(_normalized(pattern) in normalized for pattern in _INJECTION_PATTERNS):
@@ -563,7 +601,7 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
 def _normalized_for_encoding(value: str) -> str:
     return "".join(
         " " if character.isspace() else character
-        for character in unicodedata.normalize("NFKC", value)
+        for character in unicodedata.normalize("NFKD", value)
         if unicodedata.category(character) not in {"Cf", "Mn"}
     )
 

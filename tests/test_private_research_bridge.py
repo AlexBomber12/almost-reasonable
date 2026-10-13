@@ -1996,3 +1996,106 @@ def test_composed_and_inserted_marks_cannot_hide_protected_base_text(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize("leak", ["source_id", "source_principal", "source_session"])
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_split_operational_identifiers_are_rejected(
+    connected, monkeypatch, leak, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.cognition.shared import SharedIntelligence
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+
+    runtime, bridge, _, worker, _, fake, setup = connected
+    store, _, gate, _, _ = setup
+    source = append_event(store, principal("b"), "split-id-source", "Другое наблюдение")
+    one = approval(source, author="b", op="split-id-shared")
+    shared = SharedIntelligence(store, gate, approvals=(one,), clock=lambda: NOW)
+    shared.commit(one)
+    research = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    values = {
+        "source_id": source,
+        "source_principal": principal("b").principal_id.value,
+        "source_session": principal("b").authenticated_source.value,
+    }
+    value = values[leak]
+    changed = value[:3] + "🔒" + value[3:]
+    encoded = (
+        changed
+        if encoding == "plain"
+        else quote(changed, safe="")
+        if encoding == "percent"
+        else base64.b64encode(changed.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        research.submit(
+            principal("a"), "split-id-quote", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with store._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+
+
+@pytest.mark.parametrize("mark", ["\u0301", "\u0308"])
+@pytest.mark.parametrize("encoding", ["raw", "percent"])
+def test_accents_inside_base64_cannot_hide_private_text(
+    connected, monkeypatch, mark, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.cognition.shared import SharedIntelligence
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+
+    runtime, bridge, _, worker, _, fake, setup = connected
+    store, _, gate, _, _ = setup
+    source = append_event(
+        store, principal("b"), "marked-base64-source", "секретная гипотеза"
+    )
+    one = approval(source, author="b", op="marked-base64-shared")
+    shared = SharedIntelligence(store, gate, approvals=(one,), clock=lambda: NOW)
+    shared.commit(one)
+    research = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = base64.b64encode("секретная гипотеза".encode()).decode()
+    index = encoded.index("N") + 1
+    encoded = encoded[:index] + mark + encoded[index:]
+    if encoding == "percent":
+        encoded = quote(encoded, safe="")
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        research.submit(
+            principal("a"), "marked-base64-quote", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with store._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
