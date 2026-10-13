@@ -1370,3 +1370,34 @@ def test_unrelated_following_word_cannot_finish_a_private_name(question):
         screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
     )
     assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "question", ["Alice Sx Smith", "Alice SmiX Smith", "Alice SmitX Smith"]
+)
+def test_partial_inserted_fragments_keep_a_viable_identifier_prefix(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize(
+    "identifier,question",
+    [
+        ("Ann", "A navigation"),
+        ("Alice Smith", "Alice studies Smith"),
+        ("Alice Smith", "Alice summary Smith"),
+    ],
+)
+def test_unrelated_words_are_not_inserted_identifier_fragments(identifier, question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
+    )
+    assert result.disposition is BriefDisposition.READY

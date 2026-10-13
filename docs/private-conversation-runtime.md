@@ -297,7 +297,11 @@ Unfinished identifier matches survive inserted word suffixes through the final
 character and its word-boundary check, while unrelated multi-character words
 reset the partial name before they can complete it. Multi-character fragments
 whose first character does not continue the name reset partial state before
-scanning. Opaque identifiers with separators and no whitespace also retain the
+scanning. Viable earlier prefix states survive inserted partial-name fragments
+such as Sx/SmiX; partial continuation/fallback requires at most one unmatched
+word character in a fragment, preventing unrelated longer words from completing
+or preserving a partial name. State count is bounded by identifier length.
+Opaque identifiers with separators and no whitespace also retain the
 complete character-order comparison within each report field, including
 prefixes/suffixes and inserted characters at segment boundaries. Separate report
 fields do not combine to invent an opaque identifier. Individual inserted characters/separator tokens remain

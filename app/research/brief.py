@@ -408,40 +408,53 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
     if re.search(rf"{exact_left}{re.escape(needle)}{exact_right}", value):
         return True
     compact = _compact_protected(needle) or needle
-    cursor = 0
     fragments = re.sub(r"%[0-9a-f]{2}", " ", value)
     fragments = "".join(
         character if character in compact or _word_char(character) else " "
         for character in fragments
     )
+    states = {0}
     for token in fragments.split():
-        if (
-            cursor
-            and sum(_word_char(char) for char in token) > 1
-            and token[0] != compact[cursor]
-        ):
-            cursor = 0
-        matched = False
-        for index, character in enumerate(token):
-            if character != compact[cursor]:
+        words = sum(_word_char(char) for char in token)
+        next_states = {0}
+        for prior in states:
+            if prior and words > 1 and token[0] != compact[prior]:
                 continue
-            if cursor == 0 and left_boundary and index and _word_char(token[index - 1]):
-                continue
-            if (
-                cursor == len(compact) - 1
-                and right_boundary
-                and index + 1 < len(token)
-                and _word_char(token[index + 1])
-            ):
-                continue
-            cursor += 1
-            matched = True
-            if cursor == len(compact):
-                return True
-        # An unrelated word breaks a name; individual inserted characters and
-        # separator tokens can still occur between recognizable name fragments.
-        if cursor and not matched and sum(_word_char(char) for char in token) > 1:
-            cursor = 0
+            cursor = prior
+            progressed = False
+            matched_words = 0
+            for index, character in enumerate(token):
+                if character != compact[cursor]:
+                    continue
+                if (
+                    cursor == 0
+                    and left_boundary
+                    and index
+                    and _word_char(token[index - 1])
+                ):
+                    continue
+                if (
+                    cursor == len(compact) - 1
+                    and right_boundary
+                    and index + 1 < len(token)
+                    and _word_char(token[index + 1])
+                ):
+                    continue
+                cursor += 1
+                progressed = True
+                matched_words += _word_char(character)
+                if cursor == len(compact):
+                    if not prior or words - matched_words <= 1:
+                        return True
+                    break
+            # Keep viable prefix alternatives for inserted fragments such as
+            # Sx / SmiX, but not unrelated multi-character words.
+            recognizable = words - matched_words <= 1
+            if progressed and cursor < len(compact) and (not prior or recognizable):
+                next_states.add(cursor)
+            if prior and recognizable:
+                next_states.add(prior)
+        states = next_states
     return False
 
 

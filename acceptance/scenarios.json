@@ -544,7 +544,16 @@
             "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[suffix-participant-a]",
             "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[suffix-session-a]",
             "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[fragment-participant-a]",
-            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[fragment-session-a]"
+            "tests/test_private_research_bridge.py::test_structured_identifiers_keep_complete_ordered_protection[fragment-session-a]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[plain-Alice Sx Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[plain-Alice SmiX Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[plain-Alice SmitX Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[percent-Alice Sx Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[percent-Alice SmiX Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[percent-Alice SmitX Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice Sx Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice SmiX Smith]",
+            "tests/test_private_research_bridge.py::test_inserted_prefix_fragments_cannot_consume_a_private_name_match[base64-Alice SmitX Smith]"
           ]
         },
         {
