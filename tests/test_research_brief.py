@@ -1162,7 +1162,16 @@ def test_insert_tolerant_names_still_require_final_word_boundary(question):
     assert result.disposition is BriefDisposition.READY
 
 
-@pytest.mark.parametrize("question", ["AliceX Smith", "Alice🔒 Smith", "AliceX SmitXh"])
+@pytest.mark.parametrize(
+    "question",
+    [
+        "AliceX Smith",
+        "Alice🔒 Smith",
+        "AliceX SmitXh",
+        "Alice SmitX h",
+        "AlicXe SmiXt h",
+    ],
+)
 def test_multiword_identifier_partial_matches_survive_inserted_word_suffixes(question):
     result = build_safe_research_brief(
         records(ResearchQuestion(question)),
@@ -1173,7 +1182,9 @@ def test_multiword_identifier_partial_matches_survive_inserted_word_suffixes(que
     assert result.reason == "participant_identifier"
 
 
-@pytest.mark.parametrize("separator", [".", ":", ";", "🔒", "#"])
+@pytest.mark.parametrize(
+    "separator", [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः"]
+)
 @pytest.mark.parametrize("padded", [True, False])
 def test_base64_punctuation_and_symbol_separators_are_screened(separator, padded):
     import base64

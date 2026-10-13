@@ -293,9 +293,11 @@ Protected canaries, quotations and sensitive details receive the same complete
 ordered comparison. Participant and session identifiers also receive bounded
 ordered comparison across inserted characters and split tokens, preserving word
 boundaries for short names so unrelated public words do not become name matches.
-Unfinished multiword identifier matches survive inserted word suffixes. Encoded
-candidates also receive a bounded punctuation/symbol separator-folded view that
-retains the base64 alphabet and the original views; decoded candidates still pass
+Unfinished identifier matches survive inserted word suffixes through the final
+character and its word-boundary check. Encoded candidates also receive bounded
+raw and decomposed separator-folded views that retain only the base64 alphabet,
+including when inserted Unicode letters/numbers/marks are separators. Original
+views remain available; decoded candidates still pass
 through the same bounded recursive screen. The comparison has no source token-count
 cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected

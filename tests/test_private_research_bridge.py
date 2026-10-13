@@ -2101,7 +2101,16 @@ def test_accents_inside_base64_cannot_hide_private_text(
         )
 
 
-@pytest.mark.parametrize("changed", ["AliceX Smith", "Alice🔒 Smith", "AliceX SmitXh"])
+@pytest.mark.parametrize(
+    "changed",
+    [
+        "AliceX Smith",
+        "Alice🔒 Smith",
+        "AliceX SmitXh",
+        "Alice SmitX h",
+        "AlicXe SmiXt h",
+    ],
+)
 @pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
 def test_multiword_identifiers_survive_inserted_word_end_characters(
     connected, monkeypatch, changed, encoding
@@ -2136,7 +2145,9 @@ def test_multiword_identifiers_survive_inserted_word_end_characters(
         )
 
 
-@pytest.mark.parametrize("separator", [".", ":", ";", "🔒", "#"])
+@pytest.mark.parametrize(
+    "separator", [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः"]
+)
 @pytest.mark.parametrize("encoding", ["raw", "percent"])
 @pytest.mark.parametrize("padded", [True, False])
 def test_separator_split_base64_report_fields_are_rejected(

@@ -409,7 +409,6 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
     compact = _compact_protected(needle) or needle
     cursor = 0
     for token in value.split():
-        last_match = None
         for index, character in enumerate(token):
             if character != compact[cursor]:
                 continue
@@ -423,17 +422,8 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
             ):
                 continue
             cursor += 1
-            last_match = index
             if cursor == len(compact):
                 return True
-        # Carry matched name fragments across separators/whole inserted tokens,
-        # but not a partial name embedded in an unrelated word (Ann / planning).
-        if (
-            cursor == len(compact) - 1
-            and last_match is not None
-            and any(_word_char(char) for char in token[last_match + 1 :])
-        ):
-            cursor = 0
     return False
 
 
@@ -576,13 +566,12 @@ def _decode_base64(value: str) -> str | None:
 def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
-    separator_folded = "".join(
-        " "
-        if unicodedata.category(character)[0] in "PS" and character not in "+/_-="
-        else character
-        for character in normalized
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-="
+    separator_folded = tuple(
+        "".join(character if character in alphabet else " " for character in view)
+        for view in (raw, normalized)
     )
-    views = tuple(dict.fromkeys((raw, normalized, separator_folded)))
+    views = tuple(dict.fromkeys((raw, normalized, *separator_folded)))
     ordinary_contiguous = tuple(
         (match.group(0), match.group(0).endswith("="))
         for view in views
