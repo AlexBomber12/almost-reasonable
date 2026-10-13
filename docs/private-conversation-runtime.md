@@ -286,8 +286,10 @@ including short strings and percent/base64 encoded forms. Short word sequences
 are also compared as normalized tokens so commas, dashes and other intervening
 separators cannot bypass matching. A complete compact-character comparison of
 every protected text also covers stripped format separators, joined words and
-character splitting while preserving the existing in-word normalization; it has
-no source token-count cutoff for punctuation to manipulate. Unicode symbols
+character splitting while preserving the existing in-word normalization.
+Compatibility decomposition before stripping marks also prevents composed accents
+from hiding protected base characters. The comparison has no source token-count
+cutoff for punctuation to manipulate. Unicode symbols
 (including emoji/currency) remain meaningful in compact comparison, and protected
 punctuation-only sequences receive a separate conservative comparison rather than
 being skipped for having no word tokens. Complete protected character order is

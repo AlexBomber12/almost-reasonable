@@ -1946,3 +1946,53 @@ def test_inserted_meaningful_characters_cannot_hide_complete_sources(
         assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
             0,
         )
+
+
+@pytest.mark.parametrize(
+    "changed", ["cafe\u0301", "café", "ca\u0308fe", "caf\u0336e", "cafe\u20dd"]
+)
+@pytest.mark.parametrize("encoding", ["plain", "percent", "base64"])
+def test_composed_and_inserted_marks_cannot_hide_protected_base_text(
+    connected, monkeypatch, changed, encoding
+):
+    import base64
+    from urllib.parse import quote
+    from app.cognition.shared import SharedIntelligence
+    from test_cognition_pipeline import append_event
+    from test_shared_intelligence import approval
+
+    runtime, bridge, _, worker, _, fake, setup = connected
+    store, _, gate, _, _ = setup
+    source = append_event(store, principal("b"), "marks-source", "cafe")
+    one = approval(source, author="b", op="marks-shared")
+    shared = SharedIntelligence(store, gate, approvals=(one,), clock=lambda: NOW)
+    shared.commit(one)
+    research = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        shared_intelligence=shared,
+        checkpoint=runtime._checkpoint,
+        clock=lambda: NOW,
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    encoded = (
+        changed
+        if encoding == "plain"
+        else quote(changed, safe="")
+        if encoding == "percent"
+        else base64.b64encode(changed.encode()).decode()
+    )
+    report["report"]["sources"][0]["url"] = "https://example.org/" + encoded
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    assert (
+        research.submit(
+            principal("a"), "marks-quote", "Исследуй эту тему"
+        ).model_state.value
+        == "research_rejected"
+    )
+    with store._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )

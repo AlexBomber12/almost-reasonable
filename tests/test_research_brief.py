@@ -1079,3 +1079,23 @@ def test_inserted_characters_do_not_hide_complete_ordered_source(
         screening=ResearchScreeningContext(private_texts=(protected,)),
     )
     assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "protected,question",
+    [
+        ("cafe", "cafe\u0301"),
+        ("cafe", "café"),
+        ("cafe", "ca\u0308fe"),
+        ("café", "cafe"),
+        ("cafe", "caf\u0336e"),
+    ],
+)
+def test_decomposed_marks_do_not_hide_protected_text(protected, question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == "recognizable_private_overlap"

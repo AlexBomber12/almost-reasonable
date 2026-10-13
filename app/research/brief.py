@@ -371,7 +371,7 @@ def _decline(reason: str) -> BriefBuildResult:
 def _normalized(value: str) -> str:
     value = "".join(
         character
-        for character in unicodedata.normalize("NFKC", value)
+        for character in unicodedata.normalize("NFKD", value)
         if unicodedata.category(character) not in {"Cf", "Mn"}
     )
     return " ".join(value.translate(_CONFUSABLES).casefold().split())

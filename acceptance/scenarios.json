@@ -372,7 +372,22 @@
             "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\u0441\\u0435\\u043a\\u0440\\u0435\\u0442-\\u0441\\u0435X\\u043a1\\u0440\\u0435\\u0442]",
             "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f512X\\U0001f511]",
             "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f5121\\U0001f511]",
-            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f512\\U0001f4a0\\U0001f511]"
+            "tests/test_private_research_bridge.py::test_inserted_meaningful_characters_cannot_hide_complete_sources[base64-\\U0001f512\\U0001f511-\\U0001f512\\U0001f4a0\\U0001f511]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[plain-cafe\\u0301]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[plain-caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[plain-ca\\u0308fe]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[plain-caf\\u0336e]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[plain-cafe\\u20dd]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[percent-cafe\\u0301]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[percent-caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[percent-ca\\u0308fe]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[percent-caf\\u0336e]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[percent-cafe\\u20dd]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[base64-cafe\\u0301]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[base64-caf\\xe9]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[base64-ca\\u0308fe]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[base64-caf\\u0336e]",
+            "tests/test_private_research_bridge.py::test_composed_and_inserted_marks_cannot_hide_protected_base_text[base64-cafe\\u20dd]"
           ]
         },
         {
