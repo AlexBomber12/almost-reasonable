@@ -1136,6 +1136,17 @@ def test_short_names_reject_separator_or_token_inserts(question):
     assert result.disposition is BriefDisposition.DECLINED
 
 
+@pytest.mark.parametrize("suffix", ["in", "on", "an"])
+def test_short_word_exception_cannot_complete_a_long_private_name(suffix):
+    result = build_safe_research_brief(
+        records(ResearchQuestion("Alice Brow " + suffix)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Brown",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
 @pytest.mark.parametrize("mark", ["\u0301", "\u0308"])
 def test_base64_candidate_marks_are_decomposed_before_decode(mark):
     import base64

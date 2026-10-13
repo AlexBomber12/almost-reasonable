@@ -422,6 +422,7 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
             # "Ann"; other inserted fragments such as "An Xn" still match.
             if (
                 prior
+                and compact == "ann"
                 and len(compact) - prior == 1
                 and words == 2
                 and token in {"an", "in", "on"}

@@ -591,7 +591,19 @@
             "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An Xn]",
             "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An xn]",
             "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An 7n]",
-            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An-Xn]"
+            "tests/test_research_brief.py::test_short_names_reject_separator_or_token_inserts[An-Xn]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[plain-in]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[plain-on]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[plain-an]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[percent-in]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[percent-on]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[percent-an]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[base64-in]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[base64-on]",
+            "tests/test_private_research_bridge.py::test_short_word_exception_cannot_complete_a_long_name_in_worker_report[base64-an]",
+            "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[in]",
+            "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[on]",
+            "tests/test_research_brief.py::test_short_word_exception_cannot_complete_a_long_private_name[an]"
           ]
         },
         {
