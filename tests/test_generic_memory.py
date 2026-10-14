@@ -580,6 +580,73 @@ def test_generic_store_rejects_malformed_proposals(tmp_path, change):
     assert GenericMemoryStore(store).current(principal("a")) == ()
 
 
+@pytest.mark.parametrize("expected", (True, 1.0))
+def test_generic_revision_rejects_non_integer_expected_value(tmp_path, expected):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    malformed = proposal("event-two", "m1", "op-two", expected=expected)
+    outcome = engine(store, malformed).process(a, "event-two")
+    assert outcome.reason.value == "invalid_proposal"
+    with pytest.raises(GenericMemoryError):
+        commit_direct(store, malformed)
+    assert GenericMemoryStore(store).current(a)[0].view.revision == 1
+
+
+def test_unhashable_generic_parent_id_is_rejected(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    malformed = proposal("event-one", "m1", "op-one", parents=(([], 1),))
+    outcome = engine(store, malformed).process(a, "event-one")
+    assert outcome.reason.value == "invalid_proposal"
+    with pytest.raises(GenericMemoryError):
+        commit_direct(store, malformed)
+    assert GenericMemoryStore(store).current(a) == ()
+
+
+def test_conversation_accepts_valid_generic_source_union_above_typed_bound(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    first = [append_event(store, a, f"first-{i}") for i in range(49)]
+    second = [append_event(store, a, f"second-{i}") for i in range(3)]
+    initial = replace(
+        proposal(first[0], "m1", "op-one"),
+        context=replace(
+            proposal(first[0], "m1", "op-one").context,
+            supporting_event_ids=tuple(first),
+        ),
+    )
+    revision = replace(
+        proposal(second[0], "m1", "op-two", expected=1),
+        context=replace(
+            proposal(second[0], "m1", "op-two", expected=1).context,
+            supporting_event_ids=tuple(second),
+        ),
+    )
+    assert (
+        engine(store, initial)
+        .process(a, first[0], evidence_event_ids=tuple(first[1:]))
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    assert (
+        engine(store, revision)
+        .process(a, second[0], evidence_event_ids=tuple(second[1:]))
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    current = append_event(store, a, "current")
+    with store._open() as db:
+        db.execute("BEGIN IMMEDIATE")
+        request, _ = MemoryConversationAssembler(store, ContextLimits(32000, 99)).build(
+            a, current, db
+        )
+    assert request.memories[0].supporting_evidence_count == 52
+
+
 def test_generic_sql_failure_rolls_back(tmp_path, monkeypatch):
     import app.cognition.generic_store as module
 

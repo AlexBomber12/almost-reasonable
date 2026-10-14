@@ -57,6 +57,17 @@ def memory(**values):
     )
 
 
+def test_generic_model_memory_evidence_bound_matches_persisted_graph():
+    generic = replace(
+        memory(), kind="candidate_useful_memory", supporting_evidence_count=100
+    )
+    assert generic.supporting_evidence_count == 100
+    with pytest.raises(ValueError, match="invalid model memory evidence count"):
+        replace(generic, supporting_evidence_count=101)
+    with pytest.raises(ValueError, match="invalid model memory evidence count"):
+        replace(memory(), supporting_evidence_count=51)
+
+
 @pytest.mark.parametrize(
     "field,value",
     [

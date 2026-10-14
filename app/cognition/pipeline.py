@@ -310,8 +310,13 @@ class CognitionEngine:
                 or any(
                     type(parent) is not tuple
                     or len(parent) != 2
+                    or not self._valid_token(parent[0])
                     or type(parent[1]) is not int
                     for parent in proposal.parent_revisions
+                )
+                or (
+                    proposal.context.expected_revision is not None
+                    and type(proposal.context.expected_revision) is not int
                 )
             ):
                 return self._rejected(

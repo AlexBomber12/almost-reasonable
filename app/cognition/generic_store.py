@@ -193,6 +193,9 @@ class GenericMemoryStore:
             or proposal.review_state is not GenericReviewState.PENDING_REVIEW
             or type(c.supporting_event_ids) is not tuple
             or type(c.counterevidence_event_ids) is not tuple
+            or (
+                c.expected_revision is not None and type(c.expected_revision) is not int
+            )
             or type(proposal.parent_revisions) is not tuple
             or len(proposal.parent_revisions) > MAX_GENERIC_PARENTS
             or any(
@@ -203,8 +206,7 @@ class GenericMemoryStore:
             raise GenericMemoryError("invalid_generic_proposal")
         parents = proposal.parent_revisions
         if (
-            len(set(parents)) != len(parents)
-            or any(
+            any(
                 type(p) is not tuple
                 or len(p) != 2
                 or not _token(p[0])
@@ -212,6 +214,7 @@ class GenericMemoryStore:
                 or p[1] < 1
                 for p in parents
             )
+            or len(set(parents)) != len(parents)
             or proposal.item_id in {p[0] for p in parents}
         ):
             raise GenericMemoryError("invalid_generic_parents")

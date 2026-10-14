@@ -19,7 +19,7 @@ from app.privacy.application import PrivacyReadBlocked
 
 from .contracts import MemoryRecord, RetrievalPurpose, RetrievalRequest
 from .read_store import CognitionReadStore
-from .generic_store import GenericMemoryStore
+from .generic_store import MAX_GENERIC_SOURCES, GenericMemoryStore
 from .retrieval import MemoryContextSelector
 
 
@@ -92,8 +92,18 @@ class ModelMemory:
         if self.priority is not None:
             if type(self.priority) is not int or not 0 <= self.priority <= 100:
                 raise ValueError("invalid model memory priority")
+        bound = (
+            MAX_GENERIC_SOURCES
+            if self.kind
+            in {
+                "unresolved_question",
+                "candidate_useful_memory",
+                "contradiction_counterevidence",
+            }
+            else 50
+        )
         for value in (self.supporting_evidence_count, self.counterevidence_count):
-            if type(value) is not int or not 0 <= value <= 50:
+            if type(value) is not int or not 0 <= value <= bound:
                 raise ValueError("invalid model memory evidence count")
 
     @classmethod
