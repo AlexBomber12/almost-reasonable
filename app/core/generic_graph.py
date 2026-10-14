@@ -9,6 +9,20 @@ MAX_GENERIC_GRAPH_OPERATIONS = 128
 MAX_GENERIC_GRAPH_REPLIES = 4096
 
 
+def _canonical_utc(value: object) -> bool:
+    if type(value) is not str:
+        return False
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError:
+        return False
+    return (
+        parsed.tzinfo is not None
+        and parsed.utcoffset() == timedelta(0)
+        and parsed.isoformat() == value
+    )
+
+
 def validate_generic_graph(db: sqlite3.Connection) -> None:
     """Validate every retained identity, payload, edge, and complete source union."""
     limits = (
@@ -44,10 +58,11 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             parent_count,
             status,
             graph_digest,
+            decided_at,
         )
-        for operation_id, item_id, revision, expected, source_count, parent_count, status, graph_digest in db.execute(
+        for operation_id, item_id, revision, expected, source_count, parent_count, status, graph_digest, decided_at in db.execute(
             """SELECT operation_id,item_id,revision,expected_revision,
-                    source_count,parent_count,status,graph_digest
+                    source_count,parent_count,status,graph_digest,decided_at
                 FROM generic_memory_operations"""
         )
     }
@@ -127,10 +142,21 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
     }
     by_item = {item_id: {} for item_id in items}
     for operation_id, operation in operations.items():
-        item_id, revision, expected, source_count, parent_count, status, digest = (
-            operation
-        )
-        if item_id not in items or revision in by_item[item_id]:
+        (
+            item_id,
+            revision,
+            expected,
+            source_count,
+            parent_count,
+            status,
+            digest,
+            decided_at,
+        ) = operation
+        if (
+            item_id not in items
+            or revision in by_item[item_id]
+            or not _canonical_utc(decided_at)
+        ):
             raise ValueError("invalid_generic_graph")
         by_item[item_id][revision] = operation_id
         if (
@@ -165,9 +191,16 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         if operation_id in visited:
             return
         visiting.add(operation_id)
-        item_id, revision, _expected, _source_count, _parent_count, status, _digest = (
-            operations[operation_id]
-        )
+        (
+            item_id,
+            revision,
+            _expected,
+            _source_count,
+            _parent_count,
+            status,
+            _digest,
+            _decided_at,
+        ) = operations[operation_id]
         inherited = set()
         if revision > 1:
             prior = by_item[item_id][revision - 1]
@@ -220,12 +253,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                 }
                 if type(data) is not dict or data.keys() != required:
                     raise ValueError("invalid_generic_graph")
-                proposed = datetime.fromisoformat(data["proposed"])
-                if (
-                    proposed.tzinfo is None
-                    or proposed.utcoffset() != timedelta(0)
-                    or proposed.isoformat() != data["proposed"]
-                ):
+                if not _canonical_utc(data["proposed"]) or not _canonical_utc(review):
                     raise ValueError("invalid_generic_graph")
                 direct = {(data["source"], "initiating")}
                 direct.update((event, "supporting") for event in data["support"])

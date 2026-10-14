@@ -106,7 +106,8 @@ and consolidation levels, with a 100-edge and 32-revision bound. The graph diges
 content-free edges after deletion; active replay bindings live only with
 removable payloads. `protected_reply_generic` records which exact generic
 operations a later reply used. The validator checks counts, ownership, role
-union, parent cycles, replay bindings and reply dependencies before erasure or
+union, parent cycles, exact replay bindings, canonical UTC decision/review times
+and reply dependencies before erasure or
 read eligibility. The synthetic v7 graph is capped at 128 lifetime generic
 operations and 4,096 generic reply links per database, so whole-graph validation
 has a finite cost; writes at either limit fail closed. Deleting any material

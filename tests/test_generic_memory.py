@@ -31,7 +31,13 @@ from app.core.events import VerificationStatus
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, FaultPoint, schema_objects
 from app.privacy.application import EventStoreErasureAdapter
-from test_cognition_pipeline import NOW, append_event, principal, proposal_context
+from test_cognition_pipeline import (
+    NOW,
+    RaisingTimezone,
+    append_event,
+    principal,
+    proposal_context,
+)
 from test_privacy_deletion import request
 from test_private_memory_runtime import setup as runtime_setup
 from test_private_conversation_runtime import delete_source, NOW as RUNTIME_NOW
@@ -410,6 +416,7 @@ def rehash(db, operation):
         "missing_proposed",
         "extra_binding_key",
         "invalid_proposed",
+        "null_proposed",
         "naive_proposed",
         "non_utc_proposed",
         "noncanonical_proposed",
@@ -498,6 +505,10 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
         elif mutation == "invalid_proposed":
             db.execute(
                 "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.proposed','not-a-time') WHERE operation_id='op-one'"
+            )
+        elif mutation == "null_proposed":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.proposed',json('null')) WHERE operation_id='op-one'"
             )
         elif mutation == "naive_proposed":
             db.execute(
@@ -649,6 +660,68 @@ def test_generic_graph_operation_limit_blocks_growth_and_corrupt_oversize(
     monkeypatch.setattr(graph_module, "MAX_GENERIC_GRAPH_OPERATIONS", 1)
     with pytest.raises(ValueError, match="invalid_generic_graph"):
         with sqlite3.connect(store.database_path) as db:
+            validate_generic_graph(db)
+    with pytest.raises(GenericMemoryError, match="generic_memory_unavailable"):
+        GenericMemoryStore(store).current(a)
+
+
+@pytest.mark.parametrize(
+    "decided_at",
+    (NOW.replace(tzinfo=None), "not-a-time", NOW.replace(tzinfo=RaisingTimezone())),
+)
+def test_generic_store_rejects_invalid_decision_time(tmp_path, decided_at):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    with pytest.raises(GenericMemoryError):
+        GenericMemoryStore(store).commit(
+            a,
+            proposal("event-one", "m1", "op-one"),
+            model_identifier="synthetic",
+            prompt_version="v1",
+            core_self_version="core-self-v1",
+            decided_at=decided_at,
+        )
+    assert GenericMemoryStore(store).current(a) == ()
+
+
+@pytest.mark.parametrize(
+    "value",
+    (
+        "2026-03-01T10:00:00",
+        "2026-03-01T10:00:00+01:00",
+        "2026-03-01 10:00:00+00:00",
+        "not-a-time",
+        b"not-a-time",
+    ),
+)
+def test_corrupt_generic_decision_time_fails_before_extractor_sort(tmp_path, value):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    assert commit_direct(store, proposal("event-one", "m2", "op-two")) == ("m2", 1)
+    with sqlite3.connect(store.database_path) as db:
+        db.execute(
+            "UPDATE generic_memory_operations SET decided_at=? WHERE operation_id='op-one'",
+            (value,),
+        )
+        with pytest.raises(ValueError, match="invalid_generic_graph"):
+            validate_generic_graph(db)
+    with pytest.raises(GenericMemoryError, match="generic_memory_unavailable"):
+        GenericMemoryStore(store).current(a)
+
+
+def test_corrupt_generic_review_time_fails_before_read(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    with sqlite3.connect(store.database_path) as db:
+        db.execute(
+            "UPDATE generic_memory_payloads SET review_at='2026-03-01T10:00:00' WHERE operation_id='op-one'"
+        )
+        with pytest.raises(ValueError, match="invalid_generic_graph"):
             validate_generic_graph(db)
     with pytest.raises(GenericMemoryError, match="generic_memory_unavailable"):
         GenericMemoryStore(store).current(a)

@@ -2,7 +2,7 @@
 
 from contextlib import closing
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 import hashlib
 import json
 import re
@@ -69,6 +69,15 @@ def _text(value: object) -> bool:
     try:
         return len(value.encode("utf-8")) <= 4096
     except UnicodeEncodeError:
+        return False
+
+
+def _decision_time(value: object) -> bool:
+    if type(value) is not datetime:
+        return False
+    try:
+        return value.tzinfo is not None and value.utcoffset() == timedelta(0)
+    except Exception:
         return False
 
 
@@ -185,6 +194,7 @@ class GenericMemoryStore:
         c = proposal.context
         if (
             proposal.memory_kind not in _KINDS
+            or not _decision_time(decided_at)
             or not _token(proposal.item_id)
             or not _token(c.operation_id)
             or not _token(c.source_event_id)
