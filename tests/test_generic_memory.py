@@ -396,6 +396,8 @@ def rehash(db, operation):
         "mixed_status",
         "wrong_expected",
         "malformed_binding",
+        "non_object_binding",
+        "missing_comparison_field",
         "changed_binding",
         "missing_union",
         "foreign_parent",
@@ -461,6 +463,14 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
         elif mutation == "malformed_binding":
             db.execute(
                 "UPDATE generic_memory_payloads SET binding='{}' WHERE operation_id='op-one'"
+            )
+        elif mutation == "non_object_binding":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding='[]' WHERE operation_id='op-one'"
+            )
+        elif mutation == "missing_comparison_field":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_remove(binding,'$.item') WHERE operation_id='op-one'"
             )
         elif mutation == "changed_binding":
             db.execute(

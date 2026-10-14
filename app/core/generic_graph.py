@@ -198,6 +198,26 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             ) = payloads[operation_id]
             try:
                 data = json.loads(binding)
+                required = {
+                    "item",
+                    "expected",
+                    "source",
+                    "support",
+                    "counter",
+                    "parents",
+                    "kind",
+                    "statement",
+                    "confidence",
+                    "verification",
+                    "reason",
+                    "review",
+                    "review_state",
+                    "model",
+                    "prompt",
+                    "core",
+                }
+                if type(data) is not dict or not required <= data.keys():
+                    raise ValueError("invalid_generic_graph")
                 direct = {(data["source"], "initiating")}
                 direct.update((event, "supporting") for event in data["support"])
                 direct.update((event, "counterevidence") for event in data["counter"])

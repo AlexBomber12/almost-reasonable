@@ -1120,6 +1120,8 @@
             "tests/test_generic_memory.py::test_real_process_exit_at_generic_commit_boundary[inside_transaction-False]",
             "tests/test_generic_memory.py::test_real_process_exit_at_generic_commit_boundary[after_commit-True]",
             "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[missing_union]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[missing_comparison_field]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[non_object_binding]",
             "tests/test_generic_memory.py::test_orphaned_generic_operation_with_sources_fails_closed",
             "tests/test_generic_memory.py::test_generic_graph_operation_limit_blocks_growth_and_corrupt_oversize",
             "tests/test_generic_memory.py::test_generic_reply_link_limit_is_enforced_before_reservation",
