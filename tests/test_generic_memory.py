@@ -767,6 +767,35 @@ def test_generic_authorization_rejects_hidden_stale_and_disabled_parents(
     assert engine(store, child).process(a, "event-two").reason.value == "stale_revision"
 
 
+def test_generic_write_rechecks_full_memory_snapshot_inside_transaction(
+    tmp_path, monkeypatch
+):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    for name in ("one", "two", "three"):
+        append_event(store, a, name)
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    original = GenericMemoryStore.commit
+    raced = False
+
+    def race(self, context, value, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            commit_direct(store, proposal("event-three", "m3", "op-three"))
+        return original(self, context, value, **kwargs)
+
+    monkeypatch.setattr(GenericMemoryStore, "commit", race)
+    result = engine(store, proposal("event-two", "m2", "op-two")).process(
+        a, "event-two"
+    )
+    assert result.reason.value == "stale_revision"
+    assert {read.view.item_id for read in GenericMemoryStore(store).current(a)} == {
+        "m1",
+        "m3",
+    }
+
+
 def test_generic_snapshot_change_during_inference_and_retrieval_hint(tmp_path):
     store = EventStore(tmp_path / "events.db")
     a = principal("a")

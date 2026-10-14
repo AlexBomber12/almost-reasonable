@@ -1087,6 +1087,7 @@
             "tests/test_generic_memory.py::test_later_parent_revision_deletion_invalidates_earlier_descendant_reply",
             "tests/test_generic_memory.py::test_generic_authorization_rejects_hidden_stale_and_disabled_parents",
             "tests/test_generic_memory.py::test_generic_snapshot_change_during_inference_and_retrieval_hint",
+            "tests/test_generic_memory.py::test_generic_write_rechecks_full_memory_snapshot_inside_transaction",
             "tests/test_generic_memory.py::test_inherited_dependency_bound_rejects_whole_consolidation",
             "tests/test_generic_memory.py::test_generic_combined_budget_omits_whole_memory_and_its_edges",
             "tests/test_generic_memory.py::test_revision_budget_omits_generic_record_without_state_head_lookup",

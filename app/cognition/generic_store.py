@@ -174,6 +174,7 @@ class GenericMemoryStore:
         prompt_version: str,
         core_self_version: str,
         decided_at: datetime,
+        expected_visible_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> tuple[str, int]:
         """Atomically compare the exact private graph and persist one revision."""
         EventStore._validate_context(context)
@@ -254,6 +255,22 @@ class GenericMemoryStore:
                     db.execute("BEGIN IMMEDIATE")
                     self._events._verify_current_schema(db)
                     validate_generic_graph(db)
+                    if expected_visible_revisions is not None:
+                        visible = tuple(
+                            db.execute(
+                                """SELECT i.item_id,i.current_revision
+                                FROM generic_memory_items i
+                                JOIN generic_memory_operations o
+                                    ON o.item_id=i.item_id
+                                    AND o.revision=i.current_revision
+                                JOIN generic_memory_payloads p USING(operation_id)
+                                WHERE i.audience_principal_id=? AND o.status='active'
+                                ORDER BY i.item_id""",
+                                (context.principal_id.value,),
+                            )
+                        )
+                        if tuple(sorted(expected_visible_revisions)) != visible:
+                            raise GenericMemoryStale("generic_snapshot_stale")
                     prior = db.execute(
                         "SELECT item_id,revision,status FROM generic_memory_operations WHERE operation_id=?",
                         (c.operation_id,),
