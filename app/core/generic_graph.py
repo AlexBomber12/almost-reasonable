@@ -35,7 +35,11 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         FROM generic_memory_sources"""
     ):
         operation = operations.get(operation_id)
-        if operation is None or principal != items[operation[0]][0]:
+        if (
+            operation is None
+            or operation[0] not in items
+            or principal != items[operation[0]][0]
+        ):
             raise ValueError("invalid_generic_graph")
         if (retention == "active") != (operation[5] == "active"):
             raise ValueError("invalid_generic_graph")

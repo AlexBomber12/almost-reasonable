@@ -711,6 +711,19 @@ def test_orphaned_generic_operation_is_detected_before_release(tmp_path):
             validate_generic_graph(db)
 
 
+def test_orphaned_generic_operation_with_sources_fails_closed(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    with sqlite3.connect(store.database_path) as db:
+        db.execute("DELETE FROM generic_memory_items WHERE item_id='m1'")
+        with pytest.raises(ValueError, match="^invalid_generic_graph$"):
+            validate_generic_graph(db)
+    with pytest.raises(GenericMemoryError, match="^generic_memory_unavailable$"):
+        GenericMemoryStore(store).current(a)
+
+
 def test_generic_authorization_rejects_hidden_stale_and_disabled_parents(
     tmp_path, monkeypatch
 ):
@@ -861,6 +874,75 @@ def test_generic_snapshot_change_during_inference_and_retrieval_hint(tmp_path):
         "m1",
         "m2",
     }
+
+
+@pytest.mark.parametrize("statement_bytes", (32, 1200))
+def test_extractor_generic_view_is_bounded_and_parents_must_be_exposed(
+    tmp_path, statement_bytes
+):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "seed")
+    for index in range(24):
+        value = replace(
+            proposal("event-seed", f"m-{index:02}", f"op-{index:02}"),
+            statement="x" * statement_bytes,
+        )
+        assert commit_direct(store, value) == (f"m-{index:02}", 1)
+    append_event(store, a, "current")
+    seen = []
+
+    def extract(request):
+        seen.append(request.private_memories)
+        return NoChangeProposal(
+            "event-current", "Synthetic no change", ("event-current",)
+        )
+
+    extractor = SyntheticMemoryExtractor(extract, ExtractorIdentity("synthetic", "v1"))
+    worker = CognitionEngine(
+        store,
+        SelfStateStore(store),
+        extractor=extractor,
+        capabilities=CognitionCapabilities(generic_memory_write=True),
+        clock=lambda: NOW,
+    )
+    worker.process(a, "event-current")
+    worker.process(a, "event-current")
+    assert seen[0] == seen[1]
+    assert len(seen[0]) <= 16
+    assert len(seen[0]) < 24
+    assert (
+        sum(
+            len(
+                json.dumps(
+                    (
+                        view.item_id,
+                        view.revision,
+                        view.memory_kind.value,
+                        view.statement,
+                        view.confidence,
+                        view.verification.value,
+                        view.supporting_count,
+                        view.counterevidence_count,
+                        view.trusted_as_instructions,
+                    ),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+            for view in seen[0]
+        )
+        <= 16_384
+    )
+    hidden = next(
+        read.view.item_id
+        for read in GenericMemoryStore(store).current(a)
+        if read.view.item_id not in {view.item_id for view in seen[0]}
+    )
+    child = proposal("event-current", "m-child", "op-child", parents=((hidden, 1),))
+    assert (
+        engine(store, child).process(a, "event-current").reason.value
+        == "stale_revision"
+    )
 
 
 def test_runtime_requires_exact_trusted_cognition_configuration(tmp_path):

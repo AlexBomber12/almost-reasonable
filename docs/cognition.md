@@ -84,9 +84,11 @@ INT-12 adds opt-in generic persistence through EventStore v7. `GenericMemoryProp
 binds an immutable operation, item and expected revision, initiating/supporting/
 counterevidence events, exact parent item/revisions, bounded statement and
 confidence, unverified status, trusted `pending_review` state and review time.
-The engine resolves the complete
-private snapshot before synthetic extraction, compares it again before commit,
-and the store rechecks source and parent heads inside one SQLite transaction.
+The engine resolves the complete private revision snapshot before synthetic
+extraction. It exposes at most 16 generic heads and 16 KiB of serialized generic
+view data to the extractor; a proposal may name only exposed parents. The store
+rechecks the complete generic and typed candidate revision snapshots, source
+evidence and parent heads inside one SQLite write transaction.
 `private_consolidation` must also be enabled for parent references. An identical
 retry returns its original revision even after later revisions; changed bindings,
 stale heads, other participants' parents and unsupported sharing fail closed.

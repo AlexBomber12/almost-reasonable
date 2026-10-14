@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import UTC, datetime
+import json
 import re
 
 from app.core.core_self import CORE_SELF_VERSION
@@ -65,6 +66,8 @@ _GENERIC_KINDS = {
     MemoryKind.CANDIDATE_USEFUL_MEMORY,
     MemoryKind.CONTRADICTION_COUNTEREVIDENCE,
 }
+MAX_EXTRACTOR_GENERIC_RECORDS = 16
+MAX_EXTRACTOR_GENERIC_BYTES = 16_384
 
 
 class CognitionEngine:
@@ -118,6 +121,7 @@ class CognitionEngine:
                 source,
                 current,
                 generic,
+                request.private_memories,
                 resolved_evidence,
                 identity,
                 proposal,
@@ -167,9 +171,43 @@ class CognitionEngine:
             additional_evidence=tuple(
                 self._experience(item) for item in resolved_evidence
             ),
-            private_memories=tuple(read.view for read in generic),
+            private_memories=self._bounded_generic_views(generic),
         )
         return request, source, current, generic, resolved_evidence, identity
+
+    @staticmethod
+    def _bounded_generic_views(generic):
+        views = []
+        used = 0
+        for read in sorted(
+            generic,
+            key=lambda item: (item.decided_at, item.view.item_id),
+            reverse=True,
+        ):
+            view = read.view
+            size = len(
+                json.dumps(
+                    (
+                        view.item_id,
+                        view.revision,
+                        view.memory_kind.value,
+                        view.statement,
+                        view.confidence,
+                        view.verification.value,
+                        view.supporting_count,
+                        view.counterevidence_count,
+                        view.trusted_as_instructions,
+                    ),
+                    ensure_ascii=False,
+                ).encode("utf-8")
+            )
+            if used + size > MAX_EXTRACTOR_GENERIC_BYTES:
+                continue
+            views.append(view)
+            used += size
+            if len(views) == MAX_EXTRACTOR_GENERIC_RECORDS:
+                break
+        return tuple(views)
 
     def _finish(
         self,
@@ -179,6 +217,7 @@ class CognitionEngine:
         source,
         current,
         generic,
+        exposed_generic,
         resolved_evidence,
         identity,
         proposal,
@@ -212,6 +251,7 @@ class CognitionEngine:
             frozenset(candidate.item_id for candidate in current),
             tuple((candidate.item_id, candidate.revision) for candidate in current),
             tuple((read.view.item_id, read.view.revision) for read in generic),
+            tuple((view.item_id, view.revision) for view in exposed_generic),
         )
 
     def plan_source_invalidation(
@@ -243,6 +283,7 @@ class CognitionEngine:
         visible_candidate_ids: frozenset[str],
         expected_candidate_revisions: tuple[tuple[str, int], ...],
         visible_generic_revisions: tuple[tuple[str, int], ...],
+        exposed_generic_revisions: tuple[tuple[str, int], ...],
     ) -> CognitionOutcome:
         if type(proposal) is NoChangeProposal:
             return self._authorize_no_change(
@@ -323,7 +364,7 @@ class CognitionEngine:
                     CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
                 )
             if not set(proposal.parent_revisions) <= set(
-                visible_generic_revisions
+                exposed_generic_revisions
             ) and not self._generic.operation_exists(
                 context, proposal.context.operation_id
             ):

@@ -38,8 +38,12 @@ The runtime supplies source/additional evidence to the synthetic extractor,
 without rendering current candidate text into the extraction request. Candidate
 snapshots remain internal for revision authorization and CAS. This prevents a
 new item from copying another item's text without retaining that item's complete
-protected dependencies. Scripted synthetic revisions may target a known item
-and expected revision; model-guided cross-item consolidation is not enabled.
+protected dependencies. When generic memory writes are enabled, the extractor
+receives a deterministic subset of at most 16 private generic heads and 16 KiB
+of their serialized view data. The complete generic and typed revision snapshots
+are checked again in the write transaction; consolidation parents must be in the
+exposed subset. Scripted synthetic revisions may target a known item and expected
+revision; live model-guided cross-item consolidation is not enabled.
 Supporting and counterevidence are not relabeled to manufacture contextual taint.
 Delivery, stop and spend capabilities are rechecked after extraction; a changed
 capability records a durable skipped outcome before any model contact.
