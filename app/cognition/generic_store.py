@@ -10,6 +10,7 @@ import sqlite3
 
 from app.core.events import TrustedPrincipalContext, VerificationStatus
 from app.core.generic_graph import validate_generic_graph
+from app.core.self_state_store import SelfStateConflictError, SelfStateStore
 from app.core.store import EventStore
 
 from .contracts import (
@@ -175,6 +176,7 @@ class GenericMemoryStore:
         core_self_version: str,
         decided_at: datetime,
         expected_visible_revisions: tuple[tuple[str, int], ...] | None = None,
+        expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
     ) -> tuple[str, int]:
         """Atomically compare the exact private graph and persist one revision."""
         EventStore._validate_context(context)
@@ -255,6 +257,14 @@ class GenericMemoryStore:
                     db.execute("BEGIN IMMEDIATE")
                     self._events._verify_current_schema(db)
                     validate_generic_graph(db)
+                    try:
+                        SelfStateStore._validate_candidate_snapshot(
+                            db,
+                            context.principal_id.value,
+                            expected_candidate_revisions,
+                        )
+                    except SelfStateConflictError:
+                        raise GenericMemoryStale("typed_snapshot_stale") from None
                     if expected_visible_revisions is not None:
                         visible = tuple(
                             db.execute(

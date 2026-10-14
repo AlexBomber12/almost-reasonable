@@ -38,7 +38,7 @@ from app.private_web.wsgi import PrivateWebApplication
 from app.privacy.application import PrivacyReadGate, EventStoreRestoreAdapter
 from app.privacy.recovery import QuarantinedRestore, create_sqlite_backup
 from test_stage0_acceptance_journeys import journey as wsgi_journey, submitted, trusted
-from test_self_state import belief_change
+from test_self_state import belief_change, interest_change
 import json
 import sqlite3
 import hashlib
@@ -794,6 +794,30 @@ def test_generic_write_rechecks_full_memory_snapshot_inside_transaction(
         "m1",
         "m3",
     }
+
+
+def test_generic_write_rechecks_typed_candidates_inside_transaction(
+    tmp_path, monkeypatch
+):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    original = GenericMemoryStore.commit
+
+    def race(self, context, value, **kwargs):
+        SelfStateStore(store).create_interest_candidate(
+            a, interest_change("event-two", operation="typed-race")
+        )
+        return original(self, context, value, **kwargs)
+
+    monkeypatch.setattr(GenericMemoryStore, "commit", race)
+    result = engine(store, proposal("event-one", "m1", "op-one")).process(
+        a, "event-one"
+    )
+    assert result.reason.value == "stale_revision"
+    assert GenericMemoryStore(store).current(a) == ()
+    assert len(SelfStateStore(store).retrieve_private_candidates(a)) == 1
 
 
 def test_generic_snapshot_change_during_inference_and_retrieval_hint(tmp_path):
