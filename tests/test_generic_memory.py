@@ -454,7 +454,7 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
             )
         elif mutation == "missing_parent":
             db.execute(
-                "INSERT INTO generic_memory_parents VALUES ('op-three','missing')"
+                "INSERT INTO generic_memory_parents VALUES ('op-three','missing','participant-a')"
             )
         elif mutation == "missing_source":
             db.execute(
@@ -538,7 +538,7 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
             rehash(db, "op-three")
         elif mutation == "cycle":
             db.execute(
-                "INSERT INTO generic_memory_parents VALUES ('op-one','op-three')"
+                "INSERT INTO generic_memory_parents VALUES ('op-one','op-three','participant-a')"
             )
             rehash(db, "op-one")
         else:
@@ -588,8 +588,10 @@ def test_generic_operation_identity_staleness_and_private_ownership(tmp_path):
         generic.operation_exists(a, "bad operation id")
     with pytest.raises(GenericMemoryConflict):
         commit_direct(store, replace(first, statement="Changed"))
-    with pytest.raises(GenericMemoryConflict):
-        commit_direct(store, proposal("event-other", "m1", "op-other"), b)
+    assert commit_direct(store, proposal("event-other", "m1", "op-other"), b) == (
+        "m1",
+        1,
+    )
     with pytest.raises(GenericMemoryStale):
         commit_direct(store, proposal("event-two", "new", "op-new", expected=1))
     with pytest.raises(GenericMemoryStale):
@@ -611,6 +613,85 @@ def test_generic_operation_identity_staleness_and_private_ownership(tmp_path):
     )
     with pytest.raises(GenericMemoryConflict):
         commit_direct(store, first)
+    assert GenericMemoryStore(store).current(b)[0].view.item_id == "m1"
+
+
+def test_same_generic_item_id_is_private_to_each_participant(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a, b = principal("a"), principal("b")
+    append_event(store, a, "a")
+    append_event(store, b, "b")
+    assert commit_direct(store, proposal("event-a", "summary", "op-a"), a) == (
+        "summary",
+        1,
+    )
+    assert commit_direct(store, proposal("event-b", "summary", "op-b"), b) == (
+        "summary",
+        1,
+    )
+    assert len(GenericMemoryStore(store).current(a)) == 1
+    assert len(GenericMemoryStore(store).current(b)) == 1
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-a"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a) == ()
+    assert GenericMemoryStore(store).current(b)[0].source_event_ids == ("event-b",)
+
+
+def test_same_generic_operation_id_is_private_to_each_participant(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a, b = principal("a"), principal("b")
+    append_event(store, a, "a")
+    append_event(store, b, "b")
+    assert commit_direct(store, proposal("event-a", "summary", "op-shared"), a) == (
+        "summary",
+        1,
+    )
+    assert commit_direct(store, proposal("event-b", "summary", "op-shared"), b) == (
+        "summary",
+        1,
+    )
+    assert GenericMemoryStore(store).operation_exists(a, "op-shared")
+    assert GenericMemoryStore(store).operation_exists(b, "op-shared")
+    replies = AgentOutputStore(store)
+    reply_a = ReplyOperation(
+        "reply-a",
+        "event-a",
+        "chat-a",
+        "correlation-a",
+        "synthetic",
+        "v1",
+        "core",
+        ("event-a",),
+        generic_operation_ids=("op-shared",),
+    )
+    reply_b = ReplyOperation(
+        "reply-b",
+        "event-b",
+        "chat-b",
+        "correlation-b",
+        "synthetic",
+        "v1",
+        "core",
+        ("event-b",),
+        generic_operation_ids=("op-shared",),
+    )
+    replies.reserve_reply(a, reply_a)
+    replies.reserve_reply(b, reply_b)
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-a"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a) == ()
+    assert GenericMemoryStore(store).current(b)[0].source_event_ids == ("event-b",)
+    assert GenericMemoryStore(store).operation_exists(b, "op-shared")
+    assert replies.read_reply(a, "reply-a") is None
+    assert replies.read_reply(b, "reply-b") is not None
 
 
 @pytest.mark.parametrize(
@@ -870,7 +951,7 @@ def test_orphaned_generic_operation_is_detected_before_release(tmp_path):
     with sqlite3.connect(store.database_path) as db:
         db.execute(
             """INSERT INTO generic_memory_operations VALUES
-            ('forged','missing',1,NULL,1,0,'active',?, 'synthetic','v1','core',?)""",
+            ('forged','missing','participant-a',1,NULL,1,0,'active',?, 'synthetic','v1','core',?)""",
             (NOW.isoformat(), "0" * 64),
         )
     with sqlite3.connect(store.database_path) as db:

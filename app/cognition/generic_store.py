@@ -97,8 +97,9 @@ class GenericMemoryStore:
             return (
                 db.execute(
                     """SELECT 1 FROM generic_memory_operations o
-                JOIN generic_memory_items i USING(item_id)
-                WHERE o.operation_id=? AND i.audience_principal_id=?""",
+                JOIN generic_memory_items i ON i.item_id=o.item_id
+                    AND i.audience_principal_id=o.audience_principal_id
+                WHERE o.operation_id=? AND o.audience_principal_id=?""",
                     (operation_id, context.principal_id.value),
                 ).fetchone()
                 is not None
@@ -122,8 +123,11 @@ class GenericMemoryStore:
                     p.confidence,p.verification,o.decided_at,p.reason,p.review_at,
                     o.model_identifier,o.prompt_version,o.core_self_version
                 FROM generic_memory_items i JOIN generic_memory_operations o
-                    ON o.item_id=i.item_id AND o.revision=i.current_revision
-                JOIN generic_memory_payloads p USING(operation_id)
+                    ON o.item_id=i.item_id
+                    AND o.audience_principal_id=i.audience_principal_id
+                    AND o.revision=i.current_revision
+                JOIN generic_memory_payloads p ON p.operation_id=o.operation_id
+                    AND p.audience_principal_id=o.audience_principal_id
                 WHERE i.audience_principal_id=? AND o.status='active'
                 ORDER BY o.item_id""",
                 (context.principal_id.value,),
@@ -131,8 +135,8 @@ class GenericMemoryStore:
             reads = []
             for row in rows:
                 sources = db.execute(
-                    "SELECT event_id,role FROM generic_memory_sources WHERE operation_id=? ORDER BY event_id,role",
-                    (row[0],),
+                    "SELECT event_id,role FROM generic_memory_sources WHERE operation_id=? AND source_principal_id=? ORDER BY event_id,role",
+                    (row[0], context.principal_id.value),
                 ).fetchall()
                 reads.append(
                     GenericMemoryRead(
@@ -282,8 +286,11 @@ class GenericMemoryStore:
                                 FROM generic_memory_items i
                                 JOIN generic_memory_operations o
                                     ON o.item_id=i.item_id
+                                    AND o.audience_principal_id=i.audience_principal_id
                                     AND o.revision=i.current_revision
-                                JOIN generic_memory_payloads p USING(operation_id)
+                                JOIN generic_memory_payloads p
+                                    ON p.operation_id=o.operation_id
+                                    AND p.audience_principal_id=o.audience_principal_id
                                 WHERE i.audience_principal_id=? AND o.status='active'
                                 ORDER BY i.item_id""",
                                 (context.principal_id.value,),
@@ -292,13 +299,13 @@ class GenericMemoryStore:
                         if tuple(sorted(expected_visible_revisions)) != visible:
                             raise GenericMemoryStale("generic_snapshot_stale")
                     prior = db.execute(
-                        "SELECT item_id,revision,status FROM generic_memory_operations WHERE operation_id=?",
-                        (c.operation_id,),
+                        "SELECT item_id,revision,status FROM generic_memory_operations WHERE operation_id=? AND audience_principal_id=?",
+                        (c.operation_id, context.principal_id.value),
                     ).fetchone()
                     if prior is not None:
                         payload = db.execute(
-                            "SELECT binding FROM generic_memory_payloads WHERE operation_id=?",
-                            (c.operation_id,),
+                            "SELECT binding FROM generic_memory_payloads WHERE operation_id=? AND audience_principal_id=?",
+                            (c.operation_id, context.principal_id.value),
                         ).fetchone()
                         if prior[2] != "active" or payload is None:
                             raise GenericMemoryConflict("invalidated_generic_identity")
@@ -313,19 +320,17 @@ class GenericMemoryStore:
                     ):
                         raise GenericMemoryError("generic_graph_bound")
                     item = db.execute(
-                        "SELECT audience_principal_id,current_revision FROM generic_memory_items WHERE item_id=?",
-                        (proposal.item_id,),
+                        "SELECT current_revision FROM generic_memory_items WHERE item_id=? AND audience_principal_id=?",
+                        (proposal.item_id, context.principal_id.value),
                     ).fetchone()
                     if item is None:
                         if c.expected_revision is not None:
                             raise GenericMemoryStale("generic_revision_stale")
                         revision = 1
-                    elif item[0] != context.principal_id.value:
-                        raise GenericMemoryConflict("generic_item_conflict")
-                    elif c.expected_revision != item[1]:
+                    elif c.expected_revision != item[0]:
                         raise GenericMemoryStale("generic_revision_stale")
                     else:
-                        revision = item[1] + 1
+                        revision = item[0] + 1
                     if revision > MAX_GENERIC_REVISIONS:
                         raise GenericMemoryError("generic_revision_bound")
                     source_roles = set(direct)
@@ -334,8 +339,11 @@ class GenericMemoryStore:
                         parent = db.execute(
                             """SELECT o.operation_id FROM generic_memory_items i
                             JOIN generic_memory_operations o ON o.item_id=i.item_id
+                                AND o.audience_principal_id=i.audience_principal_id
                                 AND o.revision=i.current_revision
-                            JOIN generic_memory_payloads p USING(operation_id)
+                            JOIN generic_memory_payloads p
+                                ON p.operation_id=o.operation_id
+                                AND p.audience_principal_id=o.audience_principal_id
                             WHERE i.item_id=? AND i.audience_principal_id=?
                               AND o.revision=? AND o.status='active'""",
                             (parent_id, context.principal_id.value, parent_revision),
@@ -348,15 +356,15 @@ class GenericMemoryStore:
                         ancestors.extend(
                             row[0]
                             for row in db.execute(
-                                "SELECT operation_id FROM generic_memory_operations WHERE item_id=?",
-                                (proposal.item_id,),
+                                "SELECT operation_id FROM generic_memory_operations WHERE item_id=? AND audience_principal_id=?",
+                                (proposal.item_id, context.principal_id.value),
                             )
                         )
                     for operation_id in ancestors:
                         source_roles.update(
                             db.execute(
-                                "SELECT event_id,role FROM generic_memory_sources WHERE operation_id=?",
-                                (operation_id,),
+                                "SELECT event_id,role FROM generic_memory_sources WHERE operation_id=? AND source_principal_id=?",
+                                (operation_id, context.principal_id.value),
                             )
                         )
                     if len(source_roles) > MAX_GENERIC_SOURCES:
@@ -397,14 +405,15 @@ class GenericMemoryStore:
                         )
                     else:
                         db.execute(
-                            "UPDATE generic_memory_items SET current_revision=? WHERE item_id=?",
-                            (revision, proposal.item_id),
+                            "UPDATE generic_memory_items SET current_revision=? WHERE item_id=? AND audience_principal_id=?",
+                            (revision, proposal.item_id, context.principal_id.value),
                         )
                     db.execute(
-                        "INSERT INTO generic_memory_operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO generic_memory_operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             c.operation_id,
                             proposal.item_id,
+                            context.principal_id.value,
                             revision,
                             c.expected_revision,
                             len(source_roles),
@@ -418,9 +427,10 @@ class GenericMemoryStore:
                         ),
                     )
                     db.execute(
-                        "INSERT INTO generic_memory_payloads VALUES (?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO generic_memory_payloads VALUES (?,?,?,?,?,?,?,?,?,?)",
                         (
                             c.operation_id,
+                            context.principal_id.value,
                             proposal.memory_kind.value,
                             proposal.statement,
                             proposal.confidence,
@@ -445,8 +455,11 @@ class GenericMemoryStore:
                         ),
                     )
                     db.executemany(
-                        "INSERT INTO generic_memory_parents VALUES (?,?)",
-                        ((c.operation_id, parent) for parent in parent_operations),
+                        "INSERT INTO generic_memory_parents VALUES (?,?,?)",
+                        (
+                            (c.operation_id, parent, context.principal_id.value)
+                            for parent in parent_operations
+                        ),
                     )
                     validate_generic_graph(db)
                     return proposal.item_id, revision

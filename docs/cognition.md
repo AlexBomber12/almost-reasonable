@@ -100,8 +100,10 @@ retry returns its original revision even after later revisions; changed bindings
 stale heads, other participants' parents and unsupported sharing fail closed.
 
 The v7 generic tables separate `generic_memory_items` and immutable operation
-identities from removable `generic_memory_payloads`. Protected source roles and
-exact parent-operation edges retain the full union across prior item revisions
+identities from removable `generic_memory_payloads`. Item and operation IDs are
+scoped to each participant, so matching model-generated IDs remain independent
+through reads and erasure. Protected source roles and exact parent-operation
+edges retain the full union across prior item revisions
 and consolidation levels, with a 100-edge and 32-revision bound. The graph digest binds retained
 content-free edges after deletion; active replay bindings live only with
 removable payloads. `protected_reply_generic` records which exact generic

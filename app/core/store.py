@@ -609,13 +609,15 @@ _SCHEMA_V7 = (
     """ALTER TABLE agent_reply_operations ADD COLUMN generic_count INTEGER NOT NULL
         DEFAULT 0 CHECK(generic_count BETWEEN 0 AND 16)""",
     """CREATE TABLE generic_memory_items (
-        item_id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL,
         audience_principal_id TEXT NOT NULL,
-        current_revision INTEGER NOT NULL CHECK(current_revision BETWEEN 1 AND 32)
+        current_revision INTEGER NOT NULL CHECK(current_revision BETWEEN 1 AND 32),
+        PRIMARY KEY(audience_principal_id,item_id)
     )""",
     """CREATE TABLE generic_memory_operations (
-        operation_id TEXT PRIMARY KEY,
-        item_id TEXT NOT NULL REFERENCES generic_memory_items(item_id),
+        operation_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        audience_principal_id TEXT NOT NULL,
         revision INTEGER NOT NULL CHECK(revision >= 1),
         expected_revision INTEGER,
         source_count INTEGER NOT NULL CHECK(source_count BETWEEN 1 AND 100),
@@ -626,10 +628,14 @@ _SCHEMA_V7 = (
         prompt_version TEXT NOT NULL,
         core_self_version TEXT NOT NULL,
         graph_digest TEXT NOT NULL CHECK(length(graph_digest)=64),
-        UNIQUE(item_id, revision)
+        PRIMARY KEY(audience_principal_id,operation_id),
+        UNIQUE(audience_principal_id,item_id,revision),
+        FOREIGN KEY(audience_principal_id,item_id)
+            REFERENCES generic_memory_items(audience_principal_id,item_id)
     )""",
     """CREATE TABLE generic_memory_payloads (
-        operation_id TEXT PRIMARY KEY REFERENCES generic_memory_operations(operation_id),
+        operation_id TEXT NOT NULL,
+        audience_principal_id TEXT NOT NULL,
         kind TEXT NOT NULL CHECK(kind IN ('unresolved_question','candidate_useful_memory','contradiction_counterevidence')),
         statement TEXT NOT NULL CHECK(length(CAST(statement AS BLOB)) BETWEEN 1 AND 4096),
         confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
@@ -637,26 +643,39 @@ _SCHEMA_V7 = (
         reason TEXT NOT NULL CHECK(length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),
         review_at TEXT NOT NULL,
         review_state TEXT NOT NULL CHECK(review_state='pending_review'),
-        binding TEXT NOT NULL
+        binding TEXT NOT NULL,
+        PRIMARY KEY(audience_principal_id,operation_id),
+        FOREIGN KEY(audience_principal_id,operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id)
     )""",
     """CREATE TABLE generic_memory_sources (
-        operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
+        operation_id TEXT NOT NULL,
         event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
         role TEXT NOT NULL CHECK(role IN ('initiating','supporting','counterevidence')),
         source_principal_id TEXT NOT NULL,
         retention_status TEXT NOT NULL CHECK(retention_status IN ('active','invalidated')),
-        PRIMARY KEY(operation_id,event_id,role)
+        PRIMARY KEY(source_principal_id,operation_id,event_id,role),
+        FOREIGN KEY(source_principal_id,operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id)
     )""",
     """CREATE TABLE generic_memory_parents (
-        operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
-        parent_operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
-        PRIMARY KEY(operation_id,parent_operation_id),
+        operation_id TEXT NOT NULL,
+        parent_operation_id TEXT NOT NULL,
+        audience_principal_id TEXT NOT NULL,
+        PRIMARY KEY(audience_principal_id,operation_id,parent_operation_id),
+        FOREIGN KEY(audience_principal_id,operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id),
+        FOREIGN KEY(audience_principal_id,parent_operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id),
         CHECK(operation_id <> parent_operation_id)
     )""",
     """CREATE TABLE protected_reply_generic (
         operation_id TEXT NOT NULL REFERENCES agent_reply_operations(operation_id),
-        generic_operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
-        PRIMARY KEY(operation_id,generic_operation_id)
+        generic_operation_id TEXT NOT NULL,
+        generic_principal_id TEXT NOT NULL,
+        PRIMARY KEY(operation_id,generic_principal_id,generic_operation_id),
+        FOREIGN KEY(generic_principal_id,generic_operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id)
     )""",
     "CREATE INDEX generic_memory_sources_event ON generic_memory_sources(event_id)",
     "CREATE INDEX generic_memory_parents_parent ON generic_memory_parents(parent_operation_id)",

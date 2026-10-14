@@ -144,17 +144,18 @@ class AgentOutputStore:
         for generic in op.generic_operation_ids:
             row = db.execute(
                 """SELECT i.audience_principal_id,o.status FROM generic_memory_operations o
-                JOIN generic_memory_items i USING(item_id)
-                WHERE o.operation_id=?""",
-                (generic,),
+                JOIN generic_memory_items i ON i.item_id=o.item_id
+                    AND i.audience_principal_id=o.audience_principal_id
+                WHERE o.operation_id=? AND o.audience_principal_id=?""",
+                (generic, principal),
             ).fetchone()
             if row != (principal, "active"):
                 return False
             dependencies = {
                 source[0]
                 for source in db.execute(
-                    "SELECT event_id FROM generic_memory_sources WHERE operation_id=?",
-                    (generic,),
+                    "SELECT event_id FROM generic_memory_sources WHERE operation_id=? AND source_principal_id=?",
+                    (generic, principal),
                 )
             }
             if not dependencies <= set(op.source_event_ids):
@@ -290,9 +291,9 @@ class AgentOutputStore:
                     ),
                 )
                 db.executemany(
-                    "INSERT INTO protected_reply_generic VALUES (?, ?)",
+                    "INSERT INTO protected_reply_generic VALUES (?, ?, ?)",
                     (
-                        (operation.operation_id, item)
+                        (operation.operation_id, item, context.principal_id.value)
                         for item in operation.generic_operation_ids
                     ),
                 )

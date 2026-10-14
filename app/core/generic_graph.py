@@ -44,13 +44,13 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
     ):
         raise ValueError("invalid_generic_graph")
     items = {
-        item_id: (principal, head)
+        (principal, item_id): head
         for item_id, principal, head in db.execute(
             "SELECT item_id,audience_principal_id,current_revision FROM generic_memory_items"
         )
     }
     operations = {
-        operation_id: (
+        (principal, operation_id): (
             item_id,
             revision,
             expected,
@@ -59,23 +59,26 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             status,
             graph_digest,
             decided_at,
+            principal,
         )
-        for operation_id, item_id, revision, expected, source_count, parent_count, status, graph_digest, decided_at in db.execute(
+        for operation_id, item_id, revision, expected, source_count, parent_count, status, graph_digest, decided_at, principal in db.execute(
             """SELECT operation_id,item_id,revision,expected_revision,
-                    source_count,parent_count,status,graph_digest,decided_at
+                    source_count,parent_count,status,graph_digest,decided_at,
+                    audience_principal_id
                 FROM generic_memory_operations"""
         )
     }
-    sources = {operation_id: set() for operation_id in operations}
+    sources = {operation_key: set() for operation_key in operations}
     for operation_id, event_id, role, principal, retention in db.execute(
         """SELECT operation_id,event_id,role,source_principal_id,retention_status
         FROM generic_memory_sources"""
     ):
-        operation = operations.get(operation_id)
+        operation_key = (principal, operation_id)
+        operation = operations.get(operation_key)
         if (
             operation is None
-            or operation[0] not in items
-            or principal != items[operation[0]][0]
+            or (operation[8], operation[0]) not in items
+            or principal != operation[8]
         ):
             raise ValueError("invalid_generic_graph")
         if (retention == "active") != (operation[5] == "active"):
@@ -117,16 +120,18 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             or event[12:15] != (event_id, principal, "participant_assertion")
         ):
             raise ValueError("invalid_generic_graph")
-        sources[operation_id].add((event_id, role))
-    parents = {operation_id: set() for operation_id in operations}
-    for operation_id, parent in db.execute(
-        "SELECT operation_id,parent_operation_id FROM generic_memory_parents"
+        sources[operation_key].add((event_id, role))
+    parents = {operation_key: set() for operation_key in operations}
+    for operation_id, parent, principal in db.execute(
+        "SELECT operation_id,parent_operation_id,audience_principal_id FROM generic_memory_parents"
     ):
-        if operation_id not in operations or parent not in operations:
+        operation_key = (principal, operation_id)
+        parent_key = (principal, parent)
+        if operation_key not in operations or parent_key not in operations:
             raise ValueError("invalid_generic_graph")
-        parents[operation_id].add(parent)
+        parents[operation_key].add(parent_key)
     payloads = {
-        operation_id: (
+        (principal, operation_id): (
             kind,
             statement,
             confidence,
@@ -136,12 +141,12 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             review_state,
             binding,
         )
-        for operation_id, kind, statement, confidence, verification, reason, review, review_state, binding in db.execute(
+        for operation_id, principal, kind, statement, confidence, verification, reason, review, review_state, binding in db.execute(
             "SELECT * FROM generic_memory_payloads"
         )
     }
-    by_item = {item_id: {} for item_id in items}
-    for operation_id, operation in operations.items():
+    by_item = {key: {} for key in items}
+    for operation_key, operation in operations.items():
         (
             item_id,
             revision,
@@ -151,29 +156,34 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             status,
             digest,
             decided_at,
+            principal,
         ) = operation
+        key = (principal, item_id)
         if (
-            item_id not in items
-            or revision in by_item[item_id]
+            key not in items
+            or revision in by_item[key]
             or not _canonical_utc(decided_at)
         ):
             raise ValueError("invalid_generic_graph")
-        by_item[item_id][revision] = operation_id
+        by_item[key][revision] = operation_key
         if (
-            source_count != len(sources[operation_id])
-            or parent_count != len(parents[operation_id])
-            or (status == "active") != (operation_id in payloads)
+            source_count != len(sources[operation_key])
+            or parent_count != len(parents[operation_key])
+            or (status == "active") != (operation_key in payloads)
             or digest
             != hashlib.sha256(
                 json.dumps(
-                    [sorted(sources[operation_id]), sorted(parents[operation_id])],
+                    [
+                        sorted(sources[operation_key]),
+                        sorted(parent[1] for parent in parents[operation_key]),
+                    ],
                     separators=(",", ":"),
                 ).encode()
             ).hexdigest()
         ):
             raise ValueError("invalid_generic_graph")
-    for item_id, (_principal, head) in items.items():
-        chain = by_item[item_id]
+    for key, head in items.items():
+        chain = by_item[key]
         if set(chain) != set(range(1, head + 1)):
             raise ValueError("invalid_generic_graph")
         statuses = {operations[operation_id][5] for operation_id in chain.values()}
@@ -185,7 +195,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
     visited = set()
     visiting = set()
 
-    def visit(operation_id: str) -> None:
+    def visit(operation_id: tuple[str, str]) -> None:
         if operation_id in visiting:
             raise ValueError("invalid_generic_graph")
         if operation_id in visited:
@@ -200,19 +210,21 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             status,
             _digest,
             _decided_at,
+            principal,
         ) = operations[operation_id]
         inherited = set()
         if revision > 1:
-            prior = by_item[item_id][revision - 1]
+            prior = by_item[(principal, item_id)][revision - 1]
             visit(prior)
             inherited.update(sources[prior])
         for parent in parents[operation_id]:
             visit(parent)
             parent_item, parent_revision, *_ = operations[parent]
+            parent_principal = operations[parent][8]
             if (
-                parent_item == item_id
-                or items[parent_item][0] != items[item_id][0]
-                or parent_revision > items[parent_item][1]
+                (parent_principal, parent_item) == (principal, item_id)
+                or parent_principal != principal
+                or parent_revision > items[(parent_principal, parent_item)]
                 or (status == "active" and operations[parent][5] != "active")
             ):
                 raise ValueError("invalid_generic_graph")
@@ -279,18 +291,18 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                 or data["review_state"] != review_state
                 or data["model"]
                 != db.execute(
-                    "SELECT model_identifier FROM generic_memory_operations WHERE operation_id=?",
-                    (operation_id,),
+                    "SELECT model_identifier FROM generic_memory_operations WHERE operation_id=? AND audience_principal_id=?",
+                    (operation_id[1], operation_id[0]),
                 ).fetchone()[0]
                 or data["prompt"]
                 != db.execute(
-                    "SELECT prompt_version FROM generic_memory_operations WHERE operation_id=?",
-                    (operation_id,),
+                    "SELECT prompt_version FROM generic_memory_operations WHERE operation_id=? AND audience_principal_id=?",
+                    (operation_id[1], operation_id[0]),
                 ).fetchone()[0]
                 or data["core"]
                 != db.execute(
-                    "SELECT core_self_version FROM generic_memory_operations WHERE operation_id=?",
-                    (operation_id,),
+                    "SELECT core_self_version FROM generic_memory_operations WHERE operation_id=? AND audience_principal_id=?",
+                    (operation_id[1], operation_id[0]),
                 ).fetchone()[0]
                 or bound_parents != actual_parents
                 or direct | inherited != sources[operation_id]
@@ -310,9 +322,9 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         )"""
     ):
         generic_ids = [
-            row[0]
+            (row[0], row[1])
             for row in db.execute(
-                "SELECT generic_operation_id FROM protected_reply_generic WHERE operation_id=?",
+                "SELECT generic_principal_id,generic_operation_id FROM protected_reply_generic WHERE operation_id=?",
                 (reply_id,),
             )
         ]
@@ -329,7 +341,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             operation = operations.get(generic_id)
             if (
                 operation is None
-                or items[operation[0]][0] != reply_principal
+                or operation[8] != reply_principal
                 or (reply_status == "active" and operation[5] != "active")
                 or not {source for source, _role in sources[generic_id]}
                 <= reply_sources
@@ -339,47 +351,57 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
 
 def erase_generic_source(db: sqlite3.Connection, event_id: str) -> None:
     affected = {
-        row[0]
+        (row[0], row[1])
         for row in db.execute(
-            """SELECT DISTINCT o.item_id FROM generic_memory_operations o
-        JOIN generic_memory_sources s USING(operation_id) WHERE s.event_id=?""",
+            """SELECT DISTINCT o.audience_principal_id,o.item_id
+        FROM generic_memory_operations o
+        JOIN generic_memory_sources s
+            ON s.operation_id=o.operation_id
+            AND s.source_principal_id=o.audience_principal_id
+        WHERE s.event_id=?""",
             (event_id,),
         )
     }
     while True:
         descendants = {
-            row[0]
+            (row[0], row[1])
             for row in db.execute(
-                """SELECT DISTINCT child.item_id FROM generic_memory_parents p
+                """SELECT DISTINCT child.audience_principal_id,child.item_id
+            FROM generic_memory_parents p
             JOIN generic_memory_operations parent
                 ON parent.operation_id=p.parent_operation_id
+                AND parent.audience_principal_id=p.audience_principal_id
             JOIN generic_memory_operations child
                 ON child.operation_id=p.operation_id
-            WHERE parent.item_id IN ({})""".format(
-                    ",".join("?" for _ in affected) or "NULL"
+                AND child.audience_principal_id=p.audience_principal_id
+            WHERE (parent.audience_principal_id,parent.item_id) IN ({})""".format(
+                    ",".join("(?,?)" for _ in affected) or "(NULL,NULL)"
                 ),
-                tuple(sorted(affected)),
+                tuple(value for pair in sorted(affected) for value in pair),
             )
         }
         if descendants <= affected:
             break
         affected.update(descendants)
-    for item_id in sorted(affected):
+    for principal, item_id in sorted(affected):
         db.execute(
             """UPDATE generic_memory_operations SET status='invalidated'
-            WHERE item_id=?""",
-            (item_id,),
+            WHERE audience_principal_id=? AND item_id=?""",
+            (principal, item_id),
         )
         db.execute(
-            """DELETE FROM generic_memory_payloads WHERE operation_id IN
-            (SELECT operation_id FROM generic_memory_operations WHERE item_id=?)""",
-            (item_id,),
+            """DELETE FROM generic_memory_payloads WHERE audience_principal_id=?
+            AND operation_id IN
+            (SELECT operation_id FROM generic_memory_operations
+                WHERE audience_principal_id=? AND item_id=?)""",
+            (principal, principal, item_id),
         )
         db.execute(
             """UPDATE generic_memory_sources SET retention_status='invalidated'
-            WHERE operation_id IN
-            (SELECT operation_id FROM generic_memory_operations WHERE item_id=?)""",
-            (item_id,),
+            WHERE source_principal_id=? AND operation_id IN
+            (SELECT operation_id FROM generic_memory_operations
+                WHERE audience_principal_id=? AND item_id=?)""",
+            (principal, principal, item_id),
         )
     db.execute(
         """UPDATE agent_reply_operations SET retention_status='invalidated'
@@ -387,6 +409,7 @@ def erase_generic_source(db: sqlite3.Connection, event_id: str) -> None:
             SELECT r.operation_id FROM protected_reply_generic r
             JOIN generic_memory_operations o
                 ON o.operation_id=r.generic_operation_id
+                AND o.audience_principal_id=r.generic_principal_id
             WHERE o.status='invalidated')"""
     )
     db.execute(
