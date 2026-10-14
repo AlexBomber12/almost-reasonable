@@ -1,6 +1,7 @@
 """Small standard-library WSGI application for authenticated private chat."""
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from html import escape
 from http import HTTPStatus
 from ipaddress import ip_address
@@ -209,7 +210,7 @@ class PrivateWebApplication:
         if method == "GET" and path == "/chat":
             return self._chat_page(session, environ)
         if method == "GET" and path == "/api/history":
-            return self._history(session)
+            return self._history(session, environ)
         if method == "POST" and path == "/logout":
             self._require_state_change(environ, session)
             self._auth_store.revoke(session_token)
@@ -313,7 +314,7 @@ class PrivateWebApplication:
                 HTTPStatus.UNAUTHORIZED,
                 "Your session protection is invalid. Please sign in again.",
             )
-        items = self._conversations.history(session.trusted_context)
+        items = self._checked_history(session, environ)
         history = "".join(
             f"<li><time>{escape(item.occurred_at.isoformat())}</time> "
             f"<span>{escape(item.content)}</span></li>"
@@ -336,7 +337,7 @@ class PrivateWebApplication:
         return HTTPStatus.OK, [("Content-Type", "text/html; charset=utf-8")], body
 
     def _history(
-        self, session: AuthenticatedSession
+        self, session: AuthenticatedSession, environ: dict[str, Any]
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         messages = [
             {
@@ -345,9 +346,42 @@ class PrivateWebApplication:
                 "content": item.content,
                 "role": item.role,
             }
-            for item in self._conversations.history(session.trusted_context)
+            for item in self._checked_history(session, environ)
         ]
         return self._json(HTTPStatus.OK, {"messages": messages})
+
+    def _session_current(self, session, environ):
+        current = self._auth_store.authenticate(
+            self._cookie_value(environ, SESSION_COOKIE)
+        )
+        return (
+            current is not None and current.trusted_context == session.trusted_context
+        )
+
+    def _checked_history(self, session, environ):
+        from .runtime import Stage0ConversationRuntime
+
+        def current_authorized():
+            return self._session_current(session, environ)
+
+        if not current_authorized():
+            raise _RequestError(
+                HTTPStatus.UNAUTHORIZED,
+                "Your session is invalid or expired. Please sign in again.",
+            )
+        scope = (
+            self._conversations.authenticated_request(current_authorized)
+            if isinstance(self._conversations, Stage0ConversationRuntime)
+            else nullcontext()
+        )
+        with scope:
+            items = self._conversations.history(session.trusted_context)
+        if not current_authorized():
+            raise _RequestError(
+                HTTPStatus.UNAUTHORIZED,
+                "Your session is invalid or expired. Please sign in again.",
+            )
+        return items
 
     def _submit_message(
         self, environ: dict[str, Any], session: AuthenticatedSession
@@ -365,10 +399,21 @@ class PrivateWebApplication:
             ) from None
         if type(payload) is not dict or set(payload) != {"message_id", "content"}:
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Malformed message request.")
+        from .runtime import Stage0ConversationRuntime
+
+        def current_authorized():
+            return self._session_current(session, environ)
+
+        scope = (
+            self._conversations.authenticated_request(current_authorized)
+            if isinstance(self._conversations, Stage0ConversationRuntime)
+            else nullcontext()
+        )
         try:
-            result = self._conversations.submit(
-                session.trusted_context, payload["message_id"], payload["content"]
-            )
+            with scope:
+                result = self._conversations.submit(
+                    session.trusted_context, payload["message_id"], payload["content"]
+                )
         except ValueError:
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid message.") from None
         current = self._auth_store.authenticate(

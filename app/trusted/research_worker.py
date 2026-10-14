@@ -130,6 +130,9 @@ def decode_research_response(payload: bytes) -> dict[str, object]:
         or not 0 <= value["attempts"] <= 2
     ):
         raise WorkerProtocolError("invalid research response")
+    # JSON escapes can decode to unpaired surrogates. Validate all strings with
+    # the existing bounded serializer before any field-specific UTF-8 sizing.
+    _encode_json(value)
     report = value["report"]
     if value["outcome"] != "completed":
         if report is not None or value["message"] != _FAILURE_RU:
@@ -346,6 +349,9 @@ class ResearchWorkerBoundary:
             ).run(grant.brief, grant.authorization)
             if result.outcome is not ResearchOutcome.COMPLETED:
                 return _response(result.outcome.value, guarded.attempts)
+            blocked = self._guard(grant)
+            if blocked is not None:
+                return _response(blocked, guarded.attempts)
             evidence = result.evidence
             values = [evidence.text, evidence.response_id]
             for source in evidence.sources:

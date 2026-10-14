@@ -92,6 +92,7 @@ _INJECTION_PATTERNS = (
 _BRIEF_AUTHORITY = object()
 _BRIEF_INTEGRITY_KEY = secrets.token_bytes(32)
 _MAX_ENCODED_SCREEN_DEPTH = 4
+_MAX_ENCODED_REPAIR_WORK = 16 * 1024 * 1024
 _NON_SEGMENTED_SCRIPT_PREFIXES = (
     "CJK ",
     "HIRAGANA ",
@@ -371,7 +372,7 @@ def _decline(reason: str) -> BriefBuildResult:
 def _normalized(value: str) -> str:
     value = "".join(
         character
-        for character in unicodedata.normalize("NFKC", value)
+        for character in unicodedata.normalize("NFKD", value)
         if unicodedata.category(character) not in {"Cf", "Mn"}
     )
     return " ".join(value.translate(_CONFUSABLES).casefold().split())
@@ -396,17 +397,80 @@ def _contains_at_boundaries(values: list[str], needles: tuple[str, ...]) -> bool
 
 
 def _participant_identifier_matches(value: str, needle: str) -> bool:
-    if any(
+    nonsegmented = any(
         unicodedata.name(character, "").startswith(_NON_SEGMENTED_SCRIPT_PREFIXES)
         for character in needle
-    ):
-        return needle in value
-    left_boundary = r"(?<![^\W_])" if re.match(r"[^\W_]", needle[0]) else ""
-    right_boundary = r"(?![^\W_])" if re.match(r"[^\W_]", needle[-1]) else ""
-    return (
-        re.search(rf"{left_boundary}{re.escape(needle)}{right_boundary}", value)
-        is not None
     )
+    left_boundary = not nonsegmented and bool(re.match(r"[^\W_]", needle[0]))
+    right_boundary = not nonsegmented and bool(re.match(r"[^\W_]", needle[-1]))
+    exact_left = r"(?<![^\W_])" if left_boundary else ""
+    exact_right = r"(?![^\W_])" if right_boundary else ""
+    if re.search(rf"{exact_left}{re.escape(needle)}{exact_right}", value):
+        return True
+    compact = _compact_protected(needle) or needle
+    fragments = re.sub(r"%[0-9a-f]{2}", " ", value)
+    fragments = "".join(
+        character if character in compact or _word_char(character) else " "
+        for character in fragments
+    )
+    states = {0}
+    for token in fragments.split():
+        words = sum(_word_char(char) for char in token)
+        next_states = {0}
+        for prior in states:
+            # Vowel-led two-letter continuations of "An" are ambiguous
+            # public words; inserted fragments such as "An Xn" still match.
+            if (
+                prior
+                and compact == "ann"
+                and len(compact) - prior == 1
+                and words == 2
+                and token[0] in "aeiou"
+                and token[0] != compact[prior]
+            ):
+                continue
+            cursor = prior
+            progressed = False
+            matched_words = 0
+            for index, character in enumerate(token):
+                if character != compact[cursor]:
+                    continue
+                if (
+                    cursor == 0
+                    and left_boundary
+                    and index
+                    and _word_char(token[index - 1])
+                    and not (index == 1 and " " in needle)
+                ):
+                    continue
+                if (
+                    cursor == len(compact) - 1
+                    and right_boundary
+                    and " " not in needle
+                    and index + 1 < len(token)
+                    and _word_char(token[index + 1])
+                ):
+                    continue
+                cursor += 1
+                progressed = True
+                matched_words += _word_char(character)
+                if cursor == len(compact):
+                    if words - matched_words <= 1:
+                        return True
+                    break
+            # Keep viable prefix alternatives for inserted fragments such as
+            # Sx / SmiX, but not unrelated multi-character words.
+            recognizable = words - matched_words <= 1
+            if progressed and cursor < len(compact) and recognizable:
+                next_states.add(cursor)
+            if prior and recognizable:
+                next_states.add(prior)
+        states = next_states
+    return False
+
+
+def _word_char(character: str) -> bool:
+    return re.match(r"[^\W_]", character) is not None
 
 
 def _screen(
@@ -415,10 +479,16 @@ def _screen(
     *,
     identifier_values: list[str] | None = None,
     _encoded_depth: int = 0,
+    _allow_repair: bool = True,
+    _repair_budget: list[int] | None = None,
 ) -> str | None:
+    if _repair_budget is None:
+        _repair_budget = [_MAX_ENCODED_REPAIR_WORK]
     reason = _privacy_reason(values, screening, identifier_values)
     if reason is not None:
         return reason
+    if _known_encoded_overlap(values, screening):
+        return "encoded_leakage"
     try:
         percent_decoded = tuple(
             decoded
@@ -440,7 +510,13 @@ def _screen(
             )
             if opaque_is_leakage or not has_control:
                 return "encoded_leakage"
-        return None
+        return (
+            _repaired_encoded_reason(
+                encoded_candidates, screening, _encoded_depth, _repair_budget
+            )
+            if _allow_repair
+            else None
+        )
     for decoded in percent_decoded:
         if (
             _screen(
@@ -448,6 +524,8 @@ def _screen(
                 screening,
                 identifier_values=[decoded],
                 _encoded_depth=_encoded_depth + 1,
+                _allow_repair=_allow_repair,
+                _repair_budget=_repair_budget,
             )
             is not None
         ):
@@ -456,21 +534,32 @@ def _screen(
         decoded = _decode_base64(candidate)
         if decoded is None:
             continue
-        if any(unicodedata.category(character) == "Cc" for character in decoded):
-            if opaque_is_leakage:
-                return "encoded_leakage"
-            continue
+        if (
+            any(unicodedata.category(character) == "Cc" for character in decoded)
+            and opaque_is_leakage
+        ):
+            return "encoded_leakage"
+        # Untagged base64 can still contain whitespace/control separators in a
+        # protected quotation. Apply the bounded recursive privacy screen too.
         if (
             _screen(
                 [decoded],
                 screening,
                 identifier_values=[decoded],
                 _encoded_depth=_encoded_depth + 1,
+                _allow_repair=_allow_repair,
+                _repair_budget=_repair_budget,
             )
             is not None
         ):
             return "encoded_leakage"
-    return None
+    return (
+        _repaired_encoded_reason(
+            encoded_candidates, screening, _encoded_depth, _repair_budget
+        )
+        if _allow_repair
+        else None
+    )
 
 
 def _privacy_reason(
@@ -480,7 +569,15 @@ def _privacy_reason(
 ) -> str | None:
     if _contains(values, screening.private_canaries):
         return "private_canary"
-    if _contains_at_boundaries(values, screening.participant_identifiers):
+    structured_identifiers = tuple(
+        value
+        for value in screening.participant_identifiers
+        if not any(character.isspace() for character in _normalized(value))
+        and any(not _word_char(character) for character in _normalized(value))
+    )
+    if _contains_at_boundaries(values, screening.participant_identifiers) or any(
+        _recognizable_overlap([value], structured_identifiers) for value in values
+    ):
         return "participant_identifier"
     if _contains(values, screening.private_quotations):
         return "private_quotation"
@@ -497,7 +594,15 @@ def _privacy_reason(
     without_quantities = _PUBLIC_GROUPED_QUANTITY.sub(" ", without_dates)
     if _EMAIL.search(email_view) or _has_phone_number(without_quantities):
         return "direct_identifier"
-    if _recognizable_overlap(values, screening.private_texts):
+    if _recognizable_overlap(
+        values,
+        (
+            *screening.private_texts,
+            *screening.private_canaries,
+            *screening.private_quotations,
+            *screening.sensitive_details,
+        ),
+    ):
         return "recognizable_private_overlap"
     normalized = _normalized(combined)
     if any(_normalized(pattern) in normalized for pattern in _INJECTION_PATTERNS):
@@ -530,10 +635,148 @@ def _decode_base64(value: str) -> str | None:
     return decoded
 
 
+def _encoded_substrings(candidates):
+    for candidate in candidates:
+        for start in range(len(candidate)):
+            for end in range(start + 3, len(candidate) + 1):
+                if start or end != len(candidate):
+                    yield candidate[start:end]
+
+
+def _repaired_encoded_reason(candidates, screening, depth, budget) -> str | None:
+    candidates = tuple(dict.fromkeys(value for value, _ in candidates))
+    embedded = ResearchScreeningContext(
+        private_canaries=screening.private_canaries,
+        participant_identifiers=tuple(
+            value
+            for value in screening.participant_identifiers
+            if len(_normalized(value).encode("utf-8")) > 3
+        ),
+        private_quotations=screening.private_quotations,
+        sensitive_details=screening.sensitive_details,
+        private_texts=screening.private_texts,
+    )
+    # Short participant names keep their delimited one-quartet policy. Private
+    # comparison texts/canaries still receive embedded reconstruction.
+    for context, views in (
+        (screening, iter(candidates)),
+        (embedded, _encoded_substrings(candidates)),
+    ):
+        protected = set(
+            (
+                *context.private_canaries,
+                *context.participant_identifiers,
+                *context.private_quotations,
+                *context.sensitive_details,
+                *context.private_texts,
+            )
+        )
+        if not protected:
+            continue
+        comparison_cost = sum(len(value) for value in protected) * 16
+        seen = set()
+        for candidate in views:
+            for index in range(len(candidate)):
+                if budget[0] < len(candidate):
+                    return "encoded_leakage"
+                budget[0] -= len(candidate)
+                decoded = _decode_base64(candidate[:index] + candidate[index + 1 :])
+                if decoded is None or decoded in seen:
+                    continue
+                seen.add(decoded)
+                cost = len(decoded) * (1 + len(protected)) + comparison_cost
+                if budget[0] < cost:
+                    return "encoded_leakage"
+                budget[0] -= cost
+                # A repaired branch uses the existing depth/privacy checks,
+                # without recursively enumerating more character deletions.
+                if (
+                    depth >= _MAX_ENCODED_SCREEN_DEPTH
+                    or _screen(
+                        [decoded],
+                        context,
+                        identifier_values=[decoded],
+                        _encoded_depth=depth + 1,
+                        _allow_repair=False,
+                        _repair_budget=budget,
+                    )
+                    is not None
+                ):
+                    return "encoded_leakage"
+    return None
+
+
+def _known_encoded_overlap(
+    values: list[str], screening: ResearchScreeningContext
+) -> bool:
+    public_views = tuple(_normalized_for_encoding(value) for value in values)
+    protected = (
+        *screening.private_canaries,
+        *screening.participant_identifiers,
+        *screening.private_quotations,
+        *screening.sensitive_details,
+        *screening.private_texts,
+    )
+    for private in dict.fromkeys(protected):
+        texts = dict.fromkeys(
+            (
+                private,
+                private.casefold(),
+                _normalized(private),
+                *(
+                    unicodedata.normalize(form, value)
+                    for value in (private, private.casefold())
+                    for form in ("NFC", "NFD", "NFKC", "NFKD")
+                ),
+            )
+        )
+        for text in texts:
+            raw = text.encode("utf-8")
+            encodings = (
+                base64.b64encode(raw).decode("ascii").rstrip("="),
+                base64.urlsafe_b64encode(raw).decode("ascii").rstrip("="),
+            )
+            for encoded in dict.fromkeys(encodings):
+                for public in public_views:
+                    if len(encoded) <= 4:
+                        if _short_encoded_match(public, encoded):
+                            return True
+                        continue
+                    stream = iter(public)
+                    if all(
+                        any(character == expected for character in stream)
+                        for expected in encoded
+                    ):
+                        return True
+    return False
+
+
+def _short_encoded_match(public: str, encoded: str) -> bool:
+    # One base64 quartet represents at most three protected bytes. Permit one
+    # inserted character within a delimited candidate, rather than collecting
+    # unrelated initials anywhere in prose. Slash remains a URL-path delimiter.
+    patterns = (
+        re.escape(encoded[:index]) + r".?" + re.escape(encoded[index:])
+        for index in range(len(encoded) + 1)
+    )
+    return any(
+        re.search(rf"(?<![A-Za-z0-9+_-]){pattern}(?![A-Za-z0-9+_-])", public)
+        is not None
+        for pattern in patterns
+    )
+
+
 def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
     raw = "\n".join(values)
     normalized = "\n".join(_normalized_for_encoding(value) for value in values)
-    views = (raw,) if normalized == raw else (raw, normalized)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/_-"
+    # Original views retain terminal padding. Folded views reconstruct an
+    # unpadded candidate, including when invalid padding occurs inside a token.
+    separator_folded = tuple(
+        "".join(character if character in alphabet else " " for character in view)
+        for view in (raw, normalized)
+    )
+    views = tuple(dict.fromkeys((raw, normalized, *separator_folded)))
     ordinary_contiguous = tuple(
         (match.group(0), match.group(0).endswith("="))
         for view in views
@@ -560,24 +803,66 @@ def _base64_candidates(values: list[str]) -> tuple[tuple[str, bool], ...]:
 def _normalized_for_encoding(value: str) -> str:
     return "".join(
         " " if character.isspace() else character
-        for character in unicodedata.normalize("NFKC", value)
+        for character in unicodedata.normalize("NFKD", value)
         if unicodedata.category(character) not in {"Cf", "Mn"}
     )
 
 
 def _recognizable_overlap(values: list[str], private_texts: tuple[str, ...]) -> bool:
-    public_tokens = _WORDS.findall(_normalized(" ".join(values)))
-    if len(public_tokens) < 4:
-        return False
-    public_ngrams = {
-        tuple(public_tokens[index : index + 4])
-        for index in range(len(public_tokens) - 3)
-    }
+    public_normalized = _normalized(" ".join(values))
+    public_tokens = _WORDS.findall(public_normalized)
+    public_compact = _compact_protected(public_normalized)
+    public_punctuation = "".join(
+        char for char in public_normalized if unicodedata.category(char).startswith("P")
+    )
+    public_ngrams = {}
     for private_text in private_texts:
-        tokens = _WORDS.findall(_normalized(private_text))
+        private_normalized = _normalized(private_text)
+        private_compact = _compact_protected(private_normalized)
+        if private_compact:
+            protected_stream = iter(public_compact)
+            if all(
+                any(char == expected for char in protected_stream)
+                for expected in private_compact
+            ):
+                return True
+        else:
+            # Punctuation-only protected content is still data. Its complete
+            # punctuation sequence is compared conservatively across separators.
+            private_punctuation = "".join(
+                char
+                for char in private_normalized
+                if unicodedata.category(char).startswith("P")
+            )
+            punctuation_stream = iter(public_punctuation)
+            if private_punctuation and all(
+                any(char == expected for char in punctuation_stream)
+                for expected in private_punctuation
+            ):
+                return True
+        tokens = _WORDS.findall(private_normalized)
+        if not tokens:
+            continue
+        # Longer sources retain the four-token excerpt window.
+        size = min(4, len(tokens))
+        if size not in public_ngrams:
+            public_ngrams[size] = {
+                tuple(public_tokens[index : index + size])
+                for index in range(len(public_tokens) - size + 1)
+            }
         private_ngrams = {
-            tuple(tokens[index : index + 4]) for index in range(len(tokens) - 3)
+            tuple(tokens[index : index + size])
+            for index in range(len(tokens) - size + 1)
         }
-        if public_ngrams & private_ngrams:
+        if public_ngrams[size] & private_ngrams:
             return True
     return False
+
+
+def _compact_protected(normalized: str) -> str:
+    # Keep Unicode symbols (including emoji/currency) as meaningful protected
+    # content, alongside letters, numbers and retained marks. Formatting,
+    # whitespace and punctuation are separators rather than a reason to skip.
+    return "".join(
+        char for char in normalized if unicodedata.category(char)[0] in "LMNS"
+    )

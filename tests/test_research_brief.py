@@ -963,3 +963,525 @@ def test_nested_sensitive_encoding_fails_closed_at_the_screening_depth_limit():
     )
     assert result.disposition is BriefDisposition.DECLINED
     assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "private_text,question,reason",
+    [
+        (
+            "секретная гипотеза",
+            "Как работает секретная, гипотеза?",
+            "recognizable_private_overlap",
+        ),
+        (
+            "секретная гипотеза",
+            "Как работает секретная—гипотеза?",
+            "recognizable_private_overlap",
+        ),
+        ("тайна", "Как раскрывается тайна?", "recognizable_private_overlap"),
+        ("секретная гипотеза", "Полностью другой публичный вопрос", None),
+        ("секретная гипотеза", "секретная", None),
+        ("длинная защищённая фраза с множеством слов", "фраза", None),
+        ("👁", "Публичный вопрос о звёздах", None),
+    ],
+)
+def test_short_private_sequences_ignore_separators_without_matching_fragments(
+    private_text, question, reason
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(private_text,)),
+    )
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "секретная\u200bгипотеза",
+        "секретнаягипотеза",
+        "сек-ретная ги-потеза",
+        "с е к р е т н а я г и п о т е з а",
+    ],
+)
+def test_complete_compact_short_text_matches_format_and_character_separators(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
+    )
+    assert result.reason == "recognizable_private_overlap"
+
+
+@pytest.mark.parametrize(
+    "protected",
+    [
+        "сек-ретная ги-потеза",
+        "с е к р е т н а я г и п о т е з а",
+        "очень секретная гипотеза другого участника",
+    ],
+)
+def test_complete_compact_matching_has_no_source_token_count_cutoff(protected):
+    import re
+
+    question = "".join(re.findall(r"[^\W_]+", protected))
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == "recognizable_private_overlap"
+
+
+@pytest.mark.parametrize(
+    "protected,question,reason",
+    [
+        ("🔒🔑", "Публичный вопрос 🔒-🔑", "recognizable_private_overlap"),
+        ("$€", "Публичный вопрос $-€", "recognizable_private_overlap"),
+        ("?!?", "Публичный вопрос ?-!-?", "recognizable_private_overlap"),
+        ("🔒🔑", "Публичный вопрос 🌟", None),
+        ("?!?", "Публичный вопрос.", None),
+    ],
+)
+def test_nonword_protected_content_compares_across_separators(
+    protected, question, reason
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "protected,question,reason",
+    [
+        ("секрет", "сек🔒рет", "recognizable_private_overlap"),
+        ("🔒🔑", "🔒X🔑", "recognizable_private_overlap"),
+        ("🔒🔑", "🔒1🔑", "recognizable_private_overlap"),
+        ("🔒🔑", "🔑X🔒", None),
+        ("секрет", "секе", None),
+    ],
+)
+def test_inserted_characters_do_not_hide_complete_ordered_source(
+    protected, question, reason
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == reason
+
+
+@pytest.mark.parametrize(
+    "protected,question",
+    [
+        ("cafe", "cafe\u0301"),
+        ("cafe", "café"),
+        ("cafe", "ca\u0308fe"),
+        ("café", "cafe"),
+        ("cafe", "caf\u0336e"),
+    ],
+)
+def test_decomposed_marks_do_not_hide_protected_text(protected, question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=(protected,)),
+    )
+    assert result.reason == "recognizable_private_overlap"
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "private_canaries",
+        "participant_identifiers",
+        "private_quotations",
+        "sensitive_details",
+    ],
+)
+@pytest.mark.parametrize(
+    "question", ["partici🔒pant-a", "particiXpant-a", "p a r t i c i p a n t a"]
+)
+def test_all_protected_collections_reject_split_complete_content(field, question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(**{field: ("participant-a",)}),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+
+
+@pytest.mark.parametrize(
+    "question", ["A🔒nn", "A X nn", "A n n", "A1nn", "An Xn", "An xn", "An 7n", "An-Xn"]
+)
+def test_short_names_reject_separator_or_token_inserts(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.DECLINED
+
+
+@pytest.mark.parametrize("suffix", ["in", "on", "an"])
+def test_short_word_exception_cannot_complete_a_long_private_name(suffix):
+    result = build_safe_research_brief(
+        records(ResearchQuestion("Alice Brow " + suffix)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Brown",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize("mark", ["\u0301", "\u0308"])
+def test_base64_candidate_marks_are_decomposed_before_decode(mark):
+    import base64
+
+    encoded = base64.b64encode("секретная гипотеза".encode()).decode()
+    index = encoded.index("N") + 1
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:index] + mark + encoded[index:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "question", ["Annual public reports", "A🔒nnual public reports"]
+)
+def test_insert_tolerant_names_still_require_final_word_boundary(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "AliceX Smith",
+        "Alice🔒 Smith",
+        "AliceX SmitXh",
+        "Alice SmitX h",
+        "AlicXe SmiXt h",
+    ],
+)
+def test_multiword_identifier_partial_matches_survive_inserted_word_suffixes(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize(
+    "separator",
+    [".", ":", ";", "🔒", "#", "Ж", "漢", "١", "²", "ℝ", "ः", "=", "==", "=🔒="],
+)
+@pytest.mark.parametrize("padded", [True, False])
+def test_base64_punctuation_and_symbol_separators_are_screened(separator, padded):
+    import base64
+
+    encoded = base64.b64encode("секретная гипотеза".encode()).decode()
+    if not padded:
+        encoded = encoded.rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:12] + separator + encoded[12:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("секретная гипотеза",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "identifier,question",
+    [
+        ("Ann", "An unrelated public question"),
+        ("Ann", "An unrelated question"),
+        ("Ann", "An-unrelated-public-question"),
+        ("Ann", "An/unrelated/public/question"),
+        ("Ann", "An%20unrelated%20public%20question"),
+        ("Alice Smith", "Alice unrelated public Smith"),
+    ],
+)
+def test_unrelated_words_do_not_complete_partial_identifier_matches(
+    identifier, question
+):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "field",
+    [
+        "private_canaries",
+        "participant_identifiers",
+        "private_quotations",
+        "sensitive_details",
+        "private_texts",
+    ],
+)
+@pytest.mark.parametrize("urlsafe", [True, False])
+@pytest.mark.parametrize("inserted", ["A", "AX7"])
+def test_known_encoded_protected_values_match_across_inserted_alphabet_characters(
+    field, urlsafe, inserted
+):
+    import base64
+
+    encode = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    encoded = encode("секретная гипотеза".encode()).decode().rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:12] + inserted + encoded[12:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(**{field: ("секретная гипотеза",)}),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+def test_known_encoding_also_compares_normalized_protected_text():
+    import base64
+
+    encoded = base64.b64encode("cafe".encode()).decode().rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:3] + "X" + encoded[3:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "question", ["Yearly Questions", "Yonder Quick examples", "Yearly/Questions"]
+)
+def test_short_encoding_does_not_match_unrelated_public_initials(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("a",)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "encoded", ["AYQ", "YAQ", "YQA", "Y.Q", "Y🔒Q", "Y Q", "QAW5u", "AQW5u", "QW5uA"]
+)
+def test_short_known_encoding_allows_one_bounded_insert(encoded):
+    protected = "a" if len(encoded) <= 3 else "Ann"
+    result = build_safe_research_brief(
+        records(ResearchQuestion("https://example.org/" + encoded)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(protected,)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "changed", ["CAFÉ", "cAfÉ", "CaFé", "CAFE", "cafë", "Caf\u200bÉ"]
+)
+@pytest.mark.parametrize("position", [0, 4, -1])
+def test_repaired_base64_is_screened_after_normalizing_decoded_text(changed, position):
+    import base64
+
+    encoded = base64.b64encode(changed.encode()).decode().rstrip("=")
+    result = build_safe_research_brief(
+        records(ResearchQuestion(encoded[:position] + "A" + encoded[position:])),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize("budget", [0, 64])
+def test_repair_work_exhaustion_withholds_output(budget, monkeypatch):
+    from app.research import brief as module
+
+    monkeypatch.setattr(module, "_MAX_ENCODED_REPAIR_WORK", budget)
+    result = build_safe_research_brief(
+        records(ResearchQuestion("YWE=")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+def test_repaired_candidate_at_depth_limit_fails_closed():
+    from app.research import brief as module
+
+    assert (
+        module._screen(
+            ["Q0FGAw4k"],
+            ResearchScreeningContext(private_texts=("Café",)),
+            _encoded_depth=4,
+        )
+        == "encoded_leakage"
+    )
+
+
+@pytest.mark.parametrize(
+    "question",
+    ["fooQ0FGAw4k", "fooQ0FGAw4kbar", "AAAAQ0FGAw4kZZZ", "prefix999Q0FGAw4k"],
+)
+def test_embedded_case_equivalent_encoded_repairs_are_screened(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(private_texts=("Café",)),
+    )
+    assert result.reason == "encoded_leakage"
+
+
+@pytest.mark.parametrize(
+    "question",
+    [
+        "An opinion",
+        "An illustration",
+        "An unknown",
+        "An organisation",
+        "An ordinary question",
+        "An optional public question",
+        "An in-depth analysis",
+        "An on-call analysis",
+        "An en-dash analysis",
+        "An en dash analysis",
+    ],
+)
+def test_unrelated_following_word_cannot_finish_a_private_name(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann",)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize(
+    "question", ["Alice Sx Smith", "Alice SmiX Smith", "Alice SmitX Smith"]
+)
+def test_partial_inserted_fragments_keep_a_viable_identifier_prefix(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize(
+    "identifier,question",
+    [
+        ("Ann", "A navigation"),
+        ("Alice Smith", "Alice studies Smith"),
+        ("Alice Smith", "Alice summary Smith"),
+    ],
+)
+def test_unrelated_words_are_not_inserted_identifier_fragments(identifier, question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=(identifier,)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize("question", ["Alice XSmith", "Alice 7Smith", "Alice ASmith"])
+def test_leading_insert_is_checked_after_scanning_name_fragment(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Smith",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize("question", ["XAlice Brown", "7Alice Brown"])
+def test_one_leading_character_cannot_hide_a_multiword_identifier(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Alice Brown",)),
+    )
+    assert result.reason == "participant_identifier"
+
+
+@pytest.mark.parametrize("question", ["Annual research", "Annually researched"])
+def test_initial_public_word_with_long_suffix_cannot_start_a_private_name(question):
+    result = build_safe_research_brief(
+        records(ResearchQuestion(question)),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=ResearchScreeningContext(participant_identifiers=("Ann Research",)),
+    )
+    assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize("identifier", ["Alice Brown", "Mira Stone", "Nora Vale"])
+@pytest.mark.parametrize("inserted", ["X", "7"])
+def test_multiword_identifier_screens_one_trailing_character(identifier, inserted):
+    from app.research.brief import _screen
+
+    screening = ResearchScreeningContext(participant_identifiers=(identifier,))
+    assert _screen([identifier], screening) == "participant_identifier"
+    assert _screen([identifier + inserted], screening) == "participant_identifier"
+    assert _screen([identifier + "X7"], screening) is None
+
+
+@pytest.mark.parametrize("identifier", ["Alice Brown", "Mira Stone", "Ann Research"])
+def test_complete_first_fragment_rejects_more_than_one_inserted_character(identifier):
+    from app.research.brief import _screen
+
+    first, second = identifier.split()
+    screening = ResearchScreeningContext(participant_identifiers=(identifier,))
+    assert _screen([first + "XYZ" + second], screening) is None
+
+
+def test_annualresearch_is_public_for_private_ann_research():
+    from app.research.brief import _screen
+
+    screening = ResearchScreeningContext(participant_identifiers=("Ann Research",))
+    assert _screen(["AnnualResearch"], screening) is None
+    result = build_safe_research_brief(
+        records(ResearchQuestion("AnnualResearch")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=screening,
+    )
+    assert result.disposition is BriefDisposition.READY

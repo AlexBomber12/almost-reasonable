@@ -8,7 +8,9 @@ v6, with private/shared reply edges and mission erasure. Participant privacy-con
 web ingress and production restore activation remain absent.
 
 INT-05A adds the opt-in synthetic [private-memory conversation](private-memory-conversation.md).
-The v1 runtime described below remains the default.
+The v1 runtime described below remains the default. INT-11 adds the separately opt-in
+[synthetic private research bridge](#int-11-opt-in-private-research); its absence
+preserves the default unsupported research path.
 
 This is an explicit, offline Stage 0 path. `Stage0ConversationRuntime` composes
 `ConversationService`, `PrivacyReadGate`, `PrivateContextAssembler`,
@@ -219,3 +221,140 @@ is claimed; see the updated scenario traceability in `integration-contracts.md`.
 INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
 with EventStore v6 protected cross-participant edges and mission evidence. The
 older component description above does not authorize production sharing.
+
+## INT-11 opt-in private research
+
+`research_bridge=None` retains the unsupported research behavior. An explicitly
+constructed `SyntheticResearchBridge` accepts only the exact
+`SyntheticResearchClient`, exact preprovisioned fixture/handle requests, and the
+application's own store/gate. Its boolean `enabled` defaults to false; environment
+variables and HTTP JSON cannot install it or provision authority. The worker still
+requires its own exact fake transport and worker-local screened authorization.
+
+The model's existing `ResearchProposal.brief` can nominate only an exact
+`SyntheticPublicResearchFixture.value`. This is a closed candidate mapping to the
+worker's existing fixed public question, not a forwarded model brief. Trusted
+bootstrap separately calls `authorize_input(principal, existing_event_id, fixture)`
+after independent authentication and private persistence. That local grant binds
+principal, exact input/reply operation, fixture, fixed purpose/configuration and a
+ten-minute interval with an integrity seal. Chat/owner claims and model output
+cannot issue it. The connected test installs its reviewed grant in trusted fixture
+bootstrap; there is no new HTTP authorization endpoint.
+
+`SyntheticResearchClient` uses existing framing, peer UID authentication and the
+strict response decoder. It admits only an absolute owner-only AF_UNIX endpoint
+under the same synthetic service UID, with a one-second connection bound, ten-second
+frame I/O bounds and an eighty-second execution/connection deadline. The constructor
+also binds an exact view of the worker's durable provider state so current suspension
+is checked on result release and replay, including with separate databases.
+
+Application intent uses `research-intent:<sha256(reply operation identity)>` in the
+existing provider store, correlated to the fixed worker operation. Before IPC, a
+separate immutable `research-started:<sha256(reply operation identity)>` reservation
+marks possible dispatch. These hashes cover opaque operation identities only.
+Neither row contains payloads, protected source IDs, principals, private-content
+fingerprints, briefs, handles or reports. A closed result row retains fixture and
+configuration plus outcome. These are operational metadata, **not provider calls**;
+actual worker calls remain its existing suffixed attempt rows. Reservation/outcome
+identity retention follows the existing provider/reply lifecycle. No schema change
+or private-payload cache is introduced.
+
+An intent without a dispatch marker is held as `research_pending`; a dispatch marker
+without a durable reply is `research_uncertain`. Both remain held after restart;
+there is no automatic resolver or resend. A result record committed before a lost
+reply transaction is also uncertain. The worker's fixed two-operations-per-database
+rule is unchanged even after response loss, crashes, restart or handle reissuance.
+History JSON and chat HTML install the same current-session callback as POST,
+check it before private retrieval and recheck it before rendering the captured
+history. Revocation/expiry during either read path yields a payload-free denial.
+A completed reply reuses its original payload and release identity after current
+application grant, session, stop/spend/delivery, privacy and source checks. Trusted
+bootstrap must explicitly restore/reissue application retrieval authority after
+restart; absent/disabled/expired/revoked authority cannot release a research reply.
+
+Research outcomes distinguish denied, unavailable, stopped, suspended, rejected,
+failed, pending and uncertain work from `no_action`. Operational unavailable/failure
+and suspended states use bounded static Russian handling without another model call.
+Decoded reports remain untrusted. Application screening uses local protected
+identifiers, private comparison texts and trusted canaries. Its short validated
+reply snapshot includes every material private source (including protected foreign
+sources behind selected shared records), source principal/session identifiers,
+selected shared payloads and their authorized earlier alternatives. This internal
+comparison purpose does not grant participant retrieval of foreign raw data. All
+nonempty protected source/shared strings also receive exact quotation screening,
+including short strings and percent/base64 encoded forms. Short word sequences
+are also compared as normalized tokens so commas, dashes and other intervening
+separators cannot bypass matching. A complete compact-character comparison of
+every protected text also covers stripped format separators, joined words and
+character splitting while preserving the existing in-word normalization.
+Compatibility decomposition before stripping marks also prevents composed accents
+from hiding protected base characters, including inside encoded candidates.
+Protected canaries, quotations and sensitive details receive the same complete
+ordered comparison. Participant and session identifiers also receive bounded
+ordered comparison across inserted characters and split tokens, preserving word
+boundaries for short names so unrelated public words do not become name matches.
+Unfinished identifier matches survive inserted word suffixes through the final
+character and its word-boundary check, while unrelated multi-character words
+cannot complete or preserve the partial name merely through matching an ending.
+Fragments are scanned before deciding whether they are recognizable, including
+one leading inserted character. Viable earlier prefix states survive inserted
+partial-name fragments
+such as Sx/SmiX; partial continuation/fallback requires at most one unmatched
+word character in a fragment, preventing unrelated longer words from completing
+or preserving a partial name. State count is bounded by identifier length.
+Opaque identifiers with separators and no whitespace also retain the
+complete character-order comparison within each report field, including
+prefixes/suffixes and inserted characters at segment boundaries. Separate report
+fields do not combine to invent an opaque identifier. Individual inserted characters/separator tokens remain
+eligible between recognizable fragments. Encoded candidates also receive bounded
+raw and decomposed separator-folded views that retain only the base64 alphabet,
+including when inserted Unicode letters/numbers/marks are separators. Original
+views retain valid terminal padding, while folded views reconstruct unpadded
+candidates so interior padding cannot hide a protected value. Standard and
+URL-safe base64 encodings of each known protected string, its casefolded/normalized
+forms and the four standard Unicode normalization forms also receive comparison
+within individual report fields. Longer encodings use complete character order;
+encodings of up to one base64 quartet require delimiters and allow at most one
+inserted character, so unrelated public initials do not become private encodings.
+These comparisons supplement decoding when inserted alphabet characters defeat
+it. With protected comparison material, remaining candidates also undergo
+single-character deletion reconstruction, including candidate substrings when
+other alphabet characters surround an encoding. Short participant names retain
+the delimited one-quartet policy for embedded data; private comparison texts and
+canaries still receive substring reconstruction. Decoded variants use the existing
+privacy/depth screen with further reconstruction disabled on that branch. A shared
+16 MiB weighted work budget accounts for candidate decoding and protected-text
+comparison; exhaustion withholds the output. This covers case-equivalent and
+other normalized spellings without enumerating every spelling or deletion
+combination. Decoded candidates still pass through the same bounded recursive
+screen. The comparison has no source token-count
+cutoff for punctuation to manipulate. Unicode symbols
+(including emoji/currency) remain meaningful in compact comparison, and protected
+punctuation-only sequences receive a separate conservative comparison rather than
+being skipped for having no word tokens. Complete protected character order is
+compared conservatively even across inserted symbols, letters or numbers; the
+comparison requires the whole protected sequence, not a partial fragment. Four-word
+overlap remains an additional check for longer excerpts. Exact matching is deliberately conservative
+and can withhold common short text; it does not prove semantic privacy. None of that material
+enters IPC. Every rendered URL must resolve to a recorded source view. Source views
+are retained in the existing bounded Russian reply along with uncertainty,
+`claim_status=unverified` and `semantic_support=not_evaluated`; structural metadata
+is never factual or semantic verification. Missing/unsupported provenance and
+Russian-gate rejection produce explicit failure, without invented citations.
+
+All material private/shared dependencies remain those of the original reply
+reservation. Existing erasure removes its report/reply payload on originating or
+material-source deletion, and current-ledger replay removes it from older backups.
+Unrelated participant records survive. Independent auth, privacy, application and
+worker databases are not atomically committed. Short admission/persistence/release
+fences capture and revalidate evidence; inference, IPC and search run outside them.
+Research results never automatically change beliefs, memory, mission, permissions
+or publication state.
+
+Executable evidence is in `tests/test_private_research_bridge.py` and the exact
+SCN-03 manifest mappings. Real interpreter exits cover application intent/dispatch,
+worker consumption, response loss, result-record versus reply persistence and
+release. The connected WSGI journey covers independently provisioned A/B accounts,
+renewed sessions, restarted replay, history, deletion and old-backup quarantine.
+Arbitrary private-topic abstraction, recurring research, production authorization,
+real hosted search and semantic source-support evaluation remain unavailable.

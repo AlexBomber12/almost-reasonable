@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from contextvars import ContextVar
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 import hashlib
@@ -15,7 +16,12 @@ from app.core.self_state_store import SelfStateStore
 from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.action_policy import ActionPolicy, CapabilityState, TrustedActionContext
 from app.core.agent_output_store import AgentOutputStore, ReplyOperation, ResultState
-from app.core.agent_proposals import NoActionProposal, ProposalValidation, ReplyProposal
+from app.core.agent_proposals import (
+    NoActionProposal,
+    ProposalValidation,
+    ReplyProposal,
+    ResearchProposal,
+)
 from app.core.context import (
     ContextLimits,
     PrivateContextAssembler,
@@ -23,11 +29,27 @@ from app.core.context import (
 )
 from app.core.model_contract import build_model_request
 from app.core.provider_contract import DeploymentStage, default_openai_provider_config
-from app.core.provider_spend import ProviderStateStore
+from app.core.provider_spend import (
+    ProviderStateStore,
+    AttemptReservationStatus,
+    ProviderPersistenceError,
+)
 from app.core.store import EventStore
 from app.privacy.application import PrivacyReadBlocked, PrivacyReadGate
 from app.trusted.openai_gateway import GatewayOutcome, TrustedOpenAIGateway
 from app.trusted.openai_transport import FakeOpenAITransport
+
+from .research_bridge import (
+    FAILURE_RU,
+    SUSPENDED_RU,
+    SyntheticResearchBridge,
+    intent_id,
+    started_id,
+    render_report,
+)
+from app.research.authorization import SyntheticPublicResearchFixture
+from app.research.brief import ResearchScreeningContext, _normalized
+from app.trusted.openai_worker_protocol import WorkerProtocolError
 
 from .conversation import (
     ConversationService,
@@ -68,11 +90,22 @@ class Stage0ConversationRuntime(ConversationService):
         memory_extractor: SyntheticMemoryExtractor | None = None,
         shared_intelligence: SharedIntelligence | None = None,
         context_limits: ContextLimits = ContextLimits(32_000, 99),
+        research_bridge: SyntheticResearchBridge | None = None,
     ):
         if type(transport) is not FakeOpenAITransport:
             raise TypeError("Stage 0 requires an exact offline fake transport")
         if privacy_gate._store is not event_store:
             raise ValueError("privacy gate must bind the application database")
+        if research_bridge is not None and (
+            type(research_bridge) is not SyntheticResearchBridge
+            or research_bridge._store is not event_store
+            or research_bridge._gate is not privacy_gate
+        ):
+            raise ValueError("research bridge must bind the same synthetic application")
+        self._research = research_bridge
+        self._current_request = ContextVar(
+            "private_request_authorization", default=lambda: True
+        )
         self._gate = privacy_gate
         self._outputs = AgentOutputStore(event_store)
         self._provider = ProviderStateStore(event_store)
@@ -134,6 +167,15 @@ class Stage0ConversationRuntime(ConversationService):
     def _operation_id(event_id: str) -> str:
         """Bound opaque event identity, never hash private message content."""
         return "reply:" + hashlib.sha256(event_id.encode()).hexdigest()
+
+    @contextmanager
+    def authenticated_request(self, current_authorized):
+        """WSGI installs an independent current-session check for this request."""
+        token = self._current_request.set(current_authorized)
+        try:
+            yield
+        finally:
+            self._current_request.reset(token)
 
     def _capabilities(self):
         return CapabilityState(
@@ -275,9 +317,19 @@ class Stage0ConversationRuntime(ConversationService):
                     else:
                         result = self._infer(context, correlation, operation_id)
                         self._checkpoint("after_model")
-                        persisted = self._gate.authorized(
-                            lambda: self._commit(route, reserved.operation, result)
-                        )
+                        if (
+                            self._research is not None
+                            and self._research.enabled
+                            and result.outcome is GatewayOutcome.COMPLETED
+                            and isinstance(result.validation.proposal, ResearchProposal)
+                        ):
+                            persisted = self._research_turn(
+                                route, reserved.operation, result.validation.proposal
+                            )
+                        else:
+                            persisted = self._gate.authorized(
+                                lambda: self._commit(route, reserved.operation, result)
+                            )
                         if persisted:
                             self._checkpoint("after_reply_commit")
         self._checkpoint("before_release")
@@ -352,6 +404,240 @@ class Stage0ConversationRuntime(ConversationService):
         finally:
             self._memory_bridge.payload.reset(token)
 
+    def _research_screening(self, route, operation):
+        """Capture material dependencies solely for local output rejection.
+
+        A conversation audience authorizes shared abstractions, never foreign raw
+        inputs. This internal snapshot uses the already validated protected graph
+        for privacy comparisons; no value is returned to a participant or worker.
+        """
+        db = self._event_store._open()
+        try:
+            with db:
+                db.execute("BEGIN")
+                self._event_store._verify_current_schema(db)
+                reply = self._outputs._read(db, route.principal, operation.operation_id)
+                if reply is None or reply.operation != operation:
+                    raise PrivacyReadBlocked("reply_sources_unavailable")
+                source_ids = set(operation.source_event_ids)
+                shared_texts = []
+                for shared in operation.shared_operation_ids:
+                    source_ids.update(
+                        row[0]
+                        for row in db.execute(
+                            "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                            (shared,),
+                        )
+                    )
+                    # Include exactly the selected revision's value and the
+                    # authorized prior alternatives exposed in SharedModelRequest.
+                    shared_texts.extend(
+                        row[0]
+                        for row in db.execute(
+                            """SELECT DISTINCT p.value FROM shared_operations selected
+                           JOIN shared_operations history ON history.item_id=selected.item_id
+                             AND history.revision<=selected.revision
+                           JOIN shared_payloads p ON p.operation_id=history.operation_id
+                           JOIN protected_shared_audiences a ON a.operation_id=history.operation_id
+                           WHERE selected.operation_id=? AND history.status='active'
+                             AND a.principal_id=? AND a.purpose='conversation'""",
+                            (shared, route.principal.principal_id.value),
+                        )
+                    )
+                placeholders = ",".join("?" for _source in source_ids)
+                rows = db.execute(
+                    f"""SELECT e.event_id, p.content, e.audience_principal_id,
+                               e.authenticated_source_ref
+                        FROM event_envelopes e JOIN private_payloads p USING(payload_id)
+                        WHERE e.event_id IN ({placeholders}) ORDER BY e.event_id""",
+                    tuple(sorted(source_ids)),
+                ).fetchall()
+                base = self._research._screening
+                protected_texts = tuple(
+                    text
+                    for text in [*(row[1] for row in rows), *shared_texts]
+                    if _normalized(text)
+                )
+                return ResearchScreeningContext(
+                    private_canaries=base.private_canaries
+                    + tuple(sorted(source_ids))
+                    + operation.shared_operation_ids,
+                    participant_identifiers=base.participant_identifiers
+                    + tuple(
+                        sorted({identifier for row in rows for identifier in row[2:]})
+                    )
+                    + (
+                        route.principal.principal_id.value,
+                        route.principal.authenticated_source.value,
+                    ),
+                    # Exact quotations protect even one-word sources and survive
+                    # the existing percent/base64 decoding screens. Overlap still
+                    # rejects recognizable excerpts of longer protected texts.
+                    private_quotations=base.private_quotations
+                    + base.private_texts
+                    + protected_texts,
+                    sensitive_details=base.sensitive_details,
+                    private_texts=base.private_texts + protected_texts,
+                )
+        finally:
+            db.close()
+
+    def _research_turn(self, route, operation, proposal):
+        try:
+            fixture = SyntheticPublicResearchFixture(proposal.brief)
+        except ValueError:
+            fixture = None
+        worker_id = "research-stage0:" + (fixture.value if fixture else "denied")
+
+        # A short fence captures current authority and sources and commits intent.
+        # No privacy fence or SQLite transaction remains held across IPC.
+        def admission():
+            screening = self._research_screening(route, operation)
+            return self._provider.reserve_attempt(
+                intent_id(operation.operation_id), worker_id, self._clock()
+            ), screening
+
+        reservation, screening = self._gate.authorized(admission)
+        if reservation is AttemptReservationStatus.SPEND_SUSPENDED:
+
+            def suspended():
+                self._research.record(
+                    self._provider,
+                    operation,
+                    fixture,
+                    "research_suspended",
+                    self._clock(),
+                    require_reservation=False,
+                )
+                self._outputs.resolve_without_reply(
+                    route.principal, operation.operation_id, "failed"
+                )
+
+            self._gate.authorized(suspended)
+            return False
+        if reservation is not AttemptReservationStatus.CREATED:
+            return False
+        self._checkpoint("after_research_intent")
+
+        def current():
+            if (
+                self._outputs.read_reply(route.principal, operation.operation_id)
+                is None
+            ):
+                raise PrivacyReadBlocked("reply_sources_unavailable")
+            caps = self._capabilities()
+            if caps.emergency_stop_active:
+                return "research_stopped"
+            if (
+                caps.provider_spend_suspended
+                or self._research._client._worker_state.is_spend_suspended()
+            ):
+                return "research_suspended"
+            if (
+                not caps.private_reply_drafts_enabled
+                or not self._current_request.get()()
+            ):
+                return "research_unavailable"
+            if not self._research.permits(route.principal, operation, fixture):
+                return "research_denied"
+            return None
+
+        outcome = self._gate.authorized(current)
+        text = None
+        if outcome is None:
+            self._checkpoint("before_research_ipc")
+
+            def start():
+                blocked = current()
+                if blocked is not None:
+                    return blocked
+                reserved = self._provider.reserve_attempt(
+                    started_id(operation.operation_id), worker_id, self._clock()
+                )
+                return (
+                    None
+                    if reserved is AttemptReservationStatus.CREATED
+                    else "research_uncertain"
+                )
+
+            outcome = self._gate.authorized(start)
+        if outcome is None:
+            self._checkpoint("after_research_started")
+            # The started marker is conservative: crashes from this point may
+            # have consumed the independent worker. Never infer completion.
+            outcome = self._gate.authorized(current)
+        if outcome is None:
+            try:
+                response = self._research._client.execute(fixture)
+            except (OSError, WorkerProtocolError):
+                # Contact may have consumed the worker identity. Never resend.
+                response = None
+            self._checkpoint("after_research_ipc")
+            if response is None or response["outcome"] in {
+                "duplicate_operation",
+                "persistence_failure",
+            }:
+                outcome = "research_uncertain"
+            elif response["outcome"] == "completed":
+                text = render_report(response["report"], screening)
+                outcome = "completed" if text is not None else "research_rejected"
+            else:
+                outcome = {
+                    "authorization_denied": "research_denied",
+                    "disabled": "research_unavailable",
+                    "emergency_stop": "research_stopped",
+                    "spend_suspended": "research_suspended",
+                    "spend_limit_confirmed": "research_suspended",
+                    "invalid_response": "research_rejected",
+                    "output_gate_rejected": "research_rejected",
+                }.get(response["outcome"], "research_failed")
+
+        def record():
+            nonlocal outcome
+            blocked = current()
+            if blocked is not None:
+                outcome = blocked
+            return self._research.record(
+                self._provider, operation, fixture, outcome, self._clock()
+            )
+
+        if not self._gate.authorized(record):
+            return False
+        self._checkpoint("after_research_result_record")
+
+        def persist():
+            # Result evidence and reply payload have separate transactions. A
+            # crash/control change in between retains an honest held result.
+            if outcome == "completed":
+                if current() is not None:
+                    return False
+                validation = ProposalValidation(ReplyProposal(text), None)
+                caps = self._capabilities()
+                grant = ActionPolicy().evaluate(validation, route, caps)
+                self._outputs.persist_reply(route, operation, grant, caps)
+                return True
+            if outcome != "research_uncertain":
+                self._outputs.resolve_without_reply(
+                    route.principal, operation.operation_id, "failed"
+                )
+            return False
+
+        return self._gate.authorized(persist)
+
+    def _research_evidence(self, operation_id):
+        identifier = intent_id(operation_id)
+        if not self._provider.attempt_exists(identifier):
+            return None
+        try:
+            return self._provider.usage_attempt(identifier)
+        except ProviderPersistenceError:
+            # Reservation without an outcome, or unreadable evidence: fail closed.
+            return (
+                "research_uncertain"
+                if self._provider.attempt_exists(started_id(operation_id))
+                else "research_pending"
+            )
+
     def _commit(self, route, operation, result):
         caps = self._capabilities()
         if caps.emergency_stop_active or caps.provider_spend_suspended:
@@ -397,6 +683,38 @@ class Stage0ConversationRuntime(ConversationService):
         )
         if reply is None:
             raise PrivacyReadBlocked("reply_sources_unavailable")
+        evidence = self._research_evidence(operation_id)
+        if evidence is not None:
+            if isinstance(evidence, str) or reply.result_state is ResultState.PENDING:
+                state = (
+                    evidence
+                    if isinstance(evidence, str)
+                    else "research_uncertain"
+                    if evidence.outcome == "completed"
+                    else evidence.outcome
+                )
+                message = {
+                    "research_unavailable": FAILURE_RU,
+                    "research_suspended": SUSPENDED_RU,
+                    "research_stopped": SUSPENDED_RU,
+                    "research_failed": FAILURE_RU,
+                    "research_rejected": FAILURE_RU,
+                }.get(state)
+                return SubmittedMessage(message_status, ModelState(state), message)
+            fixture = SyntheticPublicResearchFixture(evidence.model_identifier)
+            if (
+                self._research is not None
+                and self._research._client._worker_state.is_spend_suspended()
+            ):
+                return SubmittedMessage(
+                    message_status, ModelState.RESEARCH_SUSPENDED, SUSPENDED_RU
+                )
+            if not self._current_request.get()():
+                return SubmittedMessage(message_status, ModelState.RESEARCH_UNAVAILABLE)
+            if self._research is None or not self._research.permits(
+                route.principal, reply.operation, fixture
+            ):
+                return SubmittedMessage(message_status, ModelState.RESEARCH_DENIED)
         if reply.result_state is ResultState.PERSISTED:
             caps = self._capabilities()
             if (
@@ -434,7 +752,7 @@ class Stage0ConversationRuntime(ConversationService):
                     route = TrustedActionContext(event.correlation_id, principal)
                     response = self._response(None, route, operation_id)
                     # The same ledger fence and source checks cover the whole rendering read.
-                    if response.response_content is not None:
+                    if response.model_state is ModelState.COMPLETED:
                         items.append(
                             HistoryItem(
                                 operation_id,

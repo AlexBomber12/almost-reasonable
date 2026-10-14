@@ -172,3 +172,15 @@ live smoke, changes no deployment, and grants no live research authority. Refer
 to [the inference smoke procedure](openai-worker-stage1-smoke.md) for the existing
 separation of readiness, offline dry run and explicit live approval; its fixed
 request and activation cannot be reused as research approval.
+
+## INT-11 application consumer
+
+The explicit [private runtime bridge](private-conversation-runtime.md#int-11-opt-in-private-research)
+now consumes this unchanged closed request protocol. Application authority binds one
+exact authenticated private input independently of the worker's local handle and
+screened public brief. The worker rechecks current local grant/stop/spend after the
+transport returns, before building a report. Application result storage/release
+performs its own current checks and retains the report only in the existing reply
+payload and dependency graph. Lost acknowledgements do not rearm worker operations.
+The ordinary runtime is still disabled; this connection supplies no production
+issuer, real transport, semantic verification or cognition/publication authority.

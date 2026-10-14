@@ -55,5 +55,10 @@ def acceptance_offline(request, monkeypatch):
     if request.node.nodeid in mapped:
         install(
             monkeypatch,
-            local_ipc=request.node.nodeid.startswith("tests/test_research_worker.py::"),
+            local_ipc=request.node.nodeid.startswith(
+                (
+                    "tests/test_research_worker.py::",
+                    "tests/test_private_research_bridge.py::",
+                )
+            ),
         )

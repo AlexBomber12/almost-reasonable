@@ -354,7 +354,7 @@ def test_authenticated_substantive_challenge_changes_confidence_and_later_contex
     assert fresh_gate.retrieve_private_candidates(trusted(auth, a)) == ()
 
 
-def test_private_research_handoff_is_explicitly_unsupported(journey):
+def test_private_research_handoff_is_default_disabled(journey):
     clock, auth, events, _, gate, _, config, a, _ = journey
     fake = FakeOpenAITransport([response("research", "What causes auroral substorms?")])
     runtime = Stage0ConversationRuntime(events, gate, fake, clock=clock)
