@@ -19,7 +19,7 @@
     "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11"
   },
   "configuration": {
-    "event_store": 6,
+    "event_store": 7,
     "threads_store": 10,
     "stage0_journal": 1,
     "core_self": "core-self-v1",
@@ -1089,6 +1089,8 @@
             "tests/test_generic_memory.py::test_generic_snapshot_change_during_inference_and_retrieval_hint",
             "tests/test_generic_memory.py::test_inherited_dependency_bound_rejects_whole_consolidation",
             "tests/test_generic_memory.py::test_generic_combined_budget_omits_whole_memory_and_its_edges",
+            "tests/test_generic_memory.py::test_revision_budget_omits_generic_record_without_state_head_lookup",
+            "tests/test_generic_memory.py::test_typed_belief_overflow_does_not_hide_same_id_generic_record",
             "tests/test_generic_memory.py::test_reply_requires_complete_exact_generic_dependencies",
             "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[unresolved_question]",
             "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[candidate_useful_memory]",

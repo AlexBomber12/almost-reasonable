@@ -38,6 +38,7 @@ from app.private_web.wsgi import PrivateWebApplication
 from app.privacy.application import PrivacyReadGate, EventStoreRestoreAdapter
 from app.privacy.recovery import QuarantinedRestore, create_sqlite_backup
 from test_stage0_acceptance_journeys import journey as wsgi_journey, submitted, trusted
+from test_self_state import belief_change
 import json
 import sqlite3
 import hashlib
@@ -1023,6 +1024,43 @@ def test_generic_combined_budget_omits_whole_memory_and_its_edges(tmp_path):
         assert limited.memories_omitted
         assert limited.generic_operation_ids == ()
         assert protected == ("event-two",)
+
+
+def test_revision_budget_omits_generic_record_without_state_head_lookup(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    assert commit_direct(store, proposal("event-one", "generic-only", "op-one")) == (
+        "generic-only",
+        1,
+    )
+    selected = MemoryContextSelector(store, SelfStateStore(store)).select(
+        a, RetrievalRequest(RetrievalPurpose.REVISION, "memory", 1, 1)
+    )
+    assert selected.records == ()
+    assert selected.records_omitted
+
+
+def test_typed_belief_overflow_does_not_hide_same_id_generic_record(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    assert commit_direct(store, proposal("event-one", "belief-oceans", "op-one")) == (
+        "belief-oceans",
+        1,
+    )
+    selector = MemoryContextSelector(store, SelfStateStore(store))
+    generic = selector.select(
+        a, RetrievalRequest(RetrievalPurpose.REVISION, "ocean", 32000, 16)
+    ).records[0]
+    SelfStateStore(store).create_belief_candidate(a, belief_change("event-one"))
+    selected = selector.select(
+        a, RetrievalRequest(RetrievalPurpose.REVISION, "ocean", generic.utf8_bytes, 16)
+    )
+    assert [record.memory_kind for record in selected.records] == [
+        MemoryKind.CANDIDATE_USEFUL_MEMORY
+    ]
+    assert selected.records_omitted
 
 
 @pytest.mark.parametrize("mutation", ("missing_link", "foreign_link", "missing_source"))

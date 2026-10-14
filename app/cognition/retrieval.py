@@ -159,13 +159,17 @@ class MemoryContextSelector:
             if len(selected) == limits.max_records:
                 omitted = True
                 break
-            if record.item_id in omitted_revision_heads:
+            if (
+                record.memory_kind is MemoryKind.BELIEF_OR_HYPOTHESIS
+                and record.item_id in omitted_revision_heads
+            ):
                 omitted = True
                 continue
             if used + record.utf8_bytes > limits.max_utf8_bytes:
                 omitted = True
                 if (
                     request.purpose is RetrievalPurpose.REVISION
+                    and record.memory_kind is MemoryKind.BELIEF_OR_HYPOTHESIS
                     and record.revision == latest_by_item[record.item_id].revision
                 ):
                     omitted_revision_heads.add(record.item_id)
