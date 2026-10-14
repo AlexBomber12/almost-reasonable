@@ -1087,6 +1087,7 @@
             "tests/test_generic_memory.py::test_later_parent_revision_deletion_invalidates_earlier_descendant_reply",
             "tests/test_generic_memory.py::test_same_generic_item_id_is_private_to_each_participant",
             "tests/test_generic_memory.py::test_same_generic_operation_id_is_private_to_each_participant",
+            "tests/test_generic_memory.py::test_counter_only_initiator_is_not_supporting_evidence",
             "tests/test_generic_memory.py::test_generic_authorization_rejects_hidden_stale_and_disabled_parents",
             "tests/test_generic_memory.py::test_generic_extraction_does_not_expose_typed_candidate_dependencies",
             "tests/test_generic_memory.py::test_generic_proposal_must_bind_every_exposed_evidence_event",

@@ -151,7 +151,7 @@ class GenericMemoryStore:
                                 {
                                     event
                                     for event, role in sources
-                                    if role in {"supporting", "initiating"}
+                                    if role == "supporting"
                                 }
                             ),
                             len(

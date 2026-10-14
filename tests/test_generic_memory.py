@@ -694,6 +694,25 @@ def test_same_generic_operation_id_is_private_to_each_participant(tmp_path):
     assert replies.read_reply(b, "reply-b") is not None
 
 
+def test_counter_only_initiator_is_not_supporting_evidence(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "counter")
+    candidate = proposal("event-counter", "m1", "op-counter")
+    candidate = replace(
+        candidate,
+        context=replace(
+            candidate.context,
+            supporting_event_ids=(),
+            counterevidence_event_ids=("event-counter",),
+        ),
+    )
+    assert commit_direct(store, candidate) == ("m1", 1)
+    view = GenericMemoryStore(store).current(a)[0].view
+    assert view.supporting_count == 0
+    assert view.counterevidence_count == 1
+
+
 @pytest.mark.parametrize(
     "change",
     (
