@@ -446,6 +446,7 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
                 if (
                     cursor == len(compact) - 1
                     and right_boundary
+                    and " " not in needle
                     and index + 1 < len(token)
                     and _word_char(token[index + 1])
                 ):
@@ -454,7 +455,7 @@ def _participant_identifier_matches(value: str, needle: str) -> bool:
                 progressed = True
                 matched_words += _word_char(character)
                 if cursor == len(compact):
-                    if not prior or words - matched_words <= 1:
+                    if words - matched_words <= 1:
                         return True
                     break
             # Keep viable prefix alternatives for inserted fragments such as

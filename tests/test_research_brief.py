@@ -1451,3 +1451,37 @@ def test_initial_public_word_with_long_suffix_cannot_start_a_private_name(questi
         screening=ResearchScreeningContext(participant_identifiers=("Ann Research",)),
     )
     assert result.disposition is BriefDisposition.READY
+
+
+@pytest.mark.parametrize("identifier", ["Alice Brown", "Mira Stone", "Nora Vale"])
+@pytest.mark.parametrize("inserted", ["X", "7"])
+def test_multiword_identifier_screens_one_trailing_character(identifier, inserted):
+    from app.research.brief import _screen
+
+    screening = ResearchScreeningContext(participant_identifiers=(identifier,))
+    assert _screen([identifier], screening) == "participant_identifier"
+    assert _screen([identifier + inserted], screening) == "participant_identifier"
+    assert _screen([identifier + "X7"], screening) is None
+
+
+@pytest.mark.parametrize("identifier", ["Alice Brown", "Mira Stone", "Ann Research"])
+def test_complete_first_fragment_rejects_more_than_one_inserted_character(identifier):
+    from app.research.brief import _screen
+
+    first, second = identifier.split()
+    screening = ResearchScreeningContext(participant_identifiers=(identifier,))
+    assert _screen([first + "XYZ" + second], screening) is None
+
+
+def test_annualresearch_is_public_for_private_ann_research():
+    from app.research.brief import _screen
+
+    screening = ResearchScreeningContext(participant_identifiers=("Ann Research",))
+    assert _screen(["AnnualResearch"], screening) is None
+    result = build_safe_research_brief(
+        records(ResearchQuestion("AnnualResearch")),
+        result_budget=2,
+        trusted_config_version="research-config-v1",
+        screening=screening,
+    )
+    assert result.disposition is BriefDisposition.READY

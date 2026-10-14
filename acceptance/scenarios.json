@@ -621,7 +621,25 @@
             "tests/test_private_research_bridge.py::test_public_annual_research_report_does_not_match_private_name[percent]",
             "tests/test_private_research_bridge.py::test_public_annual_research_report_does_not_match_private_name[base64]",
             "tests/test_research_brief.py::test_initial_public_word_with_long_suffix_cannot_start_a_private_name[Annual research]",
-            "tests/test_research_brief.py::test_initial_public_word_with_long_suffix_cannot_start_a_private_name[Annually researched]"
+            "tests/test_research_brief.py::test_initial_public_word_with_long_suffix_cannot_start_a_private_name[Annually researched]",
+            "tests/test_research_brief.py::test_multiword_identifier_screens_one_trailing_character[X-Alice Brown]",
+            "tests/test_research_brief.py::test_multiword_identifier_screens_one_trailing_character[X-Mira Stone]",
+            "tests/test_research_brief.py::test_multiword_identifier_screens_one_trailing_character[X-Nora Vale]",
+            "tests/test_research_brief.py::test_multiword_identifier_screens_one_trailing_character[7-Alice Brown]",
+            "tests/test_research_brief.py::test_multiword_identifier_screens_one_trailing_character[7-Mira Stone]",
+            "tests/test_research_brief.py::test_multiword_identifier_screens_one_trailing_character[7-Nora Vale]",
+            "tests/test_research_brief.py::test_complete_first_fragment_rejects_more_than_one_inserted_character[Alice Brown]",
+            "tests/test_research_brief.py::test_complete_first_fragment_rejects_more_than_one_inserted_character[Mira Stone]",
+            "tests/test_research_brief.py::test_complete_first_fragment_rejects_more_than_one_inserted_character[Ann Research]",
+            "tests/test_research_brief.py::test_annualresearch_is_public_for_private_ann_research",
+            "tests/test_private_research_bridge.py::test_render_report_rejects_plain_trailing_inserted_name",
+            "tests/test_private_research_bridge.py::test_trailing_inserted_name_never_persists_or_releases_worker_report[X-Alice Brown]",
+            "tests/test_private_research_bridge.py::test_trailing_inserted_name_never_persists_or_releases_worker_report[X-Mira Stone]",
+            "tests/test_private_research_bridge.py::test_trailing_inserted_name_never_persists_or_releases_worker_report[X-Nora Vale]",
+            "tests/test_private_research_bridge.py::test_trailing_inserted_name_never_persists_or_releases_worker_report[7-Alice Brown]",
+            "tests/test_private_research_bridge.py::test_trailing_inserted_name_never_persists_or_releases_worker_report[7-Mira Stone]",
+            "tests/test_private_research_bridge.py::test_trailing_inserted_name_never_persists_or_releases_worker_report[7-Nora Vale]",
+            "tests/test_private_research_bridge.py::test_annualresearch_worker_report_remains_eligible"
           ]
         },
         {

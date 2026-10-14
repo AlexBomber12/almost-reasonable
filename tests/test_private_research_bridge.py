@@ -2341,6 +2341,73 @@ def test_public_annual_research_report_does_not_match_private_name(
         )
 
 
+def test_render_report_rejects_plain_trailing_inserted_name(connected):
+    from app.private_web.research_bridge import render_report
+    from app.research.brief import ResearchScreeningContext
+
+    _, _, _, worker, _, _, _ = connected
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())["report"]
+    report["main_finding"] = "Обсуждение публичных данных завершено. Alice BrownX."
+    assert (
+        render_report(
+            report,
+            ResearchScreeningContext(participant_identifiers=("Alice Brown",)),
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("identifier", ["Alice Brown", "Mira Stone", "Nora Vale"])
+@pytest.mark.parametrize("inserted", ["X", "7"])
+def test_trailing_inserted_name_never_persists_or_releases_worker_report(
+    connected, monkeypatch, identifier, inserted
+):
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(participant_identifiers=(identifier,))
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    leaked = identifier + inserted
+    report["report"]["main_finding"] = (
+        "Обсуждение публичных данных завершено. " + leaked + "."
+    )
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = runtime.submit(principal("a"), "trailing-name", "Исследуй эту тему")
+    assert result.model_state.value == "research_rejected"
+    assert leaked not in (result.response_content or "")
+    assert leaked not in str(result)
+    assert [item.role for item in runtime.history(principal("a"))] == ["participant"]
+    assert leaked not in str(runtime.history(principal("a")))
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            0,
+        )
+        assert leaked not in "\n".join(db.iterdump())
+
+
+def test_annualresearch_worker_report_remains_eligible(connected, monkeypatch):
+    from app.research.brief import ResearchScreeningContext
+
+    runtime, bridge, _, worker, _, _, setup = connected
+    bridge._screening = ResearchScreeningContext(
+        participant_identifiers=("Ann Research",)
+    )
+    report = worker.execute(grant(worker), peer_uid=os.geteuid())
+    report["report"]["sources"][0]["url"] = "https://example.org/AnnualResearch"
+    monkeypatch.setattr(SyntheticResearchClient, "execute", lambda *args: report)
+    result = runtime.submit(principal("a"), "annual-research", "Исследуй эту тему")
+    assert result.model_state.value == "completed"
+    assert "AnnualResearch" in result.response_content
+    assert [item.role for item in runtime.history(principal("a"))] == [
+        "participant",
+        "agent",
+    ]
+    with setup[0]._open() as db:
+        assert db.execute("SELECT count(*) FROM agent_reply_payloads").fetchone() == (
+            1,
+        )
+
+
 @pytest.mark.parametrize("inserted", ["A", "x", "7", "+", "-", "_", "/", "AX7"])
 @pytest.mark.parametrize("urlsafe", [True, False])
 def test_inserted_base64_alphabet_characters_cannot_hide_private_text(
