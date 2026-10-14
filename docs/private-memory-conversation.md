@@ -44,6 +44,9 @@ of their serialized view data. The complete generic and typed revision snapshots
 are checked again in the write transaction; consolidation parents must be in the
 exposed subset. Scripted synthetic revisions may target a known item and expected
 revision; live model-guided cross-item consolidation is not enabled.
+The generic-enabled extraction path does not expose typed candidate values and
+does not persist typed proposals. Typed extraction uses the separate path with
+generic exposure disabled, so cross-type source dependencies cannot be omitted.
 Supporting and counterevidence are not relabeled to manufacture contextual taint.
 Delivery, stop and spend capabilities are rechecked after extraction; a changed
 capability records a durable skipped outcome before any model contact.

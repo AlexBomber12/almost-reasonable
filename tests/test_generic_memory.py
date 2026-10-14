@@ -3,11 +3,14 @@
 from dataclasses import replace
 
 from app.cognition.contracts import (
+    BeliefMemoryProposal,
     CognitionCapabilities,
     CognitionOutcomeStatus,
     ExtractorIdentity,
     GenericMemoryProposal,
     GenericReviewState,
+    GoalMemoryProposal,
+    InterestMemoryProposal,
     MemoryKind,
     NoChangeProposal,
     ProposalContext,
@@ -28,7 +31,7 @@ from app.core.events import VerificationStatus
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, FaultPoint, schema_objects
 from app.privacy.application import EventStoreErasureAdapter
-from test_cognition_pipeline import NOW, append_event, principal
+from test_cognition_pipeline import NOW, append_event, principal, proposal_context
 from test_privacy_deletion import request
 from test_private_memory_runtime import setup as runtime_setup
 from test_private_conversation_runtime import delete_source, NOW as RUNTIME_NOW
@@ -39,6 +42,12 @@ from app.privacy.application import PrivacyReadGate, EventStoreRestoreAdapter
 from app.privacy.recovery import QuarantinedRestore, create_sqlite_backup
 from test_stage0_acceptance_journeys import journey as wsgi_journey, submitted, trusted
 from test_self_state import belief_change, interest_change
+from app.core.self_state import (
+    BeliefStance,
+    BeliefStatus,
+    GoalStatus,
+    InterestStatus,
+)
 import json
 import sqlite3
 import hashlib
@@ -1055,6 +1064,130 @@ def test_every_supported_generic_kind_is_durable(tmp_path, kind):
     )
     reopened = EventStore(store.database_path)
     assert GenericMemoryStore(reopened).current(a)[0].view.memory_kind is kind
+
+
+def test_generic_extraction_does_not_expose_typed_candidate_dependencies(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "typed-source")
+    append_event(store, a, "generic-source")
+    SelfStateStore(store).create_interest_candidate(
+        a, interest_change("event-typed-source", operation="typed-source")
+    )
+    seen = []
+
+    def extract(request):
+        seen.append(request)
+        return proposal("event-generic-source", "m1", "op-generic")
+
+    worker = CognitionEngine(
+        store,
+        SelfStateStore(store),
+        extractor=SyntheticMemoryExtractor(
+            extract, ExtractorIdentity("synthetic", "v1")
+        ),
+        capabilities=CognitionCapabilities(generic_memory_write=True),
+        clock=lambda: NOW,
+    )
+    assert (
+        worker.process(a, "event-generic-source").status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    assert seen[0].current_candidates == ()
+    assert GenericMemoryStore(store).current(a)[0].source_event_ids == (
+        "event-generic-source",
+    )
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-typed-source"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a)[0].view.item_id == "m1"
+
+
+def test_generic_proposal_must_bind_every_exposed_evidence_event(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    incomplete = proposal("event-one", "m1", "op-one")
+    outcome = engine(store, incomplete).process(
+        a, "event-one", evidence_event_ids=("event-two",)
+    )
+    assert outcome.reason.value == "invalid_proposal"
+    assert GenericMemoryStore(store).current(a) == ()
+    complete = replace(
+        incomplete,
+        context=replace(
+            incomplete.context,
+            supporting_event_ids=("event-one", "event-two"),
+        ),
+    )
+    assert (
+        engine(store, complete)
+        .process(a, "event-one", evidence_event_ids=("event-two",))
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    assert GenericMemoryStore(store).current(a)[0].source_event_ids == (
+        "event-one",
+        "event-two",
+    )
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-two"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a) == ()
+
+
+@pytest.mark.parametrize("typed_kind", ("interest", "belief", "goal"))
+def test_generic_extraction_cannot_persist_typed_proposal_from_generic_context(
+    tmp_path, typed_kind
+):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    context = proposal_context("event-two", "cross-kind")
+    typed = {
+        "interest": InterestMemoryProposal(
+            context,
+            "interest-cross-kind",
+            "Synthetic topic",
+            50,
+            InterestStatus.ACTIVE,
+            "Synthetic reason",
+        ),
+        "belief": BeliefMemoryProposal(
+            context,
+            "belief-cross-kind",
+            "Synthetic belief",
+            BeliefStance.UNCERTAIN,
+            0.4,
+            BeliefStatus.ACTIVE,
+            (),
+            VerificationStatus.UNVERIFIED,
+        ),
+        "goal": GoalMemoryProposal(
+            context,
+            "goal-cross-kind",
+            "Synthetic goal",
+            "Synthetic rationale",
+            50,
+            GoalStatus.ACTIVE,
+            (),
+            "Synthetic review condition",
+        ),
+    }[typed_kind]
+    worker = engine(store, typed)
+    outcome = worker.process(a, "event-two")
+    assert outcome.reason.value == "capability_disabled"
+    assert worker._extractor.requests[0].private_memories
+    assert SelfStateStore(store).retrieve_private_candidates(a) == ()
 
 
 def test_review_state_cannot_be_upgraded_and_revision_history_is_bounded(tmp_path):

@@ -166,7 +166,12 @@ class CognitionEngine:
         )
         request = ExtractionRequest(
             experience=self._experience(source),
-            current_candidates=current if self._expose_current_candidates else (),
+            current_candidates=(
+                current
+                if self._expose_current_candidates
+                and not self._capabilities.generic_memory_write
+                else ()
+            ),
             core_self_version=CORE_SELF_VERSION,
             additional_evidence=tuple(
                 self._experience(item) for item in resolved_evidence
@@ -296,6 +301,14 @@ class CognitionEngine:
             GenericMemoryProposal,
         }:
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if self._capabilities.generic_memory_write and type(proposal) in {
+            InterestMemoryProposal,
+            BeliefMemoryProposal,
+            GoalMemoryProposal,
+        }:
+            return self._rejected(
+                CognitionReason.CAPABILITY_DISABLED, self._safe_kind(proposal)
+            )
         expected_kind = {
             InterestMemoryProposal: MemoryKind.DURABLE_INTEREST,
             BeliefMemoryProposal: MemoryKind.BELIEF_OR_HYPOTHESIS,
@@ -319,6 +332,19 @@ class CognitionEngine:
         )
         if reason is not None:
             return self._rejected(reason, self._safe_kind(proposal))
+        if (
+            isinstance(proposal, GenericMemoryProposal)
+            and frozenset(
+                (
+                    *proposal.context.supporting_event_ids,
+                    *proposal.context.counterevidence_event_ids,
+                )
+            )
+            != available_evidence_ids
+        ):
+            return self._rejected(
+                CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
+            )
         proposed_at = self._canonical_time(proposal.context.proposed_at)
         review_at = self._canonical_time(proposal.context.review_at)
         if proposed_at is None or review_at is None:

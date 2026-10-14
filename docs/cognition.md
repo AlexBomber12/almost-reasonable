@@ -89,6 +89,11 @@ extraction. It exposes at most 16 generic heads and 16 KiB of serialized generic
 view data to the extractor; a proposal may name only exposed parents. The store
 rechecks the complete generic and typed candidate revision snapshots, source
 evidence and parent heads inside one SQLite write transaction.
+Generic-enabled extraction hides typed candidate values and accepts only generic
+proposals or no-change outcomes. Typed extraction runs with generic memory
+exposure disabled. This keeps cross-type derivatives from losing source
+dependencies during erasure. Every raw evidence event supplied to generic
+extraction must appear in its persisted supporting or counterevidence roles.
 `private_consolidation` must also be enabled for parent references. An identical
 retry returns its original revision even after later revisions; changed bindings,
 stale heads, other participants' parents and unsupported sharing fail closed.
