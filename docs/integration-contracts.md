@@ -1,7 +1,7 @@
 # Integration contracts and Stage 0 evidence
 
 This inventory follows the executable INT-01 through INT-11 implementation,
-including EventStore v6, ThreadsStore v10 and the independent INT-09 journal v1.
+including EventStore v7, ThreadsStore v10 and the independent INT-09 journal v1.
 Ordinary runtime defaults remain disabled. Explicit offline compositions use
 synthetic identities, temporary SQLite/WAL stores, fake responses and ThreadsSimulator.
 No fixture, H screen or recorded answer grants production authority.
@@ -17,7 +17,7 @@ No fixture, H screen or recorded answer grants production authority.
 | Research | Authenticated private input -> sealed exact-input application grant -> fixed public fixture/worker-local handle -> OS-authenticated AF_UNIX ResearchWorkerServer -> fake search/provenance -> bounded durable Russian reply and authorized replay | Default-disabled; no arbitrary private-topic research, production issuer, real search adapter, semantic verification or belief bridge. |
 | Behavior/scheduler | SQLiteSchedulerRepository/DurableScheduler -> bounded DeliberationEngine -> closed intent/outcome -> ThreadsStage0 | A wakeup authorizes deliberation only. Uncertain started inference is held, never blindly replayed. |
 | Threads | Verified simulator polling/autonomous decision -> exact public route/catalog -> journal -> durable outbox -> separately installed operator approval -> current snapshot -> simulator dispatch/reconciliation | Two literal drafts only; no general private-derived publishing, production approval or Meta transport. |
-| Privacy | Pending-first separate ledger -> real v4/v5/v6 erasure adapter -> gated startup replay; consistent backup -> current-ledger replay -> sealed read-only quarantine | No authenticated participant control ingress or production restore activation. Eligibility is not activation. |
+| Privacy | Pending-first separate ledger -> real v4/v5/v6/v7 erasure adapter -> gated startup replay; consistent backup -> current-ledger replay -> sealed read-only quarantine | No authenticated participant control ingress or production restore activation. Eligibility is not activation. |
 | Owner | Independently provisioned OwnerStore/OwnerApplication -> hashed sessions/CSRF/replay -> atomic stop/operation/audit; current callback composed into synthetic runtime/scheduler/Threads | Stage 1 retains its separate worker stop file. No claim of one deployed global stop, complete usage inspection or participant authority. |
 
 ## Authority, context and effects
@@ -77,8 +77,9 @@ a PASS for a named synthetic connection is not complete scenario/MVP acceptance.
 Run `python -m acceptance.run`. It invokes the complete `scripts/ci.sh` gate,
 records actual setup/call/teardown outcomes and OAuth-inclusive coverage, runs frozen
 recorded assessment controls, and emits JSON plus a readable report. Stage 0 remains
-BLOCKED on generic consolidation, authenticated privacy
-control ingress, complete cross-channel adversarial coverage and human calibration. All complete-MVP scenarios remain BLOCKED.
+BLOCKED on authenticated privacy control ingress, complete cross-channel
+adversarial coverage and human calibration. INT-12 closes the explicitly enabled
+synthetic SCN-07 consolidation path. All complete-MVP scenarios remain BLOCKED.
 
 See [private runtime](private-conversation-runtime.md),
 [private memory](private-memory-conversation.md), [shared intelligence](shared-intelligence.md),

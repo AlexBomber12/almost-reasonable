@@ -975,9 +975,9 @@
         "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
         "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
       },
-      "stage0_connection": "BLOCKED",
+      "stage0_connection": "PASS",
       "complete_mvp": "BLOCKED",
-      "synthetic_scope": "Private source, memory and approved shared record bind later replies; current deletion replay erases old quarantine.",
+      "synthetic_scope": "Explicitly enabled synthetic private generic memory persistence, two-parent and second-level consolidation, later authorized conversation, complete source and parent dependency erasure, and old-backup quarantine replay. No live model adapter or participant deletion UI.",
       "evidence": [
         {
           "layer": "connected integration",
@@ -1072,12 +1072,52 @@
             "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_intent]",
             "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_application]"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Authenticated PrivateWebApplication WSGI and opt-in CognitionEngine",
+          "components": ["AuthStore", "PrivateWebApplication", "SyntheticMemoryExtractor", "CognitionEngine", "GenericMemoryStore", "MemoryContextSelector", "AgentOutputStore", "EventStore"],
+          "sink": "versioned private graph, protected reply dependencies and later fake-model input",
+          "risks": ["restart", "adversarial", "concurrency"],
+          "scope": "Synthetic private inputs and fake extraction; ordinary participant deletion UI is separate work.",
+          "node_ids": [
+            "tests/test_generic_memory.py::test_multilevel_private_consolidation_replay_restart_and_erasure",
+            "tests/test_generic_memory.py::test_later_trusted_conversation_uses_consolidated_private_memory",
+            "tests/test_generic_memory.py::test_authenticated_wsgi_multilevel_consolidation_reaches_later_private_context",
+            "tests/test_generic_memory.py::test_later_parent_revision_deletion_invalidates_earlier_descendant_reply",
+            "tests/test_generic_memory.py::test_generic_authorization_rejects_hidden_stale_and_disabled_parents",
+            "tests/test_generic_memory.py::test_generic_snapshot_change_during_inference_and_retrieval_hint",
+            "tests/test_generic_memory.py::test_inherited_dependency_bound_rejects_whole_consolidation",
+            "tests/test_generic_memory.py::test_generic_combined_budget_omits_whole_memory_and_its_edges",
+            "tests/test_generic_memory.py::test_reply_requires_complete_exact_generic_dependencies",
+            "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[unresolved_question]",
+            "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[candidate_useful_memory]",
+            "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[contradiction_counterevidence]",
+            "tests/test_generic_memory.py::test_review_state_cannot_be_upgraded_and_revision_history_is_bounded"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "EventStore migration, protected graph validation and quarantined restore",
+          "components": ["EventStore", "GenericMemoryStore", "EventStoreErasureAdapter", "QuarantinedRestore"],
+          "sink": "atomic v7 schema, fail-closed graph, absent deleted payloads",
+          "risks": ["restart", "crash", "adversarial"],
+          "scope": "Local SQLite/WAL and separate guarded Python process only.",
+          "node_ids": [
+            "tests/test_generic_memory.py::test_genuine_v6_migration_rolls_back_atomically_then_preserves_rows",
+            "tests/test_generic_memory.py::test_real_process_exit_at_generic_commit_boundary[inside_transaction-False]",
+            "tests/test_generic_memory.py::test_real_process_exit_at_generic_commit_boundary[after_commit-True]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[missing_union]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[cycle]",
+            "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[missing_link]",
+            "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[foreign_link]",
+            "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[missing_source]"
+          ]
         }
       ],
-      "missing_connections": [
-        "Generic model-guided consolidation and its complete cross-item persistence/provenance are absent. Connected tested private/shared derivations do not implement generic consolidation."
-      ],
+      "missing_connections": [],
       "later_stage_requirements": [
+        "Arbitrary model-guided consolidation, a live extractor and independent semantic corroboration are not demonstrated; supported generic kinds and explicit private parent revisions are the synthetic scope.",
         "Authenticated deletion UI, production retention and encrypted backup/restore activation fences; no forensic or external processor deletion claim."
       ]
     },
@@ -1159,7 +1199,7 @@
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "Model/prompt-version migration behavioral continuity and calibrated independent source assessment; generic consolidation and research evidence bridge."
+        "Model/prompt-version migration behavioral continuity and calibrated independent source assessment."
       ]
     },
     {
@@ -1557,7 +1597,6 @@
     }
   ],
   "release_blockers": [
-    "SCN-07: define supported generic consolidation persistence and complete cross-item dependency/erasure semantics, or narrow the approved Stage 0 exit scope explicitly.",
     "SCN-11: implement authenticated participant notice/consent/revoke/delete ingress with exact content/audience/purpose/validity, CSRF and replay checks.",
     "SCN-12: extend the same cross-channel adversarial corpus through research output and delayed mission retrieval across restart; current mapped slices cannot establish that combined journey.",
     "Calibrate recorded H/M anchors with fluent human reviewers and approve thresholds; fixture scores alone do not satisfy Stage 0 calibration.",

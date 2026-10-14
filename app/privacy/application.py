@@ -18,6 +18,7 @@ from app.core.events import TrustedPrincipalContext
 from app.core.self_state import StateType
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, SCHEMA_VERSION
+from app.core.generic_graph import validate_generic_graph, erase_generic_source
 from app.core.shared_graph import validate_shared_graph, erase_shared_source
 
 from .deletion import DeletionCoordinator
@@ -180,11 +181,16 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version == 6:
+    if schema_version in {6, 7}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
+    if schema_version == 7:
+        try:
+            validate_generic_graph(db)
+        except (ValueError, KeyError, TypeError, IndexError) as error:
+            raise ApplicationPrivacyError("invalid_generic_graph") from error
     for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
@@ -244,7 +250,9 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version == 6:
+        if schema_version == 7:
+            erase_generic_source(db, request.content_reference)
+        if schema_version in {6, 7}:
             erase_shared_source(db, request.content_reference)
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
         _validate_graph(db, schema_version)

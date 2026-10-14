@@ -51,6 +51,12 @@ from .contracts import (
     ProposalContext,
 )
 from .read_store import CognitionReadStore
+from .generic_store import (
+    GenericMemoryConflict,
+    GenericMemoryError,
+    GenericMemoryStale,
+    GenericMemoryStore,
+)
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -78,6 +84,7 @@ class CognitionEngine:
         self._events = event_store
         self._state = state_store
         self._read = CognitionReadStore(event_store, state_store)
+        self._generic = GenericMemoryStore(event_store)
         self._extractor = extractor
         self._capabilities = capabilities
         self._authorize_boundary = authorize
@@ -98,7 +105,7 @@ class CognitionEngine:
         )
         if isinstance(prepared, CognitionOutcome):
             return prepared
-        request, source, current, resolved_evidence, identity = prepared
+        request, source, current, generic, resolved_evidence, identity = prepared
         try:
             proposal = self._extractor.extract(request)
         except Exception:
@@ -110,6 +117,7 @@ class CognitionEngine:
                 evidence_event_ids,
                 source,
                 current,
+                generic,
                 resolved_evidence,
                 identity,
                 proposal,
@@ -147,6 +155,11 @@ class CognitionEngine:
         if not self._valid_identity(identity):
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
         current = self._state.retrieve_private_candidates(context)
+        generic = (
+            self._generic.current(context)
+            if self._capabilities.generic_memory_write
+            else ()
+        )
         request = ExtractionRequest(
             experience=self._experience(source),
             current_candidates=current if self._expose_current_candidates else (),
@@ -154,8 +167,9 @@ class CognitionEngine:
             additional_evidence=tuple(
                 self._experience(item) for item in resolved_evidence
             ),
+            private_memories=tuple(read.view for read in generic),
         )
-        return request, source, current, resolved_evidence, identity
+        return request, source, current, generic, resolved_evidence, identity
 
     def _finish(
         self,
@@ -164,6 +178,7 @@ class CognitionEngine:
         evidence_event_ids,
         source,
         current,
+        generic,
         resolved_evidence,
         identity,
         proposal,
@@ -179,6 +194,11 @@ class CognitionEngine:
             return self._rejected(CognitionReason.STALE_REVISION)
         if self._state.retrieve_private_candidates(context) != current:
             return self._rejected(CognitionReason.STALE_REVISION)
+        if (
+            self._capabilities.generic_memory_write
+            and self._generic.current(context) != generic
+        ):
+            return self._rejected(CognitionReason.STALE_REVISION)
         decided_at = self._canonical_time(self._clock())
         if decided_at is None:
             raise ValueError("clock returned an invalid decision time")
@@ -191,6 +211,7 @@ class CognitionEngine:
             frozenset((source_event_id, *evidence_event_ids)),
             frozenset(candidate.item_id for candidate in current),
             tuple((candidate.item_id, candidate.revision) for candidate in current),
+            tuple((read.view.item_id, read.view.revision) for read in generic),
         )
 
     def plan_source_invalidation(
@@ -221,6 +242,7 @@ class CognitionEngine:
         available_evidence_ids: frozenset[str],
         visible_candidate_ids: frozenset[str],
         expected_candidate_revisions: tuple[tuple[str, int], ...],
+        visible_generic_revisions: tuple[tuple[str, int], ...],
     ) -> CognitionOutcome:
         if type(proposal) is NoChangeProposal:
             return self._authorize_no_change(
@@ -250,7 +272,9 @@ class CognitionEngine:
             proposal.context,
             source_event_id,
             available_evidence_ids,
-            allow_counterevidence_only=isinstance(proposal, BeliefMemoryProposal),
+            allow_counterevidence_only=isinstance(
+                proposal, (BeliefMemoryProposal, GenericMemoryProposal)
+            ),
         )
         if reason is not None:
             return self._rejected(reason, self._safe_kind(proposal))
@@ -269,7 +293,65 @@ class CognitionEngine:
             ),
         )
         if isinstance(proposal, GenericMemoryProposal):
-            return self._authorize_generic(proposal)
+            pending = self._authorize_generic(proposal)
+            if pending.status is not CognitionOutcomeStatus.PENDING_NOT_PERSISTED:
+                return pending
+            if not self._capabilities.generic_memory_write or proposal.item_id is None:
+                return pending
+            if (
+                proposal.parent_revisions
+                and not self._capabilities.private_consolidation
+            ):
+                return self._rejected(
+                    CognitionReason.CAPABILITY_DISABLED, proposal.memory_kind
+                )
+            if not self._valid_token(proposal.item_id) or (
+                type(proposal.parent_revisions) is not tuple
+                or any(
+                    type(parent) is not tuple
+                    or len(parent) != 2
+                    or type(parent[1]) is not int
+                    for parent in proposal.parent_revisions
+                )
+            ):
+                return self._rejected(
+                    CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
+                )
+            if not set(proposal.parent_revisions) <= set(
+                visible_generic_revisions
+            ) and not self._generic.operation_exists(
+                context, proposal.context.operation_id
+            ):
+                return self._rejected(
+                    CognitionReason.STALE_REVISION, proposal.memory_kind
+                )
+            try:
+                result = self._generic.commit(
+                    context,
+                    proposal,
+                    model_identifier=identity.model_identifier,
+                    prompt_version=identity.prompt_version,
+                    core_self_version=CORE_SELF_VERSION,
+                    decided_at=decided_at,
+                )
+            except GenericMemoryConflict:
+                return self._rejected(
+                    CognitionReason.OPERATION_ID_CONFLICT, proposal.memory_kind
+                )
+            except GenericMemoryStale:
+                return self._rejected(
+                    CognitionReason.STALE_REVISION, proposal.memory_kind
+                )
+            except GenericMemoryError:
+                return self._rejected(
+                    CognitionReason.STORE_REJECTED, proposal.memory_kind
+                )
+            return CognitionOutcome(
+                CognitionOutcomeStatus.PERSISTED,
+                CognitionReason.AUTHORIZED,
+                proposal.memory_kind,
+                generic_revision=result,
+            )
         if not self._valid_specific_types(proposal):
             return self._rejected(
                 CognitionReason.INVALID_PROPOSAL, proposal.memory_kind

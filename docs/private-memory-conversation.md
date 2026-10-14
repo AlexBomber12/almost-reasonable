@@ -4,7 +4,7 @@ Current synthetic integration and exact scenario status are documented in
 [integration-contracts.md](integration-contracts.md) and the validated
 [acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
 below describe those schema versions; current live synthetic storage is EventStore
-v6, with private/shared reply edges and mission erasure. Participant privacy-control
+v7, with private/shared/generic reply edges and mission erasure. Participant privacy-control
 web ingress and production restore activation remain absent.
 
 `Stage0ConversationRuntime(..., memory_extractor=SyntheticMemoryExtractor(...))`
@@ -22,7 +22,9 @@ concurrent duplicate returns pending; interrupted work remains pending rather
 than repeating an uncertain extraction or model call. A committed memory remains
 a real state change even if later inference fails. Failed or malformed extraction
 never manufactures a successful memory transition. No-change and unsupported
-generic proposals retain their explicit non-persisted outcomes.
+generic proposals retain explicit non-persisted outcomes unless trusted
+`generic_memory_write` is enabled. Parent-based private consolidation additionally
+requires `private_consolidation`.
 
 Before extraction, the engine resolves the exact source and optional additional
 evidence within the reconciled privacy gate. Extraction runs outside the ledger
@@ -128,14 +130,14 @@ or an accepted model proposal cannot broaden an audience, publish, or activate a
 mission. Behavioral evaluation must measure A/B influence and evidence-based
 mission retention/change with independent confirmation and counterevidence.
 
-Complete M5 also requires a versioned generic-memory persistence/erasure contract,
-model-guided consolidation with complete cross-item dependencies, durable
+Complete M5 still requires arbitrary live model-guided consolidation, durable
 no-change/rejection auditing, calibrated real-model relevance and belief quality,
 authorized research evidence integration, privacy-safe shared influence, semantic
 injection/paraphrase-leakage evaluation and approved production enrollment,
 processor/retention/deletion controls and restore activation. This PR completes
 the synthetic private slice; it does not claim full M5 acceptance.
 
-INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
-with EventStore v6 protected cross-participant edges and mission evidence. The
+INT-05B added the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence, retained
+in v7. The
 older component description above does not authorize production sharing.

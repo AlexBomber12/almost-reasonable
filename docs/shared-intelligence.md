@@ -17,7 +17,12 @@ publication, research dispatch and deployment are disabled.
 | Protected origin and immutable bindings | `protected_shared_sources`, `protected_shared_audiences`, removable `protected_shared_manifests`; never serialized into model context |
 | Cross-participant reply dependencies | `protected_reply_shared` plus immutable `agent_reply_operations.shared_count`; ordinary `agent_reply_sources` remains same-principal |
 | Mission document and evidence bindings | v6 SQLite repository implementing the existing `MissionStateMachine` repository protocol; `protected_mission_shared` holds exact operation identities |
+
 | Deletion intent and restore authority | Existing separate PrivacyLedger, DeletionCoordinator and PrivacyReadGate |
+
+EventStore v7 retains these v6 shared tables and invariants. INT-12 adds private
+generic memories and exact private reply dependencies without allowing the new
+generic path to promote content into shared state.
 
 The Stage 0 application approves only four reviewed, general intellectual
 sentences in `SYNTHETIC_ABSTRACT_VALUES`. This closed vocabulary is intentional:

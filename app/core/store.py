@@ -30,7 +30,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -77,6 +77,7 @@ class FaultPoint(StrEnum):
     BEFORE_V4_MIGRATION_COMMIT = "before_v4_migration_commit"
     BEFORE_V5_MIGRATION_COMMIT = "before_v5_migration_commit"
     BEFORE_V6_MIGRATION_COMMIT = "before_v6_migration_commit"
+    BEFORE_V7_MIGRATION_COMMIT = "before_v7_migration_commit"
     AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
     AFTER_REPLY_COMMIT = "after_reply_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
@@ -604,6 +605,64 @@ _SCHEMA_V5 = (
 )
 
 
+_SCHEMA_V7 = (
+    """ALTER TABLE agent_reply_operations ADD COLUMN generic_count INTEGER NOT NULL
+        DEFAULT 0 CHECK(generic_count BETWEEN 0 AND 16)""",
+    """CREATE TABLE generic_memory_items (
+        item_id TEXT PRIMARY KEY,
+        audience_principal_id TEXT NOT NULL,
+        current_revision INTEGER NOT NULL CHECK(current_revision BETWEEN 1 AND 32)
+    )""",
+    """CREATE TABLE generic_memory_operations (
+        operation_id TEXT PRIMARY KEY,
+        item_id TEXT NOT NULL REFERENCES generic_memory_items(item_id),
+        revision INTEGER NOT NULL CHECK(revision >= 1),
+        expected_revision INTEGER,
+        source_count INTEGER NOT NULL CHECK(source_count BETWEEN 1 AND 100),
+        parent_count INTEGER NOT NULL CHECK(parent_count BETWEEN 0 AND 16),
+        status TEXT NOT NULL CHECK(status IN ('active','invalidated')),
+        decided_at TEXT NOT NULL,
+        model_identifier TEXT NOT NULL,
+        prompt_version TEXT NOT NULL,
+        core_self_version TEXT NOT NULL,
+        graph_digest TEXT NOT NULL CHECK(length(graph_digest)=64),
+        UNIQUE(item_id, revision)
+    )""",
+    """CREATE TABLE generic_memory_payloads (
+        operation_id TEXT PRIMARY KEY REFERENCES generic_memory_operations(operation_id),
+        kind TEXT NOT NULL CHECK(kind IN ('unresolved_question','candidate_useful_memory','contradiction_counterevidence')),
+        statement TEXT NOT NULL CHECK(length(CAST(statement AS BLOB)) BETWEEN 1 AND 4096),
+        confidence REAL NOT NULL CHECK(confidence BETWEEN 0 AND 1),
+        verification TEXT NOT NULL CHECK(verification='unverified'),
+        reason TEXT NOT NULL CHECK(length(CAST(reason AS BLOB)) BETWEEN 1 AND 4096),
+        review_at TEXT NOT NULL,
+        review_state TEXT NOT NULL CHECK(review_state='pending_review'),
+        binding TEXT NOT NULL
+    )""",
+    """CREATE TABLE generic_memory_sources (
+        operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
+        event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        role TEXT NOT NULL CHECK(role IN ('initiating','supporting','counterevidence')),
+        source_principal_id TEXT NOT NULL,
+        retention_status TEXT NOT NULL CHECK(retention_status IN ('active','invalidated')),
+        PRIMARY KEY(operation_id,event_id,role)
+    )""",
+    """CREATE TABLE generic_memory_parents (
+        operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
+        parent_operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
+        PRIMARY KEY(operation_id,parent_operation_id),
+        CHECK(operation_id <> parent_operation_id)
+    )""",
+    """CREATE TABLE protected_reply_generic (
+        operation_id TEXT NOT NULL REFERENCES agent_reply_operations(operation_id),
+        generic_operation_id TEXT NOT NULL REFERENCES generic_memory_operations(operation_id),
+        PRIMARY KEY(operation_id,generic_operation_id)
+    )""",
+    "CREATE INDEX generic_memory_sources_event ON generic_memory_sources(event_id)",
+    "CREATE INDEX generic_memory_parents_parent ON generic_memory_parents(parent_operation_id)",
+)
+
+
 def schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
     """Exact application objects, including explicit indexes and triggers."""
     return {
@@ -618,7 +677,15 @@ def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
     expected = {}
     with sqlite3.connect(":memory:") as connection:
         for version, statements in enumerate(
-            (_SCHEMA_V1, _SCHEMA_V2, _SCHEMA_V3, _SCHEMA_V4, _SCHEMA_V5, _SCHEMA_V6),
+            (
+                _SCHEMA_V1,
+                _SCHEMA_V2,
+                _SCHEMA_V3,
+                _SCHEMA_V4,
+                _SCHEMA_V5,
+                _SCHEMA_V6,
+                _SCHEMA_V7,
+            ),
             start=1,
         ):
             for statement in statements:
@@ -748,7 +815,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2, 3, 4, 5, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -757,7 +824,7 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, 1, 2, 3, 4, 5, SCHEMA_VERSION}:
+                if version not in {0, 1, 2, 3, 4, 5, 6, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if (
                     connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -774,6 +841,7 @@ class EventStore:
                         *_SCHEMA_V4,
                         *_SCHEMA_V5,
                         *_SCHEMA_V6,
+                        *_SCHEMA_V7,
                     ):
                         connection.execute(statement)
                     connection.execute(
@@ -788,6 +856,7 @@ class EventStore:
                         (4, _SCHEMA_V4, FaultPoint.BEFORE_V4_MIGRATION_COMMIT),
                         (5, _SCHEMA_V5, FaultPoint.BEFORE_V5_MIGRATION_COMMIT),
                         (6, _SCHEMA_V6, FaultPoint.BEFORE_V6_MIGRATION_COMMIT),
+                        (7, _SCHEMA_V7, FaultPoint.BEFORE_V7_MIGRATION_COMMIT),
                     )
                     for target, statements, fault_point in migrations:
                         if target > version:

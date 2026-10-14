@@ -39,6 +39,10 @@ class CognitionOutcomeStatus(StrEnum):
     NO_CHANGE = "no_change"
 
 
+class GenericReviewState(StrEnum):
+    PENDING_REVIEW = "pending_review"
+
+
 class CognitionReason(StrEnum):
     AUTHORIZED = "authorized"
     EXTRACTOR_NOT_CONFIGURED = "extractor_not_configured"
@@ -67,6 +71,8 @@ class CognitionCapabilities:
     memory_extraction: bool = True
     private_state_write: bool = True
     shared_abstraction_screening: bool = True
+    generic_memory_write: bool = False
+    private_consolidation: bool = False
 
     def __post_init__(self) -> None:
         if any(
@@ -75,6 +81,8 @@ class CognitionCapabilities:
                 self.memory_extraction,
                 self.private_state_write,
                 self.shared_abstraction_screening,
+                self.generic_memory_write,
+                self.private_consolidation,
             )
         ):
             raise ValueError("invalid cognition capabilities")
@@ -142,6 +150,24 @@ class GenericMemoryProposal:
     statement: str
     confidence: float
     verification: VerificationStatus
+    item_id: str | None = None
+    parent_revisions: tuple[tuple[str, int], ...] = ()
+    review_state: GenericReviewState = GenericReviewState.PENDING_REVIEW
+
+
+@dataclass(frozen=True, slots=True)
+class GenericMemoryView:
+    """Opaque private snapshot entry exposed to the synthetic extractor."""
+
+    item_id: str
+    revision: int
+    memory_kind: MemoryKind
+    statement: str
+    confidence: float
+    verification: VerificationStatus
+    supporting_count: int
+    counterevidence_count: int
+    trusted_as_instructions: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,6 +204,7 @@ class ExtractionRequest:
     core_self_version: str
     additional_evidence: tuple[Experience, ...] = ()
     participant_id: None = None
+    private_memories: tuple[GenericMemoryView, ...] = ()
 
 
 class MemoryExtractor(Protocol):
@@ -196,6 +223,7 @@ class CognitionOutcome:
     transition: StateTransitionResult | None = None
     pending_proposal: GenericMemoryProposal | None = None
     no_change: NoChangeProposal | None = None
+    generic_revision: tuple[str, int] | None = None
 
 
 class InvalidationStatus(StrEnum):

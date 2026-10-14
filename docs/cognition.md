@@ -68,9 +68,9 @@ The proposal vocabulary is closed:
 | `durable_interest` | Durable participant-private interest candidate and revisions through `SelfStateStore` |
 | `belief_or_hypothesis` | Durable participant-private belief candidate and revisions; participant assertions remain `unverified` |
 | `goal_or_intention` | Durable participant-private goal candidate and controlled lifecycle revisions |
-| `unresolved_question` | Typed `pending_not_persisted` result |
-| `candidate_useful_memory` | Typed `pending_not_persisted` result |
-| `contradiction_counterevidence` | Typed `pending_not_persisted` result; counterevidence attached to a belief revision is durable now |
+| `unresolved_question` | Durable private generic revision when trusted `generic_memory_write` is enabled; otherwise `pending_not_persisted` |
+| `candidate_useful_memory` | Durable private generic revision when enabled; supports exact private parent revisions |
+| `contradiction_counterevidence` | Durable private generic revision when enabled; contrary source roles remain protected and unverified |
 
 Durable revisions retain their full version chain, rationale, initiating event,
 supporting evidence, belief counterevidence, before/after confidence, decision
@@ -80,10 +80,30 @@ confidence, or status without becoming verified merely because a participant
 said something. Goals may be activated, suspended, resumed, completed, or
 abandoned; completed and abandoned goals are terminal in this boundary.
 
-Generic extracted-memory persistence is deliberately not implemented. Adding it
-requires a versioned migration with removable payloads, audience, protected
-taint, review/expiry state, operation identity, and deletion invalidation. This
-PR does not add an unversioned table or claim generic persistence.
+INT-12 adds opt-in generic persistence through EventStore v7. `GenericMemoryProposal`
+binds an immutable operation, item and expected revision, initiating/supporting/
+counterevidence events, exact parent item/revisions, bounded statement and
+confidence, unverified status, trusted `pending_review` state and review time.
+The engine resolves the complete
+private snapshot before synthetic extraction, compares it again before commit,
+and the store rechecks source and parent heads inside one SQLite transaction.
+`private_consolidation` must also be enabled for parent references. An identical
+retry returns its original revision even after later revisions; changed bindings,
+stale heads, other participants' parents and unsupported sharing fail closed.
+
+The v7 generic tables separate `generic_memory_items` and immutable operation
+identities from removable `generic_memory_payloads`. Protected source roles and
+exact parent-operation edges retain the full union across prior item revisions
+and consolidation levels, with a 100-edge and 32-revision bound. The graph digest binds retained
+content-free edges after deletion; active replay bindings live only with
+removable payloads. `protected_reply_generic` records which exact generic
+operations a later reply used. The validator checks counts, ownership, role
+union, parent cycles, replay bindings and reply dependencies before erasure or
+read eligibility. Deleting any material source invalidates the entire affected
+item chain, parent descendants and dependent replies, while retaining only
+content-free recovery metadata. Old backups replay the external ledger into
+quarantine before reads are eligible. No live extractor or automatic periodic
+consolidation is enabled.
 
 ## Private-to-shared abstraction
 
@@ -186,7 +206,6 @@ or backup reconciliation exists now.
 
 The following remain cross-stream work:
 
-- a versioned generic extracted-memory schema and persistence adapter;
 - durable abstraction attempt/quarantine records and a disabled-by-default shared
   intellectual-state commit path;
 - structured consent, revocation, and identifiable-disclosure authorization;
@@ -198,12 +217,11 @@ The following remain cross-stream work:
 - behavioral evaluation of semantic relevance, paraphrase leakage, calibration,
   and resistance to persuasion or personality drift.
 
-This component is evidence toward SCN-01, SCN-02, SCN-07, SCN-08, SCN-09,
-SCN-11, and SCN-12, but it does not by itself satisfy full M5 or SCN-07
-acceptance. In particular, generic memory durability, production restore activation,
-shared-state promotion, mission revision, and real-model behavioral evaluation
-remain incomplete. Private deletion/reconciliation is connected in INT-05A.
+This component contributes connected synthetic SCN-07 evidence without completing
+M5. Production restore activation, participant privacy controls, arbitrary live
+model consolidation and calibrated behavioral evaluation remain incomplete.
 
-INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
-with EventStore v6 protected cross-participant edges and mission evidence. The
+INT-05B added the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence, retained
+in v7. The
 older component description above does not authorize production sharing.

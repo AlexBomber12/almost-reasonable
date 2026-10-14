@@ -2,8 +2,8 @@
 
 Stage 0 readiness is **BLOCKED**. The acceptance package executes all 12 scenario
 mappings and distinguishes connected synthetic checks from remaining requirements.
-Missing generic consolidation, authenticated participant
-privacy controls, complete cross-channel attack coverage and fluent-human calibration prevent Stage 0 acceptance. Complete
+Missing authenticated participant privacy controls, complete cross-channel attack
+coverage and fluent-human calibration prevent Stage 0 acceptance. Complete
 MVP acceptance is also BLOCKED. Synthetic success does not grant rollout authority.
 
 ## Reproduce
@@ -58,7 +58,8 @@ downtime coalescing and process exits. Process-exit evidence covers private rese
 application, scheduler start/result/completion and provider dispatch; other checkpoint exceptions establish
 transaction/reopen behavior, not comprehensive OS-process crash coverage. Auth,
 event/provider, privacy, owner, scheduler, Threads and journal commits are independent.
-Generic consolidation and production restore activation remain absent.
+INT-12 adds explicitly enabled synthetic generic consolidation; arbitrary live
+model consolidation and production restore activation remain absent.
 
 Scoped guards reject Internet sockets, DNS, HTTP and production credential factories
 for mapped acceptance tests. Only mapped research-worker and INT-11 private-bridge AF_UNIX fixtures are permitted.
@@ -161,6 +162,21 @@ There is no automatic inference/research recovery resolver.
 
 Only this synthetic connection is complete. Arbitrary privately motivated briefs,
 production authorization/bootstrap, real providers and semantic source-support
-evaluation remain unavailable. SCN-07 generic consolidation, SCN-11 authenticated
+evaluation remain unavailable. SCN-11 authenticated
 participant privacy controls, SCN-12 combined adversarial coverage and human
 calibration continue to block Stage 0 and complete-MVP acceptance.
+
+## INT-12 connected synthetic private consolidation
+
+SCN-07 now maps all three persisted generic kinds, two-parent and second-level
+consolidation, exact historical source unions, restart conversation context,
+source/parent erasure, dependent reply invalidation and old-backup quarantine
+replay. Tests also cover competing revisions, immutable replay, bounds, forged
+and missing edges, cycles, genuine v6 migration rollback, and guarded interpreter
+exits inside and after a consolidation transaction. The new
+`protected_reply_generic` edge covers replies that used an earlier descendant
+before a parent acquired later revision evidence. Current schema is EventStore
+v7; supported historical v4–v6 backups remain exact-schema checked. The extractor
+and transport are offline synthetic fixtures. No participant deletion UI, live
+model adapter, semantic corroboration, production restore activation or
+deployment was exercised.

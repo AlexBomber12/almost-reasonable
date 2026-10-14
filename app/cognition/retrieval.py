@@ -25,6 +25,7 @@ from .contracts import (
     RetrievalRequest,
 )
 from .read_store import CognitionReadStore
+from .generic_store import GenericMemoryRead, GenericMemoryStore
 
 
 _TOKEN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
@@ -38,6 +39,7 @@ class MemoryContextSelector:
 
     def __init__(self, event_store: EventStore, state_store: SelfStateStore):
         self._read = CognitionReadStore(event_store, state_store)
+        self._generic = GenericMemoryStore(event_store)
 
     def select(
         self,
@@ -125,6 +127,30 @@ class MemoryContextSelector:
             )
             ranked.append((rank, record))
 
+        for generic in self._generic.current(context, _connection=_connection):
+            if invalidated & set(generic.source_event_ids):
+                omitted = True
+                continue
+            record = self._generic_record(generic)
+            relevance = len(
+                query_words
+                & set(self._words(record.text + " " + record.revision_reason))
+            )
+            ranked.append(
+                (
+                    (
+                        True,
+                        relevance,
+                        True,
+                        record.confidence,
+                        record.recency,
+                        record.item_id,
+                        record.revision,
+                    ),
+                    record,
+                )
+            )
+
         ranked.sort(key=lambda item: item[0], reverse=True)
         selected: list[MemoryRecord] = []
         omitted_revision_heads: set[str] = set()
@@ -152,6 +178,57 @@ class MemoryContextSelector:
             used,
             limits.max_utf8_bytes,
             omitted,
+        )
+
+    @staticmethod
+    def _generic_record(read: GenericMemoryRead) -> MemoryRecord:
+        view = read.view
+        values = (
+            view.item_id,
+            view.memory_kind.value,
+            str(view.revision),
+            read.reason,
+            view.statement,
+            "active",
+            "private_candidate",
+            str(view.confidence),
+            str(view.supporting_count),
+            str(view.counterevidence_count),
+            read.core_self_version,
+            read.model_identifier,
+            read.prompt_version,
+            read.decided_at.isoformat(),
+            read.review_at.isoformat(),
+            MemoryTrust.UNTRUSTED_MEMORY_DATA.value,
+        )
+        return MemoryRecord(
+            item_id=view.item_id,
+            memory_kind=view.memory_kind,
+            revision=view.revision,
+            revision_reason=read.reason,
+            text=view.statement,
+            status="active",
+            scope="private_candidate",
+            confidence=view.confidence,
+            priority=None,
+            stance=None,
+            supporting_evidence_count=view.supporting_count,
+            counterevidence_count=view.counterevidence_count,
+            reason_for_interest=None,
+            alternatives=(),
+            rationale=None,
+            constraints=(),
+            review_condition=None,
+            verification=view.verification,
+            provenance=ProvenanceType.MODEL_INFERENCE,
+            core_self_version=read.core_self_version,
+            model_identifier=read.model_identifier,
+            prompt_version=read.prompt_version,
+            recency=read.decided_at,
+            review_at=read.review_at,
+            trust=MemoryTrust.UNTRUSTED_MEMORY_DATA,
+            can_instruct=False,
+            utf8_bytes=sum(len(value.encode("utf-8")) for value in values),
         )
 
     @staticmethod
