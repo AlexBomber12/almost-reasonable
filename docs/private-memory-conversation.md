@@ -41,9 +41,10 @@ new item from copying another item's text without retaining that item's complete
 protected dependencies. When generic memory writes are enabled, the extractor
 receives a deterministic subset of at most 16 private generic heads and 16 KiB
 of their serialized view data. The complete generic and typed revision snapshots
-are checked again in the write transaction; consolidation parents must be in the
-exposed subset. Scripted synthetic revisions may target a known item and expected
-revision; live model-guided cross-item consolidation is not enabled.
+are checked again in the write transaction; consolidation parents and new
+revision targets must be in the exposed subset. Scripted synthetic revisions
+may target a known item and expected revision; live model-guided cross-item
+consolidation is not enabled.
 The generic-enabled extraction path does not expose typed candidate values and
 does not persist typed proposals. Typed extraction uses the separate path with
 generic exposure disabled, so cross-type source dependencies cannot be omitted.

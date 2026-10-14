@@ -389,8 +389,14 @@ class CognitionEngine:
                 return self._rejected(
                     CognitionReason.INVALID_PROPOSAL, proposal.memory_kind
                 )
-            if not set(proposal.parent_revisions) <= set(
-                exposed_generic_revisions
+            exposed = set(exposed_generic_revisions)
+            target = (proposal.item_id, proposal.context.expected_revision)
+            if (
+                not set(proposal.parent_revisions) <= exposed
+                or (
+                    proposal.context.expected_revision is not None
+                    and target not in exposed
+                )
             ) and not self._generic.operation_exists(
                 context, proposal.context.operation_id
             ):

@@ -1037,6 +1037,16 @@ def test_extractor_generic_view_is_bounded_and_parents_must_be_exposed(
         engine(store, child).process(a, "event-current").reason.value
         == "stale_revision"
     )
+    revision = proposal("event-current", hidden, "op-hidden-rev", expected=1)
+    assert (
+        engine(store, revision).process(a, "event-current").reason.value
+        == "stale_revision"
+    )
+    assert commit_direct(store, revision) == (hidden, 2)
+    assert engine(store, revision).process(a, "event-current").generic_revision == (
+        hidden,
+        2,
+    )
 
 
 def test_runtime_requires_exact_trusted_cognition_configuration(tmp_path):

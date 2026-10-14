@@ -86,7 +86,8 @@ counterevidence events, exact parent item/revisions, bounded statement and
 confidence, unverified status, trusted `pending_review` state and review time.
 The engine resolves the complete private revision snapshot before synthetic
 extraction. It exposes at most 16 generic heads and 16 KiB of serialized generic
-view data to the extractor; a proposal may name only exposed parents. The store
+view data to the extractor; a proposal may name only exposed parents or revision
+targets, except for exact replay of an existing operation. The store
 rechecks the complete generic and typed candidate revision snapshots, source
 evidence and parent heads inside one SQLite write transaction.
 Generic-enabled extraction hides typed candidate values and accepts only generic
