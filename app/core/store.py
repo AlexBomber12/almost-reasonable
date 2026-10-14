@@ -660,6 +660,7 @@ _SCHEMA_V7 = (
     )""",
     "CREATE INDEX generic_memory_sources_event ON generic_memory_sources(event_id)",
     "CREATE INDEX generic_memory_parents_parent ON generic_memory_parents(parent_operation_id)",
+    "CREATE INDEX generic_reply_count ON agent_reply_operations(operation_id) WHERE generic_count>0",
 )
 
 

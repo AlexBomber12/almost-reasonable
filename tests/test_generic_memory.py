@@ -580,6 +580,51 @@ def test_generic_store_rejects_malformed_proposals(tmp_path, change):
     assert GenericMemoryStore(store).current(principal("a")) == ()
 
 
+def test_generic_graph_operation_limit_blocks_growth_and_corrupt_oversize(
+    tmp_path, monkeypatch
+):
+    import app.cognition.generic_store as store_module
+    import app.core.generic_graph as graph_module
+
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    for index in range(2):
+        assert commit_direct(
+            store, proposal("event-one", f"m-{index}", f"op-{index}")
+        ) == (f"m-{index}", 1)
+    monkeypatch.setattr(store_module, "MAX_GENERIC_GRAPH_OPERATIONS", 2)
+    with pytest.raises(GenericMemoryError, match="generic_graph_bound"):
+        commit_direct(store, proposal("event-one", "m-2", "op-2"))
+    assert len(GenericMemoryStore(store).current(a)) == 2
+    monkeypatch.setattr(graph_module, "MAX_GENERIC_GRAPH_OPERATIONS", 1)
+    with pytest.raises(ValueError, match="invalid_generic_graph"):
+        with sqlite3.connect(store.database_path) as db:
+            validate_generic_graph(db)
+    with pytest.raises(GenericMemoryError, match="generic_memory_unavailable"):
+        GenericMemoryStore(store).current(a)
+
+
+def test_generic_reply_link_limit_is_enforced_before_reservation(tmp_path, monkeypatch):
+    import app.core.agent_output_store as reply_module
+    import app.core.generic_graph as graph_module
+
+    store = populated_graph(tmp_path / "events.db")
+    operation = generic_reply(("event-one", "event-two", "event-three"), ("op-three",))
+    monkeypatch.setattr(reply_module, "MAX_GENERIC_GRAPH_REPLIES", 0)
+    with pytest.raises(EventValidationError, match="generic reply graph bound"):
+        AgentOutputStore(store).reserve_reply(principal("a"), operation)
+    monkeypatch.setattr(reply_module, "MAX_GENERIC_GRAPH_REPLIES", 4096)
+    AgentOutputStore(store).reserve_reply(principal("a"), operation)
+    monkeypatch.setattr(graph_module, "MAX_GENERIC_GRAPH_REPLIES", 0)
+    with sqlite3.connect(store.database_path) as db:
+        with pytest.raises(ValueError, match="invalid_generic_graph"):
+            validate_generic_graph(db)
+        db.execute("DELETE FROM protected_reply_generic")
+        with pytest.raises(ValueError, match="invalid_generic_graph"):
+            validate_generic_graph(db)
+
+
 @pytest.mark.parametrize("expected", (True, 1.0))
 def test_generic_revision_rejects_non_integer_expected_value(tmp_path, expected):
     store = EventStore(tmp_path / "events.db")
@@ -1241,6 +1286,54 @@ def test_revision_budget_omits_generic_record_without_state_head_lookup(tmp_path
     )
     assert selected.records == ()
     assert selected.records_omitted
+
+
+def test_generic_retrieval_counts_every_model_facing_field(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    selector = MemoryContextSelector(store, SelfStateStore(store))
+    record = selector.select(
+        a, RetrievalRequest(RetrievalPurpose.CONVERSATION, "memory", 32000, 1)
+    ).records[0]
+    assert record.utf8_bytes == sum(
+        len(value.encode("utf-8"))
+        for value in (
+            record.item_id,
+            record.memory_kind.value,
+            str(record.revision),
+            record.revision_reason,
+            record.text,
+            record.status,
+            record.scope,
+            str(record.confidence),
+            str(record.supporting_evidence_count),
+            str(record.counterevidence_count),
+            record.verification.value,
+            record.provenance.value,
+            record.core_self_version,
+            record.model_identifier,
+            record.prompt_version,
+            record.recency.isoformat(),
+            record.review_at.isoformat(),
+            record.trust.value,
+            "false",
+        )
+    )
+    exact = selector.select(
+        a,
+        RetrievalRequest(RetrievalPurpose.CONVERSATION, "memory", record.utf8_bytes, 1),
+    )
+    assert exact.records == (record,)
+    assert exact.used_utf8_bytes == record.utf8_bytes
+    tight = selector.select(
+        a,
+        RetrievalRequest(
+            RetrievalPurpose.CONVERSATION, "memory", record.utf8_bytes - 1, 1
+        ),
+    )
+    assert tight.records == () and tight.records_omitted
 
 
 def test_typed_belief_overflow_does_not_hide_same_id_generic_record(tmp_path):

@@ -3,7 +3,11 @@
 
 def remove_v7(db):
     db.execute("DROP TABLE protected_reply_generic")
-    for index in ("generic_memory_sources_event", "generic_memory_parents_parent"):
+    for index in (
+        "generic_memory_sources_event",
+        "generic_memory_parents_parent",
+        "generic_reply_count",
+    ):
         db.execute(f"DROP INDEX {index}")
     for table in (
         "generic_memory_parents",

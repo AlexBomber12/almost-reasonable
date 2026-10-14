@@ -9,7 +9,7 @@ import re
 import sqlite3
 
 from app.core.events import TrustedPrincipalContext, VerificationStatus
-from app.core.generic_graph import validate_generic_graph
+from app.core.generic_graph import MAX_GENERIC_GRAPH_OPERATIONS, validate_generic_graph
 from app.core.self_state_store import SelfStateConflictError, SelfStateStore
 from app.core.store import EventStore
 
@@ -295,6 +295,13 @@ class GenericMemoryStore:
                         if prior[0] != proposal.item_id or payload[0] != binding:
                             raise GenericMemoryConflict("generic_operation_conflict")
                         return prior[0], prior[1]
+                    if (
+                        db.execute(
+                            "SELECT COUNT(*) FROM generic_memory_operations"
+                        ).fetchone()[0]
+                        >= MAX_GENERIC_GRAPH_OPERATIONS
+                    ):
+                        raise GenericMemoryError("generic_graph_bound")
                     item = db.execute(
                         "SELECT audience_principal_id,current_revision FROM generic_memory_items WHERE item_id=?",
                         (proposal.item_id,),

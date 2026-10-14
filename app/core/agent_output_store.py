@@ -19,7 +19,7 @@ from .action_policy import (
 from .agent_proposals import ReplyProposal
 from .events import TrustedPrincipalContext
 from .shared_graph import validate_shared_graph
-from .generic_graph import validate_generic_graph
+from .generic_graph import MAX_GENERIC_GRAPH_REPLIES, validate_generic_graph
 
 from .store import (
     EventIdentityConflictError,
@@ -250,6 +250,14 @@ class AgentOutputStore:
                     if result is None or result.operation != operation:
                         raise EventValidationError("reply operation unavailable")
                     return result
+                if operation.generic_operation_ids and (
+                    db.execute(
+                        "SELECT COUNT(*) FROM protected_reply_generic"
+                    ).fetchone()[0]
+                    + len(operation.generic_operation_ids)
+                    > MAX_GENERIC_GRAPH_REPLIES
+                ):
+                    raise EventValidationError("generic reply graph bound")
                 db.execute(
                     """
                     INSERT INTO agent_reply_operations(operation_id, audience_principal_id,

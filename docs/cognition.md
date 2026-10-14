@@ -101,8 +101,11 @@ content-free edges after deletion; active replay bindings live only with
 removable payloads. `protected_reply_generic` records which exact generic
 operations a later reply used. The validator checks counts, ownership, role
 union, parent cycles, replay bindings and reply dependencies before erasure or
-read eligibility. Deleting any material source invalidates the entire affected
-item chain, parent descendants and dependent replies, while retaining only
+read eligibility. The synthetic v7 graph is capped at 128 lifetime generic
+operations and 4,096 generic reply links per database, so whole-graph validation
+has a finite cost; writes at either limit fail closed. Deleting any material
+source invalidates the entire affected item chain, parent descendants and
+dependent replies, while retaining only
 content-free recovery metadata. Old backups replay the external ledger into
 quarantine before reads are eligible. No live extractor or automatic periodic
 consolidation is enabled.

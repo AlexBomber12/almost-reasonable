@@ -4,9 +4,30 @@ import hashlib
 import json
 import sqlite3
 
+MAX_GENERIC_GRAPH_OPERATIONS = 128
+MAX_GENERIC_GRAPH_REPLIES = 4096
+
 
 def validate_generic_graph(db: sqlite3.Connection) -> None:
     """Validate every retained identity, payload, edge, and complete source union."""
+    limits = (
+        ("generic_memory_items", MAX_GENERIC_GRAPH_OPERATIONS),
+        ("generic_memory_operations", MAX_GENERIC_GRAPH_OPERATIONS),
+        ("generic_memory_payloads", MAX_GENERIC_GRAPH_OPERATIONS),
+        ("generic_memory_sources", MAX_GENERIC_GRAPH_OPERATIONS * 100),
+        ("generic_memory_parents", MAX_GENERIC_GRAPH_OPERATIONS * 16),
+        ("protected_reply_generic", MAX_GENERIC_GRAPH_REPLIES),
+    )
+    for table, bound in limits:
+        if db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] > bound:
+            raise ValueError("invalid_generic_graph")
+    if (
+        db.execute(
+            "SELECT COUNT(*) FROM agent_reply_operations WHERE generic_count>0"
+        ).fetchone()[0]
+        > MAX_GENERIC_GRAPH_REPLIES
+    ):
+        raise ValueError("invalid_generic_graph")
     items = {
         item_id: (principal, head)
         for item_id, principal, head in db.execute(
@@ -225,7 +246,11 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         visit(operation_id)
     for reply_id, reply_principal, reply_status, generic_count in db.execute(
         """SELECT operation_id,audience_principal_id,retention_status,generic_count
-        FROM agent_reply_operations"""
+        FROM agent_reply_operations
+        WHERE operation_id IN (
+            SELECT operation_id FROM agent_reply_operations WHERE generic_count>0
+            UNION SELECT operation_id FROM protected_reply_generic
+        )"""
     ):
         generic_ids = [
             row[0]

@@ -198,12 +198,15 @@ class MemoryContextSelector:
             str(view.confidence),
             str(view.supporting_count),
             str(view.counterevidence_count),
+            view.verification.value,
+            ProvenanceType.MODEL_INFERENCE.value,
             read.core_self_version,
             read.model_identifier,
             read.prompt_version,
             read.decided_at.isoformat(),
             read.review_at.isoformat(),
             MemoryTrust.UNTRUSTED_MEMORY_DATA.value,
+            "false",
         )
         return MemoryRecord(
             item_id=view.item_id,
