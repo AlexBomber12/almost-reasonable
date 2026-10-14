@@ -1,5 +1,6 @@
 """Protected generic-memory dependency validation and source erasure."""
 
+from datetime import datetime, timedelta
 import hashlib
 import json
 import sqlite3
@@ -210,13 +211,21 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                     "confidence",
                     "verification",
                     "reason",
+                    "proposed",
                     "review",
                     "review_state",
                     "model",
                     "prompt",
                     "core",
                 }
-                if type(data) is not dict or not required <= data.keys():
+                if type(data) is not dict or data.keys() != required:
+                    raise ValueError("invalid_generic_graph")
+                proposed = datetime.fromisoformat(data["proposed"])
+                if (
+                    proposed.tzinfo is None
+                    or proposed.utcoffset() != timedelta(0)
+                    or proposed.isoformat() != data["proposed"]
+                ):
                     raise ValueError("invalid_generic_graph")
                 direct = {(data["source"], "initiating")}
                 direct.update((event, "supporting") for event in data["support"])

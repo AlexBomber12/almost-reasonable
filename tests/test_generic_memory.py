@@ -398,6 +398,12 @@ def rehash(db, operation):
         "malformed_binding",
         "non_object_binding",
         "missing_comparison_field",
+        "missing_proposed",
+        "extra_binding_key",
+        "invalid_proposed",
+        "naive_proposed",
+        "non_utc_proposed",
+        "noncanonical_proposed",
         "changed_binding",
         "missing_union",
         "foreign_parent",
@@ -471,6 +477,30 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
         elif mutation == "missing_comparison_field":
             db.execute(
                 "UPDATE generic_memory_payloads SET binding=json_remove(binding,'$.item') WHERE operation_id='op-one'"
+            )
+        elif mutation == "missing_proposed":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_remove(binding,'$.proposed') WHERE operation_id='op-one'"
+            )
+        elif mutation == "extra_binding_key":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.extra','forged') WHERE operation_id='op-one'"
+            )
+        elif mutation == "invalid_proposed":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.proposed','not-a-time') WHERE operation_id='op-one'"
+            )
+        elif mutation == "naive_proposed":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.proposed','2026-03-01T10:00:00') WHERE operation_id='op-one'"
+            )
+        elif mutation == "non_utc_proposed":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.proposed','2026-03-01T10:00:00+01:00') WHERE operation_id='op-one'"
+            )
+        elif mutation == "noncanonical_proposed":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.proposed','2026-03-01 10:00:00+00:00') WHERE operation_id='op-one'"
             )
         elif mutation == "changed_binding":
             db.execute(
