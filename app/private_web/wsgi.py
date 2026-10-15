@@ -9,10 +9,12 @@ import json
 import re
 import secrets
 from typing import Any
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
 
 from .auth import AuthenticatedSession, AuthStore, LoginStatus
 from .conversation import ConversationService
+from .privacy import ParticipantPrivacyControls, PrivacyControlError
+from app.privacy.application import PrivacyReadBlocked
 
 
 SESSION_COOKIE = "ar_session"
@@ -141,16 +143,32 @@ class PrivateWebApplication:
         auth_store: AuthStore,
         conversations: ConversationService,
         config: PrivateWebConfig,
+        *,
+        privacy: ParticipantPrivacyControls | None = None,
     ):
+        if privacy is not None and (
+            privacy.auth is not auth_store
+            or privacy.store is not conversations._event_store
+            or getattr(conversations, "_gate", None) is not privacy.gate
+        ):
+            raise ValueError("privacy composition must bind the conversation")
         self._auth_store = auth_store
         self._conversations = conversations
         self._config = config
+        self._privacy = privacy
 
     def __call__(self, environ: dict[str, Any], start_response: Any) -> list[bytes]:
         try:
             response = self._dispatch(environ)
         except _RequestError as error:
             response = self._error(error.status, error.message)
+        except PrivacyReadBlocked:
+            response = self._error(
+                HTTPStatus.SERVICE_UNAVAILABLE
+                if self._privacy is not None
+                else HTTPStatus.INTERNAL_SERVER_ERROR,
+                "Privacy reconciliation required.",
+            )
         except Exception:
             response = self._error(
                 HTTPStatus.INTERNAL_SERVER_ERROR, "The request could not be completed."
@@ -177,6 +195,20 @@ class PrivateWebApplication:
             "/api/messages",
             "/assets/chat.js",
         }
+        if self._privacy is not None:
+            known_paths.update(
+                {
+                    "/privacy",
+                    "/privacy/source",
+                    "/api/privacy/status",
+                    "/api/privacy/notice",
+                    "/api/privacy/grants",
+                    "/api/privacy/revocations",
+                    "/api/privacy/deletions",
+                    "/api/privacy/reconcile",
+                    "/assets/privacy.js",
+                }
+            )
         if path not in known_paths:
             raise _RequestError(HTTPStatus.NOT_FOUND, "Not found.")
         allowed_methods = {
@@ -188,6 +220,20 @@ class PrivateWebApplication:
             "/api/messages": {"POST"},
             "/assets/chat.js": {"GET"},
         }
+        if self._privacy is not None:
+            allowed_methods.update(
+                {
+                    "/privacy": {"GET"},
+                    "/privacy/source": {"GET"},
+                    "/api/privacy/status": {"GET"},
+                    "/api/privacy/notice": {"POST"},
+                    "/api/privacy/grants": {"POST"},
+                    "/api/privacy/revocations": {"POST"},
+                    "/api/privacy/deletions": {"POST"},
+                    "/api/privacy/reconcile": {"POST"},
+                    "/assets/privacy.js": {"GET"},
+                }
+            )
         if method not in allowed_methods[path]:
             raise _RequestError(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed.")
 
@@ -197,6 +243,8 @@ class PrivateWebApplication:
             return self._login(environ)
         if method == "GET" and path == "/assets/chat.js":
             return self._javascript()
+        if method == "GET" and path == "/assets/privacy.js":
+            return self._privacy_javascript()
 
         session_token = self._cookie_value(environ, SESSION_COOKIE)
         session = self._auth_store.authenticate(session_token)
@@ -207,6 +255,19 @@ class PrivateWebApplication:
                 HTTPStatus.UNAUTHORIZED,
                 "Your session is invalid or expired. Please sign in again.",
             )
+        if self._privacy is not None and path.startswith(("/privacy", "/api/privacy")):
+            return self._privacy_request(environ, session, method, path)
+        if self._privacy is not None and path in {
+            "/chat",
+            "/api/history",
+            "/api/messages",
+        }:
+            if not self._privacy.acknowledged(session):
+                if path == "/chat":
+                    return self._redirect("/privacy", [])
+                raise _RequestError(
+                    HTTPStatus.FORBIDDEN, "Privacy notice acknowledgement required."
+                )
         if method == "GET" and path == "/chat":
             return self._chat_page(session, environ)
         if method == "GET" and path == "/api/history":
@@ -317,14 +378,26 @@ class PrivateWebApplication:
         items = self._checked_history(session, environ)
         history = "".join(
             f"<li><time>{escape(item.occurred_at.isoformat())}</time> "
-            f"<span>{escape(item.content)}</span></li>"
+            f"<span>{escape(item.content)}</span>"
+            + (
+                f' <a href="/privacy/source?ref={quote(item.event_id, safe="")}">'
+                "Управление источником</a>"
+                if self._privacy is not None and item.role == "participant"
+                else ""
+            )
+            + "</li>"
             for item in items
         )
         body = (
             "<!doctype html><html lang=en><meta charset=utf-8>"
             "<title>Private chat</title><h1>Private chat</h1>"
             f"<p>Authenticated as {escape(session.username)}</p>"
-            '<p role="status" id="model-status">'
+            + (
+                '<nav><a href="/privacy">Приватность</a></nav>'
+                if self._privacy is not None
+                else ""
+            )
+            + '<p role="status" id="model-status">'
             "Model responses are currently unavailable or pending.</p>"
             f"<ol id=history>{history}</ol>"
             f'<form id=message-form data-csrf="{escape(csrf)}">'
@@ -357,6 +430,187 @@ class PrivateWebApplication:
         return (
             current is not None and current.trusted_context == session.trusted_context
         )
+
+    @staticmethod
+    def _privacy_cursor_query(environ, allowed):
+        raw_query = environ.get("QUERY_STRING", "")
+        if len(raw_query) > 512:
+            raise PrivacyControlError(400)
+        try:
+            query = parse_qs(raw_query, strict_parsing=True)
+        except ValueError:
+            raise PrivacyControlError(400) from None
+        if raw_query and (
+            len(query) != 1
+            or not set(query) <= allowed
+            or len(next(iter(query.values()))) != 1
+        ):
+            raise PrivacyControlError(400)
+        return query
+
+    def _privacy_request(self, environ, session, method, path):
+        controls = self._privacy
+        if not self._session_current(session, environ):
+            raise _RequestError(HTTPStatus.UNAUTHORIZED, "Session expired.")
+        try:
+            if method == "GET":
+                if path == "/api/privacy/status":
+                    query = self._privacy_cursor_query(environ, {"before"})
+                    result = self._json(
+                        HTTPStatus.OK,
+                        controls.status(session, query.get("before", [None])[0]),
+                    )
+                else:
+                    csrf = self._cookie_value(environ, CSRF_COOKIE)
+                    if not session.accepts_csrf(csrf):
+                        raise _RequestError(
+                            HTTPStatus.UNAUTHORIZED, "Session protection invalid."
+                        )
+                    if path == "/privacy":
+                        query = self._privacy_cursor_query(
+                            environ, {"before", "source_before", "deletion_before"}
+                        )
+                        body = controls.page(
+                            session,
+                            csrf,
+                            query.get("before", [None])[0],
+                            query.get("source_before", [None])[0],
+                            query.get("deletion_before", [None])[0],
+                        )
+                    else:
+                        try:
+                            query = parse_qs(
+                                environ.get("QUERY_STRING", ""), strict_parsing=True
+                            )
+                        except ValueError:
+                            raise PrivacyControlError(400) from None
+                        if set(query) != {"ref"} or len(query["ref"]) != 1:
+                            raise PrivacyControlError(400)
+                        body = controls.source_page(session, csrf, query["ref"][0])
+                    result = (
+                        HTTPStatus.OK,
+                        [("Content-Type", "text/html; charset=utf-8")],
+                        body,
+                    )
+            else:
+                self._require_state_change(environ, session)
+                fields = {
+                    "/api/privacy/notice": {"version"},
+                    "/api/privacy/grants": {
+                        "operation_id",
+                        "source",
+                        "audience",
+                        "purpose",
+                        "validity_hours",
+                    },
+                    "/api/privacy/revocations": {"operation_id", "consent_id"},
+                    "/api/privacy/deletions": {"operation_id", "source", "confirm"},
+                    "/api/privacy/reconcile": set(),
+                }[path]
+                if self._media_type(environ) != "application/json":
+                    raise _RequestError(
+                        HTTPStatus.UNSUPPORTED_MEDIA_TYPE, "Unsupported content type."
+                    )
+
+                def unique(pairs):
+                    value = {}
+                    for key, item in pairs:
+                        if key in value:
+                            raise PrivacyControlError(400)
+                        value[key] = item
+                    return value
+
+                try:
+                    data = json.loads(
+                        self._read_body(environ), object_pairs_hook=unique
+                    )
+                except (UnicodeDecodeError, json.JSONDecodeError):
+                    raise PrivacyControlError(400) from None
+                if type(data) is not dict or set(data) != fields:
+                    raise PrivacyControlError(400)
+
+                def current_authorized():
+                    return self._session_current(session, environ)
+
+                if path == "/api/privacy/notice":
+                    payload = controls.acknowledge(
+                        session, data["version"], current_authorized
+                    )
+                    status = HTTPStatus.OK
+                elif path == "/api/privacy/grants":
+                    code, payload = controls.grant(session, data, current_authorized)
+                    status = HTTPStatus(code)
+                elif path == "/api/privacy/revocations":
+                    code, payload = controls.revoke(session, data, current_authorized)
+                    status = HTTPStatus(code)
+                elif path == "/api/privacy/deletions":
+                    payload = controls.delete(session, data, current_authorized)
+                    status = HTTPStatus.OK
+                else:
+                    payload = {
+                        "status": "reconciled"
+                        if controls.gate.reconcile()
+                        else "blocked"
+                    }
+                    status = HTTPStatus.OK
+                result = self._json(status, payload)
+        except PrivacyControlError as error:
+            raise _RequestError(
+                HTTPStatus(error.status), "Privacy request rejected."
+            ) from None
+        except PrivacyReadBlocked:
+            raise _RequestError(
+                HTTPStatus.SERVICE_UNAVAILABLE, "Privacy reconciliation required."
+            ) from None
+        if not self._session_current(session, environ):
+            raise _RequestError(HTTPStatus.UNAUTHORIZED, "Session expired.")
+        return result
+
+    @staticmethod
+    def _privacy_javascript():
+        body = """'use strict';
+document.querySelectorAll('form[data-endpoint]').forEach((form) => {
+  form.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const data = Object.fromEntries(new FormData(form));
+    if (form.dataset.endpoint !== '/api/privacy/notice' &&
+        form.dataset.endpoint !== '/api/privacy/reconcile') {
+      data.operation_id = form.dataset.operationId ||= crypto.randomUUID();
+    }
+    if (data.validity_hours) data.validity_hours = Number(data.validity_hours);
+    try {
+      const response = await fetch(form.dataset.endpoint, {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json',
+                  'X-CSRF-Token': document.querySelector('main').dataset.csrf},
+        body: JSON.stringify(data)
+      });
+      if (!response.ok) {
+        alert('Операция отклонена');
+        return;
+      }
+      const result = await response.json();
+      alert(JSON.stringify(result));
+      if (form.dataset.endpoint === '/api/privacy/deletions') location.href = '/privacy';
+      else location.reload();
+    } catch (error) {
+      alert('Статус операции неизвестен. Повторите попытку.');
+    }
+  });
+});
+const logout = document.getElementById('privacy-logout');
+if (logout) logout.addEventListener('click', async () => {
+  try {
+    const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
+      headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
+    if (response.ok) location.href = '/login';
+    else alert('Не удалось выйти. Сессия может быть активна.');
+  } catch (error) {
+    alert('Выход не подтверждён. Проверьте сеанс перед уходом.');
+  }
+});
+""".encode()
+        return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body
 
     def _checked_history(self, session, environ):
         from .runtime import Stage0ConversationRuntime

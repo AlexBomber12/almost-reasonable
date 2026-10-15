@@ -62,6 +62,8 @@ class NoticeService:
         notice_version: str,
         acknowledged_at: datetime,
         correlation_id: str,
+        *,
+        authorized_check: Callable[[], object] | None = None,
     ) -> OperationResult:
         if context.origin is not OperationOrigin.CONTROL:
             correlation_id = audit_correlation(
@@ -106,6 +108,7 @@ class NoticeService:
             context.authentication_event_id,
             acknowledged_at,
             correlation_id,
+            authorized_check=authorized_check,
         )
         return OperationResult(
             created, "acknowledged" if created else "already_acknowledged"

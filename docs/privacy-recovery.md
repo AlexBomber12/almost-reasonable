@@ -4,20 +4,67 @@ Current synthetic integration and exact scenario status are documented in
 [integration-contracts.md](integration-contracts.md) and the validated
 [acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
 below describe those schema versions; current live synthetic storage is EventStore
-v7, with private/shared/generic reply edges and mission erasure. Participant privacy-control
-web ingress and production restore activation remain absent.
+v7, with private/shared/generic reply edges and mission erasure. Authenticated
+participant web ingress exists in an explicit synthetic composition; production
+activation and restore activation remain absent.
 
-Status: foundations plus INT-03 synthetic EventStore v4 erasure and quarantine
-integration. This does **not** enroll participants, activate a private-to-public
+Status: foundations plus INT-13 authenticated synthetic participant controls and
+EventStore v7 erasure and quarantine integration. This does **not** enroll real
+participants, activate a private-to-public
 path, switch a production database, or make Stage 2 privacy complete.
 
 ## Security boundary and guarantees
 
 `app/privacy` accepts control operations only with a `TrustedPrivacyContext`
 whose origin is `authenticated_control`. Constructing that value is not
-authentication. The future Private Chat or Owner Control boundary must construct
-it only after server-side authentication and anti-replay/CSRF validation; chat
+authentication. The explicit Private Chat composition constructs it only after
+server-side authentication and Host/Origin/CSRF validation; chat
 text, model output, an asserted participant ID, and an owner claim cannot do so.
+
+## INT-13 authenticated synthetic controls
+
+`PrivateWebApplication` accepts privacy controls only when their AuthStore,
+EventStore and PrivacyReadGate match its conversation runtime. Normal CLI
+construction omits these controls and retains disabled inference. The explicit
+synthetic composition presents the current versioned `NOTICE_RU` and gates chat,
+history and model input until the authenticated principal acknowledges that
+version. `/privacy`, deletion status, revocation, reconciliation and logout stay
+available when the notice changes or private reads are fenced.
+
+The source view shows the exact escaped participant-owned immutable input. The
+participant can grant a single exact source/audience/purpose scope for 1, 24 or
+168 hours, revoke its consent ID, and confirm source deletion. The current UI
+offers only the explicit public audience; named recipients remain unavailable
+until a specific recipient identity can be bound to the grant. An expired,
+unrevoked scope can receive a new revision, while a revoked scope cannot be
+reactivated with a new operation ID. Consent, source, and deletion-status lists
+use bounded cursor pages so older grants remain revocable, older source messages
+remain selectable after chat history reaches its limit, and pending or blocked
+deletion records remain inspectable. All changes use
+the existing session, exact Host/Origin and CSRF checks; operation IDs are
+bounded and durable. Server-side timestamps, principal and authenticated actor
+come from the current session and trusted clock. The ledger serializes the final
+source check and session revalidation with grant or pending deletion intent.
+The browser preserves the operation ID after an uncertain network result so a
+retry can recover the original durable outcome.
+Deletion then runs the v7 adapter outside the ledger fence. Status distinguishes
+`pending`, `incomplete_blocked` and `applied`, and a separate authenticated
+reconciliation action can replay unfinished intent. The current-use consent
+authorization denies a source with pending or completed deletion. Web grants
+cannot renew a revoked scope under another operation ID; direct service revision
+support remains an internal, separately authorized capability.
+An applied deletion refreshes the read gate before the response, including an
+identical operation retry, so normal history and chat access resume immediately
+when reconciliation succeeds.
+
+No participant route dispatches identifiable material, authorizes owner or model
+actions, publishes to Threads, or activates an old backup. The synthetic tests
+exercise the exact-use service with a closed callback, WSGI A/B isolation,
+interpreter exit after HTTP deletion intent, v7 dependency erasure, later model
+input, and old-backup quarantine replay. Local erasure does not establish
+deletion from external processors, recipients, prior publication or forensic
+storage. Legal, retention, processor and enrollment review remain prerequisites
+for real participant activation.
 
 Consent is an immutable, typed grant for one principal, exact content reference,
 audience, purpose (`identifiable_quotation` or `identifiable_disclosure`), grant
@@ -299,11 +346,11 @@ consent, revocation, and acknowledgement UX.
 | Behavior | Filter by principal/audience/purpose before ranking or model exposure; use the fail-closed abstraction result and never interpret chat/model output as control authority. |
 | Owner Control | Protect the ledger/backup directories and keys; show payload-free audit/deletion/restore status; reconcile pending operations before reads; require human authorization for activation. |
 
-Stage 2 privacy remains blocked until these interfaces are implemented together,
-participant/admin authentication and recovery are finalized, EventStore has a
-reviewed complete erasure cascade, encryption/key management and retention are
-configured, the notice receives operator/legal approval, and the combined
-two-participant consent → revoke → delete → old-backup restore scenario passes.
+Stage 2 privacy remains blocked while participant recovery and real enrollment,
+encryption/key management, retention and processor decisions, notice approval,
+and production restore activation remain unresolved. The synthetic two-participant
+consent → revoke → delete → old-backup quarantine journey now runs through WSGI;
+it does not authorize real-participant use.
 
 ## Deterministic evidence in this branch
 

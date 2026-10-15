@@ -1425,10 +1425,54 @@
         "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
         "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
       },
-      "stage0_connection": "BLOCKED",
+      "stage0_connection": "PASS",
       "complete_mvp": "BLOCKED",
-      "synthetic_scope": "Structured privacy services use directly constructed trusted control fixtures; these are component authority tests, never authenticated participant UI evidence.",
+      "synthetic_scope": "Independently authenticated synthetic participants use versioned Russian notice, exact source consent, revocation, deletion and status through WSGI. Current ledger authorization, pending-first erasure, restart and old-backup quarantine are connected; ordinary production activation remains disabled.",
       "evidence": [
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication authenticated privacy WSGI",
+          "components": [
+            "AuthStore",
+            "ParticipantPrivacyControls",
+            "NoticeService",
+            "ConsentService",
+            "DeletionCoordinator",
+            "PrivacyLedger",
+            "PrivacyReadGate",
+            "EventStoreErasureAdapter",
+            "Stage0ConversationRuntime"
+          ],
+          "sink": "Versioned notice and exact grant, revocation, deletion and status responses; current-ledger dispatch decision; erased history and restored quarantine",
+          "risks": [
+            "adversarial",
+            "restart",
+            "crash"
+          ],
+          "scope": "Two provisioned synthetic participants, fake model, closed exact use dispatch and no production activation.",
+          "node_ids": [
+            "tests/test_participant_privacy_http.py::test_notice_gate_acknowledgement_and_authenticated_restart",
+            "tests/test_participant_privacy_http.py::test_exact_grant_revocation_and_deletion_with_isolation",
+            "tests/test_participant_privacy_http.py::test_restart_retries_expiry_and_foreign_operation_ids",
+            "tests/test_participant_privacy_http.py::test_interrupted_deletion_status_and_reconciliation",
+            "tests/test_participant_privacy_http.py::test_revocation_and_grant_status_remain_usable_during_blocked_deletion",
+            "tests/test_participant_privacy_http.py::test_revocation_during_final_source_check_prevents_control_write[grant]",
+            "tests/test_participant_privacy_http.py::test_revocation_during_final_source_check_prevents_control_write[delete]",
+            "tests/test_participant_privacy_http.py::test_privacy_browser_reports_rejected_mutations_and_failed_logout",
+            "tests/test_participant_privacy_http.py::test_named_recipient_without_identity_cannot_be_granted",
+            "tests/test_participant_privacy_http.py::test_expired_grant_can_be_renewed_but_revoked_scope_stays_blocked",
+            "tests/test_participant_privacy_http.py::test_older_active_grant_remains_reachable_for_revocation",
+            "tests/test_participant_privacy_http.py::test_old_source_beyond_history_limit_remains_selectable",
+            "tests/test_participant_privacy_http.py::test_applied_deletion_refreshes_gate_on_result_and_retry",
+            "tests/test_participant_privacy_http.py::test_status_listing_is_bounded_and_principal_scoped_while_reads_fenced",
+            "tests/test_participant_privacy_http.py::test_grant_scope_and_deletion_intent_remove_current_use",
+            "tests/test_participant_privacy_http.py::test_http_deletion_cascades_memory_reply_and_old_backup",
+            "tests/test_participant_privacy_http.py::test_http_deletion_cascades_generic_contextual_descendants",
+            "tests/test_participant_privacy_http.py::test_http_deletion_requires_mission_reassessment",
+            "tests/test_participant_privacy_http.py::test_authenticated_http_deletion_process_exit_reconciles_before_reads[after_intent]",
+            "tests/test_participant_privacy_http.py::test_authenticated_http_deletion_process_exit_reconciles_before_reads[after_application]"
+          ]
+        },
         {
           "layer": "component",
           "entry_point": "ConsentService",
@@ -1534,11 +1578,9 @@
           ]
         }
       ],
-      "missing_connections": [
-        "Participant web has no notice/consent/revocation/deletion control ingress. TrustedPrivacyContext CONTROL fixtures are internal pre-authorized objects, not proof of UI authentication. Owner controls and synthetic publication approval cannot supply participant authority."
-      ],
+      "missing_connections": [],
       "later_stage_requirements": [
-        "Stage 2 reviewed notice, enrollment, purpose/exact content UX, CSRF/replay, retention/legal/processor decisions and separately reviewed activation."
+        "Stage 2 operator/legal review of notice, retention, external processor terms, participant enrollment and separately reviewed production activation. Synthetic exact-use consent grants no public dispatch or owner authority."
       ]
     },
     {
@@ -1667,7 +1709,6 @@
     }
   ],
   "release_blockers": [
-    "SCN-11: implement authenticated participant notice/consent/revoke/delete ingress with exact content/audience/purpose/validity, CSRF and replay checks.",
     "SCN-12: extend the same cross-channel adversarial corpus through research output and delayed mission retrieval across restart; current mapped slices cannot establish that combined journey.",
     "Calibrate recorded H/M anchors with fluent human reviewers and approve thresholds; fixture scores alone do not satisfy Stage 0 calibration.",
     "Review threat model/residual risks and stage promotion criteria with operator. No complete MVP or production enablement follows from this run."
@@ -1679,7 +1720,7 @@
       "shared": "four reviewed literal abstractions only",
       "research": "explicit authenticated private handoff to two public worker fixtures; exact independent application/worker grants; arbitrary topics and production disabled",
       "Threads": "two catalog drafts and simulator only",
-      "privacy": "real coordinator/quarantine; authenticated control ingress BLOCKED",
+      "privacy": "synthetic authenticated notice, consent, revocation, deletion and quarantine ingress; production activation BLOCKED",
       "calibration": "BLOCKED; recorded anchors only"
     },
     "Stage 1": {

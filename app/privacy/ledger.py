@@ -375,7 +375,12 @@ class PrivacyLedger:
             raise ValueError("invalid privacy control authentication")
 
     def insert_consent(
-        self, context: TrustedPrivacyContext, grant: ConsentGrant
+        self,
+        context: TrustedPrivacyContext,
+        grant: ConsentGrant,
+        *,
+        source_check: Callable[[], object] | None = None,
+        authorized_check: Callable[[], object] | None = None,
     ) -> bool:
         if type(grant) is not ConsentGrant:
             raise ValueError("invalid consent grant")
@@ -413,18 +418,49 @@ class PrivacyLedger:
                 if existing != values:
                     raise ValueError("consent operation identity conflict")
             else:
-                latest_revision = connection.execute(
-                    "SELECT MAX(revision) FROM consent_grants WHERE principal_id=? "
-                    "AND content_reference=? AND audience=? AND purpose=?",
+                if source_check is not None and (
+                    connection.execute(
+                        "SELECT 1 FROM deletion_records WHERE principal_id=? AND content_reference=? "
+                        "AND disposition IN ('pending','applied','incomplete_blocked') LIMIT 1",
+                        (grant.principal_id, grant.content_reference),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("source deletion prevents consent")
+                if source_check is not None:
+                    source_check()
+                latest = connection.execute(
+                    "SELECT g.revision,g.expires_at,r.revoked_at FROM consent_grants g "
+                    "LEFT JOIN consent_revocations r ON r.consent_id=g.consent_id "
+                    "WHERE g.principal_id=? AND g.content_reference=? "
+                    "AND g.audience=? AND g.purpose=? ORDER BY g.revision DESC LIMIT 1",
                     (
                         grant.principal_id,
                         grant.content_reference,
                         grant.audience,
                         grant.purpose.value,
                     ),
-                ).fetchone()[0]
-                if latest_revision is not None and grant.revision <= latest_revision:
+                ).fetchone()
+                if source_check is not None and (
+                    (latest is None and grant.revision != 1)
+                    or (
+                        latest is not None
+                        and (
+                            grant.revision != latest[0] + 1
+                            or latest[2] is not None
+                            or _time(latest[1]) > grant.granted_at
+                        )
+                    )
+                ):
                     raise ValueError("consent revision conflict")
+                if (
+                    source_check is None
+                    and latest is not None
+                    and grant.revision <= latest[0]
+                ):
+                    raise ValueError("consent revision conflict")
+                if authorized_check is not None:
+                    authorized_check()
                 connection.execute(
                     "INSERT INTO consent_grants VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values
                 )
@@ -563,7 +599,14 @@ class PrivacyLedger:
                     "ORDER BY g.revision DESC LIMIT 1",
                     (principal_id, content_reference, audience, purpose.value),
                 ).fetchone()
-                if row is None:
+                deleted = connection.execute(
+                    "SELECT 1 FROM deletion_records WHERE principal_id=? AND content_reference=? "
+                    "AND disposition IN ('pending','applied','incomplete_blocked') LIMIT 1",
+                    (principal_id, content_reference),
+                ).fetchone()
+                if deleted is not None:
+                    result = ConsentUseResult(False, "source_deleted")
+                elif row is None:
                     result = ConsentUseResult(False, "no_matching_consent")
                 else:
                     consent_id = row[0]
@@ -648,6 +691,7 @@ class PrivacyLedger:
         authentication_event_id: str,
         revoked_at: datetime,
         correlation_id: str,
+        authorized_check: Callable[[], object] | None = None,
     ) -> bool:
         require_token(consent_id, "consent id")
         require_token(operation_id, "operation id")
@@ -679,6 +723,8 @@ class PrivacyLedger:
             ).fetchone()
             if owner is None:
                 raise ValueError("revocation consent ownership mismatch")
+            if authorized_check is not None:
+                authorized_check()
             existing = connection.execute(
                 "SELECT consent_id, operation_id, principal_id, actor_reference, "
                 "authentication_event_id, revoked_at, correlation_id "
@@ -721,6 +767,9 @@ class PrivacyLedger:
         request: DeletionRequest,
         disposition: DeletionDisposition,
         reason: str,
+        *,
+        source_check: Callable[[], object] | None = None,
+        authorized_check: Callable[[], object] | None = None,
     ) -> bool:
         if type(request) is not DeletionRequest:
             raise ValueError("invalid deletion request")
@@ -760,6 +809,19 @@ class PrivacyLedger:
                 if existing != values[:8]:
                     raise ValueError("deletion operation identity conflict")
                 return False
+            if source_check is not None:
+                if (
+                    connection.execute(
+                        "SELECT 1 FROM deletion_records WHERE principal_id=? AND content_reference=? "
+                        "AND disposition IN ('pending','applied','incomplete_blocked') LIMIT 1",
+                        (request.principal_id, request.content_reference),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("source deletion already requested")
+                source_check()
+            if authorized_check is not None:
+                authorized_check()
             connection.execute(
                 "INSERT INTO deletion_records VALUES(?,?,?,?,?,?,?,?,?,?,?)", values
             )
@@ -998,6 +1060,8 @@ class PrivacyLedger:
         authentication_event_id: str,
         acknowledged_at: datetime,
         correlation_id: str,
+        *,
+        authorized_check: Callable[[], object] | None = None,
     ) -> bool:
         require_token(principal_id, "principal id")
         require_token(notice_version, "notice version")
@@ -1031,6 +1095,8 @@ class PrivacyLedger:
             ).fetchone()
             if existing is not None:
                 return False
+            if authorized_check is not None:
+                authorized_check()
             connection.execute(
                 "INSERT INTO notice_acknowledgements VALUES(?,?,?,?,?,?)", values
             )
