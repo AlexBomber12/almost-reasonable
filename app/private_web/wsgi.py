@@ -431,6 +431,23 @@ class PrivateWebApplication:
             current is not None and current.trusted_context == session.trusted_context
         )
 
+    @staticmethod
+    def _privacy_cursor_query(environ, allowed):
+        raw_query = environ.get("QUERY_STRING", "")
+        if len(raw_query) > 512:
+            raise PrivacyControlError(400)
+        try:
+            query = parse_qs(raw_query, strict_parsing=True)
+        except ValueError:
+            raise PrivacyControlError(400) from None
+        if raw_query and (
+            len(query) != 1
+            or not set(query) <= allowed
+            or len(next(iter(query.values()))) != 1
+        ):
+            raise PrivacyControlError(400)
+        return query
+
     def _privacy_request(self, environ, session, method, path):
         controls = self._privacy
         if not self._session_current(session, environ):
@@ -438,7 +455,11 @@ class PrivateWebApplication:
         try:
             if method == "GET":
                 if path == "/api/privacy/status":
-                    result = self._json(HTTPStatus.OK, controls.status(session))
+                    query = self._privacy_cursor_query(environ, {"before"})
+                    result = self._json(
+                        HTTPStatus.OK,
+                        controls.status(session, query.get("before", [None])[0]),
+                    )
                 else:
                     csrf = self._cookie_value(environ, CSRF_COOKIE)
                     if not session.accepts_csrf(csrf):
@@ -446,24 +467,15 @@ class PrivateWebApplication:
                             HTTPStatus.UNAUTHORIZED, "Session protection invalid."
                         )
                     if path == "/privacy":
-                        raw_query = environ.get("QUERY_STRING", "")
-                        if len(raw_query) > 512:
-                            raise PrivacyControlError(400)
-                        try:
-                            query = parse_qs(raw_query, strict_parsing=True)
-                        except ValueError:
-                            raise PrivacyControlError(400) from None
-                        if raw_query and (
-                            len(query) != 1
-                            or not set(query) <= {"before", "source_before"}
-                            or len(next(iter(query.values()))) != 1
-                        ):
-                            raise PrivacyControlError(400)
+                        query = self._privacy_cursor_query(
+                            environ, {"before", "source_before", "deletion_before"}
+                        )
                         body = controls.page(
                             session,
                             csrf,
                             query.get("before", [None])[0],
                             query.get("source_before", [None])[0],
+                            query.get("deletion_before", [None])[0],
                         )
                     else:
                         try:

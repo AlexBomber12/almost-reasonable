@@ -1320,13 +1320,45 @@ def test_status_listing_is_bounded_and_principal_scoped_while_reads_fenced(journ
         ledger.insert_deletion(
             context, request, DeletionDisposition.PENDING, "awaiting_erasure"
         )
-    statuses = json.loads(a.request("GET", "/api/privacy/status")[2])["deletions"]
+    first_status = json.loads(a.request("GET", "/api/privacy/status")[2])
+    statuses = first_status["deletions"]
     assert len(statuses) == 20
     assert statuses[0]["operation_id"] == "bounded-24"
     assert statuses[-1]["operation_id"] == "bounded-05"
+    assert first_status["next_cursor"] == "bounded-05"
+    older_status = json.loads(
+        a.request(
+            "GET",
+            "/api/privacy/status",
+            extra_environ={"QUERY_STRING": "before=bounded-05"},
+        )[2]
+    )
+    assert [row["operation_id"] for row in older_status["deletions"]] == [
+        f"bounded-{index:02d}" for index in range(4, -1, -1)
+    ]
+    assert older_status["next_cursor"] is None
     assert json.loads(b.request("GET", "/api/privacy/status")[2])["deletions"] == []
     page = a.request("GET", "/privacy")[2]
     assert b"bounded-24" in page and b"bounded-00" not in page
+    assert b"/privacy?deletion_before=bounded-05" in page
+    older_page = a.request(
+        "GET", "/privacy", extra_environ={"QUERY_STRING": "deletion_before=bounded-05"}
+    )[2]
+    assert b"bounded-00" in older_page
+    for path, query, expected in (
+        ("/api/privacy/status", "before=foreign-op", "404 Not Found"),
+        ("/api/privacy/status", "before=bad%20id", "400 Bad Request"),
+        (
+            "/api/privacy/status",
+            "before=bounded-05&before=bounded-04",
+            "400 Bad Request",
+        ),
+        ("/privacy", "deletion_before=foreign-op", "404 Not Found"),
+        ("/privacy", "deletion_before=bad%20id", "400 Bad Request"),
+    ):
+        assert (
+            a.request("GET", path, extra_environ={"QUERY_STRING": query})[0] == expected
+        )
 
 
 def test_dependency_composition_rejects_mismatch(journey, tmp_path):
@@ -1394,8 +1426,8 @@ def test_privacy_page_and_history_revalidate_before_response(journey, monkeypatc
     controls = a.app._privacy
     real_status = controls.status
 
-    def revoke_during_status(session):
-        result = real_status(session)
+    def revoke_during_status(session, before=None):
+        result = real_status(session, before)
         auth.revoke(a.cookies["ar_session"])
         return result
 

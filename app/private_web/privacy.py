@@ -107,6 +107,7 @@ class ParticipantPrivacyControls:
         csrf: str,
         before: str | None = None,
         source_before: str | None = None,
+        deletion_before: str | None = None,
     ) -> bytes:
         acknowledged = self.acknowledged(session)
         status = "Подтверждено" if acknowledged else "Требуется подтверждение"
@@ -187,10 +188,17 @@ class ParticipantPrivacyControls:
             "applied": "Локальное удаление завершено",
             "incomplete_blocked": "Удаление не завершено",
         }
+        deletion_status = self.status(session, deletion_before)
         deletion_rows = "".join(
             f"<li>{escape(row['operation_id'])}: "
             f"{deletion_labels.get(row['status'], 'Операция отклонена')}</li>"
-            for row in self.status(session)["deletions"]
+            for row in deletion_status["deletions"]
+        )
+        deletion_next_link = (
+            f'<a href="/privacy?deletion_before={quote(deletion_status["next_cursor"], safe="")}">'
+            "Следующие удаления</a>"
+            if deletion_status["next_cursor"] is not None
+            else ""
         )
         try:
             if source_before is not None:
@@ -234,7 +242,8 @@ class ParticipantPrivacyControls:
             + "<h2>Статус локального удаления</h2><ol>"
             + deletion_rows
             + "</ol>"
-            '<form data-endpoint="/api/privacy/reconcile"><h2>Повторить локальное удаление</h2>'
+            + deletion_next_link
+            + '<form data-endpoint="/api/privacy/reconcile"><h2>Повторить локальное удаление</h2>'
             "<button>Проверить незавершённые операции</button></form>"
             '<button id="privacy-logout">Выйти</button>'
             '</main><script src="/assets/privacy.js"></script></html>'
@@ -527,17 +536,37 @@ class ParticipantPrivacyControls:
             self.gate.reconcile()
         return {"status": disposition.value, "operation_id": operation_id}
 
-    def status(self, session: AuthenticatedSession) -> dict[str, object]:
+    def status(
+        self, session: AuthenticatedSession, before: str | None = None
+    ) -> dict[str, object]:
         with closing(self.ledger._open()) as db:
-            rows = db.execute(
+            cursor = None
+            if before is not None:
+                self._token(before)
+                cursor = db.execute(
+                    "SELECT requested_at,operation_id FROM deletion_records "
+                    "WHERE principal_id=? AND operation_id=?",
+                    (session.principal_id.value, before),
+                ).fetchone()
+                if cursor is None:
+                    raise PrivacyControlError(404)
+            query = (
                 "SELECT operation_id,disposition,reason FROM deletion_records "
-                "WHERE principal_id=? ORDER BY requested_at DESC LIMIT 20",
-                (session.principal_id.value,),
-            ).fetchall()
+                "WHERE principal_id=? "
+            )
+            params: tuple[str, ...] = (session.principal_id.value,)
+            if cursor is not None:
+                query += "AND (requested_at<? OR (requested_at=? AND operation_id<?)) "
+                params += (cursor[0], cursor[0], cursor[1])
+            query += "ORDER BY requested_at DESC,operation_id DESC LIMIT 21"
+            rows = db.execute(query, params).fetchall()
+        has_more = len(rows) > 20
+        rows = rows[:20]
         return {
             "deletions": [
                 dict(operation_id=row[0], status=row[1], reason=row[2]) for row in rows
-            ]
+            ],
+            "next_cursor": rows[-1][0] if has_more else None,
         }
 
     @staticmethod
