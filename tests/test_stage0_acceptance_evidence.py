@@ -124,12 +124,26 @@ def test_even_all_green_synthetic_fixtures_cannot_declare_release_ready():
     assert report["readiness"] == "BLOCKED"
     assert report["complete_mvp"] == "BLOCKED"
     assert report["stage1_smoke"] == "NOT_RUN"
-    assert {
-        row["id"]
-        for row in report["scenarios"]
-        if row["stage0_connection"] == "BLOCKED"
-    } == {"SCN-12"}
+    assert all(row["stage0_connection"] == "PASS" for row in report["scenarios"])
     assert "human calibration absent" in readable(report)
+
+
+def test_scn12_requires_every_connected_case_and_effect_control():
+    manifest, execution, coverage, behavior, metadata = input_evidence()
+    scenario = next(row for row in manifest["scenarios"] if row["id"] == "SCN-12")
+    connected = scenario["evidence"][0]["node_ids"]
+    assert len(connected) == 9
+    for node in connected:
+        omitted = deepcopy(execution)
+        omitted["results"][node] = {
+            "setup": "passed",
+            "call": "skipped",
+            "teardown": "passed",
+        }
+        report = build_report(manifest, omitted, coverage, behavior, metadata, 0)
+        observed = next(row for row in report["scenarios"] if row["id"] == "SCN-12")
+        assert observed["stage0_connection"] == "NOT_RUN"
+        assert report["deterministic_gate"] == "FAIL"
 
 
 @pytest.mark.parametrize(
