@@ -100,20 +100,44 @@ class ParticipantPrivacyControls:
                 raise PrivacyControlError(404)
             return row[0]
 
-    def page(self, session: AuthenticatedSession, csrf: str) -> bytes:
+    def page(
+        self, session: AuthenticatedSession, csrf: str, before: str | None = None
+    ) -> bytes:
         acknowledged = self.acknowledged(session)
         status = "Подтверждено" if acknowledged else "Требуется подтверждение"
         with closing(self.ledger._open()) as db:
-            grants = db.execute(
+            cursor = None
+            if before is not None:
+                self._token(before)
+                cursor = db.execute(
+                    "SELECT granted_at,consent_id FROM consent_grants "
+                    "WHERE principal_id=? AND consent_id=?",
+                    (session.principal_id.value, before),
+                ).fetchone()
+                if cursor is None:
+                    raise PrivacyControlError(404)
+            query = (
                 "SELECT g.consent_id,g.content_reference,g.audience,g.purpose,g.expires_at,"
                 "r.revoked_at,EXISTS(SELECT 1 FROM deletion_records d "
                 "WHERE d.principal_id=g.principal_id AND d.content_reference=g.content_reference "
                 "AND d.disposition IN ('pending','applied','incomplete_blocked')) "
                 "FROM consent_grants g LEFT JOIN consent_revocations r "
                 "ON r.consent_id=g.consent_id WHERE g.principal_id=? "
-                "ORDER BY g.granted_at DESC LIMIT 20",
-                (session.principal_id.value,),
-            ).fetchall()
+            )
+            params: tuple[str, ...] = (session.principal_id.value,)
+            if cursor is not None:
+                query += "AND (g.granted_at<? OR (g.granted_at=? AND g.consent_id<?)) "
+                params += (cursor[0], cursor[0], cursor[1])
+            query += "ORDER BY g.granted_at DESC,g.consent_id DESC LIMIT 21"
+            grants = db.execute(query, params).fetchall()
+        has_more = len(grants) > 20
+        grants = grants[:20]
+        next_link = (
+            f'<a href="/privacy?before={quote(grants[-1][0], safe="")}">'
+            "Следующие согласия</a>"
+            if has_more
+            else ""
+        )
         now = self.clock()
         audience_names = {
             "public": "Публичная аудитория",
@@ -184,8 +208,13 @@ class ParticipantPrivacyControls:
             "<button>Подтвердить уведомление</button></form>"
             "<p>Отдельное согласие необязательно для приватного разговора.</p>"
             "<h2>Мои источники</h2><ol>" + source_links + "</ol>"
-            "<h2>Последние согласия</h2><ol>" + rows + "</ol>"
-            "<h2>Статус локального удаления</h2><ol>" + deletion_rows + "</ol>"
+            "<h2>Согласия</h2><ol>"
+            + rows
+            + "</ol>"
+            + next_link
+            + "<h2>Статус локального удаления</h2><ol>"
+            + deletion_rows
+            + "</ol>"
             '<form data-endpoint="/api/privacy/reconcile"><h2>Повторить локальное удаление</h2>'
             "<button>Проверить незавершённые операции</button></form>"
             '<button id="privacy-logout">Выйти</button>'

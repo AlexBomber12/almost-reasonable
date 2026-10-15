@@ -446,7 +446,20 @@ class PrivateWebApplication:
                             HTTPStatus.UNAUTHORIZED, "Session protection invalid."
                         )
                     if path == "/privacy":
-                        body = controls.page(session, csrf)
+                        raw_query = environ.get("QUERY_STRING", "")
+                        if len(raw_query) > 512:
+                            raise PrivacyControlError(400)
+                        try:
+                            query = parse_qs(raw_query, strict_parsing=True)
+                        except ValueError:
+                            raise PrivacyControlError(400) from None
+                        if raw_query and (
+                            set(query) != {"before"} or len(query["before"]) != 1
+                        ):
+                            raise PrivacyControlError(400)
+                        body = controls.page(
+                            session, csrf, query["before"][0] if raw_query else None
+                        )
                     else:
                         try:
                             query = parse_qs(

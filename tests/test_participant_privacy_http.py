@@ -302,6 +302,64 @@ def test_expired_grant_can_be_renewed_but_revoked_scope_stays_blocked(journey):
     )
 
 
+def test_older_active_grant_remains_reachable_for_revocation(journey):
+    clock, auth, store, ledger, gate, fake, config, a, b = journey
+    session = auth.authenticate(a.cookies["ar_session"])
+    context = a.app._privacy.context(session)
+    for number in range(21):
+        op = f"older-{number:02d}"
+        ledger.insert_consent(
+            context,
+            ConsentGrant(
+                "consent:" + op,
+                op,
+                context.principal_id,
+                "synthetic-source:" + op,
+                "public",
+                ConsentPurpose.IDENTIFIABLE_QUOTATION,
+                clock() + timedelta(seconds=number),
+                clock() + timedelta(days=7),
+                context.actor_reference,
+                1,
+                "grant:" + op,
+                context.authentication_event_id,
+            ),
+        )
+    first = a.request("GET", "/privacy")[2]
+    assert b"consent:older-00" not in first
+    assert b"/privacy?before=" in first
+    second = a.request(
+        "GET", "/privacy", extra_environ={"QUERY_STRING": "before=consent:older-01"}
+    )[2]
+    assert b"consent:older-00" in second
+    assert (
+        post(
+            a,
+            "/api/privacy/revocations",
+            {"operation_id": "revoke-older", "consent_id": "consent:older-00"},
+        )[0]
+        == "201 Created"
+    )
+    assert (
+        a.request(
+            "GET", "/privacy", extra_environ={"QUERY_STRING": "before=consent:foreign"}
+        )[0]
+        == "404 Not Found"
+    )
+    for query in (
+        "before=bad%20id",
+        "before=",
+        "before=consent:older-01&before=consent:older-02",
+        "unexpected=value",
+        "invalid",
+        "before=" + "x" * 513,
+    ):
+        assert (
+            a.request("GET", "/privacy", extra_environ={"QUERY_STRING": query})[0]
+            == "400 Bad Request"
+        )
+
+
 @pytest.mark.parametrize(
     "mutation,status",
     [
