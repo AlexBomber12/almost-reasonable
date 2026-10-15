@@ -101,7 +101,11 @@ class ParticipantPrivacyControls:
             return row[0]
 
     def page(
-        self, session: AuthenticatedSession, csrf: str, before: str | None = None
+        self,
+        session: AuthenticatedSession,
+        csrf: str,
+        before: str | None = None,
+        source_before: str | None = None,
     ) -> bytes:
         acknowledged = self.acknowledged(session)
         status = "Подтверждено" if acknowledged else "Требуется подтверждение"
@@ -188,13 +192,24 @@ class ParticipantPrivacyControls:
             for row in self.status(session)["deletions"]
         )
         try:
-            source_rows = self.gate.authorized(lambda: self._source_ids(session))
+            if source_before is not None:
+                self._token(source_before)
+            source_rows, source_has_more = self.gate.authorized(
+                lambda: self._source_ids(session, source_before)
+            )
         except PrivacyReadBlocked:
             source_rows = ()
+            source_has_more = False
         source_links = "".join(
             f'<li><a href="/privacy/source?ref={quote(ref, safe="")}">'
             f"Сообщение {index}</a></li>"
             for index, ref in enumerate(source_rows, 1)
+        )
+        source_next_link = (
+            f'<a href="/privacy?source_before={quote(source_rows[-1], safe="")}">'
+            "Следующие источники</a>"
+            if source_has_more
+            else ""
         )
         return (
             '<!doctype html><html lang="ru"><meta charset="utf-8">'
@@ -207,8 +222,11 @@ class ParticipantPrivacyControls:
             f'<input type="hidden" name="version" value="{escape(NOTICE_VERSION)}">'
             "<button>Подтвердить уведомление</button></form>"
             "<p>Отдельное согласие необязательно для приватного разговора.</p>"
-            "<h2>Мои источники</h2><ol>" + source_links + "</ol>"
-            "<h2>Согласия</h2><ol>"
+            "<h2>Мои источники</h2><ol>"
+            + source_links
+            + "</ol>"
+            + source_next_link
+            + "<h2>Согласия</h2><ol>"
             + rows
             + "</ol>"
             + next_link
@@ -221,18 +239,36 @@ class ParticipantPrivacyControls:
             '</main><script src="/assets/privacy.js"></script></html>'
         ).encode()
 
-    def _source_ids(self, session: AuthenticatedSession) -> tuple[str, ...]:
+    def _source_ids(
+        self, session: AuthenticatedSession, before: str | None = None
+    ) -> tuple[tuple[str, ...], bool]:
         with closing(self.store._open()) as db:
             self.store._verify_current_schema(db)
-            rows = db.execute(
+            cursor = None
+            if before is not None:
+                cursor = db.execute(
+                    "SELECT e.occurred_at,e.event_id FROM event_envelopes e "
+                    "JOIN private_payloads p ON p.payload_id=e.payload_id "
+                    "WHERE e.event_id=? AND e.audience_principal_id=? "
+                    "AND e.event_type='participant_input' AND e.channel='private_chat' "
+                    "AND p.retention_status='active'",
+                    (before, session.principal_id.value),
+                ).fetchone()
+                if cursor is None:
+                    raise PrivacyControlError(404)
+            query = (
                 "SELECT e.event_id FROM event_envelopes e "
                 "JOIN private_payloads p ON p.payload_id=e.payload_id "
                 "WHERE e.audience_principal_id=? AND e.event_type='participant_input' "
                 "AND e.channel='private_chat' AND p.retention_status='active' "
-                "ORDER BY e.occurred_at DESC,e.event_id DESC LIMIT 20",
-                (session.principal_id.value,),
-            ).fetchall()
-        return tuple(row[0] for row in rows)
+            )
+            params: tuple[str, ...] = (session.principal_id.value,)
+            if cursor is not None:
+                query += "AND (e.occurred_at<? OR (e.occurred_at=? AND e.event_id<?)) "
+                params += (cursor[0], cursor[0], cursor[1])
+            query += "ORDER BY e.occurred_at DESC,e.event_id DESC LIMIT 21"
+            rows = db.execute(query, params).fetchall()
+        return tuple(row[0] for row in rows[:20]), len(rows) > 20
 
     def source_page(
         self, session: AuthenticatedSession, csrf: str, reference: str

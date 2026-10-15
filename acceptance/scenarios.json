@@ -1462,6 +1462,7 @@
             "tests/test_participant_privacy_http.py::test_named_recipient_without_identity_cannot_be_granted",
             "tests/test_participant_privacy_http.py::test_expired_grant_can_be_renewed_but_revoked_scope_stays_blocked",
             "tests/test_participant_privacy_http.py::test_older_active_grant_remains_reachable_for_revocation",
+            "tests/test_participant_privacy_http.py::test_old_source_beyond_history_limit_remains_selectable",
             "tests/test_participant_privacy_http.py::test_status_listing_is_bounded_and_principal_scoped_while_reads_fenced",
             "tests/test_participant_privacy_http.py::test_grant_scope_and_deletion_intent_remove_current_use",
             "tests/test_participant_privacy_http.py::test_http_deletion_cascades_memory_reply_and_old_backup",

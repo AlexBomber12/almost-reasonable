@@ -37,8 +37,9 @@ participant can grant a single exact source/audience/purpose scope for 1, 24 or
 offers only the explicit public audience; named recipients remain unavailable
 until a specific recipient identity can be bound to the grant. An expired,
 unrevoked scope can receive a new revision, while a revoked scope cannot be
-reactivated with a new operation ID. The consent list uses bounded cursor pages
-so an older grant remains reachable for revocation. All changes use
+reactivated with a new operation ID. Consent and source lists use bounded cursor
+pages so older grants remain revocable and older source messages remain
+selectable after chat history reaches its limit. All changes use
 the existing session, exact Host/Origin and CSRF checks; operation IDs are
 bounded and durable. Server-side timestamps, principal and authenticated actor
 come from the current session and trusted clock. The ledger serializes the final

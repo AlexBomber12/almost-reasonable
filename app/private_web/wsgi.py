@@ -454,11 +454,16 @@ class PrivateWebApplication:
                         except ValueError:
                             raise PrivacyControlError(400) from None
                         if raw_query and (
-                            set(query) != {"before"} or len(query["before"]) != 1
+                            len(query) != 1
+                            or not set(query) <= {"before", "source_before"}
+                            or len(next(iter(query.values()))) != 1
                         ):
                             raise PrivacyControlError(400)
                         body = controls.page(
-                            session, csrf, query["before"][0] if raw_query else None
+                            session,
+                            csrf,
+                            query.get("before", [None])[0],
+                            query.get("source_before", [None])[0],
                         )
                     else:
                         try:

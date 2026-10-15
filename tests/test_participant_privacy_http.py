@@ -3,6 +3,7 @@
 from datetime import timedelta
 from dataclasses import replace
 import json
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -48,6 +49,7 @@ from test_shared_intelligence import approval
 from test_behavior_mission import invariants
 from test_generic_memory import proposal as generic_proposal
 from test_private_web_http import Browser, Clock
+from test_event_store import private_input
 
 
 @pytest.fixture
@@ -358,6 +360,68 @@ def test_older_active_grant_remains_reachable_for_revocation(journey):
             a.request("GET", "/privacy", extra_environ={"QUERY_STRING": query})[0]
             == "400 Bad Request"
         )
+
+
+def test_old_source_beyond_history_limit_remains_selectable(journey):
+    clock, auth, store, ledger, gate, fake, config, a, b = journey
+    acknowledge(a)
+    session = auth.authenticate(a.cookies["ar_session"])
+    for number in range(101):
+        store.append_private_input(
+            session.trusted_context,
+            private_input(
+                f"page-{number:03d}",
+                f"Синтетический источник {number}",
+                occurred_at=clock() + timedelta(seconds=number),
+            ),
+        )
+    history = json.loads(a.request("GET", "/api/history")[2])["messages"]
+    assert len(history) == 100
+    assert all(item["event_id"] != "event-page-000" for item in history)
+    page = a.request("GET", "/privacy")[2]
+    for _ in range(6):
+        if b"event-page-000" in page:
+            break
+        match = re.search(rb'/privacy\?source_before=([^"&]+)', page)
+        assert match is not None
+        page = a.request(
+            "GET",
+            "/privacy",
+            extra_environ={"QUERY_STRING": "source_before=" + match[1].decode()},
+        )[2]
+    assert b"event-page-000" in page
+    assert (
+        a.request(
+            "GET",
+            "/privacy/source",
+            extra_environ={"QUERY_STRING": "ref=event-page-000"},
+        )[0]
+        == "200 OK"
+    )
+    for query, expected in (
+        ("source_before=event-foreign", "404 Not Found"),
+        ("source_before=bad%20id", "400 Bad Request"),
+        (
+            "source_before=event-page-001&source_before=event-page-002",
+            "400 Bad Request",
+        ),
+    ):
+        assert (
+            a.request("GET", "/privacy", extra_environ={"QUERY_STRING": query})[0]
+            == expected
+        )
+    assert (
+        post(
+            a,
+            "/api/privacy/deletions",
+            {
+                "operation_id": "delete-old-source",
+                "source": "event-page-000",
+                "confirm": "delete",
+            },
+        )[0]
+        == "200 OK"
+    )
 
 
 @pytest.mark.parametrize(
