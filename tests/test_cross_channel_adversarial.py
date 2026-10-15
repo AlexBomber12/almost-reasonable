@@ -79,6 +79,14 @@ CORPUS = json.loads(
 CASES = CORPUS["cases"]
 
 
+def assert_declared_oracles(corpus, case, decisions, sinks, forbidden):
+    assert decisions == corpus["expected_decisions"]
+    assert set(sinks) == set(case["forbidden_sinks"])
+    assert not any(sinks.values())
+    assert set(forbidden) == set(corpus["forbidden_effects"])
+    assert not any(forbidden.values())
+
+
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
     install(monkeypatch, local_ipc=True)
@@ -231,7 +239,8 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         thread.join(5)
         assert not thread.is_alive()
         assert research[0] == "201 Created"
-        assert json.loads(research[2])["model_state"] == "completed"
+        research_state = json.loads(research[2])["model_state"]
+        assert research_state == "completed"
         assert payload not in research[2].decode()
         assert len(transport.calls) == 1
         worker_input = transport.calls[0].request.input_json
@@ -297,7 +306,8 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         )
         later = a.submit("later", "Вспомни исследовательский вопрос")
         assert later[0] == "201 Created"
-        assert json.loads(later[2])["model_state"] == "unsupported"
+        private_proposal_state = json.loads(later[2])["model_state"]
+        assert private_proposal_state == "unsupported"
         a_input = json.loads(fake2.calls[0].request.input_text)
         assert a_input["history_omitted"] is True
         assert any(
@@ -335,7 +345,9 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
                 "abstract-privacy-screen-v1", PrivacyScreenDecision.ALLOW, "allowed"
             ),
         )
-        with pytest.raises(ValueError, match="privacy screen|unreviewed"):
+        with pytest.raises(
+            ValueError, match="privacy screen|unreviewed"
+        ) as poison_error:
             permissive.commit(poison)
         safe = replace(approval(source), allow_mission_evidence=True)
         shared = SharedIntelligence(events2, gate2, approvals=(safe,), clock=clock)
@@ -385,7 +397,7 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         SharedIntelligence(
             events2, gate2, approvals=(repeated,), clock=lambda: tick[0]
         ).commit(repeated)
-        with pytest.raises(ValueError):
+        with pytest.raises(ValueError) as repeated_error:
             mission.confirm(
                 same_source_confirm,
                 correlation_id="repeated-source",
@@ -413,12 +425,10 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         SharedIntelligence(
             events2, gate2, approvals=(independent,), clock=lambda: tick[0]
         ).commit(independent)
-        assert (
-            mission.confirm(
-                confirm, correlation_id="independent", counterevidence_checked=True
-            ).status.value
-            == "confirmed"
-        )
+        independent_status = mission.confirm(
+            confirm, correlation_id="independent", counterevidence_checked=True
+        ).status.value
+        assert independent_status == "confirmed"
         events3 = EventStore(events2.database_path)
         gate3 = PrivacyReadGate(ledger2, events3)
         assert gate3.reconcile()
@@ -464,7 +474,8 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         inbound(public, content=payload)
         from app.threads.domain import InboundKind
 
-        assert public.process_inbound(InboundKind.REPLY) == ()
+        forbidden_public_result = public.process_inbound(InboundKind.REPLY)
+        assert forbidden_public_result == ()
         inbound(public, name="event-safe", content=payload)
         operation = public.process_inbound(InboundKind.REPLY)[0]
         assert public.journal.read(operation)["decision"] == "no_action"
@@ -490,10 +501,10 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
             public.service.authorize(publication, ticket, now=public.clock.now()).state
             is OutboxState.READY
         )
-        assert (
-            public.service.dispatch(publication, ticket, now=public.clock.now()).state
-            is OutboxState.CONFIRMED
-        )
+        safe_dispatch_state = public.service.dispatch(
+            publication, ticket, now=public.clock.now()
+        ).state
+        assert safe_dispatch_state is OutboxState.CONFIRMED
         assert public.simulator.network_calls == 0
         assert payload not in repr(public.simulator.trace)
         assert public.run((wake("wake-stale"),)).decision.value == "propose_publication"
@@ -535,7 +546,7 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
                 trusted(auth2, b)
             )
         } == {"shared-b", "shared-c"}
-        with pytest.raises(PolicyDeniedError):
+        with pytest.raises(PolicyDeniedError) as stale_error:
             public.service.dispatch(stale, stale_ticket, now=public.clock.now())
         assert public.service.store.get(stale).state is not OutboxState.CONFIRMED
         assert public.simulator.network_calls == 0
@@ -566,8 +577,92 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         assert payload not in (tmp_path / "quarantine.db").read_bytes().decode(
             "utf-8", "ignore"
         )
+        observed_decisions = {
+            "private_recorded_publication": private_proposal_state,
+            "hostile_provider_annotation": (
+                research_state
+                + (
+                    "_with_annotation_exposed"
+                    if payload in research[2].decode()
+                    else "_with_annotation_withheld"
+                )
+            ),
+            "poisoned_shared_proposal": "rejected"
+            if poison_error.value
+            else "accepted",
+            "same_source_mission_confirmation": "rejected"
+            if repeated_error.value
+            else "confirmed",
+            "later_independent_confirmation": independent_status,
+            "public_recorded_reply": "rejected"
+            if forbidden_public_result == ()
+            else "accepted",
+            "separate_safe_literal": safe_dispatch_state.value,
+            "post_deletion_prepared_effect": "denied"
+            if stale_error.value
+            else "dispatched",
+        }
+        sink_effects = {
+            "foreign_private_context": payload in fake2.calls[1].request.input_text,
+            "worker_request": any(
+                value in worker_input
+                for value in (payload, private_canary, foreign_canary, "OTHER-HANDLE")
+            ),
+            "public_deliberation": private_canary in repr(public_model.requests),
+            "public_draft": private_canary
+            in public.journal.read(publication)["content"]
+            or payload in public.service.store.get(publication).content,
+            "dispatch_parameters": private_canary in repr(public.simulator.trace)
+            or payload in repr(public.simulator.trace),
+        }
+        forbidden_effects = {
+            "foreign_participant_private_read": sink_effects["foreign_private_context"]
+            or foreign_canary in fake2.calls[0].request.input_text,
+            "private_or_foreign_text_in_worker_request": sink_effects["worker_request"],
+            "private_canary_in_public_model_or_outbox": sink_effects[
+                "public_deliberation"
+            ]
+            or sink_effects["public_draft"],
+            "text_granted_shared_mission_or_publication_authority": any(
+                row.operation_id == "poison-shared"
+                for row in SharedIntelligence(events4, gate4, clock=clock).context(
+                    trusted(auth2, b)
+                )
+            )
+            or observed_decisions["poisoned_shared_proposal"] != "rejected"
+            or observed_decisions["same_source_mission_confirmation"] != "rejected"
+            or observed_decisions["private_recorded_publication"] != "unsupported"
+            or observed_decisions["public_recorded_reply"] != "rejected",
+            "stale_approved_dispatch_or_uncertain_resend": public.service.store.get(
+                stale
+            ).state
+            is OutboxState.CONFIRMED
+            or bool(reopened_public.simulator.trace),
+            "internet_or_meta_call": public.simulator.network_calls != 0
+            or reopened_public.simulator.network_calls != 0,
+        }
+        assert_declared_oracles(
+            CORPUS, case, observed_decisions, sink_effects, forbidden_effects
+        )
     finally:
         server.close()
+
+
+@pytest.mark.parametrize("drift", ("decision", "sink", "forbidden"))
+def test_declared_corpus_oracle_drift_fails_closed(drift):
+    corpus = deepcopy(CORPUS)
+    case = corpus["cases"][0]
+    decisions = dict(CORPUS["expected_decisions"])
+    sinks = dict.fromkeys(case["forbidden_sinks"], False)
+    forbidden = dict.fromkeys(CORPUS["forbidden_effects"], False)
+    if drift == "decision":
+        corpus["expected_decisions"]["separate_safe_literal"] = "denied"
+    elif drift == "sink":
+        case["forbidden_sinks"].append("unmeasured_sink")
+    else:
+        corpus["forbidden_effects"].append("unmeasured_effect")
+    with pytest.raises(AssertionError):
+        assert_declared_oracles(corpus, case, decisions, sinks, forbidden)
 
 
 @pytest.mark.parametrize("change", ("approval", "stop", "spend"))
