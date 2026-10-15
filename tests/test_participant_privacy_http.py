@@ -182,9 +182,32 @@ def test_exact_grant_revocation_and_deletion_with_isolation(journey):
         )[0]
         == "200 OK"
     )
-    assert gate.reconcile()
     assert source not in json.dumps(json.loads(a.request("GET", "/api/history")[2]))
     assert b.request("GET", "/privacy")[0] == "200 OK"
+
+
+def test_applied_deletion_refreshes_gate_on_result_and_retry(journey):
+    clock, auth, store, ledger, gate, fake, config, a, b = journey
+    acknowledge(a)
+    source = source_for(a)
+    deletion = {"operation_id": "delete-refresh", "source": source, "confirm": "delete"}
+    assert (
+        json.loads(post(a, "/api/privacy/deletions", deletion)[2])["status"]
+        == "applied"
+    )
+    assert a.request("GET", "/api/history")[0] == "200 OK"
+    assert a.request("GET", "/chat")[0] == "200 OK"
+    gate._generation = None
+    assert a.request("GET", "/api/history")[0] == "503 Service Unavailable"
+    assert (
+        post(a, "/api/privacy/grants", grant_for(source, "blocked-while-stale"))[0]
+        == "503 Service Unavailable"
+    )
+    assert (
+        json.loads(post(a, "/api/privacy/deletions", deletion)[2])["status"]
+        == "applied"
+    )
+    assert a.request("GET", "/api/history")[0] == "200 OK"
 
 
 def test_request_guards_and_pending_status_access(journey):

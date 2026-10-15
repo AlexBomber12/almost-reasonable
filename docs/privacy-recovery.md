@@ -50,6 +50,9 @@ reconciliation action can replay unfinished intent. The current-use consent
 authorization denies a source with pending or completed deletion. Web grants
 cannot renew a revoked scope under another operation ID; direct service revision
 support remains an internal, separately authorized capability.
+An applied deletion refreshes the read gate before the response, including an
+identical operation retry, so normal history and chat access resume immediately
+when reconciliation succeeds.
 
 No participant route dispatches identifiable material, authorizes owner or model
 actions, publishes to Threads, or activates an old backup. The synthetic tests

@@ -19,6 +19,7 @@ from app.privacy.models import (
     ConsentGrant,
     ConsentPurpose,
     ContentCategory,
+    DeletionDisposition,
     DeletionRequest,
     NOTICE_VERSION,
     OperationOrigin,
@@ -485,7 +486,7 @@ class ParticipantPrivacyControls:
                 raise PrivacyControlError(404)
             if prior.content_reference != source:
                 raise PrivacyControlError(409)
-            return {"status": prior.disposition.value, "operation_id": op}
+            return self._deletion_result(op, prior.disposition)
         context = self.context(session)
         self.source(session, source)
         request = DeletionRequest(
@@ -516,8 +517,15 @@ class ParticipantPrivacyControls:
                 raise PrivacyControlError(404) from None
             if record.content_reference != source:
                 raise PrivacyControlError(409) from None
-            return {"status": record.disposition.value, "operation_id": op}
-        return {"status": result.disposition.value, "operation_id": op}
+            return self._deletion_result(op, record.disposition)
+        return self._deletion_result(op, result.disposition)
+
+    def _deletion_result(
+        self, operation_id: str, disposition: DeletionDisposition
+    ) -> dict[str, str]:
+        if disposition is DeletionDisposition.APPLIED:
+            self.gate.reconcile()
+        return {"status": disposition.value, "operation_id": operation_id}
 
     def status(self, session: AuthenticatedSession) -> dict[str, object]:
         with closing(self.ledger._open()) as db:
