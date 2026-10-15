@@ -566,28 +566,36 @@ document.querySelectorAll('form[data-endpoint]').forEach((form) => {
       data.operation_id = form.dataset.operationId ||= crypto.randomUUID();
     }
     if (data.validity_hours) data.validity_hours = Number(data.validity_hours);
-    const response = await fetch(form.dataset.endpoint, {
-      method: 'POST', credentials: 'same-origin',
-      headers: {'Content-Type': 'application/json',
-                'X-CSRF-Token': document.querySelector('main').dataset.csrf},
-      body: JSON.stringify(data)
-    });
-    if (!response.ok) {
-      alert('Операция отклонена');
-      return;
+    try {
+      const response = await fetch(form.dataset.endpoint, {
+        method: 'POST', credentials: 'same-origin',
+        headers: {'Content-Type': 'application/json',
+                  'X-CSRF-Token': document.querySelector('main').dataset.csrf},
+        body: JSON.stringify(data)
+      });
+      if (!response.ok) {
+        alert('Операция отклонена');
+        return;
+      }
+      const result = await response.json();
+      alert(JSON.stringify(result));
+      if (form.dataset.endpoint === '/api/privacy/deletions') location.href = '/privacy';
+      else location.reload();
+    } catch (error) {
+      alert('Статус операции неизвестен. Повторите попытку.');
     }
-    const result = await response.json();
-    alert(JSON.stringify(result));
-    if (form.dataset.endpoint === '/api/privacy/deletions') location.href = '/privacy';
-    else location.reload();
   });
 });
 const logout = document.getElementById('privacy-logout');
 if (logout) logout.addEventListener('click', async () => {
-  const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
-    headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
-  if (response.ok) location.href = '/login';
-  else alert('Не удалось выйти. Сессия может быть активна.');
+  try {
+    const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
+      headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
+    if (response.ok) location.href = '/login';
+    else alert('Не удалось выйти. Сессия может быть активна.');
+  } catch (error) {
+    alert('Выход не подтверждён. Проверьте сеанс перед уходом.');
+  }
 });
 """.encode()
         return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body

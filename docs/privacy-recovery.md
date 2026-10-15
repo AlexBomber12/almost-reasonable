@@ -44,6 +44,8 @@ the existing session, exact Host/Origin and CSRF checks; operation IDs are
 bounded and durable. Server-side timestamps, principal and authenticated actor
 come from the current session and trusted clock. The ledger serializes the final
 source check and session revalidation with grant or pending deletion intent.
+The browser preserves the operation ID after an uncertain network result so a
+retry can recover the original durable outcome.
 Deletion then runs the v7 adapter outside the ledger fence. Status distinguishes
 `pending`, `incomplete_blocked` and `applied`, and a separate authenticated
 reconciliation action can replay unfinished intent. The current-use consent

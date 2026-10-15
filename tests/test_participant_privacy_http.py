@@ -851,7 +851,7 @@ async function scenario(endpoint, response, expectedAlert, expectedLocation) {
     },
     FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
     crypto: {randomUUID() { return 'operation'; }},
-    fetch: async () => response,
+    fetch: async () => typeof response === 'function' ? response() : response,
     alert(message) { alerts.push(message); },
     location
   };
@@ -862,6 +862,41 @@ async function scenario(endpoint, response, expectedAlert, expectedLocation) {
       (expectedAlert !== undefined && alerts[0] !== expectedAlert) ||
       location.href !== expectedLocation) {
     throw Error(JSON.stringify({endpoint, alerts, location: location.href}));
+  }
+}
+
+async function uncertainMutationRetry() {
+  let submit;
+  const alerts = [];
+  const operations = [];
+  const form = {
+    dataset: {endpoint: '/api/privacy/grants'},
+    addEventListener(name, callback) { submit = callback; }
+  };
+  const location = {href: '/privacy', reload() { this.href = 'reloaded'; }};
+  vm.runInNewContext(script, {
+    document: {
+      querySelectorAll() { return [form]; },
+      querySelector() { return {dataset: {csrf: 'csrf'}}; },
+      getElementById() { return null; }
+    },
+    FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
+    crypto: {randomUUID() { return 'same-operation'; }},
+    fetch: async (url, options) => {
+      operations.push(JSON.parse(options.body).operation_id);
+      if (operations.length === 1) throw Error('offline');
+      return {ok: true, json: async () => ({status: 'granted'})};
+    },
+    alert(message) { alerts.push(message); },
+    location
+  });
+  await submit({preventDefault() {}});
+  if (alerts[0] !== 'Статус операции неизвестен. Повторите попытку.' ||
+      location.href !== '/privacy') throw Error(JSON.stringify({alerts, location}));
+  await submit({preventDefault() {}});
+  if (operations.join(',') !== 'same-operation,same-operation' ||
+      alerts[1] !== '{"status":"granted"}' || location.href !== 'reloaded') {
+    throw Error(JSON.stringify({operations, alerts, location}));
   }
 }
 
@@ -879,6 +914,9 @@ async function scenario(endpoint, response, expectedAlert, expectedLocation) {
     'Не удалось выйти. Сессия может быть активна.', '/privacy');
   await scenario('/logout', {ok: true},
     undefined, '/login');
+  await scenario('/logout', () => { throw Error('offline'); },
+    'Выход не подтверждён. Проверьте сеанс перед уходом.', '/privacy');
+  await uncertainMutationRetry();
 })().catch(error => { console.error(error); process.exitCode = 1; });
 """
     result = subprocess.run(
