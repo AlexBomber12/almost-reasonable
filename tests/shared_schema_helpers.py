@@ -6,10 +6,12 @@ def remove_v7(db):
     for index in (
         "generic_memory_sources_event",
         "generic_memory_parents_parent",
+        "generic_memory_context_source",
         "generic_reply_count",
     ):
         db.execute(f"DROP INDEX {index}")
     for table in (
+        "generic_memory_context",
         "generic_memory_parents",
         "generic_memory_sources",
         "generic_memory_payloads",

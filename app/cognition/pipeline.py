@@ -413,6 +413,7 @@ class CognitionEngine:
                     decided_at=decided_at,
                     expected_visible_revisions=visible_generic_revisions,
                     expected_candidate_revisions=expected_candidate_revisions,
+                    exposed_generic_revisions=exposed_generic_revisions,
                 )
             except GenericMemoryConflict:
                 return self._rejected(

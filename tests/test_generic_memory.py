@@ -162,9 +162,7 @@ def test_multilevel_private_consolidation_replay_restart_and_erasure(tmp_path):
         .blockers
         == ()
     )
-    assert [read.view.item_id for read in GenericMemoryStore(reopened).current(a)] == [
-        "m2"
-    ]
+    assert GenericMemoryStore(reopened).current(a) == ()
     assert GenericMemoryStore(reopened).current(b) == ()
 
 
@@ -241,10 +239,7 @@ def test_later_trusted_conversation_uses_consolidated_private_memory(tmp_path):
     )
     assert fresh_gate.reconcile()
     assert fresh_gate.read_reply(principal("a"), fresh._operation_id(later)) is None
-    assert [
-        read.view.item_id
-        for read in GenericMemoryStore(reopened).current(principal("a"))
-    ] == ["m2"]
+    assert GenericMemoryStore(reopened).current(principal("a")) == ()
     quarantine = tmp_path / "quarantine.db"
     assert (
         QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter)
@@ -252,9 +247,332 @@ def test_later_trusted_conversation_uses_consolidated_private_memory(tmp_path):
         .activation_eligible
     )
     with sqlite3.connect(f"{quarantine.as_uri()}?mode=ro", uri=True) as db:
+        assert (
+            db.execute("SELECT statement FROM generic_memory_payloads").fetchall() == []
+        )
+
+
+def test_undeclared_exposed_memory_is_erased_before_later_model_input(tmp_path):
+    store, ledger, gate, fake, _ = runtime_setup.__wrapped__(tmp_path)
+    canary = "SYNTHETIC-CONTEXT-CANARY-47"
+    seen = []
+
+    def extract(request):
+        source = request.experience.event_id
+        seen.append(tuple(view.item_id for view in request.private_memories))
+        if len(seen) == 1:
+            return replace(proposal(source, "m1", "op-m1"), statement=canary)
+        if len(seen) == 2:
+            assert seen[-1] == ("m1",)
+            return replace(
+                proposal(source, "m2", "op-m2"),
+                statement=request.private_memories[0].statement,
+            )
+        return NoChangeProposal(source, "No update", (source,))
+
+    caps = CognitionCapabilities(generic_memory_write=True, private_consolidation=True)
+    runtime = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        memory_extractor=SyntheticMemoryExtractor(
+            extract, ExtractorIdentity("synthetic", "v1")
+        ),
+        cognition_capabilities=caps,
+    )
+    a = principal("a")
+    runtime.submit(a, "seed", "Synthetic private canary source")
+    original_source = gate.retrieve_private_events(a)[0].event_id
+    runtime.submit(a, "copy", "Unrelated synthetic message")
+    assert {read.view.item_id for read in GenericMemoryStore(store).current(a)} == {
+        "m1",
+        "m2",
+    }
+    backup = tmp_path / "before-erasure.db"
+    create_sqlite_backup(store.database_path, backup, 7, RUNTIME_NOW)
+    assert (
+        delete_source(
+            (store, ledger, gate, fake, runtime), original_source
+        ).disposition.value
+        == "applied"
+    )
+    reopened = EventStore(store.database_path)
+    fresh_gate = PrivacyReadGate(ledger, reopened)
+    assert fresh_gate.reconcile()
+    fresh = Stage0ConversationRuntime(
+        reopened,
+        fresh_gate,
+        fake,
+        memory_extractor=SyntheticMemoryExtractor(
+            extract, ExtractorIdentity("synthetic", "v1")
+        ),
+        cognition_capabilities=caps,
+    )
+    fresh.submit(a, "later", "What remains in memory?")
+    assert canary not in fake.calls[-1].request.input_text
+    assert GenericMemoryStore(reopened).current(a) == ()
+    later_event = fresh_gate.retrieve_private_events(a)[-1].event_id
+    assert fresh_gate.read_reply(a, fresh._operation_id(later_event)) is not None
+    quarantine = tmp_path / "quarantine.db"
+    assert (
+        QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter)
+        .restore(backup, quarantine, RUNTIME_NOW)
+        .activation_eligible
+    )
+    with sqlite3.connect(f"{quarantine.as_uri()}?mode=ro", uri=True) as db:
+        assert (
+            db.execute("SELECT statement FROM generic_memory_payloads").fetchall() == []
+        )
+
+
+@pytest.mark.parametrize(
+    "kind",
+    (
+        MemoryKind.UNRESOLVED_QUESTION,
+        MemoryKind.CANDIDATE_USEFUL_MEMORY,
+        MemoryKind.CONTRADICTION_COUNTEREVIDENCE,
+    ),
+)
+@pytest.mark.parametrize("consolidation", (False, True))
+def test_every_kind_retains_undeclared_exposed_source_without_parent(
+    tmp_path, kind, consolidation
+):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    child = replace(
+        proposal("event-two", "m2", "op-two"),
+        memory_kind=kind,
+        statement="Copied synthetic context",
+    )
+    worker = CognitionEngine(
+        store,
+        SelfStateStore(store),
+        extractor=SyntheticMemoryExtractor(
+            lambda request: child,
+            ExtractorIdentity("synthetic", "v1"),
+        ),
+        capabilities=CognitionCapabilities(
+            generic_memory_write=True,
+            private_consolidation=consolidation,
+        ),
+        clock=lambda: NOW,
+    )
+    assert worker.process(a, "event-two").status is CognitionOutcomeStatus.PERSISTED
+    with sqlite3.connect(store.database_path) as db:
         assert db.execute(
-            "SELECT statement FROM generic_memory_payloads"
-        ).fetchall() == [("Synthetic memory m2",)]
+            "SELECT context_operation_id FROM generic_memory_context WHERE operation_id='op-two'"
+        ).fetchall() == [("op-one",)]
+        assert (
+            db.execute(
+                "SELECT parent_operation_id FROM generic_memory_parents WHERE operation_id='op-two'"
+            ).fetchall()
+            == []
+        )
+    read = GenericMemoryStore(store).current(a)[-1]
+    assert read.view.supporting_count == 1
+    assert read.view.counterevidence_count == 0
+    assert set(read.source_event_ids) == {"event-one", "event-two"}
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-one"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a) == ()
+
+
+def test_partial_semantic_parents_still_bind_all_exposed_context(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    for name in ("one", "two", "three", "four"):
+        append_event(store, a, name)
+    for name in ("one", "two", "three"):
+        assert commit_direct(store, proposal(f"event-{name}", name, f"op-{name}")) == (
+            name,
+            1,
+        )
+    child = proposal("event-four", "child", "op-child", parents=(("one", 1),))
+
+    def copy_omitted_parent(request):
+        copied = next(
+            view for view in request.private_memories if view.item_id == "two"
+        )
+        return replace(child, statement=copied.statement)
+
+    worker = CognitionEngine(
+        store,
+        SelfStateStore(store),
+        extractor=SyntheticMemoryExtractor(
+            copy_omitted_parent, ExtractorIdentity("synthetic", "v1")
+        ),
+        capabilities=CognitionCapabilities(
+            generic_memory_write=True, private_consolidation=True
+        ),
+        clock=lambda: NOW,
+    )
+    assert worker.process(a, "event-four").status is CognitionOutcomeStatus.PERSISTED
+    with sqlite3.connect(store.database_path) as db:
+        assert set(
+            db.execute(
+                "SELECT context_operation_id FROM generic_memory_context WHERE operation_id='op-child'"
+            )
+        ) == {("op-one",), ("op-two",), ("op-three",)}
+        assert list(
+            db.execute(
+                "SELECT parent_operation_id FROM generic_memory_parents WHERE operation_id='op-child'"
+            )
+        ) == [("op-one",)]
+    child_read = GenericMemoryStore(store).current(a)[0]
+    assert child_read.view.item_id == "child"
+    assert child_read.view.statement == "Synthetic memory two"
+    assert child_read.view.supporting_count == 2
+    assert set(child_read.source_event_ids) == {
+        "event-one",
+        "event-two",
+        "event-three",
+        "event-four",
+    }
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-two"))
+        .blockers
+        == ()
+    )
+    assert {read.view.item_id for read in GenericMemoryStore(store).current(a)} == {
+        "one",
+        "three",
+    }
+
+
+def test_contextual_dependencies_cross_levels_and_target_revision(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    for name in ("seed", "first", "revision", "grandchild"):
+        append_event(store, a, name)
+    assert commit_direct(store, proposal("event-seed", "seed", "op-seed")) == (
+        "seed",
+        1,
+    )
+    assert (
+        engine(store, proposal("event-first", "child", "op-child"))
+        .process(a, "event-first")
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    revised = proposal("event-revision", "child", "op-child-rev", expected=1)
+    assert engine(store, revised).process(a, "event-revision").generic_revision == (
+        "child",
+        2,
+    )
+    assert (
+        engine(store, proposal("event-grandchild", "grandchild", "op-grandchild"))
+        .process(a, "event-grandchild")
+        .status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    with sqlite3.connect(store.database_path) as db:
+        assert ("op-child",) in list(
+            db.execute(
+                "SELECT context_operation_id FROM generic_memory_context WHERE operation_id='op-child-rev'"
+            )
+        )
+    assert set(GenericMemoryStore(store).current(a)[1].source_event_ids) == {
+        "event-seed",
+        "event-first",
+        "event-revision",
+        "event-grandchild",
+    }
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-seed"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a) == ()
+
+
+def test_contextual_operation_replay_keeps_original_snapshot_after_restart(tmp_path):
+    path = tmp_path / "events.db"
+    store = EventStore(path)
+    a = principal("a")
+    for name in ("one", "two", "three", "four"):
+        append_event(store, a, name)
+    first = proposal("event-one", "m1", "op-one")
+    assert commit_direct(store, first) == ("m1", 1)
+    child = proposal("event-two", "m2", "op-two")
+    assert commit_direct(store, child, exposed_generic_revisions=(("m1", 1),)) == (
+        "m2",
+        1,
+    )
+    assert commit_direct(
+        store, proposal("event-three", "m1", "op-one-rev", expected=1)
+    ) == ("m1", 2)
+    assert commit_direct(store, proposal("event-four", "m3", "op-three")) == (
+        "m3",
+        1,
+    )
+    reopened = EventStore(path)
+    assert commit_direct(
+        reopened,
+        child,
+        exposed_generic_revisions=(("m1", 2), ("m3", 1)),
+        expected_visible_revisions=(("m1", 1),),
+    ) == ("m2", 1)
+    with sqlite3.connect(path) as db:
+        assert db.execute(
+            "SELECT context_operation_id FROM generic_memory_context WHERE operation_id='op-two'"
+        ).fetchall() == [("op-one",)]
+    with pytest.raises(GenericMemoryConflict):
+        commit_direct(
+            reopened,
+            replace(child, statement="Changed replay"),
+            exposed_generic_revisions=(("m1", 2),),
+        )
+    assert (
+        EventStoreErasureAdapter(reopened)
+        .erase(request(content_reference="event-one"))
+        .blockers
+        == ()
+    )
+    with pytest.raises(GenericMemoryConflict):
+        commit_direct(reopened, child)
+
+
+def test_contextual_erasure_keeps_same_ids_in_other_participant_graph(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a, b = principal("a"), principal("b")
+    append_event(store, a, "a-seed")
+    append_event(store, a, "a-child")
+    append_event(store, b, "b-seed")
+    append_event(store, b, "b-child")
+    for who, label in ((a, "a"), (b, "b")):
+        assert commit_direct(
+            store, proposal(f"event-{label}-seed", "seed", "op-seed"), who
+        ) == ("seed", 1)
+        assert commit_direct(
+            store,
+            proposal(f"event-{label}-child", "child", "op-child"),
+            who,
+            exposed_generic_revisions=(("seed", 1),),
+        ) == ("child", 1)
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-a-seed"))
+        .blockers
+        == ()
+    )
+    assert GenericMemoryStore(store).current(a) == ()
+    assert {read.view.item_id for read in GenericMemoryStore(store).current(b)} == {
+        "child",
+        "seed",
+    }
+    assert set(GenericMemoryStore(store).current(b)[0].source_event_ids) == {
+        "event-b-seed",
+        "event-b-child",
+    }
 
 
 def test_authenticated_wsgi_multilevel_consolidation_reaches_later_private_context(
@@ -383,15 +701,23 @@ def rehash(db, operation):
         "SELECT parent_operation_id FROM generic_memory_parents WHERE operation_id=?",
         (operation,),
     ).fetchall()
+    context = db.execute(
+        "SELECT context_operation_id FROM generic_memory_context WHERE operation_id=?",
+        (operation,),
+    ).fetchall()
     digest = hashlib.sha256(
         json.dumps(
-            [sorted(sources), sorted(p[0] for p in parents)],
+            [
+                sorted(sources),
+                sorted(p[0] for p in parents),
+                sorted(edge[0] for edge in context),
+            ],
             separators=(",", ":"),
         ).encode()
     ).hexdigest()
     db.execute(
-        "UPDATE generic_memory_operations SET graph_digest=?,source_count=?,parent_count=? WHERE operation_id=?",
-        (digest, len(sources), len(parents), operation),
+        "UPDATE generic_memory_operations SET graph_digest=?,source_count=?,parent_count=?,context_count=? WHERE operation_id=?",
+        (digest, len(sources), len(parents), len(context), operation),
     )
 
 
@@ -423,6 +749,7 @@ def rehash(db, operation):
         "changed_binding",
         "missing_union",
         "foreign_parent",
+        "same_item_parent",
         "cycle",
         "inactive_parent",
     ),
@@ -536,6 +863,11 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
                 "UPDATE generic_memory_parents SET parent_operation_id='op-other' WHERE operation_id='op-three' AND parent_operation_id='op-two'"
             )
             rehash(db, "op-three")
+        elif mutation == "same_item_parent":
+            db.execute(
+                "INSERT INTO generic_memory_parents VALUES ('op-one-rev','op-one','participant-a')"
+            )
+            rehash(db, "op-one-rev")
         elif mutation == "cycle":
             db.execute(
                 "INSERT INTO generic_memory_parents VALUES ('op-one','op-three','participant-a')"
@@ -562,7 +894,7 @@ def test_corrupt_generic_graph_blocks_erasure_and_reads(tmp_path, mutation):
         GenericMemoryStore(store).current(principal("a"))
 
 
-def commit_direct(store, value, who=None):
+def commit_direct(store, value, who=None, **kwargs):
     return GenericMemoryStore(store).commit(
         who or principal("a"),
         value,
@@ -570,6 +902,7 @@ def commit_direct(store, value, who=None):
         prompt_version="v1",
         core_self_version="core-self-v1",
         decided_at=NOW,
+        **kwargs,
     )
 
 
@@ -965,12 +1298,234 @@ def test_inherited_dependency_bound_rejects_whole_consolidation(tmp_path):
     }
 
 
+def test_contextual_source_union_bound_rejects_atomically(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    for name in (
+        "one",
+        "two",
+        "three",
+        *(f"a-{index}" for index in range(49)),
+        *(f"b-{index}" for index in range(49)),
+    ):
+        append_event(store, a, name)
+    for label, source in (("a", "event-one"), ("b", "event-two")):
+        initial = proposal(source, f"m-{label}", f"op-{label}")
+        initial = replace(
+            initial,
+            context=replace(
+                initial.context,
+                supporting_event_ids=(
+                    source,
+                    *(f"event-{label}-{i}" for i in range(49)),
+                ),
+            ),
+        )
+        assert commit_direct(store, initial) == (f"m-{label}", 1)
+    child = proposal("event-three", "m-child", "op-child")
+    assert (
+        engine(store, child).process(a, "event-three").reason.value == "store_rejected"
+    )
+    with sqlite3.connect(store.database_path) as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM generic_memory_operations WHERE operation_id='op-child'"
+            ).fetchone()
+            is None
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM generic_memory_context WHERE operation_id='op-child'"
+            ).fetchone()
+            is None
+        )
+    assert {read.view.item_id for read in GenericMemoryStore(store).current(a)} == {
+        "m-a",
+        "m-b",
+    }
+
+
+@pytest.mark.parametrize(
+    "exposed",
+    (
+        [("m1", 1)],
+        (("m1", 1), ("m1", 1)),
+        (("bad item", 1),),
+        (("m1", True),),
+        (("m1", 0),),
+        (("m1",),),
+    ),
+)
+def test_invalid_context_snapshot_is_rejected_without_write(tmp_path, exposed):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    with pytest.raises(
+        GenericMemoryError, match="invalid_generic_context|invalid_generic_proposal"
+    ):
+        commit_direct(
+            store,
+            proposal("event-two", "m2", "op-two"),
+            exposed_generic_revisions=exposed,
+        )
+    with sqlite3.connect(store.database_path) as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM generic_memory_operations WHERE operation_id='op-two'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_stale_or_foreign_context_head_rejects_whole_write(tmp_path):
+    store = EventStore(tmp_path / "events.db")
+    a, b = principal("a"), principal("b")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    append_event(store, a, "three")
+    append_event(store, b, "other")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    assert commit_direct(
+        store, proposal("event-three", "m1", "op-rev", expected=1)
+    ) == ("m1", 2)
+    assert commit_direct(store, proposal("event-other", "foreign", "op-other"), b) == (
+        "foreign",
+        1,
+    )
+    child = proposal("event-two", "m2", "op-two")
+    for exposed in (("m1", 1), ("foreign", 1), ("missing", 1)):
+        with pytest.raises(GenericMemoryStale, match="generic_context_stale"):
+            commit_direct(store, child, exposed_generic_revisions=(exposed,))
+    with sqlite3.connect(store.database_path) as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM generic_memory_operations WHERE operation_id='op-two'"
+            ).fetchone()
+            is None
+        )
+
+
+def test_context_source_deletion_between_snapshot_check_and_commit(
+    tmp_path, monkeypatch
+):
+    store = EventStore(tmp_path / "events.db")
+    a = principal("a")
+    append_event(store, a, "one")
+    append_event(store, a, "two")
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    original = GenericMemoryStore.commit
+    raced = False
+
+    def race(self, context, value, **kwargs):
+        nonlocal raced
+        if not raced:
+            raced = True
+            assert (
+                EventStoreErasureAdapter(store)
+                .erase(request(content_reference="event-one"))
+                .blockers
+                == ()
+            )
+        return original(self, context, value, **kwargs)
+
+    monkeypatch.setattr(GenericMemoryStore, "commit", race)
+    result = engine(store, proposal("event-two", "m2", "op-two")).process(
+        a, "event-two"
+    )
+    assert result.reason.value == "stale_revision"
+    with sqlite3.connect(store.database_path) as db:
+        assert (
+            db.execute(
+                "SELECT 1 FROM generic_memory_operations WHERE operation_id='op-two'"
+            ).fetchone()
+            is None
+        )
+
+
+@pytest.mark.parametrize(
+    "mutation",
+    (
+        "missing_edge",
+        "altered_edge",
+        "foreign_edge",
+        "missing_union",
+        "role_inflation",
+        "missing_binding",
+        "changed_binding",
+        "wrong_count",
+    ),
+)
+def test_context_graph_corruption_blocks_reads_and_erasure(tmp_path, mutation):
+    store = EventStore(tmp_path / "events.db")
+    a, b = principal("a"), principal("b")
+    for name, who in (("one", a), ("two", a), ("three", a), ("other", b)):
+        append_event(store, who, name)
+    assert commit_direct(store, proposal("event-one", "m1", "op-one")) == ("m1", 1)
+    assert commit_direct(store, proposal("event-two", "m2", "op-two")) == ("m2", 1)
+    assert commit_direct(store, proposal("event-other", "m3", "op-other"), b) == (
+        "m3",
+        1,
+    )
+    assert commit_direct(
+        store,
+        proposal("event-three", "child", "op-child"),
+        exposed_generic_revisions=(("m1", 1),),
+    ) == ("child", 1)
+    with sqlite3.connect(store.database_path) as db:
+        if mutation == "missing_edge":
+            db.execute(
+                "DELETE FROM generic_memory_context WHERE operation_id='op-child'"
+            )
+        elif mutation == "altered_edge":
+            db.execute(
+                "UPDATE generic_memory_context SET context_operation_id='op-two' WHERE operation_id='op-child'"
+            )
+            rehash(db, "op-child")
+        elif mutation == "foreign_edge":
+            db.execute(
+                "UPDATE generic_memory_context SET context_operation_id='op-other' WHERE operation_id='op-child'"
+            )
+        elif mutation == "missing_union":
+            db.execute(
+                "DELETE FROM generic_memory_sources WHERE operation_id='op-child' AND event_id='event-one'"
+            )
+            rehash(db, "op-child")
+        elif mutation == "role_inflation":
+            db.execute(
+                "UPDATE generic_memory_sources SET role='supporting' WHERE operation_id='op-child' AND role='contextual'"
+            )
+            rehash(db, "op-child")
+        elif mutation == "missing_binding":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_remove(binding,'$.context') WHERE operation_id='op-child'"
+            )
+        elif mutation == "changed_binding":
+            db.execute(
+                "UPDATE generic_memory_payloads SET binding=json_set(binding,'$.context[0][0]','m2') WHERE operation_id='op-child'"
+            )
+        else:
+            db.execute(
+                "UPDATE generic_memory_operations SET context_count=0 WHERE operation_id='op-child'"
+            )
+        with pytest.raises(ValueError, match="^invalid_generic_graph$"):
+            validate_generic_graph(db)
+    with pytest.raises(GenericMemoryError, match="^generic_memory_unavailable$"):
+        GenericMemoryStore(store).current(a)
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference="event-one"))
+        .blockers
+    )
+
+
 def test_orphaned_generic_operation_is_detected_before_release(tmp_path):
     store = EventStore(tmp_path / "events.db")
     with sqlite3.connect(store.database_path) as db:
         db.execute(
             """INSERT INTO generic_memory_operations VALUES
-            ('forged','missing','participant-a',1,NULL,1,0,'active',?, 'synthetic','v1','core',?)""",
+            ('forged','missing','participant-a',1,NULL,1,0,0,'active',?, 'synthetic','v1','core',?)""",
             (NOW.isoformat(), "0" * 64),
         )
     with sqlite3.connect(store.database_path) as db:
@@ -1553,9 +2108,7 @@ def test_later_parent_revision_deletion_invalidates_earlier_descendant_reply(tmp
     )
     assert gate.read_reply(principal("a"), runtime._operation_id(last)) is None
     assert gate.read_reply(principal("b"), runtime._operation_id(b_event)) == b_reply
-    assert [
-        read.view.item_id for read in GenericMemoryStore(store).current(principal("a"))
-    ] == ["m2"]
+    assert GenericMemoryStore(store).current(principal("a")) == ()
 
 
 def generic_reply(source_ids, generic_ids):

@@ -31,6 +31,7 @@ _KINDS = frozenset(
 )
 MAX_GENERIC_SOURCES = 100
 MAX_GENERIC_PARENTS = 16
+MAX_GENERIC_CONTEXT = 16
 MAX_GENERIC_REVISIONS = 32
 
 
@@ -190,6 +191,7 @@ class GenericMemoryStore:
         decided_at: datetime,
         expected_visible_revisions: tuple[tuple[str, int], ...] | None = None,
         expected_candidate_revisions: tuple[tuple[str, int], ...] | None = None,
+        exposed_generic_revisions: tuple[tuple[str, int], ...] = (),
     ) -> tuple[str, int]:
         """Atomically compare the exact private graph and persist one revision."""
         EventStore._validate_context(context)
@@ -215,6 +217,8 @@ class GenericMemoryStore:
             )
             or type(proposal.parent_revisions) is not tuple
             or len(proposal.parent_revisions) > MAX_GENERIC_PARENTS
+            or type(exposed_generic_revisions) is not tuple
+            or len(exposed_generic_revisions) > MAX_GENERIC_CONTEXT
             or any(
                 not _token(value)
                 for value in (model_identifier, prompt_version, core_self_version)
@@ -222,6 +226,15 @@ class GenericMemoryStore:
         ):
             raise GenericMemoryError("invalid_generic_proposal")
         parents = proposal.parent_revisions
+        if any(
+            type(exposed) is not tuple
+            or len(exposed) != 2
+            or not _token(exposed[0])
+            or type(exposed[1]) is not int
+            or exposed[1] < 1
+            for exposed in exposed_generic_revisions
+        ) or len(set(exposed_generic_revisions)) != len(exposed_generic_revisions):
+            raise GenericMemoryError("invalid_generic_context")
         if (
             any(
                 type(p) is not tuple
@@ -242,28 +255,27 @@ class GenericMemoryStore:
         )
         if len(direct) > MAX_GENERIC_SOURCES:
             raise GenericMemoryError("generic_source_bound")
-        binding = json.dumps(
-            {
-                "item": proposal.item_id,
-                "expected": c.expected_revision,
-                "source": c.source_event_id,
-                "support": c.supporting_event_ids,
-                "counter": c.counterevidence_event_ids,
-                "parents": parents,
-                "kind": proposal.memory_kind.value,
-                "statement": proposal.statement,
-                "confidence": proposal.confidence,
-                "verification": proposal.verification.value,
-                "reason": c.reason,
-                "proposed": c.proposed_at.isoformat(),
-                "review": c.review_at.isoformat(),
-                "review_state": proposal.review_state.value,
-                "model": model_identifier,
-                "prompt": prompt_version,
-                "core": core_self_version,
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+        binding_fields = {
+            "item": proposal.item_id,
+            "expected": c.expected_revision,
+            "source": c.source_event_id,
+            "support": c.supporting_event_ids,
+            "counter": c.counterevidence_event_ids,
+            "parents": parents,
+            "kind": proposal.memory_kind.value,
+            "statement": proposal.statement,
+            "confidence": proposal.confidence,
+            "verification": proposal.verification.value,
+            "reason": c.reason,
+            "proposed": c.proposed_at.isoformat(),
+            "review": c.review_at.isoformat(),
+            "review_state": proposal.review_state.value,
+            "model": model_identifier,
+            "prompt": prompt_version,
+            "core": core_self_version,
+        }
+        proposal_binding = json.dumps(
+            binding_fields, sort_keys=True, separators=(",", ":")
         )
         with closing(self._events._open()) as db:
             try:
@@ -271,6 +283,28 @@ class GenericMemoryStore:
                     db.execute("BEGIN IMMEDIATE")
                     self._events._verify_current_schema(db)
                     validate_generic_graph(db)
+                    prior = db.execute(
+                        "SELECT item_id,revision,status FROM generic_memory_operations WHERE operation_id=? AND audience_principal_id=?",
+                        (c.operation_id, context.principal_id.value),
+                    ).fetchone()
+                    if prior is not None:
+                        payload = db.execute(
+                            "SELECT binding FROM generic_memory_payloads WHERE operation_id=? AND audience_principal_id=?",
+                            (c.operation_id, context.principal_id.value),
+                        ).fetchone()
+                        if prior[2] != "active" or payload is None:
+                            raise GenericMemoryConflict("invalidated_generic_identity")
+                        stored_binding = json.loads(payload[0])
+                        stored_binding.pop("context")
+                        if (
+                            prior[0] != proposal.item_id
+                            or json.dumps(
+                                stored_binding, sort_keys=True, separators=(",", ":")
+                            )
+                            != proposal_binding
+                        ):
+                            raise GenericMemoryConflict("generic_operation_conflict")
+                        return prior[0], prior[1]
                     try:
                         SelfStateStore._validate_candidate_snapshot(
                             db,
@@ -298,20 +332,6 @@ class GenericMemoryStore:
                         )
                         if tuple(sorted(expected_visible_revisions)) != visible:
                             raise GenericMemoryStale("generic_snapshot_stale")
-                    prior = db.execute(
-                        "SELECT item_id,revision,status FROM generic_memory_operations WHERE operation_id=? AND audience_principal_id=?",
-                        (c.operation_id, context.principal_id.value),
-                    ).fetchone()
-                    if prior is not None:
-                        payload = db.execute(
-                            "SELECT binding FROM generic_memory_payloads WHERE operation_id=? AND audience_principal_id=?",
-                            (c.operation_id, context.principal_id.value),
-                        ).fetchone()
-                        if prior[2] != "active" or payload is None:
-                            raise GenericMemoryConflict("invalidated_generic_identity")
-                        if prior[0] != proposal.item_id or payload[0] != binding:
-                            raise GenericMemoryConflict("generic_operation_conflict")
-                        return prior[0], prior[1]
                     if (
                         db.execute(
                             "SELECT COUNT(*) FROM generic_memory_operations"
@@ -351,6 +371,26 @@ class GenericMemoryStore:
                         if parent is None:
                             raise GenericMemoryStale("generic_parent_stale")
                         parent_operations.append(parent[0])
+                    context_operations = []
+                    for exposed_id, exposed_revision in exposed_generic_revisions:
+                        exposed = db.execute(
+                            """SELECT o.operation_id FROM generic_memory_items i
+                            JOIN generic_memory_operations o
+                                ON o.item_id=i.item_id
+                                AND o.audience_principal_id=i.audience_principal_id
+                                AND o.revision=i.current_revision
+                            JOIN generic_memory_payloads p
+                                ON p.operation_id=o.operation_id
+                                AND p.audience_principal_id=o.audience_principal_id
+                            WHERE i.item_id=? AND i.audience_principal_id=?
+                                AND i.current_revision=? AND o.status='active'""",
+                            (exposed_id, context.principal_id.value, exposed_revision),
+                        ).fetchone()
+                        if exposed is None:
+                            raise GenericMemoryStale("generic_context_stale")
+                        context_operations.append(
+                            (exposed_id, exposed_revision, exposed[0])
+                        )
                     ancestors = parent_operations[:]
                     if item is not None:
                         ancestors.extend(
@@ -367,14 +407,36 @@ class GenericMemoryStore:
                                 (operation_id, context.principal_id.value),
                             )
                         )
+                    covered_events = {event for event, _role in source_roles}
+                    for _item_id, _revision, operation_id in context_operations:
+                        for (event_id,) in db.execute(
+                            "SELECT DISTINCT event_id FROM generic_memory_sources WHERE operation_id=? AND source_principal_id=?",
+                            (operation_id, context.principal_id.value),
+                        ):
+                            if event_id not in covered_events:
+                                source_roles.add((event_id, "contextual"))
+                                covered_events.add(event_id)
                     if len(source_roles) > MAX_GENERIC_SOURCES:
                         raise GenericMemoryError("generic_source_bound")
+                    context_operations.sort()
                     graph_digest = hashlib.sha256(
                         json.dumps(
-                            [sorted(source_roles), sorted(parent_operations)],
+                            [
+                                sorted(source_roles),
+                                sorted(parent_operations),
+                                sorted(
+                                    operation_id
+                                    for _item_id, _revision, operation_id in context_operations
+                                ),
+                            ],
                             separators=(",", ":"),
                         ).encode()
                     ).hexdigest()
+                    binding = json.dumps(
+                        {**binding_fields, "context": context_operations},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
                     for event_id, _role in source_roles:
                         valid = db.execute(
                             """SELECT 1 FROM event_envelopes e JOIN private_payloads p
@@ -409,7 +471,7 @@ class GenericMemoryStore:
                             (revision, proposal.item_id, context.principal_id.value),
                         )
                     db.execute(
-                        "INSERT INTO generic_memory_operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        "INSERT INTO generic_memory_operations VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         (
                             c.operation_id,
                             proposal.item_id,
@@ -418,6 +480,7 @@ class GenericMemoryStore:
                             c.expected_revision,
                             len(source_roles),
                             len(parent_operations),
+                            len(context_operations),
                             "active",
                             decided_at.isoformat(),
                             model_identifier,
@@ -459,6 +522,13 @@ class GenericMemoryStore:
                         (
                             (c.operation_id, parent, context.principal_id.value)
                             for parent in parent_operations
+                        ),
+                    )
+                    db.executemany(
+                        "INSERT INTO generic_memory_context VALUES (?,?,?)",
+                        (
+                            (c.operation_id, operation_id, context.principal_id.value)
+                            for _item_id, _revision, operation_id in context_operations
                         ),
                     )
                     validate_generic_graph(db)

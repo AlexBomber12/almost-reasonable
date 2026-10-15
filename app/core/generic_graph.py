@@ -31,6 +31,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         ("generic_memory_payloads", MAX_GENERIC_GRAPH_OPERATIONS),
         ("generic_memory_sources", MAX_GENERIC_GRAPH_OPERATIONS * 100),
         ("generic_memory_parents", MAX_GENERIC_GRAPH_OPERATIONS * 16),
+        ("generic_memory_context", MAX_GENERIC_GRAPH_OPERATIONS * 16),
         ("protected_reply_generic", MAX_GENERIC_GRAPH_REPLIES),
     )
     for table, bound in limits:
@@ -60,11 +61,12 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             graph_digest,
             decided_at,
             principal,
+            context_count,
         )
-        for operation_id, item_id, revision, expected, source_count, parent_count, status, graph_digest, decided_at, principal in db.execute(
+        for operation_id, item_id, revision, expected, source_count, parent_count, status, graph_digest, decided_at, principal, context_count in db.execute(
             """SELECT operation_id,item_id,revision,expected_revision,
                     source_count,parent_count,status,graph_digest,decided_at,
-                    audience_principal_id
+                    audience_principal_id,context_count
                 FROM generic_memory_operations"""
         )
     }
@@ -130,6 +132,15 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         if operation_key not in operations or parent_key not in operations:
             raise ValueError("invalid_generic_graph")
         parents[operation_key].add(parent_key)
+    contexts = {operation_key: set() for operation_key in operations}
+    for operation_id, source, principal in db.execute(
+        "SELECT operation_id,context_operation_id,audience_principal_id FROM generic_memory_context"
+    ):
+        operation_key = (principal, operation_id)
+        source_key = (principal, source)
+        if operation_key not in operations or source_key not in operations:
+            raise ValueError("invalid_generic_graph")
+        contexts[operation_key].add(source_key)
     payloads = {
         (principal, operation_id): (
             kind,
@@ -157,6 +168,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             digest,
             decided_at,
             principal,
+            context_count,
         ) = operation
         key = (principal, item_id)
         if (
@@ -169,6 +181,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
         if (
             source_count != len(sources[operation_key])
             or parent_count != len(parents[operation_key])
+            or context_count != len(contexts[operation_key])
             or (status == "active") != (operation_key in payloads)
             or digest
             != hashlib.sha256(
@@ -176,6 +189,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                     [
                         sorted(sources[operation_key]),
                         sorted(parent[1] for parent in parents[operation_key]),
+                        sorted(source[1] for source in contexts[operation_key]),
                     ],
                     separators=(",", ":"),
                 ).encode()
@@ -211,6 +225,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             _digest,
             _decided_at,
             principal,
+            _context_count,
         ) = operations[operation_id]
         inherited = set()
         if revision > 1:
@@ -229,6 +244,17 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
             ):
                 raise ValueError("invalid_generic_graph")
             inherited.update(sources[parent])
+        context_events = set()
+        for source in contexts[operation_id]:
+            visit(source)
+            source_item, source_revision, *_ = operations[source]
+            if (source_item == item_id and source_revision >= revision) or (
+                status == "active" and operations[source][5] != "active"
+            ):
+                raise ValueError("invalid_generic_graph")
+            context_events.update(event for event, _role in sources[source])
+        if not context_events <= {event for event, _role in sources[operation_id]}:
+            raise ValueError("invalid_generic_graph")
         if not inherited <= sources[operation_id]:
             raise ValueError("invalid_generic_graph")
         if status == "active":
@@ -251,6 +277,7 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                     "support",
                     "counter",
                     "parents",
+                    "context",
                     "kind",
                     "statement",
                     "confidence",
@@ -274,10 +301,24 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                     (parent_item, parent_revision)
                     for parent_item, parent_revision in data["parents"]
                 }
+                bound_context = {
+                    (source_item, source_revision, source_operation)
+                    for source_item, source_revision, source_operation in data[
+                        "context"
+                    ]
+                }
             except (TypeError, ValueError, KeyError, IndexError):
                 raise ValueError("invalid_generic_graph") from None
             actual_parents = {
                 (operations[p][0], operations[p][1]) for p in parents[operation_id]
+            }
+            actual_context = {
+                (operations[source][0], operations[source][1], source[1])
+                for source in contexts[operation_id]
+            }
+            covered_events = {event for event, _role in direct | inherited}
+            contextual = {
+                (event, "contextual") for event in context_events - covered_events
             }
             if (
                 data["item"] != item_id
@@ -305,7 +346,9 @@ def validate_generic_graph(db: sqlite3.Connection) -> None:
                     (operation_id[1], operation_id[0]),
                 ).fetchone()[0]
                 or bound_parents != actual_parents
-                or direct | inherited != sources[operation_id]
+                or bound_context != actual_context
+                or len(data["context"]) != len(actual_context)
+                or direct | inherited | contextual != sources[operation_id]
             ):
                 raise ValueError("invalid_generic_graph")
         visiting.remove(operation_id)
@@ -367,9 +410,15 @@ def erase_generic_source(db: sqlite3.Connection, event_id: str) -> None:
             (row[0], row[1])
             for row in db.execute(
                 """SELECT DISTINCT child.audience_principal_id,child.item_id
-            FROM generic_memory_parents p
+            FROM (
+                SELECT operation_id,parent_operation_id AS source_operation_id,
+                    audience_principal_id FROM generic_memory_parents
+                UNION ALL
+                SELECT operation_id,context_operation_id AS source_operation_id,
+                    audience_principal_id FROM generic_memory_context
+            ) p
             JOIN generic_memory_operations parent
-                ON parent.operation_id=p.parent_operation_id
+                ON parent.operation_id=p.source_operation_id
                 AND parent.audience_principal_id=p.audience_principal_id
             JOIN generic_memory_operations child
                 ON child.operation_id=p.operation_id

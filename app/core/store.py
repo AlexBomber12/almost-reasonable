@@ -622,6 +622,7 @@ _SCHEMA_V7 = (
         expected_revision INTEGER,
         source_count INTEGER NOT NULL CHECK(source_count BETWEEN 1 AND 100),
         parent_count INTEGER NOT NULL CHECK(parent_count BETWEEN 0 AND 16),
+        context_count INTEGER NOT NULL CHECK(context_count BETWEEN 0 AND 16),
         status TEXT NOT NULL CHECK(status IN ('active','invalidated')),
         decided_at TEXT NOT NULL,
         model_identifier TEXT NOT NULL,
@@ -651,7 +652,7 @@ _SCHEMA_V7 = (
     """CREATE TABLE generic_memory_sources (
         operation_id TEXT NOT NULL,
         event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
-        role TEXT NOT NULL CHECK(role IN ('initiating','supporting','counterevidence')),
+        role TEXT NOT NULL CHECK(role IN ('initiating','supporting','counterevidence','contextual')),
         source_principal_id TEXT NOT NULL,
         retention_status TEXT NOT NULL CHECK(retention_status IN ('active','invalidated')),
         PRIMARY KEY(source_principal_id,operation_id,event_id,role),
@@ -669,6 +670,17 @@ _SCHEMA_V7 = (
             REFERENCES generic_memory_operations(audience_principal_id,operation_id),
         CHECK(operation_id <> parent_operation_id)
     )""",
+    """CREATE TABLE generic_memory_context (
+        operation_id TEXT NOT NULL,
+        context_operation_id TEXT NOT NULL,
+        audience_principal_id TEXT NOT NULL,
+        PRIMARY KEY(audience_principal_id,operation_id,context_operation_id),
+        FOREIGN KEY(audience_principal_id,operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id),
+        FOREIGN KEY(audience_principal_id,context_operation_id)
+            REFERENCES generic_memory_operations(audience_principal_id,operation_id),
+        CHECK(operation_id <> context_operation_id)
+    )""",
     """CREATE TABLE protected_reply_generic (
         operation_id TEXT NOT NULL REFERENCES agent_reply_operations(operation_id),
         generic_operation_id TEXT NOT NULL,
@@ -679,6 +691,7 @@ _SCHEMA_V7 = (
     )""",
     "CREATE INDEX generic_memory_sources_event ON generic_memory_sources(event_id)",
     "CREATE INDEX generic_memory_parents_parent ON generic_memory_parents(parent_operation_id)",
+    "CREATE INDEX generic_memory_context_source ON generic_memory_context(context_operation_id)",
     "CREATE INDEX generic_reply_count ON agent_reply_operations(operation_id) WHERE generic_count>0",
 )
 

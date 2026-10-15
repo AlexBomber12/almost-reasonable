@@ -99,21 +99,32 @@ extraction must appear in its persisted supporting or counterevidence roles.
 retry returns its original revision even after later revisions; changed bindings,
 stale heads, other participants' parents and unsupported sharing fail closed.
 
+Every generic memory actually shown in `ExtractionRequest.private_memories` is
+bound to the resulting revision by a protected contextual edge, even when the
+extractor declares no semantic parent. The store resolves exact item revisions
+to protected operation IDs inside the write transaction and retains their
+complete transitive source union. Contextual-only sources use a separate role
+and do not increase supporting or counterevidence counts. A visible prior
+revision of the target item is valid context; its own revision chain already
+supplies the source dependency. A replay keeps its original contextual binding
+when the current retrieval window changes.
+
 The v7 generic tables separate `generic_memory_items` and immutable operation
 identities from removable `generic_memory_payloads`. Item and operation IDs are
 scoped to each participant, so matching model-generated IDs remain independent
-through reads and erasure. Protected source roles and exact parent-operation
-edges retain the full union across prior item revisions
+through reads and erasure. `generic_memory_context` stores the exact exposed
+operation identities separately from semantic parents. Protected source roles,
+parent edges and contextual edges retain the full union across prior item revisions
 and consolidation levels, with a 100-edge and 32-revision bound. The graph digest binds retained
 content-free edges after deletion; active replay bindings live only with
 removable payloads. `protected_reply_generic` records which exact generic
 operations a later reply used. The validator checks counts, ownership, role
-union, parent cycles, exact replay bindings, canonical UTC decision/review times
+union, dependency cycles, exact replay bindings, canonical UTC decision/review times
 and reply dependencies before erasure or
 read eligibility. The synthetic v7 graph is capped at 128 lifetime generic
 operations and 4,096 generic reply links per database, so whole-graph validation
 has a finite cost; writes at either limit fail closed. Deleting any material
-source invalidates the entire affected item chain, parent descendants and
+source invalidates the entire affected item chain, parent and context descendants and
 dependent replies, while retaining only
 content-free recovery metadata. Old backups replay the external ledger into
 quarantine before reads are eligible. No live extractor or automatic periodic
