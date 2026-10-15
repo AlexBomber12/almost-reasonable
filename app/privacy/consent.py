@@ -44,7 +44,12 @@ class ConsentService:
         return None
 
     def grant(
-        self, context: TrustedPrivacyContext, grant: ConsentGrant
+        self,
+        context: TrustedPrivacyContext,
+        grant: ConsentGrant,
+        *,
+        source_check: Callable[[], object] | None = None,
+        authorized_check: Callable[[], object] | None = None,
     ) -> OperationResult:
         reason = self._authenticated(context, grant)
         if reason is not None:
@@ -55,7 +60,12 @@ class ConsentService:
                 actor_reference=context.actor_reference,
             )
             return OperationResult(False, reason)
-        created = self.ledger.insert_consent(context, grant)
+        created = self.ledger.insert_consent(
+            context,
+            grant,
+            source_check=source_check,
+            authorized_check=authorized_check,
+        )
         reason = "granted" if created else "already_granted"
         return OperationResult(created, reason)
 
@@ -119,6 +129,7 @@ class ConsentService:
         operation_id: str,
         revoked_at: datetime,
         correlation_id: str,
+        authorized_check: Callable[[], object] | None = None,
     ) -> OperationResult:
         if context.origin is not OperationOrigin.CONTROL:
             correlation_id = audit_correlation(
@@ -143,6 +154,7 @@ class ConsentService:
                     authentication_event_id=context.authentication_event_id,
                     revoked_at=revoked_at,
                     correlation_id=correlation_id,
+                    authorized_check=authorized_check,
                 )
                 reason = "revoked" if created else "already_revoked"
                 return OperationResult(created, reason)

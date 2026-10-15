@@ -42,6 +42,8 @@ class DeletionCoordinator:
         request: DeletionRequest,
         *,
         after_pending: Callable[[DeletionRequest], None] | None = None,
+        source_check: Callable[[], object] | None = None,
+        authorized_check: Callable[[], object] | None = None,
     ) -> DeletionOutcome:
         if context.origin is not OperationOrigin.CONTROL or (
             context.actor_reference != request.actor_reference
@@ -77,7 +79,12 @@ class DeletionCoordinator:
 
         if existing is None:
             self.ledger.insert_deletion(
-                context, request, DeletionDisposition.PENDING, "awaiting_erasure"
+                context,
+                request,
+                DeletionDisposition.PENDING,
+                "awaiting_erasure",
+                source_check=source_check,
+                authorized_check=authorized_check,
             )
         if after_pending is not None:
             after_pending(request)

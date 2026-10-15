@@ -247,6 +247,7 @@ _CONSENT_USE_RESULTS = {
     "not_yet_valid",
     "pre_dispatch_failure",
     "revoked",
+    "source_deleted",
 }
 _DELETION_RESULTS = {
     "pending:awaiting_erasure",
