@@ -418,8 +418,6 @@ class PrivacyLedger:
                 if existing != values:
                     raise ValueError("consent operation identity conflict")
             else:
-                if authorized_check is not None:
-                    authorized_check()
                 if source_check is not None and (
                     connection.execute(
                         "SELECT 1 FROM deletion_records WHERE principal_id=? AND content_reference=? "
@@ -445,6 +443,8 @@ class PrivacyLedger:
                     source_check is not None or grant.revision <= latest_revision
                 ):
                     raise ValueError("consent revision conflict")
+                if authorized_check is not None:
+                    authorized_check()
                 connection.execute(
                     "INSERT INTO consent_grants VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", values
                 )
@@ -793,8 +793,6 @@ class PrivacyLedger:
                 if existing != values[:8]:
                     raise ValueError("deletion operation identity conflict")
                 return False
-            if authorized_check is not None:
-                authorized_check()
             if source_check is not None:
                 if (
                     connection.execute(
@@ -806,6 +804,8 @@ class PrivacyLedger:
                 ):
                     raise ValueError("source deletion already requested")
                 source_check()
+            if authorized_check is not None:
+                authorized_check()
             connection.execute(
                 "INSERT INTO deletion_records VALUES(?,?,?,?,?,?,?,?,?,?,?)", values
             )

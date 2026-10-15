@@ -678,6 +678,55 @@ def test_final_deletion_boundary_rejects_revoked_session(journey, monkeypatch):
         ledger.deletion("delete-denied")
 
 
+@pytest.mark.parametrize("action", ["grant", "delete"])
+def test_revocation_during_final_source_check_prevents_control_write(
+    journey, monkeypatch, action
+):
+    clock, auth, store, ledger, gate, fake, config, a, b = journey
+    acknowledge(a)
+    source = source_for(a)
+    controls = a.app._privacy
+    original = controls._source_unfenced
+    calls = 0
+
+    def revoke_after_read(session, reference):
+        nonlocal calls
+        value = original(session, reference)
+        calls += 1
+        if calls == 2:
+            auth.revoke(a.cookies["ar_session"])
+        return value
+
+    monkeypatch.setattr(controls, "_source_unfenced", revoke_after_read)
+    if action == "grant":
+        assert (
+            post(a, "/api/privacy/grants", grant_for(source, "revoked-after-source"))[0]
+            == "401 Unauthorized"
+        )
+        assert ledger.consent_principal("consent:revoked-after-source") is None
+    else:
+        assert (
+            post(
+                a,
+                "/api/privacy/deletions",
+                {
+                    "operation_id": "revoked-after-source",
+                    "source": source,
+                    "confirm": "delete",
+                },
+            )[0]
+            == "401 Unauthorized"
+        )
+        with pytest.raises(KeyError):
+            ledger.deletion("revoked-after-source")
+        with store._open() as db:
+            assert db.execute(
+                "SELECT count(*) FROM private_payloads WHERE content=?",
+                ("Синтетический источник",),
+            ).fetchone() == (1,)
+    assert calls == 2
+
+
 def test_final_notice_and_revocation_boundaries_reject_revoked_session(
     journey, monkeypatch
 ):
