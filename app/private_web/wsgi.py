@@ -554,19 +554,22 @@ document.querySelectorAll('form[data-endpoint]').forEach((form) => {
                 'X-CSRF-Token': document.querySelector('main').dataset.csrf},
       body: JSON.stringify(data)
     });
-    const result = await response.json();
-    alert(response.ok ? JSON.stringify(result) : 'Операция отклонена');
-    if (response.ok) {
-      if (form.dataset.endpoint === '/api/privacy/deletions') location.href = '/privacy';
-      else location.reload();
+    if (!response.ok) {
+      alert('Операция отклонена');
+      return;
     }
+    const result = await response.json();
+    alert(JSON.stringify(result));
+    if (form.dataset.endpoint === '/api/privacy/deletions') location.href = '/privacy';
+    else location.reload();
   });
 });
 const logout = document.getElementById('privacy-logout');
 if (logout) logout.addEventListener('click', async () => {
-  await fetch('/logout', {method: 'POST', credentials: 'same-origin',
+  const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
     headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
-  location.href = '/login';
+  if (response.ok) location.href = '/login';
+  else alert('Не удалось выйти. Сессия может быть активна.');
 });
 """.encode()
         return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body

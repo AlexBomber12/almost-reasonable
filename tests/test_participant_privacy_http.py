@@ -3,6 +3,7 @@
 from datetime import timedelta
 from dataclasses import replace
 import json
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -597,6 +598,71 @@ def test_source_selection_and_logout_stay_available_when_notice_unacknowledged(j
         == "303 See Other"
     )
     assert a.request("GET", "/privacy")[0] == "401 Unauthorized"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
+def test_privacy_browser_reports_rejected_mutations_and_failed_logout(journey):
+    a = journey[-2]
+    status, _, script = a.request("GET", "/assets/privacy.js")
+    assert status == "200 OK"
+    harness = r"""
+const fs = require('node:fs');
+const vm = require('node:vm');
+const script = fs.readFileSync(0, 'utf8');
+
+async function scenario(endpoint, response, expectedAlert, expectedLocation) {
+  const listeners = {};
+  const alerts = [];
+  const form = {
+    dataset: {endpoint},
+    addEventListener(name, callback) { listeners.submit = callback; }
+  };
+  const logout = {
+    addEventListener(name, callback) { listeners.logout = callback; }
+  };
+  const location = {href: '/privacy', reload() { this.href = 'reloaded'; }};
+  const context = {
+    document: {
+      querySelectorAll() { return [form]; },
+      querySelector() { return {dataset: {csrf: 'csrf'}}; },
+      getElementById() { return logout; }
+    },
+    FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
+    crypto: {randomUUID() { return 'operation'; }},
+    fetch: async () => response,
+    alert(message) { alerts.push(message); },
+    location
+  };
+  vm.runInNewContext(script, context);
+  if (endpoint === '/logout') await listeners.logout();
+  else await listeners.submit({preventDefault() {}});
+  if (alerts.length !== (expectedAlert === undefined ? 0 : 1) ||
+      (expectedAlert !== undefined && alerts[0] !== expectedAlert) ||
+      location.href !== expectedLocation) {
+    throw Error(JSON.stringify({endpoint, alerts, location: location.href}));
+  }
+}
+
+(async () => {
+  await scenario('/api/privacy/grants',
+    {ok: false, json() { throw Error('HTML error body'); }},
+    'Операция отклонена', '/privacy');
+  await scenario('/api/privacy/revocations',
+    {ok: false, json() { throw Error('HTML error body'); }},
+    'Операция отклонена', '/privacy');
+  await scenario('/api/privacy/deletions',
+    {ok: false, json() { throw Error('HTML error body'); }},
+    'Операция отклонена', '/privacy');
+  await scenario('/logout', {ok: false},
+    'Не удалось выйти. Сессия может быть активна.', '/privacy');
+  await scenario('/logout', {ok: true},
+    undefined, '/login');
+})().catch(error => { console.error(error); process.exitCode = 1; });
+"""
+    result = subprocess.run(
+        ["node", "-e", harness], input=script, capture_output=True, check=False
+    )
+    assert result.returncode == 0, result.stderr.decode()
 
 
 def test_concurrent_same_grant_and_revocation_retry(journey, monkeypatch):
