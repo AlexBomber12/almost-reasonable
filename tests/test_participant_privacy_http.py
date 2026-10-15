@@ -130,7 +130,7 @@ def test_exact_grant_revocation_and_deletion_with_isolation(journey):
     grant = {
         "operation_id": "grant-1",
         "source": source,
-        "audience": "named-recipient",
+        "audience": "public",
         "purpose": "identifiable_quotation",
         "validity_hours": 1,
     }
@@ -138,7 +138,9 @@ def test_exact_grant_revocation_and_deletion_with_isolation(journey):
     assert post(a, "/api/privacy/grants", grant)[0] == "201 Created"
     assert post(a, "/api/privacy/grants", grant)[0] == "200 OK"
     assert (
-        post(a, "/api/privacy/grants", {**grant, "audience": "public"})[0]
+        post(a, "/api/privacy/grants", {**grant, "purpose": "identifiable_disclosure"})[
+            0
+        ]
         == "409 Conflict"
     )
     controls = a.app._privacy
@@ -147,7 +149,7 @@ def test_exact_grant_revocation_and_deletion_with_isolation(journey):
         controls.context(auth.authenticate(a.cookies["ar_session"])),
         principal_id="participant-a",
         content_reference=source,
-        audience="named-recipient",
+        audience="public",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="use-1",
         dispatch=lambda: dispatched.append("sent"),
@@ -165,7 +167,7 @@ def test_exact_grant_revocation_and_deletion_with_isolation(journey):
         controls.context(auth.authenticate(a.cookies["ar_session"])),
         principal_id="participant-a",
         content_reference=source,
-        audience="named-recipient",
+        audience="public",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="use-2",
         dispatch=lambda: dispatched.append("bad"),
@@ -219,10 +221,85 @@ def grant_for(source, operation_id="grant-1"):
     return {
         "operation_id": operation_id,
         "source": source,
-        "audience": "named-recipient",
+        "audience": "public",
         "purpose": "identifiable_quotation",
         "validity_hours": 1,
     }
+
+
+def test_named_recipient_without_identity_cannot_be_granted(journey):
+    *_, a, b = journey
+    acknowledge(a)
+    source = source_for(a)
+    assert (
+        b'value="named-recipient"'
+        not in a.request(
+            "GET", "/privacy/source", extra_environ={"QUERY_STRING": f"ref={source}"}
+        )[2]
+    )
+    assert (
+        post(
+            a,
+            "/api/privacy/grants",
+            grant_for(source) | {"audience": "named-recipient"},
+        )[0]
+        == "400 Bad Request"
+    )
+
+
+def test_expired_grant_can_be_renewed_but_revoked_scope_stays_blocked(journey):
+    clock, auth, store, ledger, gate, fake, config, a, b = journey
+    acknowledge(a)
+    source = source_for(a)
+    first = grant_for(source, "grant-first")
+    first["audience"] = "public"
+    assert post(a, "/api/privacy/grants", first)[0] == "201 Created"
+    assert (
+        post(
+            a,
+            "/api/privacy/grants",
+            grant_for(source, "too-early") | {"audience": "public"},
+        )[0]
+        == "409 Conflict"
+    )
+    clock.timestamp += 3600
+    a.login("alice", "synthetic-password-a")
+    renewed = grant_for(source, "grant-renewed") | {"audience": "public"}
+    assert post(a, "/api/privacy/grants", renewed)[0] == "201 Created"
+    with ledger._open() as db:
+        assert db.execute(
+            "SELECT revision FROM consent_grants WHERE principal_id=? AND content_reference=? "
+            "ORDER BY revision",
+            ("participant-a", source),
+        ).fetchall() == [(1,), (2,)]
+    result = a.app._privacy.consent.authorize(
+        a.app._privacy.context(auth.authenticate(a.cookies["ar_session"])),
+        principal_id="participant-a",
+        content_reference=source,
+        audience="public",
+        purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
+        correlation_id="renewed-use",
+        dispatch=lambda: None,
+    )
+    assert result.allowed and result.consent_id == "consent:grant-renewed"
+    assert (
+        post(
+            a,
+            "/api/privacy/revocations",
+            {"operation_id": "revoke-renewed", "consent_id": "consent:grant-renewed"},
+        )[0]
+        == "201 Created"
+    )
+    clock.timestamp += 3600
+    a.login("alice", "synthetic-password-a")
+    assert (
+        post(
+            a,
+            "/api/privacy/grants",
+            grant_for(source, "after-revoke") | {"audience": "public"},
+        )[0]
+        == "409 Conflict"
+    )
 
 
 @pytest.mark.parametrize(
@@ -369,7 +446,7 @@ def test_restart_retries_expiry_and_foreign_operation_ids(journey):
         controls.context(reopened_auth.authenticate(a.cookies["ar_session"])),
         principal_id="participant-a",
         content_reference=source,
-        audience="named-recipient",
+        audience="public",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="after-expiry",
         dispatch=lambda: called.append("bad"),
@@ -489,9 +566,9 @@ def test_grant_scope_and_deletion_intent_remove_current_use(journey):
     controls = a.app._privacy
     context = controls.context(auth.authenticate(a.cookies["ar_session"]))
     for reference, audience, purpose in (
-        (source, "public", ConsentPurpose.IDENTIFIABLE_QUOTATION),
-        (source, "named-recipient", ConsentPurpose.IDENTIFIABLE_DISCLOSURE),
-        ("web-event:other", "named-recipient", ConsentPurpose.IDENTIFIABLE_QUOTATION),
+        (source, "named-recipient", ConsentPurpose.IDENTIFIABLE_QUOTATION),
+        (source, "public", ConsentPurpose.IDENTIFIABLE_DISCLOSURE),
+        ("web-event:other", "public", ConsentPurpose.IDENTIFIABLE_QUOTATION),
     ):
         outcome = controls.consent.authorize(
             context,
@@ -530,7 +607,7 @@ def test_grant_scope_and_deletion_intent_remove_current_use(journey):
         context,
         principal_id="participant-a",
         content_reference=source,
-        audience="named-recipient",
+        audience="public",
         purpose=ConsentPurpose.IDENTIFIABLE_QUOTATION,
         correlation_id="after-deletion",
         dispatch=lambda: pytest.fail("deleted use dispatched"),
@@ -1211,7 +1288,11 @@ def test_grant_races_fail_closed_for_missing_foreign_and_changed_binding(
     )
 
     def changed_commit(context, grant, **kwargs):
-        original(context, replace(grant, audience="public"), **kwargs)
+        original(
+            context,
+            replace(grant, purpose=ConsentPurpose.IDENTIFIABLE_DISCLOSURE),
+            **kwargs,
+        )
         raise ValueError("synthetic changed request")
 
     monkeypatch.setattr(controls.consent, "grant", changed_commit)

@@ -429,18 +429,34 @@ class PrivacyLedger:
                     raise ValueError("source deletion prevents consent")
                 if source_check is not None:
                     source_check()
-                latest_revision = connection.execute(
-                    "SELECT MAX(revision) FROM consent_grants WHERE principal_id=? "
-                    "AND content_reference=? AND audience=? AND purpose=?",
+                latest = connection.execute(
+                    "SELECT g.revision,g.expires_at,r.revoked_at FROM consent_grants g "
+                    "LEFT JOIN consent_revocations r ON r.consent_id=g.consent_id "
+                    "WHERE g.principal_id=? AND g.content_reference=? "
+                    "AND g.audience=? AND g.purpose=? ORDER BY g.revision DESC LIMIT 1",
                     (
                         grant.principal_id,
                         grant.content_reference,
                         grant.audience,
                         grant.purpose.value,
                     ),
-                ).fetchone()[0]
-                if latest_revision is not None and (
-                    source_check is not None or grant.revision <= latest_revision
+                ).fetchone()
+                if source_check is not None and (
+                    (latest is None and grant.revision != 1)
+                    or (
+                        latest is not None
+                        and (
+                            grant.revision != latest[0] + 1
+                            or latest[2] is not None
+                            or _time(latest[1]) > grant.granted_at
+                        )
+                    )
+                ):
+                    raise ValueError("consent revision conflict")
+                if (
+                    source_check is None
+                    and latest is not None
+                    and grant.revision <= latest[0]
                 ):
                     raise ValueError("consent revision conflict")
                 if authorized_check is not None:

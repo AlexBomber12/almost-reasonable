@@ -116,7 +116,6 @@ class ParticipantPrivacyControls:
             ).fetchall()
         now = self.clock()
         audience_names = {
-            "named-recipient": "Названный синтетический получатель",
             "public": "Публичная аудитория",
         }
         purpose_names = {
@@ -220,7 +219,6 @@ class ParticipantPrivacyControls:
             f'<input type="hidden" name="source" value="{ref}">'
             '<label>Аудитория <select name="audience">'
             '<option value="" selected disabled>Выберите аудиторию</option>'
-            '<option value="named-recipient">Названный синтетический получатель</option>'
             '<option value="public">Публичная аудитория</option></select></label>'
             '<label>Цель <select name="purpose">'
             '<option value="" selected disabled>Выберите цель</option>'
@@ -282,7 +280,7 @@ class ParticipantPrivacyControls:
         if (
             type(audience) is not str
             or type(purpose) is not str
-            or audience not in {"named-recipient", "public"}
+            or audience != "public"
             or purpose not in {p.value for p in ConsentPurpose}
             or type(hours) is not int
             or hours not in {1, 24, 168}
@@ -307,6 +305,12 @@ class ParticipantPrivacyControls:
             return 200, {"status": "already_granted", "consent_id": prior[0]}
         context = self.context(session)
         now = self.clock()
+        with closing(self.ledger._open()) as db:
+            latest_revision = db.execute(
+                "SELECT MAX(revision) FROM consent_grants WHERE principal_id=? "
+                "AND content_reference=? AND audience=? AND purpose=?",
+                (session.principal_id.value, source, audience, purpose),
+            ).fetchone()[0]
         grant = ConsentGrant(
             "consent:" + op,
             op,
@@ -317,7 +321,7 @@ class ParticipantPrivacyControls:
             now,
             now + timedelta(hours=hours),
             context.actor_reference,
-            1,
+            1 if latest_revision is None else latest_revision + 1,
             "grant:" + op,
             context.authentication_event_id,
         )

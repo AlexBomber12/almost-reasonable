@@ -33,7 +33,11 @@ available when the notice changes or private reads are fenced.
 
 The source view shows the exact escaped participant-owned immutable input. The
 participant can grant a single exact source/audience/purpose scope for 1, 24 or
-168 hours, revoke its consent ID, and confirm source deletion. All changes use
+168 hours, revoke its consent ID, and confirm source deletion. The current UI
+offers only the explicit public audience; named recipients remain unavailable
+until a specific recipient identity can be bound to the grant. An expired,
+unrevoked scope can receive a new revision, while a revoked scope cannot be
+reactivated with a new operation ID. All changes use
 the existing session, exact Host/Origin and CSRF checks; operation IDs are
 bounded and durable. Server-side timestamps, principal and authenticated actor
 come from the current session and trusted clock. The ledger serializes the final
