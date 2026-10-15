@@ -19,6 +19,7 @@ from app.privacy.application import PrivacyReadBlocked
 
 from .contracts import MemoryRecord, RetrievalPurpose, RetrievalRequest
 from .read_store import CognitionReadStore
+from .generic_store import MAX_GENERIC_SOURCES, GenericMemoryStore
 from .retrieval import MemoryContextSelector
 
 
@@ -51,7 +52,14 @@ class ModelMemory:
         closed = (
             (
                 self.kind,
-                {"durable_interest", "belief_or_hypothesis", "goal_or_intention"},
+                {
+                    "durable_interest",
+                    "belief_or_hypothesis",
+                    "goal_or_intention",
+                    "unresolved_question",
+                    "candidate_useful_memory",
+                    "contradiction_counterevidence",
+                },
             ),
             (
                 self.status,
@@ -84,8 +92,18 @@ class ModelMemory:
         if self.priority is not None:
             if type(self.priority) is not int or not 0 <= self.priority <= 100:
                 raise ValueError("invalid model memory priority")
+        bound = (
+            MAX_GENERIC_SOURCES
+            if self.kind
+            in {
+                "unresolved_question",
+                "candidate_useful_memory",
+                "contradiction_counterevidence",
+            }
+            else 50
+        )
         for value in (self.supporting_evidence_count, self.counterevidence_count):
-            if type(value) is not int or not 0 <= value <= 50:
+            if type(value) is not int or not 0 <= value <= bound:
                 raise ValueError("invalid model memory evidence count")
 
     @classmethod
@@ -150,6 +168,7 @@ class MemoryModelRequest:
     conversation: ModelRequest
     memories: tuple[ModelMemory, ...]
     memories_omitted: bool
+    generic_operation_ids: tuple[str, ...] = ()
 
     def serialize(self) -> str:
         serialized = self._serialized()
@@ -196,6 +215,7 @@ class MemoryConversationAssembler:
         self._state = SelfStateStore(store)
         self._read = CognitionReadStore(store, self._state)
         self._selector = MemoryContextSelector(store, self._state)
+        self._generic = GenericMemoryStore(store)
 
     def build(self, principal, event_id, db):
         events = self._store.retrieve_private_events_in_commit_order(
@@ -212,8 +232,38 @@ class MemoryConversationAssembler:
             _connection=db,
         )
         dependencies = {
-            (read.candidate.item_id, read.candidate.revision): read.evidence_event_ids
+            (
+                self._selector._record(
+                    read.candidate,
+                    read.decided_at,
+                    read.decision_origin,
+                    read.revision_reason,
+                    read.core_self_version,
+                    read.model_identifier,
+                    read.prompt_version,
+                ).memory_kind,
+                read.candidate.item_id,
+                read.candidate.revision,
+            ): read.evidence_event_ids
             for read in authorized
+        }
+        dependencies.update(
+            {
+                (
+                    read.view.memory_kind,
+                    read.view.item_id,
+                    read.view.revision,
+                ): read.source_event_ids
+                for read in self._generic.current(principal, _connection=db)
+            }
+        )
+        generic_operations = {
+            (
+                read.view.memory_kind,
+                read.view.item_id,
+                read.view.revision,
+            ): read.operation_id
+            for read in self._generic.current(principal, _connection=db)
         }
         selection = self._selector.select(
             principal,
@@ -240,7 +290,9 @@ class MemoryConversationAssembler:
         ):
             raise PrivacyReadBlocked("current_input_exceeds_combined_budget")
         for record in selection.records:
-            evidence = dependencies[(record.item_id, record.revision)]
+            evidence = dependencies[
+                (record.memory_kind, record.item_id, record.revision)
+            ]
             proposed = replace(
                 request, memories=(*request.memories, ModelMemory.from_record(record))
             )
@@ -254,7 +306,20 @@ class MemoryConversationAssembler:
                 request = replace(request, memories_omitted=True)
                 continue
             sources.update(evidence)
-            request = proposed
+            generic_operation = generic_operations.get(
+                (record.memory_kind, record.item_id, record.revision)
+            )
+            request = (
+                proposed
+                if generic_operation is None
+                else replace(
+                    proposed,
+                    generic_operation_ids=(
+                        *proposed.generic_operation_ids,
+                        generic_operation,
+                    ),
+                )
+            )
         history_omitted = False
         for event in reversed(events[:-1]):
             history = build_model_request(
@@ -291,4 +356,6 @@ class MemoryConversationAssembler:
                 history_omitted=history_omitted or len(events) == 100,
             ),
         )
-        return request, tuple(sorted(sources))
+        return replace(
+            request, generic_operation_ids=tuple(sorted(request.generic_operation_ids))
+        ), tuple(sorted(sources))

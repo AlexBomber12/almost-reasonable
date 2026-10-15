@@ -1,7 +1,29 @@
 """Remove only additive v6 objects when constructing genuine historical fixtures."""
 
 
+def remove_v7(db):
+    db.execute("DROP TABLE protected_reply_generic")
+    for index in (
+        "generic_memory_sources_event",
+        "generic_memory_parents_parent",
+        "generic_memory_context_source",
+        "generic_reply_count",
+    ):
+        db.execute(f"DROP INDEX {index}")
+    for table in (
+        "generic_memory_context",
+        "generic_memory_parents",
+        "generic_memory_sources",
+        "generic_memory_payloads",
+        "generic_memory_operations",
+        "generic_memory_items",
+    ):
+        db.execute(f"DROP TABLE {table}")
+    db.execute("ALTER TABLE agent_reply_operations DROP COLUMN generic_count")
+
+
 def remove_v6(db):
+    remove_v7(db)
     for table in (
         "protected_mission_shared",
         "shared_mission_document",

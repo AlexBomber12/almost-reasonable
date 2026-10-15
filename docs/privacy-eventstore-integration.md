@@ -4,7 +4,7 @@ Current synthetic integration and exact scenario status are documented in
 [integration-contracts.md](integration-contracts.md) and the validated
 [acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
 below describe those schema versions; current live synthetic storage is EventStore
-v6, with private/shared reply edges and mission erasure. Participant privacy-control
+v7, with private/shared/generic reply edges and mission erasure. Participant privacy-control
 web ingress and production restore activation remain absent.
 
 This is Stage 0 synthetic integration. `app/privacy/application.py` implements
@@ -172,8 +172,9 @@ one-to-one event binding is checked by the v5 graph validator. Payload erasure
 retains this sequence with the tombstone; v4 quarantine validation omits both
 v5-only metadata checks while still verifying the exact v4 schema and graph.
 
-INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
-with EventStore v6 protected cross-participant edges and mission evidence. The
+INT-05B added the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence, retained
+in v7. The
 older component description above does not authorize production sharing.
 
 INT-11 research reports use existing `AgentOutputStore` reply payloads and the
@@ -183,3 +184,15 @@ remove the dependent research reply; old-backup reconciliation applies the same
 erasure before quarantine eligibility. Research intent/dispatch/outcome metadata
 in existing provider tables contains opaque operation correlations and fixed
 fixture/configuration/outcome values only, never private text, source IDs or handles.
+
+INT-12 adds v7 `generic_memory_items`, `generic_memory_operations`, removable
+`generic_memory_payloads`, protected source and parent edges, and
+`protected_reply_generic`. Erasure validates the complete graph before mutation,
+invalidates all revisions of an affected item and its parent-edge descendants,
+then removes their payloads and all replies bound to their exact operations.
+This covers a source added to a parent in a later revision even when an earlier
+descendant reply could not have listed that future source event. All dependent
+reply payloads disappear; unrelated participant records remain available.
+Reconciliation retains pending-first intent in the external ledger. A failed
+graph check rolls back the application transaction and blocks reads. There is
+no atomic commit across the ledger and application database.

@@ -9,6 +9,7 @@ import hashlib
 
 from app.cognition.conversation_context import MemoryConversationAssembler
 from app.cognition.pipeline import CognitionEngine
+from app.cognition.contracts import CognitionCapabilities
 from app.cognition.synthetic import SyntheticMemoryExtractor
 from app.cognition.shared import SharedIntelligence
 from app.cognition.shared_context import assemble_shared
@@ -88,6 +89,7 @@ class Stage0ConversationRuntime(ConversationService):
         clock: Callable[[], datetime] = _utc_now,
         checkpoint: Callable[[str], None] = lambda _point: None,
         memory_extractor: SyntheticMemoryExtractor | None = None,
+        cognition_capabilities: CognitionCapabilities = CognitionCapabilities(),
         shared_intelligence: SharedIntelligence | None = None,
         context_limits: ContextLimits = ContextLimits(32_000, 99),
         research_bridge: SyntheticResearchBridge | None = None,
@@ -117,6 +119,8 @@ class Stage0ConversationRuntime(ConversationService):
             and type(memory_extractor) is not SyntheticMemoryExtractor
         ):
             raise TypeError("memory extraction requires an exact synthetic fixture")
+        if type(cognition_capabilities) is not CognitionCapabilities:
+            raise TypeError("trusted cognition capabilities required")
         if shared_intelligence is not None and (
             type(shared_intelligence) is not SharedIntelligence
             or shared_intelligence._events is not event_store
@@ -136,6 +140,7 @@ class Stage0ConversationRuntime(ConversationService):
                 event_store,
                 SelfStateStore(event_store),
                 extractor=memory_extractor,
+                capabilities=cognition_capabilities,
                 clock=clock,
                 authorize=privacy_gate.authorized,
                 expose_current_candidates=False,
@@ -355,6 +360,7 @@ class Stage0ConversationRuntime(ConversationService):
                 request, sources = MemoryConversationAssembler(
                     self._event_store, private_limits
                 ).build(principal, event_id, db)
+                generic_operations = request.generic_operation_ids
                 shared_operations = ()
                 if self._shared is not None:
                     request, shared_operations = assemble_shared(
@@ -378,6 +384,7 @@ class Stage0ConversationRuntime(ConversationService):
                     request.conversation.core_self_version,
                     sources,
                     shared_operations,
+                    generic_operations,
                 )
                 return self._outputs.reserve_reply(
                     principal, operation, _connection=db

@@ -19,7 +19,7 @@
     "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11"
   },
   "configuration": {
-    "event_store": 6,
+    "event_store": 7,
     "threads_store": 10,
     "stage0_journal": 1,
     "core_self": "core-self-v1",
@@ -975,9 +975,9 @@
         "H": "Russian and semantic screening corpus measurements; no language/privacy proof.",
         "M": "Recorded assessment anchors only; real-model judgment and fluent-human calibration unavailable."
       },
-      "stage0_connection": "BLOCKED",
+      "stage0_connection": "PASS",
       "complete_mvp": "BLOCKED",
-      "synthetic_scope": "Private source, memory and approved shared record bind later replies; current deletion replay erases old quarantine.",
+      "synthetic_scope": "Explicitly enabled synthetic private generic memory persistence, two-parent and second-level consolidation, exact provenance for every extractor-visible generic memory, later authorized conversation, complete source, parent and contextual dependency erasure, and old-backup quarantine replay. No live model adapter or participant deletion UI.",
       "evidence": [
         {
           "layer": "connected integration",
@@ -1072,12 +1072,122 @@
             "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_intent]",
             "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_application]"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Authenticated PrivateWebApplication WSGI and opt-in CognitionEngine",
+          "components": ["AuthStore", "PrivateWebApplication", "SyntheticMemoryExtractor", "CognitionEngine", "GenericMemoryStore", "MemoryContextSelector", "AgentOutputStore", "EventStore"],
+          "sink": "versioned private graph, protected reply dependencies and later fake-model input",
+          "risks": ["restart", "adversarial", "concurrency"],
+          "scope": "Synthetic private inputs and fake extraction; ordinary participant deletion UI is separate work.",
+          "node_ids": [
+            "tests/test_generic_memory.py::test_multilevel_private_consolidation_replay_restart_and_erasure",
+            "tests/test_generic_memory.py::test_later_trusted_conversation_uses_consolidated_private_memory",
+            "tests/test_generic_memory.py::test_undeclared_exposed_memory_is_erased_before_later_model_input",
+            "tests/test_generic_memory.py::test_partial_semantic_parents_still_bind_all_exposed_context",
+            "tests/test_generic_memory.py::test_contextual_dependencies_cross_levels_and_target_revision",
+            "tests/test_generic_memory.py::test_contextual_operation_replay_keeps_original_snapshot_after_restart",
+            "tests/test_generic_memory.py::test_contextual_erasure_keeps_same_ids_in_other_participant_graph",
+            "tests/test_generic_memory.py::test_every_kind_retains_undeclared_exposed_source_without_parent[False-unresolved_question]",
+            "tests/test_generic_memory.py::test_every_kind_retains_undeclared_exposed_source_without_parent[False-candidate_useful_memory]",
+            "tests/test_generic_memory.py::test_every_kind_retains_undeclared_exposed_source_without_parent[False-contradiction_counterevidence]",
+            "tests/test_generic_memory.py::test_every_kind_retains_undeclared_exposed_source_without_parent[True-unresolved_question]",
+            "tests/test_generic_memory.py::test_every_kind_retains_undeclared_exposed_source_without_parent[True-candidate_useful_memory]",
+            "tests/test_generic_memory.py::test_every_kind_retains_undeclared_exposed_source_without_parent[True-contradiction_counterevidence]",
+            "tests/test_generic_memory.py::test_authenticated_wsgi_multilevel_consolidation_reaches_later_private_context",
+            "tests/test_generic_memory.py::test_later_parent_revision_deletion_invalidates_earlier_descendant_reply",
+            "tests/test_generic_memory.py::test_same_generic_item_id_is_private_to_each_participant",
+            "tests/test_generic_memory.py::test_same_generic_operation_id_is_private_to_each_participant",
+            "tests/test_generic_memory.py::test_counter_only_initiator_is_not_supporting_evidence",
+            "tests/test_generic_memory.py::test_generic_authorization_rejects_hidden_stale_and_disabled_parents",
+            "tests/test_generic_memory.py::test_generic_extraction_does_not_expose_typed_candidate_dependencies",
+            "tests/test_generic_memory.py::test_generic_proposal_must_bind_every_exposed_evidence_event",
+            "tests/test_generic_memory.py::test_generic_extraction_cannot_persist_typed_proposal_from_generic_context[interest]",
+            "tests/test_generic_memory.py::test_generic_extraction_cannot_persist_typed_proposal_from_generic_context[belief]",
+            "tests/test_generic_memory.py::test_generic_extraction_cannot_persist_typed_proposal_from_generic_context[goal]",
+            "tests/test_generic_memory.py::test_generic_snapshot_change_during_inference_and_retrieval_hint",
+            "tests/test_generic_memory.py::test_extractor_generic_view_is_bounded_and_parents_must_be_exposed[32]",
+            "tests/test_generic_memory.py::test_extractor_generic_view_is_bounded_and_parents_must_be_exposed[1200]",
+            "tests/test_generic_memory.py::test_generic_write_rechecks_full_memory_snapshot_inside_transaction",
+            "tests/test_generic_memory.py::test_context_source_deletion_between_snapshot_check_and_commit",
+            "tests/test_generic_memory.py::test_contextual_source_union_bound_rejects_atomically",
+            "tests/test_generic_memory.py::test_stale_or_foreign_context_head_rejects_whole_write",
+            "tests/test_generic_memory.py::test_invalid_context_snapshot_is_rejected_without_write[exposed0]",
+            "tests/test_generic_memory.py::test_invalid_context_snapshot_is_rejected_without_write[exposed1]",
+            "tests/test_generic_memory.py::test_invalid_context_snapshot_is_rejected_without_write[exposed2]",
+            "tests/test_generic_memory.py::test_invalid_context_snapshot_is_rejected_without_write[exposed3]",
+            "tests/test_generic_memory.py::test_invalid_context_snapshot_is_rejected_without_write[exposed4]",
+            "tests/test_generic_memory.py::test_invalid_context_snapshot_is_rejected_without_write[exposed5]",
+            "tests/test_generic_memory.py::test_generic_write_rechecks_typed_candidates_inside_transaction",
+            "tests/test_generic_memory.py::test_inherited_dependency_bound_rejects_whole_consolidation",
+            "tests/test_generic_memory.py::test_generic_combined_budget_omits_whole_memory_and_its_edges",
+            "tests/test_generic_memory.py::test_revision_budget_omits_generic_record_without_state_head_lookup",
+            "tests/test_generic_memory.py::test_generic_retrieval_counts_every_model_facing_field",
+            "tests/test_generic_memory.py::test_typed_belief_overflow_does_not_hide_same_id_generic_record",
+            "tests/test_generic_memory.py::test_generic_revision_rejects_non_integer_expected_value[True]",
+            "tests/test_generic_memory.py::test_generic_revision_rejects_non_integer_expected_value[1.0]",
+            "tests/test_generic_memory.py::test_unhashable_generic_parent_id_is_rejected",
+            "tests/test_generic_memory.py::test_conversation_accepts_valid_generic_source_union_above_typed_bound",
+            "tests/test_memory_conversation_context.py::test_generic_model_memory_evidence_bound_matches_persisted_graph",
+            "tests/test_generic_memory.py::test_reply_requires_complete_exact_generic_dependencies",
+            "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[unresolved_question]",
+            "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[candidate_useful_memory]",
+            "tests/test_generic_memory.py::test_every_supported_generic_kind_is_durable[contradiction_counterevidence]",
+            "tests/test_generic_memory.py::test_review_state_cannot_be_upgraded_and_revision_history_is_bounded"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "EventStore migration, protected graph validation and quarantined restore",
+          "components": ["EventStore", "GenericMemoryStore", "EventStoreErasureAdapter", "QuarantinedRestore"],
+          "sink": "atomic v7 schema, fail-closed graph, absent deleted payloads",
+          "risks": ["restart", "crash", "adversarial"],
+          "scope": "Local SQLite/WAL and separate guarded Python process only.",
+          "node_ids": [
+            "tests/test_generic_memory.py::test_genuine_v6_migration_rolls_back_atomically_then_preserves_rows",
+            "tests/test_generic_memory.py::test_real_process_exit_at_generic_commit_boundary[inside_transaction-False]",
+            "tests/test_generic_memory.py::test_real_process_exit_at_generic_commit_boundary[after_commit-True]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[missing_union]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[missing_edge]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[altered_edge]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[foreign_edge]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[missing_union]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[role_inflation]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[missing_binding]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[changed_binding]",
+            "tests/test_generic_memory.py::test_context_graph_corruption_blocks_reads_and_erasure[wrong_count]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[same_item_parent]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[missing_comparison_field]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[non_object_binding]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[missing_proposed]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[extra_binding_key]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[invalid_proposed]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[naive_proposed]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[non_utc_proposed]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[noncanonical_proposed]",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[null_proposed]",
+            "tests/test_generic_memory.py::test_generic_store_rejects_invalid_decision_time[decided_at0]",
+            "tests/test_generic_memory.py::test_generic_store_rejects_invalid_decision_time[not-a-time]",
+            "tests/test_generic_memory.py::test_generic_store_rejects_invalid_decision_time[decided_at2]",
+            "tests/test_generic_memory.py::test_corrupt_generic_decision_time_fails_before_extractor_sort[2026-03-01T10:00:00]",
+            "tests/test_generic_memory.py::test_corrupt_generic_decision_time_fails_before_extractor_sort[2026-03-01T10:00:00+01:00]",
+            "tests/test_generic_memory.py::test_corrupt_generic_decision_time_fails_before_extractor_sort[2026-03-01 10:00:00+00:00]",
+            "tests/test_generic_memory.py::test_corrupt_generic_decision_time_fails_before_extractor_sort[not-a-time0]",
+            "tests/test_generic_memory.py::test_corrupt_generic_decision_time_fails_before_extractor_sort[not-a-time1]",
+            "tests/test_generic_memory.py::test_corrupt_generic_review_time_fails_before_read",
+            "tests/test_generic_memory.py::test_orphaned_generic_operation_with_sources_fails_closed",
+            "tests/test_generic_memory.py::test_generic_graph_operation_limit_blocks_growth_and_corrupt_oversize",
+            "tests/test_generic_memory.py::test_generic_reply_link_limit_is_enforced_before_reservation",
+            "tests/test_generic_memory.py::test_corrupt_generic_graph_blocks_erasure_and_reads[cycle]",
+            "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[missing_link]",
+            "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[foreign_link]",
+            "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[missing_source]"
+          ]
         }
       ],
-      "missing_connections": [
-        "Generic model-guided consolidation and its complete cross-item persistence/provenance are absent. Connected tested private/shared derivations do not implement generic consolidation."
-      ],
+      "missing_connections": [],
       "later_stage_requirements": [
+        "Arbitrary model-guided consolidation, a live extractor and independent semantic corroboration are not demonstrated; supported generic kinds and explicit private parent revisions are the synthetic scope.",
         "Authenticated deletion UI, production retention and encrypted backup/restore activation fences; no forensic or external processor deletion claim."
       ]
     },
@@ -1159,7 +1269,7 @@
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "Model/prompt-version migration behavioral continuity and calibrated independent source assessment; generic consolidation and research evidence bridge."
+        "Model/prompt-version migration behavioral continuity and calibrated independent source assessment."
       ]
     },
     {
@@ -1557,7 +1667,6 @@
     }
   ],
   "release_blockers": [
-    "SCN-07: define supported generic consolidation persistence and complete cross-item dependency/erasure semantics, or narrow the approved Stage 0 exit scope explicitly.",
     "SCN-11: implement authenticated participant notice/consent/revoke/delete ingress with exact content/audience/purpose/validity, CSRF and replay checks.",
     "SCN-12: extend the same cross-channel adversarial corpus through research output and delayed mission retrieval across restart; current mapped slices cannot establish that combined journey.",
     "Calibrate recorded H/M anchors with fluent human reviewers and approve thresholds; fixture scores alone do not satisfy Stage 0 calibration.",

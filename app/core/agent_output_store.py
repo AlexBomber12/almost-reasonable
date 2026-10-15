@@ -19,6 +19,7 @@ from .action_policy import (
 from .agent_proposals import ReplyProposal
 from .events import TrustedPrincipalContext
 from .shared_graph import validate_shared_graph
+from .generic_graph import MAX_GENERIC_GRAPH_REPLIES, validate_generic_graph
 
 from .store import (
     EventIdentityConflictError,
@@ -47,6 +48,7 @@ class ReplyOperation:
     core_self_version: str
     source_event_ids: tuple[str, ...]
     shared_operation_ids: tuple[str, ...] = ()
+    generic_operation_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -107,6 +109,16 @@ class AgentOutputStore:
             raise EventValidationError("invalid shared reply sources")
         for item in shared:
             EventStore._require_token("shared operation", item)
+        generic = operation.generic_operation_ids
+        if (
+            type(generic) is not tuple
+            or len(generic) > 16
+            or any(type(item) is not str for item in generic)
+            or tuple(sorted(set(generic))) != generic
+        ):
+            raise EventValidationError("invalid generic reply sources")
+        for item in generic:
+            EventStore._require_token("generic operation", item)
 
     @staticmethod
     def _binding(context: TrustedPrincipalContext, op: ReplyOperation) -> tuple:
@@ -127,7 +139,27 @@ class AgentOutputStore:
         db: sqlite3.Connection, principal: str, op: ReplyOperation
     ) -> bool:
         validate_shared_graph(db)
+        validate_generic_graph(db)
         all_sources = set(op.source_event_ids)
+        for generic in op.generic_operation_ids:
+            row = db.execute(
+                """SELECT i.audience_principal_id,o.status FROM generic_memory_operations o
+                JOIN generic_memory_items i ON i.item_id=o.item_id
+                    AND i.audience_principal_id=o.audience_principal_id
+                WHERE o.operation_id=? AND o.audience_principal_id=?""",
+                (generic, principal),
+            ).fetchone()
+            if row != (principal, "active"):
+                return False
+            dependencies = {
+                source[0]
+                for source in db.execute(
+                    "SELECT event_id FROM generic_memory_sources WHERE operation_id=? AND source_principal_id=?",
+                    (generic, principal),
+                )
+            }
+            if not dependencies <= set(op.source_event_ids):
+                return False
         for shared in op.shared_operation_ids:
             authorized = db.execute(
                 """SELECT 1 FROM shared_operations o
@@ -219,16 +251,26 @@ class AgentOutputStore:
                     if result is None or result.operation != operation:
                         raise EventValidationError("reply operation unavailable")
                     return result
+                if operation.generic_operation_ids and (
+                    db.execute(
+                        "SELECT COUNT(*) FROM protected_reply_generic"
+                    ).fetchone()[0]
+                    + len(operation.generic_operation_ids)
+                    > MAX_GENERIC_GRAPH_REPLIES
+                ):
+                    raise EventValidationError("generic reply graph bound")
                 db.execute(
                     """
                     INSERT INTO agent_reply_operations(operation_id, audience_principal_id,
                         initiating_event_id, conversation_id, correlation_id, model_identifier,
-                        prompt_version, core_self_version, source_count, shared_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        prompt_version, core_self_version, source_count, shared_count,
+                        generic_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         *self._binding(context, operation),
                         len(operation.shared_operation_ids),
+                        len(operation.generic_operation_ids),
                     ),
                 )
                 db.executemany(
@@ -246,6 +288,13 @@ class AgentOutputStore:
                     (
                         (operation.operation_id, item)
                         for item in operation.shared_operation_ids
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO protected_reply_generic VALUES (?, ?, ?)",
+                    (
+                        (operation.operation_id, item, context.principal_id.value)
+                        for item in operation.generic_operation_ids
                     ),
                 )
                 return PrivateReply(
@@ -380,6 +429,15 @@ class AgentOutputStore:
         )
         if len(shared) != row[13]:
             return None
+        generic = tuple(
+            item[0]
+            for item in db.execute(
+                "SELECT generic_operation_id FROM protected_reply_generic WHERE operation_id=? ORDER BY generic_operation_id",
+                (operation_id,),
+            )
+        )
+        if len(generic) != row[14]:
+            return None
         op = ReplyOperation(
             row[0],
             row[2],
@@ -390,6 +448,7 @@ class AgentOutputStore:
             row[7],
             tuple(source[0] for source in sources),
             shared,
+            generic,
         )
         self._validate(context, op)
         try:

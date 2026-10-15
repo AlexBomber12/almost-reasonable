@@ -4,7 +4,7 @@ Current synthetic integration and exact scenario status are documented in
 [integration-contracts.md](integration-contracts.md) and the validated
 [acceptance manifest](../acceptance/scenarios.json). Historical v4/v5 inventories
 below describe those schema versions; current live synthetic storage is EventStore
-v6, with private/shared reply edges and mission erasure. Participant privacy-control
+v7, with private/shared/generic reply edges and mission erasure. Participant privacy-control
 web ingress and production restore activation remain absent.
 
 `Stage0ConversationRuntime(..., memory_extractor=SyntheticMemoryExtractor(...))`
@@ -22,7 +22,9 @@ concurrent duplicate returns pending; interrupted work remains pending rather
 than repeating an uncertain extraction or model call. A committed memory remains
 a real state change even if later inference fails. Failed or malformed extraction
 never manufactures a successful memory transition. No-change and unsupported
-generic proposals retain their explicit non-persisted outcomes.
+generic proposals retain explicit non-persisted outcomes unless trusted
+`generic_memory_write` is enabled. Parent-based private consolidation additionally
+requires `private_consolidation`.
 
 Before extraction, the engine resolves the exact source and optional additional
 evidence within the reconciled privacy gate. Extraction runs outside the ledger
@@ -36,8 +38,16 @@ The runtime supplies source/additional evidence to the synthetic extractor,
 without rendering current candidate text into the extraction request. Candidate
 snapshots remain internal for revision authorization and CAS. This prevents a
 new item from copying another item's text without retaining that item's complete
-protected dependencies. Scripted synthetic revisions may target a known item
-and expected revision; model-guided cross-item consolidation is not enabled.
+protected dependencies. When generic memory writes are enabled, the extractor
+receives a deterministic subset of at most 16 private generic heads and 16 KiB
+of their serialized view data. The complete generic and typed revision snapshots
+are checked again in the write transaction; consolidation parents and new
+revision targets must be in the exposed subset. Scripted synthetic revisions
+may target a known item and expected revision; live model-guided cross-item
+consolidation is not enabled.
+The generic-enabled extraction path does not expose typed candidate values and
+does not persist typed proposals. Typed extraction uses the separate path with
+generic exposure disabled, so cross-type source dependencies cannot be omitted.
 Supporting and counterevidence are not relabeled to manufacture contextual taint.
 Delivery, stop and spend capabilities are rechecked after extraction; a changed
 capability records a durable skipped outcome before any model contact.
@@ -128,14 +138,14 @@ or an accepted model proposal cannot broaden an audience, publish, or activate a
 mission. Behavioral evaluation must measure A/B influence and evidence-based
 mission retention/change with independent confirmation and counterevidence.
 
-Complete M5 also requires a versioned generic-memory persistence/erasure contract,
-model-guided consolidation with complete cross-item dependencies, durable
+Complete M5 still requires arbitrary live model-guided consolidation, durable
 no-change/rejection auditing, calibrated real-model relevance and belief quality,
 authorized research evidence integration, privacy-safe shared influence, semantic
 injection/paraphrase-leakage evaluation and approved production enrollment,
 processor/retention/deletion controls and restore activation. This PR completes
 the synthetic private slice; it does not claim full M5 acceptance.
 
-INT-05B adds the explicit offline [shared-intelligence path](shared-intelligence.md)
-with EventStore v6 protected cross-participant edges and mission evidence. The
+INT-05B added the explicit offline [shared-intelligence path](shared-intelligence.md)
+with EventStore v6 protected cross-participant edges and mission evidence, retained
+in v7. The
 older component description above does not authorize production sharing.
