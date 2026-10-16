@@ -288,11 +288,16 @@ def test_mentions_poll_persists_cursor_and_pending_event(tmp_path):
         response(200, {"data": [], "paging": {}}),
     )
     svc, _ = service(tmp_path, fake)
-    result = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
-    assert result.pages == 2
+    result = svc.poll(
+        InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_pages=1
+    )
+    assert result.pages == 1
     assert result.new_events[0].event_id == "mention-1"
     assert svc.store.cursor("account-1", InboundKind.MENTION).startswith("c-")
     assert len(svc.store.pending_inbound_events("account-1", InboundKind.MENTION)) == 1
+    finished = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
+    assert finished.pages == 1
+    assert svc.store.cursor("account-1", InboundKind.MENTION) is None
     assert "after=opaque%2F%2B%3D" in fake.calls[1][1]
 
 
@@ -311,6 +316,7 @@ def test_reply_poll_rejects_wrong_root_without_advancing(tmp_path):
         svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-1")
     assert failure.value.effect_class is EffectClass.PROVEN_PRE_DISPATCH
     assert svc.store.cursor("account-1", InboundKind.REPLY) is None
+    assert "reverse=false" in fake.calls[0][1]
 
 
 def test_http_adapter_bounded_reads_and_redirect_suppression(monkeypatch):
@@ -748,3 +754,65 @@ def test_http_adapter_worker_error_and_start_failure_are_bounded(monkeypatch):
         client.request("GET", "https://example.invalid", {}, None, 1)
     with pytest.raises(TimeoutError, match="could not start"):
         client.request("GET", "https://example.invalid", {}, None, 1)
+
+
+def test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor(tmp_path):
+    def reply(name):
+        return {
+            "id": name,
+            "text": "Привет",
+            "timestamp": NOW.isoformat(),
+            "root_post": {"id": "root-1"},
+            "replied_to": {"id": "parent-1"},
+            "is_reply_owned_by_me": False,
+        }
+
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [reply("reply-1")],
+                "paging": {"next": "next-page", "cursors": {"after": "page-1"}},
+            },
+        ),
+        response(
+            200,
+            {"data": [reply("reply-2")], "paging": {"cursors": {"after": "terminal"}}},
+        ),
+        response(
+            200,
+            {
+                "data": [reply("reply-2"), reply("reply-3")],
+                "paging": {"cursors": {"after": "terminal-2"}},
+            },
+        ),
+    )
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-1", max_pages=1)
+    assert [event.event_id for event in first.new_events] == ["reply-1"]
+    assert first.final_cursor is not None
+    second = svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-2")
+    assert [event.event_id for event in second.new_events] == ["reply-2"]
+    third = svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-3")
+    assert [event.event_id for event in third.new_events] == ["reply-3"]
+    assert third.duplicate_count == 1
+    assert all("reverse=false" in call[1] for call in fake.calls)
+    assert "after=page-1" in fake.calls[1][1] and "after=page-1" in fake.calls[2][1]
+
+
+@pytest.mark.parametrize("reset,next_cursor", [(True, "cursor-1"), (1, None)])
+def test_store_rejects_ambiguous_cursor_reset(tmp_path, reset, next_cursor):
+    store = ThreadsStore(tmp_path / "cursor.sqlite3")
+    with pytest.raises(ValueError, match="cursor reset"):
+        store.commit_poll_page(
+            correlation_id="poll-1",
+            account_ref="account-1",
+            stream=InboundKind.MENTION,
+            verified_source_ref="meta-threads-v1",
+            expected_cursor=None,
+            next_cursor=next_cursor,
+            reset_cursor=reset,
+            events=(),
+            now=NOW,
+            precommit_check=lambda: None,
+        )

@@ -724,7 +724,13 @@ class ThreadsService:
             pending_events.extend(page.events)
             fetched_count += len(page.events)
             pages += 1
-            final_cursor = page.next_cursor if page.next_cursor is not None else cursor
+            final_cursor = (
+                page.next_cursor
+                if page.next_cursor is not None
+                else None
+                if self.live_enabled and stream is InboundKind.MENTION
+                else cursor
+            )
             cursor = page.next_cursor
             if cursor is None:
                 break
@@ -741,6 +747,11 @@ class ThreadsService:
                 verified_source_ref=self.simulator.source_ref,
                 expected_cursor=initial_cursor,
                 next_cursor=final_cursor,
+                reset_cursor=(
+                    self.live_enabled
+                    and stream is InboundKind.MENTION
+                    and final_cursor is None
+                ),
                 events=pending_events,
                 now=now,
                 lock_wait_seconds=min(5.0, remaining),

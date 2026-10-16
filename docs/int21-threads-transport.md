@@ -17,13 +17,15 @@ The scopes above are service policy checks, not claims that the Meta app or curr
 - A trusted, explicit `ThreadsHTTPTransport` binds the local account, Meta user ID, root post ID, token and HTTP client. The destination and version are fixed to `https://graph.threads.net/v1.0`; no caller can supply a URL. OAuth bearer credentials stay in the authorization header. The standard HTTPS client verifies TLS, disables redirects, caps each response at 64 KB, and returns or times out within the configured total caller deadline of at most 10 seconds. A timed-out write may still finish in its background worker and is classified uncertain; one in-flight request per transport prevents accumulating workers. The service accepts this transport only with an explicit `live_enabled=True` Stage 3 binding. Stage 0 still admits only the exact `ThreadsSimulator`.
 - `GET /me?fields=id` checks the authenticated account before each write. A failed preflight read is a proven no-write result. `POST /{user}/threads` creates a `TEXT` container, with `reply_to_id` for a reply. `POST /{user}/threads_publish` publishes its `creation_id`. The returned publication ID is stored durably before `GET /{id}` checks the same owner and expected parent. Actual returned container and publication IDs use existing columns, so no schema migration is needed.
 - Structured 400, 401 and 403 Graph errors reject an operation. A structured 429, server error, redirect, missing ID, malformed or oversized response, interrupted request, or failed publication verification leaves the operation `UNKNOWN` when a write may have occurred. The account remains paused. Current approval, per-draft privacy, policy, stop, capability and outbox reservations remain at the existing service boundary. An explicit pre-transmission failure may use the existing bounded retry path.
-- `GET /{root}/replies` and `GET /{user}/mentions` use bounded pages and opaque `after` cursors. `paging.next` controls continuation; a terminal page may still carry an `after` cursor. The transport validates every event before returning a verified page. The service commits all fetched pages, events and the final cursor in one transaction. A malformed later page commits none of them. Reply routing requires the configured root ID and a provider parent ID. Mention records keep provider IDs.
+- `GET /{root}/replies` requests `reverse=false` for chronological pages, so a durable `after` cursor can reach later arrivals. `GET /{user}/mentions` has no verified forward-order parameter in the official collection, so a completed bounded scan resets its durable cursor and the next poll starts at the head; interrupted scans continue from their saved `after` cursor. `paging.next` controls continuation; a terminal page may still carry an `after` cursor. The transport validates every event before returning a verified page. The service commits all fetched pages, events and the final cursor in one transaction. A malformed later page commits none of them. Reply routing requires the configured root ID and a provider parent ID. Mention records keep provider IDs.
 
 ## Deliberately unresolved
 
 The published contract does not provide an operation key that proves a lost write response did or did not create exactly this publication. If the publish response yielded a real post ID before readback failed, reconciliation can query that exact ID and confirm only when owner and parent bindings match. Otherwise `reconcile` returns `UNRESOLVED`; it never searches by text or time, synthesizes a provider ID, republishes, or authorizes a replacement. Administrative `UNKNOWN_ABANDONED` remains the existing purpose-bound path. A separately reviewed strategy with exact provider evidence is needed to resolve effects whose response ID was lost.
 
 The Meta collection uses unversioned examples; this implementation pins `v1.0` as trusted configuration. Version acceptance and bearer-header behavior require an authorized live smoke before activation. App review, current account scopes, token validity, publishing limits, endpoint field availability, and mention/reply coverage cannot be established from requested scopes or offline responses. Public keyword search, token refresh, profile edits, general model-generated publication, deployment configuration and an unauthenticated publish endpoint are outside this milestone. The fixed root ID limits reply polling to one configured conversation; broader discovery needs a separate reviewed design.
+
+The mention head-rescan strategy avoids treating a reverse-ordered `after` cursor as a permanent checkpoint. Under sustained arrivals faster than the bounded page budget, a scan may take multiple polls to reach its terminal page; operational backlog limits and Meta's actual ordering require live validation before activation.
 
 The existing `app/oauth_server.py` is a state-checked callback that stores an authorization code; it is not a token exchange, token loader, account access verifier, or refresh service. This PR leaves it unchanged. A future live smoke requires a separately authorized credential path and an independent check of the actual Meta app/account permissions.
 
@@ -58,6 +60,8 @@ Do not edit `acceptance/scenarios.json` in this parallel PR. Proposed mappings f
 | `test_sending_evidence_rejects_invalid_publication_id` | `INT-21-ID-VALIDATION` |
 | `test_http_adapter_enforces_total_deadline_and_one_inflight_request` | `INT-21-TOTAL-DEADLINE` |
 | `test_http_adapter_worker_error_and_start_failure_are_bounded` | `INT-21-HTTP-WORKER-FAILURE` |
+| `test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor` | `INT-21-FORWARD-REPLIES` |
+| `test_store_rejects_ambiguous_cursor_reset` | `INT-21-CURSOR-RESET-VALIDATION` |
 
 All responses in these tests are deterministic fakes; ordinary CI has no Meta token or connection. Release readiness remains `BLOCKED` until a separately authorized live smoke verifies the exact app, account, scopes and endpoint contract.
 
@@ -119,4 +123,7 @@ tests/test_int21_threads_transport.py::test_publication_id_is_durable_before_rea
 tests/test_int21_threads_transport.py::test_sending_evidence_rejects_invalid_publication_id
 tests/test_int21_threads_transport.py::test_http_adapter_enforces_total_deadline_and_one_inflight_request
 tests/test_int21_threads_transport.py::test_http_adapter_worker_error_and_start_failure_are_bounded
+tests/test_int21_threads_transport.py::test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor
+tests/test_int21_threads_transport.py::test_store_rejects_ambiguous_cursor_reset[True-cursor-1]
+tests/test_int21_threads_transport.py::test_store_rejects_ambiguous_cursor_reset[1-None]
 ```

@@ -1160,6 +1160,7 @@ class ThreadsStore:
         verified_source_ref: str,
         expected_cursor: str | None,
         next_cursor: str | None,
+        reset_cursor: bool = False,
         events: Iterable[InboundEvent],
         now: datetime,
         lock_wait_seconds: float = 5.0,
@@ -1174,6 +1175,8 @@ class ThreadsStore:
         for cursor in (expected_cursor, next_cursor):
             if cursor is not None:
                 require_reference("pagination cursor", cursor)
+        if type(reset_cursor) is not bool or (reset_cursor and next_cursor is not None):
+            raise ValueError("invalid cursor reset")
         require_aware_time("poll commit time", now)
         if type(lock_wait_seconds) not in {int, float} or not (
             0 < lock_wait_seconds <= 5.0
@@ -1184,7 +1187,13 @@ class ThreadsStore:
         if not callable(precommit_check):
             raise ValueError("invalid poll commit authorization fence")
         page = tuple(events)
-        committed_cursor = next_cursor if next_cursor is not None else expected_cursor
+        committed_cursor = (
+            None
+            if reset_cursor
+            else next_cursor
+            if next_cursor is not None
+            else expected_cursor
+        )
         cursor_identity = content_fingerprint(
             f"{expected_cursor is not None}:{expected_cursor or ''}\0"
             f"{committed_cursor is not None}:{committed_cursor or ''}"

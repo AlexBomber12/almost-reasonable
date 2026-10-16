@@ -379,6 +379,8 @@ class ThreadsHTTPTransport:
             "fields": "id,text,timestamp,root_post,replied_to,is_reply_owned_by_me",
             "limit": "50",
         }
+        if stream is InboundKind.REPLY:
+            params["reverse"] = "false"
         if raw_cursor is not None:
             params["after"] = raw_cursor
         data = self._call("GET", path, params)
