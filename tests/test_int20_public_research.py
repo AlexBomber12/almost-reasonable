@@ -206,10 +206,14 @@ def test_provider_errors_and_invalid_results_are_consumed(tmp_path):
             "invalid_response",
         }
         assert store.attempt_exists(request.operation_id)
-        assert store.usage_attempt(request.operation_id).outcome in {
+        recorded = store.usage_attempt(request.operation_id)
+        assert recorded.outcome in {
             "server_error",
             "invalid_response",
         }
+        if index == 1:
+            assert recorded.provider_response_id == "resp_synthetic"
+            assert recorded.total_tokens == 150
         assert (
             worker.execute(request, peer_uid=os.geteuid())["outcome"]
             == "duplicate_operation"
@@ -377,10 +381,23 @@ def test_trusted_installation_rejects_invalid_binding(tmp_path, field, value):
         worker.install_synthetic_authorization(**arguments)
 
 
-def test_installation_does_not_admit_arbitrary_url(tmp_path):
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.org/private",
+        "example.org/private",
+        "//example.org/private",
+        "example.org?key=private",
+        "EXAMPLE．ORG/private",
+        "example%2Eorg%2Fprivate",
+        "exam\u200bple.org/private",
+        "example&#46;org&#47;private",
+    ],
+)
+def test_installation_does_not_admit_arbitrary_url(tmp_path, url):
     worker, _, _ = boundary(tmp_path)
     with pytest.raises(ValueError):
-        grant(worker, question="Read https://example.org/private")
+        grant(worker, question="Read " + url)
 
 
 def test_clock_before_grant_validity_denies(tmp_path):
@@ -583,20 +600,32 @@ def test_provider_transport_is_bounded_and_sanitized(tmp_path, monkeypatch):
 
     sdk.outcomes = [Dump()]
     assert transport.call(request, timeout_seconds=1).status == "completed"
-    for malformed in (
-        None,
-        {**raw_response(), "usage": {}},
-        {
-            **raw_response(),
-            "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 149},
-        },
-        {**raw_response(), "output": {}},
-        {**raw_response(), "output": "x" * 600000},
+    for malformed, expected_usage in (
+        (None, None),
+        ({**raw_response(), "usage": {}}, None),
+        (
+            {
+                **raw_response(),
+                "usage": {
+                    "input_tokens": 100,
+                    "output_tokens": 50,
+                    "total_tokens": 149,
+                },
+            },
+            None,
+        ),
+        ({**raw_response(), "output": {}}, 150),
+        ({**raw_response(), "output": "x" * 600000}, 150),
+        ({**raw_response(), "output": object()}, 150),
     ):
         sdk.outcomes = [malformed]
         with pytest.raises(HostedSearchTransportError):
             transport.call(request, timeout_seconds=1)
-        assert transport.last_usage is None
+        assert (
+            None
+            if transport.last_usage is None
+            else transport.last_usage["total_tokens"]
+        ) == expected_usage
     sdk.outcomes = [{**raw_response(), "usage": None}]
     transport.call(request, timeout_seconds=1)
     assert transport.last_usage is None
@@ -638,13 +667,39 @@ def test_error_mapping_and_provider_refusal(tmp_path):
         == "project_spend_limit_exceeded"
     )
     assert _error_code(OpenAITransportError()) == "provider_error"
-    worker, sdk, _ = boundary(
+    worker, sdk, store = boundary(
         tmp_path, [{**raw_response(), "status": "incomplete"}], enabled=True
     )
     assert (
         worker.execute(grant(worker), peer_uid=os.geteuid())["outcome"]
         == "invalid_response"
     )
+    assert len(sdk.calls) == 1
+    assert store.usage_attempt("int20-ocean").provider_response_id == "resp_synthetic"
+
+
+@pytest.mark.parametrize(
+    "response_id,expected_id",
+    [
+        ("resp_synthetic", "resp_synthetic"),
+        ("resp_private-canary", None),
+    ],
+)
+def test_malformed_output_keeps_safe_usage_and_id(tmp_path, response_id, expected_id):
+    raw = {**raw_response(), "id": response_id, "output": {}}
+    worker, sdk, store = boundary(
+        tmp_path,
+        [raw],
+        enabled=True,
+        screening=ResearchScreeningContext(private_canaries=("private-canary",)),
+    )
+    request = grant(worker)
+    result = worker.execute(request, peer_uid=os.geteuid())
+    assert result["outcome"] == "invalid_response"
+    assert result["usage"]["total_tokens"] == 150
+    recorded = store.usage_attempt(request.operation_id)
+    assert recorded.total_tokens == 150
+    assert recorded.provider_response_id == expected_id
     assert len(sdk.calls) == 1
 
 

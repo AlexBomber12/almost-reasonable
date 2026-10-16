@@ -2,6 +2,7 @@
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
+import html
 import hashlib
 import hmac
 import math
@@ -9,6 +10,8 @@ import re
 import secrets
 import socket
 import time
+import unicodedata
+from urllib.parse import unquote
 
 from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.provider_contract import (
@@ -54,12 +57,18 @@ from app.trusted.openai_worker_server import (
     WorkerServerConfig,
     _peer_uid,
 )
-from app.trusted.public_research_transport import PublicResearchTransport
+from app.trusted.public_research_transport import (
+    PublicResearchTransport,
+    recordable_response_id,
+)
 
 
 PUBLIC_RESEARCH_VERSION = "public-research-v1"
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 _TOKEN = re.compile(r"[0-9a-f]{64}\Z")
+_URL_LIKE = re.compile(
+    r"(?i)(?<![\w])(?:[\w-]+\.)+[\w-]{2,}(?![\w])|[a-z][a-z0-9+.-]{1,30}:\S"
+)
 _FAILURE = "Исследование недоступно; проверенные выводы не сформированы."
 _UNCERTAINTY = (
     "Ссылки проверены только структурно; фактическая достоверность не оценена."
@@ -107,8 +116,7 @@ def encode_public_request(request: PublicResearchRequest) -> bytes:
         or type(request.question) is not str
         or not request.question.strip()
         or len(request.question.encode("utf-8")) > 2048
-        or "://" in request.question
-        or "www." in request.question.lower()
+        or _question_has_url(request.question)
         or type(request.authorization) is not str
         or _TOKEN.fullmatch(request.authorization) is None
     ):
@@ -121,6 +129,20 @@ def encode_public_request(request: PublicResearchRequest) -> bytes:
             "question": request.question,
             "authorization": request.authorization,
         }
+    )
+
+
+def _question_has_url(value: str) -> bool:
+    normalized = unicodedata.normalize("NFKC", value)
+    for _ in range(3):
+        normalized = html.unescape(unquote(normalized))
+    normalized = "".join(
+        character for character in normalized if unicodedata.category(character) != "Cf"
+    )
+    return (
+        "/" in normalized
+        or "\\" in normalized
+        or _URL_LIKE.search(normalized) is not None
     )
 
 
@@ -326,6 +348,11 @@ class PublicResearchBoundary:
             return "spend_suspended"
         return None
 
+    def _screened_response_id(self, value: object) -> str | None:
+        if not recordable_response_id(value):
+            return None
+        return value if _screen((value,), self._screening) is None else None
+
     def execute(
         self, request: PublicResearchRequest, *, peer_uid: int
     ) -> dict[str, object]:
@@ -347,6 +374,7 @@ class PublicResearchBoundary:
         started_at = None
         began = None
         usage = None
+        safe_response_id = None
         try:
             blocked = self._guard(grant)
             if blocked is not None:
@@ -392,35 +420,46 @@ class PublicResearchBoundary:
                 from app.research.provider import HostedSearchTransportError
 
                 if isinstance(error, HostedSearchTransportError):
+                    usage = self._transport.last_usage
+                    safe_response_id = self._screened_response_id(
+                        self._transport.last_response_id
+                    )
                     if error.code in CONFIRMED_SPEND_LIMIT_CODES:
                         return finish(
-                            _response("spend_limit_confirmed", 1), code=error.code
+                            _response("spend_limit_confirmed", 1, usage=usage),
+                            response_id=safe_response_id,
+                            code=error.code,
                         )
                     return finish(
                         _response(
                             error.code if error.code in _OUTCOMES else "provider_error",
                             1,
+                            usage=usage,
                         ),
+                        response_id=safe_response_id,
                         code=error.code if error.code in _OUTCOMES else None,
                     )
                 return finish(_response("provider_error", 1))
             usage = self._transport.last_usage
+            safe_response_id = self._screened_response_id(
+                self._transport.last_response_id
+            )
             if self._monotonic() - began >= self._config.overall_timeout_seconds:
-                return finish(_response("timeout", 1, usage=usage))
+                return finish(
+                    _response("timeout", 1, usage=usage),
+                    response_id=safe_response_id,
+                )
             blocked = self._guard(grant)
             if blocked is not None:
-                return finish(_response(blocked, 1, usage=usage))
+                return finish(
+                    _response(blocked, 1, usage=usage),
+                    response_id=safe_response_id,
+                )
             evidence = parse_hosted_search_response(
                 provider_result,
                 retrieved_at=self._utcnow(),
                 max_search_calls=self._config.max_search_calls,
                 max_sources=3,
-            )
-            # A parsed identifier can still contain a known private canary.
-            safe_response_id = (
-                evidence.response_id
-                if _screen((evidence.response_id,), self._screening) is None
-                else None
             )
             if any(
                 source.status is not SourceStatus.RECORDED
@@ -481,7 +520,11 @@ class PublicResearchBoundary:
             result = _response("invalid_response", attempts, usage=usage)
             if admitted:
                 return self._record_terminal(
-                    request.operation_id, result, started_at, began
+                    request.operation_id,
+                    result,
+                    started_at,
+                    began,
+                    response_id=safe_response_id,
                 )
             return result
 

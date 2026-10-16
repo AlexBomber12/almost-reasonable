@@ -1,6 +1,7 @@
 """Explicit, fixed-destination hosted-search adapter for the trusted worker."""
 
 import math
+import re
 
 from app.research.provider import (
     HostedSearchRequest,
@@ -13,6 +14,13 @@ from app.trusted.openai_gateway import GatewayOutcome, _classify_error
 from app.trusted.openai_transport import OpenAITransportError, _sanitized_sdk_error
 
 
+_RECORDABLE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
+
+
+def recordable_response_id(value: object) -> bool:
+    return type(value) is str and _RECORDABLE_ID.fullmatch(value) is not None
+
+
 class PublicResearchTransport:
     """A worker-owned SDK client; callers supply only a sealed search request."""
 
@@ -21,6 +29,7 @@ class PublicResearchTransport:
             raise TypeError("OpenAI Responses client required")
         self._client = client
         self.last_usage: dict[str, int] | None = None
+        self.last_response_id: str | None = None
 
     @classmethod
     def from_protected_file(cls, *, project_id: str, organization_id: str):
@@ -30,6 +39,8 @@ class PublicResearchTransport:
         return cls(transport._client)
 
     def call(self, request: HostedSearchRequest, *, timeout_seconds: float):
+        self.last_usage = None
+        self.last_response_id = None
         if type(request) is not HostedSearchRequest:
             raise TypeError("sealed hosted-search request required")
         kwargs = request.to_sdk_kwargs()
@@ -40,7 +51,6 @@ class PublicResearchTransport:
             or timeout_seconds > 120
         ):
             raise ValueError("invalid research timeout")
-        self.last_usage = None
         try:
             raw = self._client.responses.create(**kwargs, timeout=timeout_seconds)
         except Exception as error:
@@ -54,11 +64,11 @@ class PublicResearchTransport:
                 raw = raw.model_dump(mode="json")
             if type(raw) is not dict:
                 raise ValueError("invalid response")
+            self.last_response_id = (
+                raw.get("id") if recordable_response_id(raw.get("id")) else None
+            )
             import json
 
-            encoded = json.dumps(raw, ensure_ascii=False).encode("utf-8")
-            if len(encoded) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
-                raise ValueError("oversized response")
             usage = raw.get("usage")
             if usage is not None:
                 if (
@@ -76,12 +86,14 @@ class PublicResearchTransport:
                     key: usage[key]
                     for key in ("input_tokens", "output_tokens", "total_tokens")
                 }
+            encoded = json.dumps(raw, ensure_ascii=False).encode("utf-8")
+            if len(encoded) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
+                raise ValueError("oversized response")
             output = raw["output"]
             if type(output) is not list:
                 raise ValueError("invalid output")
             return HostedSearchResponse(raw["id"], raw["status"], tuple(output))
         except (KeyError, TypeError, ValueError, UnicodeError):
-            self.last_usage = None
             raise HostedSearchTransportError("invalid_response") from None
 
 
