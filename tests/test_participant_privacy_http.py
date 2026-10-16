@@ -95,6 +95,8 @@ def test_notice_gate_acknowledgement_and_authenticated_restart(journey):
     assert a.request("GET", "/privacy")[0] == "200 OK"
     notice = a.request("GET", "/privacy")[2]
     assert "OpenAI".encode() in notice and "Cloudflare".encode() in notice
+    assert "fictional-autobiography-ru-v1".encode() in notice
+    assert "Биографические истории".encode() in notice
     assert a.request("GET", "/chat")[0] == "303 See Other"
     assert a.submit("one", "Секрет А")[0] == "403 Forbidden"
     assert not fake.calls
@@ -114,7 +116,10 @@ def test_notice_gate_acknowledgement_and_authenticated_restart(journey):
         ),
     )
     a.app = reopened
-    assert a.request("GET", "/chat")[0] == "200 OK"
+    chat = a.request("GET", "/chat")
+    assert chat[0] == "200 OK"
+    assert "fictional-autobiography-ru-v1".encode() in chat[2]
+    assert "Биографические истории".encode() in chat[2]
 
 
 def test_exact_grant_revocation_and_deletion_with_isolation(journey):

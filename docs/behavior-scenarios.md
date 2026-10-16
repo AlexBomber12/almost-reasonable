@@ -22,7 +22,7 @@ These journeys refine the contract into implementation and acceptance behavior. 
 
 **Failure modes:** Payload persisted before authentication; stale/incorrect memory; fabricated continuity; cross-user retrieval; abstraction leakage or inference-risk overpromise; storage/model failure; duplicate delivery; provider spend exhaustion; non-Russian or nearby-Cyrillic false classification.
 
-**Acceptance tests:** G tests verify authentication before payload persistence/retrieval/call, context partition, event/payload separation, restart recovery, duplicate control, provenance hiding, spend-suspension/static Russian error, and model/Core Self version recording. H tests exercise natural Russian, nearby Cyrillic languages, Unicode, identifiers, quotations, emoji, private canaries, and overlap. M tests evaluate accurate continuity, natural Russian, and privacy-preserving intellectual influence without invented memory/biography.
+**Acceptance tests:** G tests verify authentication before payload persistence/retrieval/call, context partition, event/payload separation, restart recovery, duplicate control, provenance hiding, spend-suspension/static Russian error, and model/Core Self version recording. H tests exercise natural Russian, nearby Cyrillic languages, Unicode, identifiers, quotations, emoji, private canaries, and overlap. M tests evaluate accurate continuity, natural Russian, and privacy-preserving intellectual influence without invented actual memory. Disclosed fictional autobiography is assessed under narrative policy v1; invented factual authority remains an error.
 
 ## SCN-02 — Multiuser private conversations and shared identity
 

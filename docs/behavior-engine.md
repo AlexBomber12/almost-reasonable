@@ -249,7 +249,7 @@ citation support; useful privacy-minimized research; single-source skepticism;
 disagreement; evidence-driven revision; owner non-sycophancy; trolling response;
 reasonable inactivity; privacy-preserving intellectual influence; deterministic
 privacy boundaries; semantic platform-policy judgment; mission continuity and
-coherent two-phase revision; non-impersonation and no invented human biography;
+coherent two-phase revision; non-impersonation and honest AI identity under narrative policy v1 (the historical biography dimension retains its original meaning);
 and no optimization for posting frequency.
 
 An `EvaluationCase` contains frozen synthetic prompts and one or more recorded

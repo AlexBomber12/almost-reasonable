@@ -68,6 +68,10 @@ def digest(value):
 
 
 def strict_json(path):
+    return strict_json_bytes(Path(path).read_bytes())
+
+
+def strict_json_bytes(raw):
     def unique(pairs):
         result = {}
         for key, value in pairs:
@@ -80,7 +84,7 @@ def strict_json(path):
         raise ValueError(f"invalid numeric constant: {value}")
 
     return json.loads(
-        Path(path).read_text(encoding="utf-8"),
+        raw.decode("utf-8"),
         object_pairs_hook=unique,
         parse_constant=invalid_constant,
     )

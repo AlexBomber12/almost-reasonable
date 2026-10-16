@@ -26,7 +26,12 @@ from app.privacy.models import (
     TrustedPrivacyContext,
     require_token,
 )
-from app.privacy.notice import NOTICE_RU, NoticeService
+from app.privacy.notice import (
+    NARRATIVE_DISCLOSURE_RU,
+    NARRATIVE_DISCLOSURE_VERSION,
+    NOTICE_RU,
+    NoticeService,
+)
 
 from .auth import AuthStore, AuthenticatedSession
 
@@ -226,6 +231,9 @@ class ParticipantPrivacyControls:
             '<nav><a href="/chat">Чат</a></nav>'
             f"<p>Версия {escape(NOTICE_VERSION)}: {status}</p>"
             f"<pre>{escape(NOTICE_RU)}</pre>"
+            '<section id="narrative-disclosure" '
+            f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
+            f"<p>{escape(NARRATIVE_DISCLOSURE_RU)}</p></section>"
             f'<main data-csrf="{escape(csrf)}">'
             '<form data-endpoint="/api/privacy/notice"><h2>Подтверждение уведомления</h2>'
             f'<input type="hidden" name="version" value="{escape(NOTICE_VERSION)}">'
