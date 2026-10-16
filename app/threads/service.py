@@ -95,6 +95,7 @@ class ThreadsService:
         self._bound_reply_thread_id = (
             simulator.reply_thread_id if live_enabled else None
         )
+        self._bound_source_ref = simulator.source_ref if live_enabled else None
         self.policy = policy
         self._account_ref = policy.account_ref
         self.clock = clock
@@ -710,6 +711,9 @@ class ThreadsService:
         interrupt_after_fetch: bool,
     ) -> PollResult:
         started = self.clock()
+        expected_source_ref = (
+            self._bound_source_ref if self.live_enabled else self.simulator.source_ref
+        )
         cursor = self.store.cursor(self._account_ref, stream)
         initial_cursor = cursor
         seen_cursors = {cursor}
@@ -740,7 +744,7 @@ class ThreadsService:
             if (
                 not page.is_verified()
                 or page.account_ref != self._account_ref
-                or page.source_ref != self.simulator.source_ref
+                or page.source_ref != expected_source_ref
                 or page.requested_cursor != cursor
             ):
                 raise PollingError("poll page source is not verified")
@@ -771,7 +775,7 @@ class ThreadsService:
                 correlation_id=correlation_id,
                 account_ref=self._account_ref,
                 stream=stream,
-                verified_source_ref=self.simulator.source_ref,
+                verified_source_ref=expected_source_ref,
                 expected_cursor=initial_cursor,
                 next_cursor=final_cursor,
                 reset_cursor=(
@@ -812,6 +816,7 @@ class ThreadsService:
                 and (
                     self.simulator.provider_user_id != self._bound_provider_user_id
                     or self.simulator.reply_thread_id != self._bound_reply_thread_id
+                    or self.simulator.source_ref != self._bound_source_ref
                 )
             )
             or self.policy.account_ref != self._account_ref

@@ -601,6 +601,26 @@ def test_live_provider_binding_change_prevents_poll(tmp_path, field, value):
     assert fake.calls == []
 
 
+def test_live_source_mutation_cannot_persist_forged_provenance(tmp_path):
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [
+                    {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
+                ],
+                "paging": {},
+            },
+        )
+    )
+    svc, _ = service(tmp_path, fake)
+    svc.simulator.source_ref = "forged-live-source"
+    with pytest.raises(PolicyDeniedError, match="binding changed"):
+        svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-forged-source")
+    assert fake.calls == []
+    assert svc.store.pending_inbound_events("account-1", InboundKind.MENTION) == ()
+
+
 def test_real_transport_subclass_cannot_enter_non_live_service(tmp_path):
     from dataclasses import replace
 
