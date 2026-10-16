@@ -394,6 +394,10 @@ def test_trusted_installation_rejects_invalid_binding(tmp_path, field, value):
         "exam\u200bple.org/private",
         "example&#46;org&#47;private",
         "example&amp;amp;#46;org",
+        "127.0.0.1:8080?token=secret",
+        "127.0.0.1",
+        "[::1]:8080?token=secret",
+        "2001:db8::1",
     ],
 )
 def test_installation_does_not_admit_arbitrary_url(tmp_path, url):

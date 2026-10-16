@@ -67,6 +67,10 @@ _TOKEN = re.compile(r"[0-9a-f]{64}\Z")
 _URL_LIKE = re.compile(
     r"(?i)(?<![\w])(?:[\w-]+\.)+[\w-]{2,}(?![\w])|[a-z][a-z0-9+.-]{1,30}:\S"
 )
+_IPV4_LIKE = re.compile(r"(?<![\w])(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?(?![\w])")
+_IPV6_LIKE = re.compile(
+    r"(?i)(?<![\w])(?:\[[0-9a-f:.]+\]|[0-9a-f]{0,4}:(?:[0-9a-f]{0,4}:)+[0-9a-f]{0,4})(?::\d{1,5})?(?![\w])"
+)
 _FAILURE = "Исследование недоступно; проверенные выводы не сформированы."
 _UNCERTAINTY = (
     "Ссылки проверены только структурно; фактическая достоверность не оценена."
@@ -138,6 +142,8 @@ def _question_has_url(value: str) -> bool:
     return (
         any(character in normalized for character in "/\\%&#")
         or _URL_LIKE.search(normalized) is not None
+        or _IPV4_LIKE.search(normalized) is not None
+        or _IPV6_LIKE.search(normalized) is not None
     )
 
 
