@@ -216,3 +216,56 @@ v7; supported historical v4–v6 backups remain exact-schema checked. The extrac
 and transport are offline synthetic fixtures. No participant deletion UI, live
 model adapter, semantic corroboration, production restore activation or
 deployment was exercised.
+
+## Offline human calibration handoff (INT-15)
+
+This is preparation for fluent Russian human review, not completed calibration. Export
+uses only local synthetic inputs and makes no provider call:
+
+```bash
+python -m acceptance.human_review export --output .artifacts/human-review
+```
+
+Give each reviewer an independent copy of `blank-review.json` and the readable
+`packet.ru.md`. In the copy, set a short `reviewer_id` (pseudonym is fine),
+using 1–64 ASCII letters, digits, periods, underscores or hyphens and starting
+with a letter or digit; this keeps the readable report on one line per item. Set
+`metadata.reviewed_at` to an ISO 8601 timestamp with timezone, and optionally
+`metadata.note`. Score each item/dimension from 0 to 1; leave `score: null` when
+unable to judge and set `concerns` to `ambiguous` or `insufficient_context` as
+appropriate. The answer, prior conversation, source excerpts and authority state
+are in the packet. Do not edit item IDs, versions or hashes. Use `evidence_class:
+"synthetic_test_fixture"` for test submissions; it cannot count as release
+calibration. The `human` value is a reviewer assertion, not verified identity.
+The version 2 packet asks only for `natural_russian` on the existing language-only
+`russian` case; that case has no evidentiary claim to score for intellectual honesty.
+The recorded-assessment corpus and its separate reporting remain unchanged.
+
+```bash
+python -m acceptance.human_review summarize reviewer-a.json reviewer-b.json \
+  --output .artifacts/human-review-summary
+```
+
+The command rejects invalid files and writes `summary.json` plus `summary.ru.md`.
+A well-formed partial human submission reports `INCOMPLETE`; a fixture-only run
+reports `NO_HUMAN_ASSESSMENTS`. Human and synthetic test evidence have separate
+reviewer counts, score distributions, missing items, concerns, disagreements and
+adjudication items. The `stage0-human-summary-v2` JSON retains the packet SHA-256,
+corpus/context/Russian-corpus/rubric versions, reviewer metadata, and every supplied
+assessment with item, dimension, score, note and case/context/output hashes. Each
+reviewer record has `submission_sha256`: SHA-256 of the parsed submission encoded
+as UTF-8 JSON with sorted keys, no extra spaces and non-ASCII characters preserved.
+This is reproducible content provenance, not proof of identity or independence.
+The readable report lists missing items, disagreements and every reported concern
+with reviewer, item, dimension and explanation. Supplied notes are escaped as
+literal Markdown text in the readable report and kept verbatim in JSON.
+
+Even complete human files report `VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and
+`NOT_APPROVED`: the 0.75 thresholds,
+reviewer count/independence, sample size, agreement and adjudication policy still
+need a separate decision. Review disagreements and threshold proposals, then obtain
+an explicit operator threat/residual-risk decision. A failed deterministic G check
+remains failed regardless of human scores. The public frozen anchors are not hidden
+cases, reviewer provenance is not cryptographic identity proof, and no hand-selected
+sample supports a confidence interval or claim about real model trials. The default
+acceptance runner does not import review files and remains BLOCKED.
