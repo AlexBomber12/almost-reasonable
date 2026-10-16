@@ -498,6 +498,118 @@ def test_invalid_stored_cursor_and_stream_rejected_before_http():
     assert fake.calls == []
 
 
+def test_live_cursor_is_bound_to_stream_and_provider_route():
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [],
+                "paging": {"next": "next-page", "cursors": {"after": "opaque"}},
+            },
+        )
+    )
+    client = transport(fake)
+    cursor = client.poll(InboundKind.REPLY, None).next_cursor
+    assert client.owns_cursor(InboundKind.REPLY, cursor)
+    assert not client.owns_cursor(InboundKind.MENTION, cursor)
+    assert not client.owns_cursor("reply", cursor)
+    assert not client.owns_cursor(InboundKind.REPLY, 17)
+    assert not client.owns_cursor(InboundKind.REPLY, "c-" + "A" * 3_000_000)
+    assert not client.owns_cursor(InboundKind.REPLY, "cursor-1")
+    with pytest.raises(ValueError, match="stored cursor"):
+        client.poll(InboundKind.REPLY, cursor.partition("_")[0] + "__w")
+    changed_root = ThreadsHTTPTransport(
+        account_ref="account-1",
+        provider_user_id="user-1",
+        reply_thread_id="root-2",
+        token=TOKEN,
+        client=fake,
+    )
+    assert not changed_root.owns_cursor(InboundKind.REPLY, cursor)
+    with pytest.raises(ValueError, match="stored cursor"):
+        changed_root.poll(InboundKind.REPLY, cursor)
+    assert len(fake.calls) == 1
+
+
+def test_simulator_cursor_is_reset_when_live_transport_activates(tmp_path):
+    from app.threads.simulator import ThreadsSimulator
+
+    simulator = ThreadsSimulator(account_ref="account-1")
+    simulator.add_poll_page(
+        stream=InboundKind.REPLY, cursor=None, next_cursor="cursor-1", events=()
+    )
+    live, _ = service(tmp_path, FakeHTTP())
+    simulation_policy = AccountPolicy(
+        "account-1",
+        Stage.SIMULATION,
+        True,
+        True,
+        live.policy.scopes,
+        True,
+        True,
+        True,
+    )
+    simulated = ThreadsService(
+        live.store, simulator, simulation_policy, utc_now=lambda: NOW
+    )
+    simulated.poll(InboundKind.REPLY, now=NOW, correlation_id="sim-poll", max_pages=1)
+    assert live.store.cursor("account-1", InboundKind.REPLY) == "cursor-1"
+
+    fake = FakeHTTP(response(200, {"data": [], "paging": {}}))
+    live, _ = service(tmp_path, fake)
+    result = live.poll(InboundKind.REPLY, now=NOW, correlation_id="live-poll")
+    assert result.final_cursor is None
+    assert live.store.cursor("account-1", InboundKind.REPLY) is None
+    assert "after=" not in fake.calls[0][1]
+
+
+def test_changed_live_reply_route_restarts_from_first_page(tmp_path):
+    first_fake = FakeHTTP(
+        response(
+            200,
+            {"data": [], "paging": {"next": "next-page", "cursors": {"after": "old"}}},
+        )
+    )
+    first, _ = service(tmp_path, first_fake)
+    old_cursor = first.poll(
+        InboundKind.REPLY, now=NOW, correlation_id="first", max_pages=1
+    ).final_cursor
+    assert old_cursor is not None
+
+    second_fake = FakeHTTP(
+        response(
+            200,
+            {"data": [], "paging": {"next": "next-page", "cursors": {"after": "new"}}},
+        )
+    )
+    from dataclasses import replace
+
+    second = ThreadsService(
+        ThreadsStore(tmp_path / "threads.sqlite3"),
+        ThreadsHTTPTransport(
+            account_ref="account-1",
+            provider_user_id="user-1",
+            reply_thread_id="root-2",
+            token=TOKEN,
+            client=second_fake,
+        ),
+        replace(first.policy),
+        utc_now=lambda: NOW,
+        live_enabled=True,
+    )
+    new_cursor = second.poll(
+        InboundKind.REPLY, now=NOW, correlation_id="second", max_pages=1
+    ).final_cursor
+    assert new_cursor != old_cursor
+    assert second.simulator.owns_cursor(InboundKind.REPLY, new_cursor)
+    assert "after=" not in second_fake.calls[0][1]
+
+
+def test_live_stage_3_readiness_reports_enabled_transport(tmp_path):
+    live, _ = service(tmp_path, FakeHTTP())
+    assert live.stage_3_readiness() == ()
+
+
 def test_account_preflight_prevents_publication_to_wrong_profile(tmp_path):
     fake = FakeHTTP()
     fake.profile_id = "other-user"

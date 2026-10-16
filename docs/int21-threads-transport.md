@@ -25,7 +25,7 @@ The published contract does not provide an operation key that proves a lost writ
 
 The Meta collection uses unversioned examples; this implementation pins `v1.0` as trusted configuration. Version acceptance and bearer-header behavior require an authorized live smoke before activation. App review, current account scopes, token validity, publishing limits, endpoint field availability, and mention/reply coverage cannot be established from requested scopes or offline responses. Public keyword search, token refresh, profile edits, general model-generated publication, deployment configuration and an unauthenticated publish endpoint are outside this milestone. The fixed root ID limits reply polling to one configured conversation; broader discovery needs a separate reviewed design.
 
-The mention head-rescan strategy avoids treating a reverse-ordered `after` cursor as a permanent checkpoint. Under sustained arrivals faster than the bounded page budget, a scan may take multiple polls to reach its terminal page; operational backlog limits and Meta's actual ordering require live validation before activation.
+The mention head-rescan strategy avoids treating a reverse-ordered `after` cursor as a permanent checkpoint. Under sustained arrivals faster than the bounded page budget, a scan may take multiple polls to reach its terminal page; operational backlog limits and Meta's actual ordering require live validation before activation. Live cursors contain a digest of the source reference, provider user ID, stream and stream route. On activation from simulation, or after a provider user or reply root change, the service starts at the first page and atomically replaces or clears the old cursor with the newly verified result. Stage 3 readiness recognizes an explicitly enabled live transport.
 
 The existing `app/oauth_server.py` is a state-checked callback that stores an authorization code; it is not a token exchange, token loader, account access verifier, or refresh service. This PR leaves it unchanged. A future live smoke requires a separately authorized credential path and an independent check of the actual Meta app/account permissions.
 
@@ -48,6 +48,10 @@ Do not edit `acceptance/scenarios.json` in this parallel PR. Proposed mappings f
 | `test_malformed_mention_pages_do_not_advance_cursor` | `INT-21-PAGE-ATOMICITY` |
 | `test_valid_reply_and_mention_parent_are_preserved` | `INT-21-INBOUND-PARENT` |
 | `test_invalid_stored_cursor_and_stream_rejected_before_http` | `INT-21-CURSOR-VALIDATION` |
+| `test_live_cursor_is_bound_to_stream_and_provider_route` | `INT-21-CURSOR-ROUTE-BINDING` |
+| `test_simulator_cursor_is_reset_when_live_transport_activates` | `INT-21-CURSOR-MIGRATION` |
+| `test_changed_live_reply_route_restarts_from_first_page` | `INT-21-ROUTE-CHANGE` |
+| `test_live_stage_3_readiness_reports_enabled_transport` | `INT-21-LIVE-READINESS` |
 | `test_account_preflight_prevents_publication_to_wrong_profile` | `INT-21-ACCOUNT-PREFLIGHT` |
 | `test_explicit_live_binding_requires_real_transport_and_stage_3` | `INT-21-LIVE-BINDING` |
 | `test_later_malformed_page_does_not_commit_earlier_events` | `INT-21-PAGE-ROLLBACK` |
@@ -136,6 +140,10 @@ tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advan
 tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advance_cursor[payload9]
 tests/test_int21_threads_transport.py::test_valid_reply_and_mention_parent_are_preserved
 tests/test_int21_threads_transport.py::test_invalid_stored_cursor_and_stream_rejected_before_http
+tests/test_int21_threads_transport.py::test_live_cursor_is_bound_to_stream_and_provider_route
+tests/test_int21_threads_transport.py::test_simulator_cursor_is_reset_when_live_transport_activates
+tests/test_int21_threads_transport.py::test_changed_live_reply_route_restarts_from_first_page
+tests/test_int21_threads_transport.py::test_live_stage_3_readiness_reports_enabled_transport
 tests/test_int21_threads_transport.py::test_account_preflight_prevents_publication_to_wrong_profile
 tests/test_int21_threads_transport.py::test_explicit_live_binding_requires_real_transport_and_stage_3
 tests/test_int21_threads_transport.py::test_live_activation_rejects_non_boolean_values[false]

@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 import base64
+import hashlib
 import json
 from queue import Empty, Queue
 import re
@@ -34,8 +35,8 @@ _VERSION = "v1.0"
 _SOURCE = "meta-threads-v1"
 _MAX_RESPONSE = MAX_PROVIDER_RESPONSE_BYTES
 _PAGE_LIMIT = 10
-_MAX_CURSOR_LENGTH = 2 + 4 * ((_MAX_RESPONSE + 2) // 3)
-_CURSOR = re.compile(r"c-([A-Za-z0-9_-]+)\Z")
+_MAX_CURSOR_LENGTH = 67 + 4 * ((_MAX_RESPONSE + 2) // 3)
+_CURSOR = re.compile(r"c-([0-9a-f]{64})_([A-Za-z0-9_-]+)\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -375,6 +376,23 @@ class ThreadsHTTPTransport:
                 EffectClass.PROVEN_PRE_DISPATCH, "provider_account_mismatch"
             )
 
+    def _cursor_scope(self, stream: InboundKind) -> str:
+        route = (
+            self.reply_thread_id
+            if stream is InboundKind.REPLY
+            else self.provider_user_id
+        )
+        binding = f"{self.source_ref}\0{self.provider_user_id}\0{route}\0{stream.value}"
+        return hashlib.sha256(binding.encode()).hexdigest()
+
+    def owns_cursor(self, stream: InboundKind, cursor: str) -> bool:
+        if type(stream) is not InboundKind or not isinstance(cursor, str):
+            return False
+        if len(cursor) > _MAX_CURSOR_LENGTH:
+            return False
+        match = _CURSOR.fullmatch(cursor)
+        return match is not None and match[1] == self._cursor_scope(stream)
+
     def poll(
         self,
         stream: InboundKind,
@@ -396,11 +414,11 @@ class ThreadsHTTPTransport:
             if not isinstance(cursor, str) or len(cursor) > _MAX_CURSOR_LENGTH:
                 raise ValueError("invalid stored cursor")
             match = _CURSOR.fullmatch(cursor)
-            if match is None:
+            if match is None or match[1] != self._cursor_scope(stream):
                 raise ValueError("invalid stored cursor")
             try:
                 raw_cursor = base64.urlsafe_b64decode(
-                    match[1] + "=" * (-len(match[1]) % 4)
+                    match[2] + "=" * (-len(match[2]) % 4)
                 ).decode("utf-8")
             except (ValueError, UnicodeDecodeError):
                 raise ValueError("invalid stored cursor") from None
@@ -444,7 +462,10 @@ class ThreadsHTTPTransport:
                     EffectClass.PROVEN_PRE_DISPATCH, "poll_cursor_invalid"
                 ) from None
         next_cursor = (
-            "c-" + base64.urlsafe_b64encode(raw_next_bytes).decode().rstrip("=")
+            "c-"
+            + self._cursor_scope(stream)
+            + "_"
+            + base64.urlsafe_b64encode(raw_next_bytes).decode().rstrip("=")
             if raw_next_bytes is not None
             else None
         )

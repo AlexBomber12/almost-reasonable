@@ -714,8 +714,14 @@ class ThreadsService:
         expected_source_ref = (
             self._bound_source_ref if self.live_enabled else self.simulator.source_ref
         )
-        cursor = self.store.cursor(self._account_ref, stream)
-        initial_cursor = cursor
+        stored_cursor = self.store.cursor(self._account_ref, stream)
+        route_changed = (
+            self.live_enabled
+            and stored_cursor is not None
+            and not self.simulator.owns_cursor(stream, stored_cursor)
+        )
+        cursor = None if route_changed else stored_cursor
+        initial_cursor = stored_cursor
         seen_cursors = {cursor}
         pending_events = []
         final_cursor = cursor
@@ -779,8 +785,10 @@ class ThreadsService:
                 expected_cursor=initial_cursor,
                 next_cursor=final_cursor,
                 reset_cursor=(
-                    self.live_enabled
-                    and stream is InboundKind.MENTION
+                    (
+                        route_changed
+                        or (self.live_enabled and stream is InboundKind.MENTION)
+                    )
                     and final_cursor is None
                 ),
                 events=pending_events,
@@ -798,7 +806,9 @@ class ThreadsService:
 
     def stage_3_readiness(self) -> tuple[str, ...]:
         stage_3_policy = replace(self.policy, stage=Stage.STAGE_3)
-        return stage_3_policy.publication_blockers(PublicationType.POST)
+        return stage_3_policy.publication_blockers(
+            PublicationType.POST, live_transport_enabled=self.live_enabled
+        )
 
     def _require_owned_item(self, operation_id: str) -> OutboxItem:
         self._require_account_binding()
