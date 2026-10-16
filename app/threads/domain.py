@@ -153,14 +153,15 @@ class AccountPolicy:
             raise ValueError("invalid account scopes")
 
     def publication_blockers(
-        self, publication_type: PublicationType
+        self, publication_type: PublicationType, *, live_transport_enabled: bool = False
     ) -> tuple[str, ...]:
         self.validate()
         blockers = []
         if self.stage is Stage.DISABLED:
             blockers.append("public stage is disabled")
         elif self.stage is Stage.STAGE_3:
-            blockers.append("live Threads transport is not implemented")
+            if not live_transport_enabled:
+                blockers.append("live Threads transport is not implemented")
         elif not self.simulation_enabled:
             blockers.append("simulation capability is disabled")
         if not self.account_authorized:

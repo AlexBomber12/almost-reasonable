@@ -63,11 +63,13 @@ class ProviderFailure(RuntimeError):
         evidence: str,
         *,
         container_id: str | None = None,
+        publication_id: str | None = None,
     ):
         super().__init__(evidence)
         self.effect_class = effect_class
         self.evidence = evidence
         self.container_id = container_id
+        self.publication_id = publication_id
 
 
 class SimulatedCrash(RuntimeError):

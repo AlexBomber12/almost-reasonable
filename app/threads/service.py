@@ -34,6 +34,7 @@ from .simulator import (
     ThreadsSimulator,
     simulated_provider_id,
 )
+from .transport import ConfirmedPublication, ThreadsTransport, ThreadsHTTPTransport
 from .store import (
     ActiveEffectWorkerError,
     PollCommitDeadlineError,
@@ -62,17 +63,25 @@ class ThreadsService:
     def __init__(
         self,
         store: ThreadsStore,
-        simulator: ThreadsSimulator,
+        simulator: ThreadsTransport,
         policy: AccountPolicy,
         *,
         clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
         authorization_provider: CurrentAuthorizationProvider | None = None,
         poll_guard: Callable[[], None] | None = None,
+        live_enabled: bool = False,
     ):
         policy.validate()
         if simulator.account_ref != policy.account_ref:
-            raise ValueError("simulator account does not match policy")
+            raise ValueError("transport account does not match policy")
+        if live_enabled and (
+            type(simulator) is not ThreadsHTTPTransport
+            or policy.stage is not Stage.STAGE_3
+        ):
+            raise ValueError("live transport requires explicit Stage 3 binding")
+        if type(simulator) is ThreadsHTTPTransport and not live_enabled:
+            raise ValueError("real transport is disabled")
         self.store = store
         self.simulator = simulator
         self.policy = policy
@@ -81,6 +90,7 @@ class ThreadsService:
         self.utc_now = utc_now
         self.authorization_provider = authorization_provider
         self.poll_guard = poll_guard
+        self.live_enabled = live_enabled
 
     def propose(
         self,
@@ -500,7 +510,10 @@ class ThreadsService:
                     release_lock_required=True,
                     precommit_check=self._require_account_binding,
                 )
-            elif result is ReconciliationResult.CONFIRMED:
+            elif (
+                result is ReconciliationResult.CONFIRMED
+                and type(self.simulator) is ThreadsSimulator
+            ):
                 reconciled = self.store.transition(
                     operation_id,
                     OutboxState.CONFIRMED,
@@ -509,6 +522,25 @@ class ThreadsService:
                     provider_publication_id=simulated_provider_id(
                         "thread", operation_id
                     ),
+                    reconciliation_status="verified_success",
+                    reconciliation_correlation_id=correlation_id,
+                    release_lock_target_operation_id=operation_id,
+                    release_lock_kind="reconciliation",
+                    release_lock_required=True,
+                    precommit_check=self._require_account_binding,
+                )
+            elif (
+                type(result) is ConfirmedPublication
+                and type(self.simulator) is ThreadsHTTPTransport
+                and result.publication_id == item.provider_publication_id
+            ):
+                reconciled = self.store.transition(
+                    operation_id,
+                    OutboxState.CONFIRMED,
+                    reason="reconciliation_verified_success",
+                    now=now,
+                    provider_publication_id=result.publication_id,
+                    dispatch_evidence=result.evidence,
                     reconciliation_status="verified_success",
                     reconciliation_correlation_id=correlation_id,
                     release_lock_target_operation_id=operation_id,
@@ -762,7 +794,9 @@ class ThreadsService:
         self, item: OutboxItem, approval: Approval, *, now: datetime
     ) -> Approval:
         self._require_account_binding()
-        blockers = self.policy.publication_blockers(item.publication_type)
+        blockers = self.policy.publication_blockers(
+            item.publication_type, live_transport_enabled=self.live_enabled
+        )
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
         validate_approval(
@@ -816,7 +850,9 @@ class ThreadsService:
             raise PolicyDeniedError(
                 "current draft privacy authorization is unavailable"
             )
-        blockers = self.policy.publication_blockers(item.publication_type)
+        blockers = self.policy.publication_blockers(
+            item.publication_type, live_transport_enabled=self.live_enabled
+        )
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
         return snapshot.approval
@@ -910,6 +946,7 @@ class ThreadsService:
         common = {
             "now": now,
             "provider_container_id": error.container_id,
+            "provider_publication_id": error.publication_id,
             "dispatch_evidence": error.evidence,
             "release_account_effect_lock": True,
             "account_effect_lock_required": True,
@@ -971,8 +1008,12 @@ class ThreadsService:
             else REQUIRED_MENTION_SCOPES
         )
         if (
-            self.policy.stage is not Stage.SIMULATION
-            or not self.policy.simulation_enabled
+            (
+                self.policy.stage is not Stage.STAGE_3
+                if self.live_enabled
+                else self.policy.stage is not Stage.SIMULATION
+            )
+            or (not self.live_enabled and not self.policy.simulation_enabled)
             or not self.policy.account_authorized
             or not required <= self.policy.scopes
             or self.policy.emergency_stop
