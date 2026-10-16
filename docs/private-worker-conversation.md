@@ -7,15 +7,18 @@ The ordinary `python -m app.private_web.cli serve` path still constructs disable
 python -m app.private_web.cli serve \
   --auth-db /private/auth.db --event-db /private/events.db \
   --privacy-ledger /private/ledger.db --owner-directory /private/owner \
-  --provider-db /private/provider.db \
+  --ipc-state-db /private/app-ipc-state.db \
   --worker-socket /private/worker/worker.sock --worker-uid 1001 \
   --allowed-host chat.example --allowed-origin https://chat.example
 ```
 
-All five stores must already exist. The provider database must be distinct from
-the conversation EventStore and match the database configured for the separate
-worker process; the worker does not open private conversation storage. The owner
-store is read with its current stop
+All five application stores must already exist. The application IPC state database
+must be distinct from the conversation EventStore and owned by the application UID.
+It holds durable IPC reservations and the application spend suspension control.
+The worker uses its own provider database, owned by the worker UID, and never opens
+either application database. The worker checks its own spend state before provider
+use; a worker-reported suspension is recorded as a terminal conversation outcome.
+Both spend controls can independently stop inference. The owner store is read with its current stop
 state; startup never clears it. The privacy gate must reconcile the matching
 EventStore and ledger before serving. This mode installs `ParticipantPrivacyControls`,
 `SharedIntelligence` for already approved records, and `WorkerConversationRuntime`
@@ -42,7 +45,7 @@ authority; the worker runtime does not install a research bridge or memory
 extractor.
 
 The authenticated HTTP path uses the same privacy fence, original-input identity,
-reply reservation, provider-spend state, `ActionPolicy`, zero-regeneration Russian
+reply reservation, application spend state, `ActionPolicy`, zero-regeneration Russian
 screen, durable result, protected dependency checks, release and history as the
 offline Stage 0 runtime. The Stage 0 constructor still requires the exact fake
 transport. Worker reply metadata says `worker-owned` instead of claiming that the

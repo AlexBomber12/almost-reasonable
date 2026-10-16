@@ -46,7 +46,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--event-db", required=True)
     serve.add_argument("--worker-socket")
     serve.add_argument("--worker-uid", type=int)
-    serve.add_argument("--provider-db")
+    serve.add_argument("--ipc-state-db")
     serve.add_argument("--privacy-ledger")
     serve.add_argument("--owner-directory")
     serve.add_argument("--listen-host", default="127.0.0.1")
@@ -134,10 +134,10 @@ def main(
         if (
             args.privacy_ledger is None
             or args.owner_directory is None
-            or args.provider_db is None
+            or args.ipc_state_db is None
         ):
             raise SystemExit(
-                "worker mode requires privacy ledger, owner directory and provider database"
+                "worker mode requires privacy ledger, owner directory and application IPC state database"
             )
         if args.worker_uid is None:
             raise SystemExit("worker mode requires an expected worker UID")
@@ -148,7 +148,7 @@ def main(
                     args.auth_db,
                     args.event_db,
                     args.privacy_ledger,
-                    args.provider_db,
+                    args.ipc_state_db,
                 )
             )
             or not (Path(args.owner_directory) / "owner.sqlite").is_file()
@@ -158,7 +158,7 @@ def main(
         args.privacy_ledger is not None
         or args.owner_directory is not None
         or args.worker_uid is not None
-        or args.provider_db is not None
+        or args.ipc_state_db is not None
     ):
         raise SystemExit("privacy and owner stores require worker mode")
     auth = AuthStore(args.auth_db)
@@ -181,7 +181,7 @@ def main(
             event_store,
             gate,
             OpenAIWorkerClient(args.worker_socket, expected_worker_uid=args.worker_uid),
-            provider_state=ProviderStateStore(EventStore(args.provider_db)),
+            provider_state=ProviderStateStore(EventStore(args.ipc_state_db)),
             emergency_stop=owner.active,
             shared_intelligence=shared,
         )

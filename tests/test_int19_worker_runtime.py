@@ -197,7 +197,7 @@ def _app(tmp_path, socket_path):
     auth.provision_account("alice", "synthetic-password-a", "participant-a")
     auth.provision_account("bob", "synthetic-password-b", "participant-b")
     events = EventStore(tmp_path / "events.db")
-    EventStore(tmp_path / "provider.db")
+    EventStore(tmp_path / "ipc-state.db")
     ledger = PrivacyLedger(tmp_path / "ledger.db")
     gate = PrivacyReadGate(ledger, events)
     assert gate.reconcile()
@@ -205,7 +205,7 @@ def _app(tmp_path, socket_path):
         events,
         gate,
         OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
-        provider_state=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
         clock=clock,
     )
     controls = ParticipantPrivacyControls(auth, events, ledger, gate, clock=clock)
@@ -323,7 +323,7 @@ def test_provider_context_builder_is_separate_from_v1_and_gateway_accepts_only_t
     )
     fake = FakeOpenAITransport([response()])
     gateway = TrustedOpenAIGateway(
-        store=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        store=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
         transport=fake,
         config=config,
     )
@@ -348,7 +348,8 @@ def test_connected_http_worker_process_isolation_restart_and_no_retry(tmp_path):
     auth, events, ledger, gate, app, a, b = _app(tmp_path, socket_path)
     parent, child = multiprocessing.Pipe(duplex=False)
     process = multiprocessing.Process(
-        target=_worker, args=(str(socket_path), str(tmp_path / "provider.db"), child, 2)
+        target=_worker,
+        args=(str(socket_path), str(tmp_path / "worker-provider.db"), child, 2),
     )
     process.start()
     child.close()
@@ -379,6 +380,20 @@ def test_connected_http_worker_process_isolation_restart_and_no_retry(tmp_path):
         assert "Секрет только Алисы" not in inputs[1]
         process.join(5)
         assert process.exitcode == 0
+        with EventStore(tmp_path / "ipc-state.db")._open() as db:
+            assert db.execute(
+                "SELECT count(*) FROM provider_attempt_reservations"
+            ).fetchone() == (2,)
+            assert db.execute(
+                "SELECT count(*) FROM provider_usage_attempts"
+            ).fetchone() == (0,)
+        with EventStore(tmp_path / "worker-provider.db")._open() as db:
+            assert db.execute(
+                "SELECT count(*) FROM provider_attempt_reservations"
+            ).fetchone() == (0,)
+            assert db.execute(
+                "SELECT count(*) FROM provider_usage_attempts"
+            ).fetchone() == (2,)
         # A renewed session and a restart must return the durable result without IPC.
         reopened_events = EventStore(events.database_path)
         new_gate = PrivacyReadGate(ledger, reopened_events)
@@ -387,7 +402,7 @@ def test_connected_http_worker_process_isolation_restart_and_no_retry(tmp_path):
             reopened_events,
             new_gate,
             OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
-            provider_state=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+            provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
             clock=Clock(),
         )
         app._privacy = ParticipantPrivacyControls(
@@ -419,14 +434,15 @@ def test_shared_context_crosses_worker_without_private_provenance_and_erases(tmp
         events,
         gate,
         OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
-        provider_state=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
         shared_intelligence=shared,
         clock=Clock(),
     )
     app._conversations = runtime
     parent, child = multiprocessing.Pipe(duplex=False)
     process = multiprocessing.Process(
-        target=_worker, args=(str(socket_path), str(tmp_path / "provider.db"), child, 1)
+        target=_worker,
+        args=(str(socket_path), str(tmp_path / "worker-provider.db"), child, 1),
     )
     process.start()
     child.close()
@@ -490,7 +506,7 @@ def test_existing_private_memory_crosses_worker_with_deletion_dependency(tmp_pat
     parent, child = multiprocessing.Pipe(duplex=False)
     process = multiprocessing.Process(
         target=_worker,
-        args=(str(socket_path), str(tmp_path / "provider.db"), child, 1),
+        args=(str(socket_path), str(tmp_path / "worker-provider.db"), child, 1),
     )
     process.start()
     child.close()
@@ -532,7 +548,7 @@ def test_existing_private_memory_crosses_worker_with_deletion_dependency(tmp_pat
 def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path):
     auth_path = tmp_path / "auth.db"
     event_path = tmp_path / "events.db"
-    provider_path = tmp_path / "provider.db"
+    provider_path = tmp_path / "ipc-state.db"
     ledger_path = tmp_path / "ledger.db"
     owner_path = tmp_path / "owner"
     AuthStore(auth_path)
@@ -574,7 +590,7 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
             + [
                 "--worker-socket",
                 str(tmp_path / "worker.sock"),
-                "--provider-db",
+                "--ipc-state-db",
                 str(provider_path),
                 "--privacy-ledger",
                 str(ledger_path),
@@ -585,7 +601,7 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
         )
     with pytest.raises(SystemExit, match="require worker mode"):
         private_web_main(
-            base + ["--provider-db", str(provider_path)], server_factory=factory
+            base + ["--ipc-state-db", str(provider_path)], server_factory=factory
         )
     with pytest.raises(SystemExit, match="requires existing application stores"):
         private_web_main(
@@ -595,7 +611,7 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
                 str(tmp_path / "worker.sock"),
                 "--worker-uid",
                 str(os.getuid()),
-                "--provider-db",
+                "--ipc-state-db",
                 str(provider_path),
                 "--privacy-ledger",
                 str(ledger_path),
@@ -612,7 +628,7 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
                 str(tmp_path / "worker.sock"),
                 "--worker-uid",
                 str(os.getuid()),
-                "--provider-db",
+                "--ipc-state-db",
                 str(provider_path),
                 "--privacy-ledger",
                 str(ledger_path),
@@ -634,7 +650,7 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
 def test_cli_worker_mode_rejects_failed_privacy_reconciliation(tmp_path, monkeypatch):
     auth_path = tmp_path / "auth.db"
     events_path = tmp_path / "events.db"
-    provider_path = tmp_path / "provider.db"
+    provider_path = tmp_path / "ipc-state.db"
     ledger_path = tmp_path / "ledger.db"
     owner_path = tmp_path / "owner"
     AuthStore(auth_path)
@@ -651,7 +667,7 @@ def test_cli_worker_mode_rejects_failed_privacy_reconciliation(tmp_path, monkeyp
                 str(auth_path),
                 "--event-db",
                 str(events_path),
-                "--provider-db",
+                "--ipc-state-db",
                 str(provider_path),
                 "--privacy-ledger",
                 str(ledger_path),
@@ -675,7 +691,7 @@ def test_cli_worker_mode_rejects_failed_privacy_reconciliation(tmp_path, monkeyp
 def test_runtime_construction_rejects_unbound_provider_and_synthetic_effects(tmp_path):
     socket_path = tmp_path / "absent.sock"
     _auth, events, _ledger, gate, _app_instance, _a, _b = _app(tmp_path, socket_path)
-    provider = ProviderStateStore(EventStore(tmp_path / "provider.db"))
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc-state.db"))
     client = OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid())
     with pytest.raises(TypeError, match="exact worker client"):
         WorkerConversationRuntime(events, gate, object(), provider_state=provider)
@@ -733,7 +749,7 @@ def test_worker_admission_rechecks_controls_after_reservation(
         elif change == "delivery":
             runtime._delivery = lambda: False
         else:
-            with EventStore(tmp_path / "provider.db")._open() as db:
+            with EventStore(tmp_path / "ipc-state.db")._open() as db:
                 db.execute(
                     "INSERT INTO provider_spend_suspensions VALUES (?,?,?,?,?)",
                     (
@@ -777,7 +793,7 @@ def test_worker_admission_requires_reply_and_duplicate_marker_never_reinfers(tmp
 def test_worker_preflight_reports_existing_spend_suspension_without_ipc(tmp_path):
     socket_path = tmp_path / "absent.sock"
     _auth, _events, _ledger, _gate, _app_instance, a, _b = _app(tmp_path, socket_path)
-    with EventStore(tmp_path / "provider.db")._open() as db:
+    with EventStore(tmp_path / "ipc-state.db")._open() as db:
         db.execute(
             "INSERT INTO provider_spend_suspensions VALUES (?,?,?,?,?)",
             (
@@ -791,7 +807,7 @@ def test_worker_preflight_reports_existing_spend_suspension_without_ipc(tmp_path
     first = json.loads(a.submit("suspended", "Проверим лимит")[2])
     assert first["model_state"] == "spend_suspended"
     assert first["response"] is not None
-    with EventStore(tmp_path / "provider.db")._open() as db:
+    with EventStore(tmp_path / "ipc-state.db")._open() as db:
         assert db.execute(
             "SELECT count(*) FROM provider_attempt_reservations"
         ).fetchone() == (0,)
@@ -935,7 +951,7 @@ def test_worker_result_states_are_durable_and_never_reinferred(
         reopened_events,
         gate,
         OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
-        provider_state=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
         clock=Clock(),
     )
     app._privacy = ParticipantPrivacyControls(
@@ -969,7 +985,7 @@ def test_actual_worker_boundary_uncertainty_survives_restart(tmp_path, mode):
     parent, child = multiprocessing.Pipe(duplex=False)
     process = multiprocessing.Process(
         target=_broken_worker,
-        args=(str(socket_path), str(tmp_path / "provider.db"), child, mode),
+        args=(str(socket_path), str(tmp_path / "worker-provider.db"), child, mode),
     )
     process.start()
     child.close()
@@ -988,7 +1004,7 @@ def test_actual_worker_boundary_uncertainty_survives_restart(tmp_path, mode):
             reopened_events,
             gate,
             OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
-            provider_state=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+            provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
             clock=Clock(),
         )
         app._privacy = ParticipantPrivacyControls(
@@ -1013,12 +1029,13 @@ def test_client_rejects_wrong_worker_uid_before_private_transmission(tmp_path):
         events,
         gate,
         OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid() + 1),
-        provider_state=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
         clock=Clock(),
     )
     parent, child = multiprocessing.Pipe(duplex=False)
     process = multiprocessing.Process(
-        target=_worker, args=(str(socket_path), str(tmp_path / "provider.db"), child, 1)
+        target=_worker,
+        args=(str(socket_path), str(tmp_path / "worker-provider.db"), child, 1),
     )
     process.start()
     child.close()
@@ -1057,7 +1074,13 @@ def test_controls_change_while_separate_worker_is_in_flight(tmp_path, change, st
     entered, release = multiprocessing.Event(), multiprocessing.Event()
     process = multiprocessing.Process(
         target=_paused_worker,
-        args=(str(socket_path), str(tmp_path / "provider.db"), child, entered, release),
+        args=(
+            str(socket_path),
+            str(tmp_path / "worker-provider.db"),
+            child,
+            entered,
+            release,
+        ),
     )
     process.start()
     child.close()
@@ -1074,7 +1097,7 @@ def test_controls_change_while_separate_worker_is_in_flight(tmp_path, change, st
         if change == "stop":
             stopped[0] = True
         elif change == "spend":
-            with EventStore(tmp_path / "provider.db")._open() as db:
+            with EventStore(tmp_path / "ipc-state.db")._open() as db:
                 db.execute(
                     "INSERT INTO provider_spend_suspensions VALUES (?,?,?,?,?)",
                     (
