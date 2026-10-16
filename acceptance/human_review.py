@@ -7,6 +7,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import re
 
 from acceptance.behavior import CORPUS, evaluate
 from app.behavior.evaluation import (
@@ -19,7 +20,7 @@ from app.behavior.russian_gate import RUSSIAN_GATE_CORPUS_VERSION, corpus_cases
 
 ROOT = Path(__file__).resolve().parent
 CONTEXT = ROOT / "human_review_context.json"
-PACKET_VERSION = "stage0-human-packet-v1"
+PACKET_VERSION = "stage0-human-packet-v2"
 REVIEW_VERSION = "stage0-human-review-v1"
 SUMMARY_VERSION = "stage0-human-summary-v2"
 DIMENSIONS = {
@@ -82,6 +83,13 @@ def nonempty(value):
     return type(value) is str and bool(value.strip()) and len(value) <= 200
 
 
+def valid_reviewer_id(value):
+    return (
+        type(value) is str
+        and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", value) is not None
+    )
+
+
 def packet():
     corpus = strict_json(CORPUS)
     context = strict_json(CONTEXT)
@@ -109,6 +117,11 @@ def packet():
             raise ValueError("invalid review context")
         if row["id"] in required and not ctx[required[row["id"]]]:
             raise ValueError(f"insufficient review context for {row['id']}")
+        review_dimensions = (
+            {RubricDimension.NATURAL_RUSSIAN.value}
+            if row["id"] == "russian"
+            else {row["dimension"], RubricDimension.NATURAL_RUSSIAN.value}
+        )
         for trial, output in enumerate(row["outputs"], 1):
             obs = identity[row["id"], trial]
             item_id = digest([PACKET_VERSION, corpus["version"], row["id"], trial])[:20]
@@ -120,14 +133,10 @@ def packet():
                     "source_excerpts": ctx["source_excerpts"],
                     "authority_state": ctx["authority_state"],
                     "answer": output,
-                    "dimensions": sorted(
-                        {row["dimension"], RubricDimension.NATURAL_RUSSIAN.value}
-                    ),
+                    "dimensions": sorted(review_dimensions),
                     "guidance": {
                         dimension: GUIDANCE[dimension]
-                        for dimension in sorted(
-                            {row["dimension"], RubricDimension.NATURAL_RUSSIAN.value}
-                        )
+                        for dimension in sorted(review_dimensions)
                     },
                     "case_input_sha256": obs["case_input_sha256"],
                     "context_sha256": digest(ctx),
@@ -219,8 +228,8 @@ def validate(pkt, submission):
     ):
         if submission[key] != template[key]:
             raise ValueError(f"stale or mismatched {key}")
-    if not nonempty(submission["reviewer_id"]):
-        raise ValueError("reviewer_id required")
+    if not valid_reviewer_id(submission["reviewer_id"]):
+        raise ValueError("reviewer_id requires a short alphanumeric pseudonym")
     if submission["evidence_class"] not in ("human", "synthetic_test_fixture"):
         raise ValueError("invalid evidence_class")
     exact(submission["metadata"], ("reviewed_at", "note"), "metadata")

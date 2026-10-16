@@ -228,6 +228,8 @@ python -m acceptance.human_review export --output .artifacts/human-review
 
 Give each reviewer an independent copy of `blank-review.json` and the readable
 `packet.ru.md`. In the copy, set a short `reviewer_id` (pseudonym is fine),
+using 1–64 ASCII letters, digits, periods, underscores or hyphens and starting
+with a letter or digit; this keeps the readable report on one line per item. Set
 `metadata.reviewed_at` to an ISO 8601 timestamp with timezone, and optionally
 `metadata.note`. Score each item/dimension from 0 to 1; leave `score: null` when
 unable to judge and set `concerns` to `ambiguous` or `insufficient_context` as
@@ -235,6 +237,9 @@ appropriate. The answer, prior conversation, source excerpts and authority state
 are in the packet. Do not edit item IDs, versions or hashes. Use `evidence_class:
 "synthetic_test_fixture"` for test submissions; it cannot count as release
 calibration. The `human` value is a reviewer assertion, not verified identity.
+The version 2 packet asks only for `natural_russian` on the existing language-only
+`russian` case; that case has no evidentiary claim to score for intellectual honesty.
+The recorded-assessment corpus and its separate reporting remain unchanged.
 
 ```bash
 python -m acceptance.human_review summarize reviewer-a.json reviewer-b.json \

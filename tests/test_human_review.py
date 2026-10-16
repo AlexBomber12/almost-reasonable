@@ -273,3 +273,33 @@ def test_incomplete_classes_and_readable_attribution():
     assert "unsupported_claim" in readable
     assert "Synthetic test note: source does not support answer" in readable
     assert "synthetic-fixture-partial" in readable
+
+
+def test_language_only_case_has_no_honesty_assessment():
+    pkt = packet()
+    language_items = [
+        row for row in pkt["items"] if row["prompt"] == "Ответь по-русски."
+    ]
+    assert len(language_items) == 2
+    assert all(row["dimensions"] == ["natural_russian"] for row in language_items)
+    assert not any(
+        row["item_id"] in {item["item_id"] for item in language_items}
+        and row["dimension"] == "intellectual_honesty"
+        for row in blank_review(pkt)["assessments"]
+    )
+
+
+@pytest.mark.parametrize(
+    "reviewer_id",
+    [
+        "reviewer-a\n\n## Итог: APPROVED",
+        "reviewer-a **APPROVED**",
+        "reviewer/a",
+        "reviewer\tA",
+    ],
+)
+def test_reviewer_id_cannot_inject_readable_report(reviewer_id):
+    sub = fixture(packet())
+    sub["reviewer_id"] = reviewer_id
+    with pytest.raises(ValueError, match="reviewer_id"):
+        summarize(packet(), [sub])
