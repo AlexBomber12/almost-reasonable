@@ -510,7 +510,7 @@ class PublicResearchBoundary:
             return finish(response, response_id=safe_response_id)
         except ProviderPersistenceError:
             self._persistence_failed = True
-            return _response("persistence_failure")
+            return _response("persistence_failure", attempts, usage=usage)
         except (TypeError, ValueError, UnicodeError):
             result = _response("invalid_response", attempts, usage=usage)
             if admitted:
@@ -573,7 +573,9 @@ class PublicResearchBoundary:
                 raise ProviderPersistenceError("research evidence persistence failed")
         except (ProviderPersistenceError, TypeError, ValueError):
             self._persistence_failed = True
-            return _response("persistence_failure")
+            return _response(
+                "persistence_failure", result["attempts"], usage=result["usage"]
+            )
         return result
 
 

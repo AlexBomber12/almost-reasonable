@@ -493,10 +493,8 @@ def test_persistence_failure_latches_and_sanitizes(tmp_path, monkeypatch):
         raise ProviderPersistenceError("private")
 
     monkeypatch.setattr(store, "reserve_attempt", failed)
-    assert (
-        worker.execute(request, peer_uid=os.geteuid())["outcome"]
-        == "persistence_failure"
-    )
+    first = worker.execute(request, peer_uid=os.geteuid())
+    assert first["outcome"] == "persistence_failure" and first["attempts"] == 0
     monkeypatch.undo()
     assert (
         worker.execute(request, peer_uid=os.geteuid())["outcome"]
@@ -757,10 +755,8 @@ def test_unrecorded_spend_limit_fails_closed(tmp_path, monkeypatch):
     worker, sdk, store = boundary(tmp_path, [Limit("private")], enabled=True)
     request = grant(worker)
     monkeypatch.setattr(store, "record_attempt", lambda *args, **kwargs: False)
-    assert (
-        worker.execute(request, peer_uid=os.geteuid())["outcome"]
-        == "persistence_failure"
-    )
+    first = worker.execute(request, peer_uid=os.geteuid())
+    assert first["outcome"] == "persistence_failure" and first["attempts"] == 1
     assert (
         worker.execute(request, peer_uid=os.geteuid())["outcome"]
         == "persistence_failure"
@@ -772,10 +768,9 @@ def test_unrecorded_success_fails_closed(tmp_path, monkeypatch):
     worker, sdk, store = boundary(tmp_path, enabled=True)
     request = grant(worker)
     monkeypatch.setattr(store, "record_attempt", lambda *args, **kwargs: False)
-    assert (
-        worker.execute(request, peer_uid=os.geteuid())["outcome"]
-        == "persistence_failure"
-    )
+    first = worker.execute(request, peer_uid=os.geteuid())
+    assert first["outcome"] == "persistence_failure" and first["attempts"] == 1
+    assert first["usage"]["total_tokens"] == 150
     assert (
         worker.execute(request, peer_uid=os.geteuid())["outcome"]
         == "persistence_failure"
@@ -795,11 +790,36 @@ def test_invalid_pre_admission_state_and_duration_fail_closed(tmp_path):
 
     worker._stop = lambda: False
     worker._monotonic = iter((5, 5, 4, 3)).__next__
-    assert (
-        worker.execute(request, peer_uid=os.geteuid())["outcome"]
-        == "persistence_failure"
-    )
+    result = worker.execute(request, peer_uid=os.geteuid())
+    assert result["outcome"] == "persistence_failure" and result["attempts"] == 1
     assert store.attempt_exists(request.operation_id)
+
+
+def test_post_contact_store_failure_reports_one_attempt(tmp_path, monkeypatch):
+    from app.core.provider_spend import ProviderPersistenceError
+
+    worker, sdk, store = boundary(tmp_path, enabled=True)
+    request = grant(worker)
+    contacted = [False]
+    create = sdk.create
+
+    def contact(**kwargs):
+        response = create(**kwargs)
+        contacted[0] = True
+        return response
+
+    def spend_state():
+        if contacted[0]:
+            raise ProviderPersistenceError("private")
+        return False
+
+    monkeypatch.setattr(sdk, "create", contact)
+    monkeypatch.setattr(store, "is_spend_suspended", spend_state)
+    result = worker.execute(request, peer_uid=os.geteuid())
+    assert result["outcome"] == "persistence_failure"
+    assert result["attempts"] == 1
+    assert result["usage"]["total_tokens"] == 150
+    assert len(sdk.calls) == 1
 
 
 def test_provider_dispatch_exception_and_post_response_stop(tmp_path, monkeypatch):
