@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
-import html
 import hashlib
 import hmac
 import math
@@ -11,7 +10,6 @@ import secrets
 import socket
 import time
 import unicodedata
-from urllib.parse import unquote
 
 from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.provider_contract import (
@@ -134,14 +132,11 @@ def encode_public_request(request: PublicResearchRequest) -> bytes:
 
 def _question_has_url(value: str) -> bool:
     normalized = unicodedata.normalize("NFKC", value)
-    for _ in range(3):
-        normalized = html.unescape(unquote(normalized))
     normalized = "".join(
         character for character in normalized if unicodedata.category(character) != "Cf"
     )
     return (
-        "/" in normalized
-        or "\\" in normalized
+        any(character in normalized for character in "/\\%&#")
         or _URL_LIKE.search(normalized) is not None
     )
 

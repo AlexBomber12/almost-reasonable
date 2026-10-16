@@ -390,8 +390,10 @@ def test_trusted_installation_rejects_invalid_binding(tmp_path, field, value):
         "example.org?key=private",
         "EXAMPLE．ORG/private",
         "example%2Eorg%2Fprivate",
+        "example%2525252Eorg%2525252Fprivate",
         "exam\u200bple.org/private",
         "example&#46;org&#47;private",
+        "example&amp;amp;#46;org",
     ],
 )
 def test_installation_does_not_admit_arbitrary_url(tmp_path, url):
