@@ -2,9 +2,10 @@
 
 Stage 0 readiness is **BLOCKED**. The acceptance package executes all 12 scenario
 mappings and distinguishes connected synthetic checks from remaining requirements.
-Missing complete cross-channel attack
-coverage and fluent-human calibration prevent Stage 0 acceptance. Complete
-MVP acceptance is also BLOCKED. Synthetic success does not grant rollout authority.
+The connected synthetic SCN-12 cross-channel matrix is complete; fluent-human
+calibration and operator threat/risk review still prevent Stage 0 acceptance.
+Complete MVP acceptance is also BLOCKED. Synthetic success does not grant
+rollout authority.
 
 ## Reproduce
 
@@ -163,8 +164,43 @@ There is no automatic inference/research recovery resolver.
 Only this synthetic connection is complete. Arbitrary privately motivated briefs,
 production authorization/bootstrap, real providers and semantic source-support
 evaluation remain unavailable. SCN-11 authenticated synthetic participant privacy
-controls now have connected WSGI evidence; SCN-12 combined adversarial coverage and human
-calibration continue to block Stage 0 and complete-MVP acceptance.
+controls have connected WSGI evidence. INT-14 adds the connected synthetic SCN-12
+matrix below. Human calibration and operator review still block Stage 0 release
+readiness and complete-MVP acceptance.
+
+## INT-14 connected synthetic adversarial matrix
+
+`acceptance/cross_channel_corpus.json` is the versioned five-case matrix. Each
+case uses authenticated A/B HTTP input and notice acknowledgement, an actual
+AF_UNIX research worker with hostile fake hosted-search annotation, instruction-
+bearing generic memory and an omitted-parent derivative, reopened stores and
+bounded delayed private retrieval, a closed shared proposal and independent
+two-phase mission confirmation. A test-only composition reads the current mission
+from the reviewed EventStore and PrivacyReadGate for each bounded Threads
+deliberation. The proposal then uses verified polling, journal, the literal draft
+catalog, independent SyntheticOperator approval, outbox and simulator. Ordinary
+scheduler/Threads mission consumption remains absent.
+
+The synthetic extractor copies the poison statement from the private memory
+snapshot it actually receives and declares no semantic parent. The connected
+journey checks the protected contextual edge to that exact poison operation,
+its source union and counts before deletion and after reopening storage. A
+focused control removes contextual binding at the cognition/store seam: the
+SCN-12 provenance assertion fails on the missing edge, then passes with normal
+binding. HTTP deletion removes the derivative and dependent reply payloads;
+they remain unavailable after restart and current-ledger replay into an older
+quarantined backup. A later authenticated conversation sees neither the removed
+statement nor its private canary.
+
+The connected G checks cover foreign-context and worker-request canaries, model
+input provenance, malicious private/public proposals, rejected shared poison
+even with permissive H screening, current mission/version, no unauthorized
+dispatch, safe literal dispatch, deletion and dependent reply removal, stale
+approval after deletion, restart, old-backup quarantine, and no uncertain
+resend. Separate public variants revoke approval, stop operation or suspend spend
+after preparation. The simulator records zero network calls. Recorded model
+decisions and permissive H results do not establish model resistance, semantic
+source understanding or human calibration.
 
 ## INT-12 connected synthetic private consolidation
 

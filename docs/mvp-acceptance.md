@@ -223,3 +223,19 @@ gate passed while release readiness is BLOCKED; it grants no stage promotion.
 See [Stage 0 acceptance procedure](stage0-acceptance.md) for independent Stage 1
 smoke prerequisites and limitations. Human calibration and real-model trials remain
 unavailable; no completed MVP is claimed.
+
+## INT-14 connected synthetic SCN-12
+
+The versioned [cross-channel corpus](../acceptance/cross_channel_corpus.json)
+now runs five multilingual/encoded/multi-turn cases through authenticated HTTP,
+the AF_UNIX research worker, generic memory, shared and mission authority,
+restart, bounded mission-fed deliberation and verified Threads simulation.
+Case-specific nodes also check deletion, quarantine, prepared-effect controls,
+and uncertain-operation recovery. In this connected deterministic G evidence,
+the extractor copies an exposed private memory into a parentless derivative,
+whose protected contextual edge is checked before and after storage reopen.
+A focused negative control removes that edge and fails the SCN-12 provenance
+oracle; the deletion chain also checks a later model input and the old backup.
+The mission-to-Threads read is an explicit test-only composition. Ordinary
+mission consumption, real-model resistance, fluent-human H/M calibration,
+operator review, live providers and production activation remain absent.
