@@ -31,7 +31,8 @@ from .simulator import (
 _HOST = "https://graph.threads.net"
 _VERSION = "v1.0"
 _SOURCE = "meta-threads-v1"
-_MAX_RESPONSE = 64_000
+_MAX_RESPONSE = 2_097_152
+_PAGE_LIMIT = 10
 _CURSOR = re.compile(r"c-([A-Za-z0-9_-]{1,124})\Z")
 
 
@@ -355,11 +356,11 @@ class ThreadsHTTPTransport:
             )
 
     def poll(
-        self, stream: InboundKind, cursor: str | None, *, limit: int = 50
+        self, stream: InboundKind, cursor: str | None, *, limit: int = _PAGE_LIMIT
     ) -> VerifiedPollPage:
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
-        if type(limit) is not int or not 1 <= limit <= 50:
+        if type(limit) is not int or not 1 <= limit <= _PAGE_LIMIT:
             raise ValueError("invalid provider page limit")
         raw_cursor = None
         if cursor is not None:
@@ -378,7 +379,7 @@ class ThreadsHTTPTransport:
             else f"{self.provider_user_id}/mentions"
         )
         params = {
-            "fields": "id,text,timestamp,root_post,replied_to,is_reply_owned_by_me",
+            "fields": "id,text,media_type,timestamp,root_post,replied_to,is_reply_owned_by_me",
             "limit": str(limit),
         }
         if stream is InboundKind.REPLY:
@@ -418,7 +419,6 @@ class ThreadsHTTPTransport:
                 if not isinstance(row, dict):
                     raise ValueError("invalid row")
                 event_id = require_reference("event ID", row.get("id"))
-                text = validate_content(row.get("text"), inbound=True)
                 occurred = datetime.fromisoformat(row.get("timestamp"))
                 if occurred.tzinfo is None:
                     raise ValueError("unaware event time")
@@ -442,6 +442,11 @@ class ThreadsHTTPTransport:
                     )
                     if parent_id is not None:
                         parent_id = require_reference("mention parent", parent_id)
+                raw_text = row.get("text")
+                if raw_text is None or raw_text == "":
+                    if row.get("media_type") in {"IMAGE", "VIDEO", "CAROUSEL_ALBUM"}:
+                        continue
+                text = validate_content(raw_text, inbound=True)
                 events.append(
                     InboundEvent(
                         event_id,

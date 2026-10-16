@@ -711,7 +711,7 @@ class ThreadsService:
             self._check_poll_policy_with_audit(stream, correlation_id, now)
             page = (
                 self.simulator.poll(
-                    stream, cursor, limit=min(50, max_events - fetched_count)
+                    stream, cursor, limit=min(10, max_events - fetched_count)
                 )
                 if type(self.simulator) is ThreadsHTTPTransport
                 else self.simulator.poll(stream, cursor)

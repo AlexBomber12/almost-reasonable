@@ -23,7 +23,7 @@ from app.threads.simulator import (
     SimulationAuthorizationProvider,
 )
 from app.threads.store import ThreadsStore, ThreadsStoreError
-from app.threads.transport import HTTPResponse, ThreadsHTTPTransport
+from app.threads.transport import HTTPResponse, ThreadsHTTPTransport, _MAX_RESPONSE
 
 NOW = datetime(2026, 10, 16, 12, tzinfo=UTC)
 TOKEN = "test-credential-do-not-log"
@@ -394,7 +394,7 @@ def test_transport_rejects_untrusted_configuration(changes):
         HTTPResponse(200, b"{"),
         HTTPResponse(200, b"[]"),
         HTTPResponse(302, b"{}"),
-        HTTPResponse(200, b"x" * 64001),
+        HTTPResponse(200, b"x" * (_MAX_RESPONSE + 1)),
         HTTPResponse(200, b"\xff"),
         "wrong type",
     ],
@@ -864,32 +864,33 @@ def test_live_pages_stop_at_event_budget_and_resume_without_loss(tmp_path):
         response(
             200,
             {
-                "data": [mention(i) for i in range(50)],
+                "data": [mention(i) for i in range(10)],
                 "paging": {"next": "next-page", "cursors": {"after": "page-1"}},
             },
         ),
         response(
             200,
             {
-                "data": [mention(i) for i in range(50, 100)],
-                "paging": {"next": "next-page", "cursors": {"after": "page-2"}},
+                "data": [mention(10)],
+                "paging": {},
             },
         ),
-        response(200, {"data": [mention(100)], "paging": {}}),
     )
     svc, _ = service(tmp_path, fake)
-    first = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
-    assert (first.pages, len(first.new_events), len(fake.calls)) == (2, 100, 2)
+    first = svc.poll(
+        InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_events=10
+    )
+    assert (first.pages, len(first.new_events), len(fake.calls)) == (1, 10, 1)
     assert first.final_cursor is not None
     second = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
-    assert [event.event_id for event in second.new_events] == ["mention-100"]
+    assert [event.event_id for event in second.new_events] == ["mention-10"]
     assert svc.store.cursor("account-1", InboundKind.MENTION) is None
     with sqlite3.connect(svc.store.database) as connection:
         assert (
             connection.execute(
                 "SELECT count(*) FROM threads_inbound_events"
             ).fetchone()[0]
-            == 101
+            == 11
         )
 
 
@@ -921,7 +922,7 @@ def test_owned_reply_is_skipped_and_cursor_advances(tmp_path):
     assert [event.event_id for event in second.new_events] == ["reply-1"]
 
 
-@pytest.mark.parametrize("limit", [0, 51, True])
+@pytest.mark.parametrize("limit", [0, 11, True])
 def test_live_page_limit_is_validated_before_http(limit):
     fake = FakeHTTP()
     with pytest.raises(ValueError, match="page limit"):
@@ -939,6 +940,85 @@ def test_provider_page_exceeding_requested_limit_keeps_cursor(tmp_path):
     with pytest.raises(ProviderFailure, match="poll_page_invalid"):
         svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_events=1)
     assert "limit=1" in fake.calls[0][1]
+    assert svc.store.cursor("account-1", InboundKind.MENTION) is None
+
+
+def test_full_page_of_long_valid_text_fits_response_bound_and_advances(tmp_path):
+    rows = [
+        {
+            "id": f"mention-{number}",
+            "text": "я" * 8_000,
+            "timestamp": NOW.isoformat(),
+        }
+        for number in range(10)
+    ]
+    first_page = response(
+        200,
+        {
+            "data": rows,
+            "paging": {"next": "next-page", "cursors": {"after": "page-1"}},
+        },
+    )
+    assert 64_000 < len(first_page.body) < _MAX_RESPONSE
+    fake = FakeHTTP(first_page, response(200, {"data": [], "paging": {}}))
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(
+        InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_events=10
+    )
+    assert len(first.new_events) == 10
+    assert first.final_cursor is not None
+    second = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
+    assert second.final_cursor is None
+    assert "limit=10" in fake.calls[0][1]
+
+
+@pytest.mark.parametrize("stream", [InboundKind.REPLY, InboundKind.MENTION])
+def test_media_only_item_is_skipped_and_cursor_advances(tmp_path, stream):
+    media = {
+        "id": "media-1",
+        "media_type": "IMAGE",
+        "timestamp": NOW.isoformat(),
+    }
+    textual = {
+        "id": "text-1",
+        "text": "Привет",
+        "timestamp": NOW.isoformat(),
+    }
+    if stream is InboundKind.REPLY:
+        for row in (media, textual):
+            row.update(
+                root_post={"id": "root-1"},
+                replied_to={"id": "parent-1"},
+                is_reply_owned_by_me=False,
+            )
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [media, textual],
+                "paging": {"next": "next-page", "cursors": {"after": "page-1"}},
+            },
+        ),
+        response(200, {"data": [], "paging": {}}),
+    )
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(stream, now=NOW, correlation_id="poll-1", max_pages=1)
+    assert [event.event_id for event in first.new_events] == ["text-1"]
+    assert first.final_cursor is not None
+    second = svc.poll(stream, now=NOW, correlation_id="poll-2")
+    assert second.new_events == ()
+    assert len(fake.calls) == 2
+
+
+@pytest.mark.parametrize("media_type", [None, "TEXT_POST", "UNRECOGNIZED"])
+def test_missing_text_without_supported_media_type_fails_closed(tmp_path, media_type):
+    row = {"id": "mention-1", "timestamp": NOW.isoformat()}
+    if media_type is not None:
+        row["media_type"] = media_type
+    fake = FakeHTTP(response(200, {"data": [row], "paging": {}}))
+    svc, _ = service(tmp_path, fake)
+    with pytest.raises(ProviderFailure, match="poll_page_invalid"):
+        svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
     assert svc.store.cursor("account-1", InboundKind.MENTION) is None
 
 
