@@ -43,6 +43,7 @@ def source():
     }
     return {
         "format_version": "qualitative-human-pilot-checkpoint-v1",
+        "evidence_class": "synthetic_test_fixture",
         "reviewer_id": "synthetic",
         "reviewer_identity_basis": "test fixture",
         "sampling": "one synthetic item",
@@ -115,6 +116,8 @@ def test_qualitative_rejects_identity_provenance_and_schema_errors(tmp_path):
     path.write_text(json.dumps(valid))
     with pytest.raises(ValueError, match="SHA-256"):
         import_pilot(path, "0" * 64, "synthetic_test_fixture")
+    with pytest.raises(ValueError, match="approved pilot source"):
+        import_pilot(path, hashlib.sha256(path.read_bytes()).hexdigest(), "human")
     for edit in (
         lambda x: x["responses"][0].update(output_sha256="0" * 64),
         lambda x: x["responses"][0].update(received_at="2026-10-16"),
@@ -122,6 +125,7 @@ def test_qualitative_rejects_identity_provenance_and_schema_errors(tmp_path):
         lambda x: x["responses"][0].update(score=0.5),
         lambda x: x.update(numeric_scores_assigned=True),
         lambda x: x["summary"].update(verdict_counts={"acceptable": 1}),
+        lambda x: x.pop("evidence_class"),
     ):
         changed = deepcopy(valid)
         edit(changed)

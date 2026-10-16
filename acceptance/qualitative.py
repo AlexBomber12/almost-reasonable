@@ -17,6 +17,9 @@ from acceptance.human_review import (
 
 FORMAT = "qualitative-human-pilot-checkpoint-v1"
 IMPORT_VERSION = "qualitative-review-import-v1"
+APPROVED_HUMAN_PILOT_SHA256 = (
+    "4bb4bac24d6dd6b4563c305e2f502112e09dea9559d8406cca9a9b078eef360f"
+)
 VERDICTS = frozenset(
     {
         "acceptable",
@@ -80,12 +83,18 @@ def import_pilot(path, expected_sha256, evidence_class):
             "adjudication_resolution",
             "remaining_decisions",
         ),
+        ("evidence_class",),
     )
     if (
         pilot["format_version"] != FORMAT
         or pilot["numeric_scores_assigned"] is not False
     ):
         raise ValueError("unsupported qualitative pilot")
+    if evidence_class == "human":
+        if source_sha256 != APPROVED_HUMAN_PILOT_SHA256 or "evidence_class" in pilot:
+            raise ValueError("human evidence requires the approved pilot source")
+    elif pilot.get("evidence_class") != "synthetic_test_fixture":
+        raise ValueError("synthetic evidence class must be bound to the source")
     if (
         not valid_reviewer_id(pilot["reviewer_id"])
         or type(pilot["reviewer_identity_basis"]) is not str
