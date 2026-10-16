@@ -8,6 +8,7 @@ import math
 import re
 import secrets
 import socket
+import threading
 import time
 import unicodedata
 
@@ -72,7 +73,7 @@ _IPV6_LIKE = re.compile(
     r"(?i)(?<![\w])(?:\[[0-9a-f:.]+\]|[0-9a-f]{0,4}:(?:[0-9a-f]{0,4}:)+[0-9a-f]{0,4})(?::\d{1,5})?(?![\w])"
 )
 _NUMERIC_HOST = re.compile(
-    r"(?i)(?<![\w])(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){1,3}(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]{6,}|\d{8,12})(?::\d{1,5})?(?![\w])"
+    r"(?i)(?<![\w])(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){1,3}(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]{6,}|\d{8,12})(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]+|\d{1,12}):\d{1,5}(?:[?/#]|$)"
 )
 _FAILURE = "Исследование недоступно; проверенные выводы не сформированы."
 _UNCERTAINTY = (
@@ -293,6 +294,7 @@ class PublicResearchBoundary:
         self._monotonic = monotonic
         self._grants = {}
         self._persistence_failed = False
+        self._execution_lock = threading.Lock()
 
     def install_synthetic_authorization(
         self,
@@ -353,8 +355,6 @@ class PublicResearchBoundary:
             return "emergency_stop"
         if self._store.is_spend_suspended():
             return "spend_suspended"
-        if self._persistence_failed:
-            return "persistence_failure"
         return None
 
     def _screened_response_id(self, value: object) -> str | None:
@@ -363,6 +363,12 @@ class PublicResearchBoundary:
         return value if _screen((value,), self._screening) is None else None
 
     def execute(
+        self, request: PublicResearchRequest, *, peer_uid: int
+    ) -> dict[str, object]:
+        with self._execution_lock:
+            return self._execute_serial(request, peer_uid=peer_uid)
+
+    def _execute_serial(
         self, request: PublicResearchRequest, *, peer_uid: int
     ) -> dict[str, object]:
         encode_public_request(request)
