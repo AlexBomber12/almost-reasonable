@@ -942,6 +942,34 @@ def test_mission_change_during_inference_holds_result(tmp_path, monkeypatch):
     assert len(app.model.requests) == 1
 
 
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"decision": "no_action", "reason_category": "low_value"},
+        {"decision": "propose_publication", "draft": DRAFT},
+    ],
+    ids=["no_action", "publication"],
+)
+def test_mission_change_after_intent_blocks_scheduler_acceptance(tmp_path, response):
+    app, events, gate, tick, adapter, proposal, confirmations, _ = mission_application(
+        tmp_path, [response]
+    )
+
+    def checkpoint(point):
+        if point == "after_intent":
+            confirm_mission(events, gate, tick, adapter, proposal, confirmations)
+
+    app.checkpoint = checkpoint
+    assert app.run((wake("changed-after-intent"),)).outcome.value == "failed"
+    operation = app.wakeup_operation("changed-after-intent")
+    assert app.journal.read(operation)["phase"] == "held"
+    assert app.scheduler.repository.outcomes()[-1].outcome.value == "failed"
+    assert app.simulator.trace == []
+    assert len(app.model.requests) == 1
+    app.run((wake("changed-after-intent"),))
+    assert len(app.model.requests) == 1
+
+
 def test_mission_source_deletion_holds_ready_effect_and_new_work(tmp_path):
     from app.privacy.application import EventStoreErasureAdapter
     from app.privacy.deletion import DeletionCoordinator

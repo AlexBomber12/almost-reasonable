@@ -1352,6 +1352,8 @@
             "tests/test_threads_stage0_integration.py::test_configured_mission_changes_only_after_confirmation",
             "tests/test_threads_stage0_integration.py::test_mission_binding_holds_stale_publication_across_restart",
             "tests/test_threads_stage0_integration.py::test_mission_change_during_inference_holds_result",
+            "tests/test_threads_stage0_integration.py::test_mission_change_after_intent_blocks_scheduler_acceptance[no_action]",
+            "tests/test_threads_stage0_integration.py::test_mission_change_after_intent_blocks_scheduler_acceptance[publication]",
             "tests/test_threads_stage0_integration.py::test_mission_source_deletion_holds_ready_effect_and_new_work",
             "tests/test_threads_stage0_integration.py::test_pending_source_deletion_holds_mission_after_reopen",
             "tests/test_threads_stage0_integration.py::test_interrupted_initial_mission_pin_recovers_without_rebinding",

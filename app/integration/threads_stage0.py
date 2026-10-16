@@ -285,6 +285,13 @@ class Stage0Journal:
                 ),
             )
 
+    def hold_intent(self, operation):
+        with self.transaction() as db:
+            db.execute(
+                "UPDATE intents SET phase='held' WHERE operation=? AND phase='intent'",
+                (operation,),
+            )
+
     def linked(self, operation):
         with self.transaction() as db:
             db.execute(
@@ -567,6 +574,11 @@ class ThreadsStage0:
         payload = self.journal.read(operation)
         if payload["phase"] in ("started", "rejected", "held"):
             raise ValueError("deliberation unavailable or rejected")
+        try:
+            self.require_mission(payload)
+        except ValueError:
+            self.journal.hold_intent(operation)
+            raise
         return AgentDecision(payload["decision"])
 
     def run(self, pending=()):
