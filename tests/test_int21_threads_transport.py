@@ -585,6 +585,42 @@ def test_rebinding_live_service_transport_cannot_dispatch(tmp_path):
     assert fake.calls == []
 
 
+def test_real_transport_subclass_cannot_enter_non_live_service(tmp_path):
+    from dataclasses import replace
+
+    class DerivedTransport(ThreadsHTTPTransport):
+        pass
+
+    fake = FakeHTTP()
+    live, _ = service(tmp_path, fake)
+    derived = DerivedTransport(
+        account_ref="account-1",
+        provider_user_id="user-1",
+        reply_thread_id="root-1",
+        token=TOKEN,
+        client=fake,
+    )
+    with pytest.raises(ValueError, match="exact ThreadsSimulator"):
+        ThreadsService(
+            ThreadsStore(tmp_path / "subclass.sqlite3"),
+            derived,
+            replace(live.policy, stage=Stage.SIMULATION, simulation_enabled=True),
+        )
+    assert fake.calls == []
+
+
+def test_live_activation_cannot_be_disabled_after_construction(tmp_path):
+    fake = FakeHTTP()
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    svc.live_enabled = False
+    svc.policy.stage = Stage.SIMULATION
+    svc.policy.simulation_enabled = True
+    with pytest.raises(PolicyDeniedError, match="binding changed"):
+        svc.dispatch("operation-1", approval, now=NOW)
+    assert fake.calls == []
+
+
 @pytest.mark.parametrize("field", ["root_post", "replied_to"])
 @pytest.mark.parametrize("value", ["bad", {}, {"id": "../bad"}, None])
 def test_malformed_present_mention_relationship_keeps_cursor(tmp_path, field, value):

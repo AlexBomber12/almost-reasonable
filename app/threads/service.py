@@ -82,8 +82,10 @@ class ThreadsService:
             or policy.stage is not Stage.STAGE_3
         ):
             raise ValueError("live transport requires explicit Stage 3 binding")
-        if type(simulator) is ThreadsHTTPTransport and not live_enabled:
-            raise ValueError("real transport is disabled")
+        if not live_enabled and type(simulator) is not ThreadsSimulator:
+            raise ValueError(
+                "real transport is disabled without exact ThreadsSimulator"
+            )
         self.store = store
         self.simulator = simulator
         self._bound_transport = simulator
@@ -94,6 +96,7 @@ class ThreadsService:
         self.authorization_provider = authorization_provider
         self.poll_guard = poll_guard
         self.live_enabled = live_enabled
+        self._bound_live_enabled = live_enabled
 
     def propose(
         self,
@@ -797,6 +800,7 @@ class ThreadsService:
     def _require_account_binding(self) -> None:
         if (
             self.simulator is not self._bound_transport
+            or self.live_enabled is not self._bound_live_enabled
             or self.policy.account_ref != self._account_ref
             or self.simulator.account_ref != self._account_ref
         ):
