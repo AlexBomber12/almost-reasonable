@@ -181,8 +181,9 @@ bounded delayed private retrieval, a closed shared proposal and independent
 two-phase mission confirmation. A test-only composition reads the current mission
 from the reviewed EventStore and PrivacyReadGate for each bounded Threads
 deliberation. The proposal then uses verified polling, journal, the literal draft
-catalog, independent SyntheticOperator approval, outbox and simulator. Ordinary
-scheduler/Threads mission consumption remains absent.
+catalog, independent SyntheticOperator approval, outbox and simulator. INT-18
+separately connects explicitly configured offline scheduler/Threads mission
+consumption through ThreadsStage0; this INT-14 composition remains test-only.
 
 The synthetic extractor copies the poison statement from the private memory
 snapshot it actually receives and declares no semantic parent. The connected

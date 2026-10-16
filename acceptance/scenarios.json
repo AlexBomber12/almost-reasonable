@@ -21,7 +21,7 @@
   "configuration": {
     "event_store": 7,
     "threads_store": 10,
-    "stage0_journal": 1,
+    "stage0_journal": 2,
     "core_self": "core-self-v1",
     "private_memory": "private-memory-stage0-v2",
     "shared_context": "model-contract-shared-intelligence-v3",
@@ -1289,7 +1289,7 @@
       },
       "stage0_connection": "PASS",
       "complete_mvp": "BLOCKED",
-      "synthetic_scope": "Closed mission proposal with later independent private source, exact confirmation, restart and composition into actual bounded deliberation.",
+      "synthetic_scope": "Closed mission proposal with later independent private source and exact confirmation; earlier test-only deliberation composition plus explicitly configured offline ThreadsStage0 and durable scheduler consumption of the current reviewed mission. Mission-bound work holds on stale revisions, deletion and reassessment, including restart and process exits.",
       "evidence": [
         {
           "layer": "connected integration",
@@ -1305,7 +1305,7 @@
           "risks": [
             "restart"
           ],
-          "scope": "Synthetic fixtures only; no live authority.",
+          "scope": "Earlier explicit test-only mission-to-deliberation composition with synthetic fixtures; no live authority.",
           "node_ids": [
             "tests/test_stage0_acceptance_journeys.py::test_confirmed_mission_enters_later_deliberation_without_new_capabilities"
           ]
@@ -1330,11 +1330,81 @@
             "tests/test_shared_intelligence.py::test_mission_authority_rejects_owner_claims_early_or_same_participant_evidence",
             "tests/test_shared_intelligence.py::test_later_independent_mission_rejection_preserves_current_version"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.run -> DurableScheduler.run -> DeliberationEngine.deliberate",
+          "components": [
+            "ThreadsStage0",
+            "DurableScheduler",
+            "SQLiteSchedulerRepository",
+            "Stage0Journal",
+            "SharedMissionAdapter",
+            "PrivacyReadGate",
+            "EventStore",
+            "RecordedBehaviorModel",
+            "ThreadsSimulator"
+          ],
+          "sink": "current mission in bounded model request; pinned journal binding; held stale result and publication; simulator effect trace",
+          "risks": ["restart", "adversarial"],
+          "scope": "Explicit offline application composition with recorded model and simulator; pending proposal retains current mission until independent confirmation, while changed or deleted mission state holds affected work and requires reassessment.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_configured_mission_changes_only_after_confirmation",
+            "tests/test_threads_stage0_integration.py::test_mission_binding_holds_stale_publication_across_restart",
+            "tests/test_threads_stage0_integration.py::test_mission_change_during_inference_holds_result",
+            "tests/test_threads_stage0_integration.py::test_mission_source_deletion_holds_ready_effect_and_new_work",
+            "tests/test_threads_stage0_integration.py::test_pending_source_deletion_holds_mission_after_reopen",
+            "tests/test_threads_stage0_integration.py::test_interrupted_initial_mission_pin_recovers_without_rebinding",
+            "tests/test_threads_stage0_integration.py::test_stale_mission_allows_purpose_bound_unknown_cleanup[revision-ABANDON_UNKNOWN]",
+            "tests/test_threads_stage0_integration.py::test_stale_mission_allows_purpose_bound_unknown_cleanup[revision-RECOVER_RECONCILIATION]",
+            "tests/test_threads_stage0_integration.py::test_stale_mission_allows_purpose_bound_unknown_cleanup[deletion-ABANDON_UNKNOWN]",
+            "tests/test_threads_stage0_integration.py::test_stale_mission_allows_purpose_bound_unknown_cleanup[deletion-RECOVER_RECONCILIATION]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "ThreadsStage0.process_inbound -> DeliberationEngine.deliberate",
+          "components": [
+            "ThreadsStage0",
+            "Stage0Journal",
+            "SharedMissionAdapter",
+            "PrivacyReadGate",
+            "EventStore",
+            "RecordedBehaviorModel",
+            "ThreadsSimulator"
+          ],
+          "sink": "verified inbound context and current mission in model request; pinned journal intent and bounded outbox",
+          "risks": ["restart", "concurrency"],
+          "scope": "Explicit offline application composition; verified simulator ingress only, no private source in the public model request; stale inbound work does not block independent conversation work.",
+          "node_ids": [
+            "tests/test_threads_stage0_integration.py::test_configured_inbound_uses_mission_without_private_source",
+            "tests/test_threads_stage0_integration.py::test_stale_inbound_intent_does_not_starve_next_conversation",
+            "tests/test_threads_stage0_integration.py::test_raced_stale_inbound_claim_allows_independent_reply"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "ThreadsStage0.run across OS process exit and journal reopen",
+          "components": [
+            "ThreadsStage0",
+            "DurableScheduler",
+            "Stage0Journal",
+            "SharedMissionAdapter",
+            "PrivacyReadGate",
+            "EventStore"
+          ],
+          "sink": "exact persisted mission version and digest at started/intent boundary; no repeated inference",
+          "risks": ["crash", "restart"],
+          "scope": "Real child-process exits at mission-bound journal start and intent; synthetic recorded model and stores after restart.",
+          "node_ids": [
+            "tests/test_stage0_process_acceptance.py::test_mission_process_exit_retains_exact_binding_without_reinference[after_started-started]",
+            "tests/test_stage0_process_acceptance.py::test_mission_process_exit_retains_exact_binding_without_reinference[after_intent-intent]"
+          ]
         }
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "General autonomous scheduler/Threads mission consumption is not wired; real corroboration and reassessment policy, calibrated two-phase evolution. Test composition is not a daemon."
+        "The configured offline application path is not a deployed daemon or live provider integration. Real-model judgment, general corroboration and reassessment policy, fluent-human calibration and operator review remain required."
       ]
     },
     {

@@ -1,7 +1,7 @@
 # Integration contracts and Stage 0 evidence
 
-This inventory follows the executable INT-01 through INT-14 synthetic slices,
-including EventStore v7, ThreadsStore v10 and the independent INT-09 journal v1.
+This inventory follows the executable INT-01 through INT-18 synthetic slices,
+including EventStore v7, ThreadsStore v10 and the independent Stage 0 journal v2.
 Ordinary runtime defaults remain disabled. Explicit offline compositions use
 synthetic identities, temporary SQLite/WAL stores, fake responses and ThreadsSimulator.
 No fixture, H screen or recorded answer grants production authority.
