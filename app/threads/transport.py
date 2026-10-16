@@ -98,11 +98,12 @@ class HTTPSClient:
 
         def perform() -> None:
             try:
-                result.put(self._request_once(method, url, headers, body, timeout))
+                outcome = self._request_once(method, url, headers, body, timeout)
             except Exception as failure:
-                result.put(failure)
+                outcome = failure
             finally:
                 self._active_request.release()
+            result.put(outcome)
 
         try:
             Thread(target=perform, daemon=True).start()
@@ -170,6 +171,7 @@ class ThreadsHTTPTransport:
         *,
         publication_id: str | None = None,
         container_id: str | None = None,
+        timeout: float | None = None,
     ) -> dict:
         query = parse.urlencode(parameters)
         url = f"{_HOST}/{_VERSION}/{path}" + (f"?{query}" if query else "")
@@ -185,7 +187,13 @@ class ThreadsHTTPTransport:
             else EffectClass.PROVEN_PRE_DISPATCH
         )
         try:
-            response = self._client.request(method, url, headers, body, self._timeout)
+            response = self._client.request(
+                method,
+                url,
+                headers,
+                body,
+                min(self._timeout, timeout) if timeout is not None else self._timeout,
+            )
         except Exception:
             response = None
         if response is None:
@@ -356,12 +364,21 @@ class ThreadsHTTPTransport:
             )
 
     def poll(
-        self, stream: InboundKind, cursor: str | None, *, limit: int = _PAGE_LIMIT
+        self,
+        stream: InboundKind,
+        cursor: str | None,
+        *,
+        limit: int = _PAGE_LIMIT,
+        timeout: float | None = None,
     ) -> VerifiedPollPage:
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
         if type(limit) is not int or not 1 <= limit <= _PAGE_LIMIT:
             raise ValueError("invalid provider page limit")
+        if timeout is not None and (
+            type(timeout) not in {int, float} or not 0 < timeout <= 30
+        ):
+            raise ValueError("invalid provider page timeout")
         raw_cursor = None
         if cursor is not None:
             match = _CURSOR.fullmatch(cursor)
@@ -386,7 +403,7 @@ class ThreadsHTTPTransport:
             params["reverse"] = "false"
         if raw_cursor is not None:
             params["after"] = raw_cursor
-        data = self._call("GET", path, params)
+        data = self._call("GET", path, params, timeout=timeout)
         rows = data.get("data")
         paging = data.get("paging", {})
         if (

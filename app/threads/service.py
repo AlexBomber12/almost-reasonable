@@ -709,13 +709,18 @@ class ThreadsService:
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
             self._check_poll_policy_with_audit(stream, correlation_id, now)
-            page = (
-                self.simulator.poll(
-                    stream, cursor, limit=min(10, max_events - fetched_count)
+            if type(self.simulator) is ThreadsHTTPTransport:
+                remaining = timeout_seconds - (self.clock() - started)
+                if remaining <= 0:
+                    raise PollingError("poll time limit reached")
+                page = self.simulator.poll(
+                    stream,
+                    cursor,
+                    limit=min(10, max_events - fetched_count),
+                    timeout=remaining,
                 )
-                if type(self.simulator) is ThreadsHTTPTransport
-                else self.simulator.poll(stream, cursor)
-            )
+            else:
+                page = self.simulator.poll(stream, cursor)
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
             if interrupt_after_fetch:

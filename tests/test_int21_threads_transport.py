@@ -757,6 +757,52 @@ def test_http_adapter_worker_error_and_start_failure_are_bounded(monkeypatch):
         client.request("GET", "https://example.invalid", {}, None, 1)
 
 
+@pytest.mark.parametrize("fails", [False, True])
+def test_http_adapter_releases_slot_before_result_is_visible(monkeypatch, fails):
+    from queue import Queue
+
+    from app.threads.transport import HTTPSClient
+
+    class CheckingQueue(Queue):
+        def put(self, item, *args, **kwargs):
+            assert client._active_request.acquire(blocking=False)
+            client._active_request.release()
+            return super().put(item, *args, **kwargs)
+
+    class Opener:
+        def open(self, _req, timeout):
+            if fails:
+                raise OSError("connection failed")
+
+            class Reply:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return None
+
+                def read(self, _limit):
+                    return b"{}"
+
+            return Reply()
+
+    monkeypatch.setattr("app.threads.transport.Queue", CheckingQueue)
+    monkeypatch.setattr(
+        "app.threads.transport.request.build_opener", lambda *_: Opener()
+    )
+    client = HTTPSClient()
+    for _ in range(2):
+        if fails:
+            with pytest.raises(OSError, match="connection failed"):
+                client.request("GET", "https://example.invalid", {}, None, 1)
+        else:
+            assert client.request(
+                "GET", "https://example.invalid", {}, None, 1
+            ) == HTTPResponse(200, b"{}")
+
+
 def test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor(tmp_path):
     def reply(name):
         return {
@@ -927,6 +973,55 @@ def test_live_page_limit_is_validated_before_http(limit):
     fake = FakeHTTP()
     with pytest.raises(ValueError, match="page limit"):
         transport(fake).poll(InboundKind.MENTION, None, limit=limit)
+    assert fake.calls == []
+
+
+def test_live_page_http_timeout_uses_remaining_poll_budget(tmp_path):
+    class RecordingHTTP(FakeHTTP):
+        def __init__(self):
+            super().__init__(response(200, {"data": [], "paging": {}}))
+            self.timeouts = []
+
+        def request(self, method, url, headers, body, timeout):
+            self.timeouts.append(timeout)
+            return super().request(method, url, headers, body, timeout)
+
+    fake = RecordingHTTP()
+    svc, _ = service(tmp_path, fake)
+    ticks = iter([0.0, 0.75] + [0.75] * 20)
+    svc.clock = lambda: next(ticks)
+    result = svc.poll(
+        InboundKind.MENTION,
+        now=NOW,
+        correlation_id="poll-deadline",
+        timeout_seconds=1.0,
+    )
+    assert result.pages == 1
+    assert fake.timeouts == [0.25]
+
+
+def test_live_poll_deadline_expiring_before_request_avoids_http(tmp_path):
+    fake = FakeHTTP()
+    svc, _ = service(tmp_path, fake)
+    ticks = iter([0.0, 0.0, 1.0])
+    svc.clock = lambda: next(ticks)
+    from app.threads.service import PollingError
+
+    with pytest.raises(PollingError, match="time limit"):
+        svc.poll(
+            InboundKind.MENTION,
+            now=NOW,
+            correlation_id="poll-expired",
+            timeout_seconds=1.0,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("timeout", [0, -1, True, "1", 31])
+def test_live_page_rejects_invalid_http_timeout_before_request(timeout):
+    fake = FakeHTTP()
+    with pytest.raises(ValueError, match="page timeout"):
+        transport(fake).poll(InboundKind.MENTION, None, timeout=timeout)
     assert fake.calls == []
 
 
