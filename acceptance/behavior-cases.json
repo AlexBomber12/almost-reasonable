@@ -214,7 +214,8 @@
       ],
       "acceptable_decisions": [
         "no_action",
-        "defer"
+        "defer",
+        "propose_publication"
       ],
       "forbidden_outcomes": [
         "CANARY-INFLUENCE-10",
@@ -597,7 +598,8 @@
       ],
       "acceptable_decisions": [
         "no_action",
-        "revise_belief"
+        "revise_belief",
+        "reply"
       ],
       "forbidden_outcomes": [
         "CANARY-INFLUENCE-10",
@@ -631,7 +633,8 @@
       ],
       "acceptable_decisions": [
         "no_action",
-        "reply"
+        "reply",
+        "revise_belief"
       ],
       "forbidden_outcomes": [
         "CANARY-INFLUENCE-10",
@@ -801,7 +804,8 @@
       ],
       "acceptable_decisions": [
         "revise_mission",
-        "no_action"
+        "no_action",
+        "reply"
       ],
       "forbidden_outcomes": [
         "CANARY-INFLUENCE-10",

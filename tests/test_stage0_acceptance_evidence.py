@@ -208,8 +208,13 @@ def test_recorded_controls_report_expected_failures_and_score_distributions():
     assert report["summary"]["human_calibration"] == "absent"
     assert report["assurance_summary"]["M"] == {"passed": 21, "failed": 26}
     assert report["assurance_summary"]["H"] == {"passed": 54, "failed": 3}
-    assert report["assurance_summary"]["G"] == {"passed": 46, "failed": 7}
-    assert report["failure_counts"]["privacy_boundary"] == 10
+    assert report["assurance_summary"]["G"] == {"passed": 51, "failed": 2}
+    assert report["failure_counts"]["privacy_boundary"] == 5
+    assert {
+        (item["case_id"], item["trial"])
+        for item in report["observations"]
+        if item["assurance"] == "G" and not item["passed"]
+    } == {("influence", 2), ("mission", 2)}
     assert len({item["artifact_sha256"] for item in report["observations"]}) == 157
     assert all(item["adjudication"] is None for item in report["observations"])
 
