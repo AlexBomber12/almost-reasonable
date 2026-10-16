@@ -3,6 +3,7 @@
 from collections import deque
 from datetime import UTC, datetime, timedelta
 import json
+import sqlite3
 
 import pytest
 
@@ -816,3 +817,143 @@ def test_store_rejects_ambiguous_cursor_reset(tmp_path, reset, next_cursor):
             now=NOW,
             precommit_check=lambda: None,
         )
+
+
+@pytest.mark.parametrize("crash_stage", ["container", "publish"])
+def test_crash_during_account_preflight_recovers_without_unknown(
+    tmp_path, monkeypatch, crash_stage
+):
+    fake = FakeHTTP(response(200, {"id": "container-1"}))
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    original = svc.simulator.verify_account
+    calls = 0
+
+    def interrupt_preflight():
+        nonlocal calls
+        calls += 1
+        if crash_stage == "container" or calls == 2:
+            raise SystemExit("simulated abrupt exit")
+        original()
+
+    monkeypatch.setattr(svc.simulator, "verify_account", interrupt_preflight)
+    with pytest.raises(SystemExit):
+        svc.dispatch("operation-1", approval, now=NOW)
+    sending = svc.store.get("operation-1")
+    assert sending.dispatch_evidence in {
+        "pre_dispatch_intent",
+        "container_created_publish_not_started",
+    }
+    restarted, _ = service(tmp_path, fake, authorization=auth)
+    recovered = restarted.recover_sending("operation-1", now=NOW)
+    assert recovered.state is OutboxState.READY
+    assert recovered.provider_container_id == (
+        "container-1" if crash_stage == "publish" else None
+    )
+
+
+def test_live_pages_stop_at_event_budget_and_resume_without_loss(tmp_path):
+    def mention(number):
+        return {
+            "id": f"mention-{number}",
+            "text": "Привет",
+            "timestamp": NOW.isoformat(),
+        }
+
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [mention(i) for i in range(50)],
+                "paging": {"next": "next-page", "cursors": {"after": "page-1"}},
+            },
+        ),
+        response(
+            200,
+            {
+                "data": [mention(i) for i in range(50, 100)],
+                "paging": {"next": "next-page", "cursors": {"after": "page-2"}},
+            },
+        ),
+        response(200, {"data": [mention(100)], "paging": {}}),
+    )
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
+    assert (first.pages, len(first.new_events), len(fake.calls)) == (2, 100, 2)
+    assert first.final_cursor is not None
+    second = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
+    assert [event.event_id for event in second.new_events] == ["mention-100"]
+    assert svc.store.cursor("account-1", InboundKind.MENTION) is None
+    with sqlite3.connect(svc.store.database) as connection:
+        assert (
+            connection.execute(
+                "SELECT count(*) FROM threads_inbound_events"
+            ).fetchone()[0]
+            == 101
+        )
+
+
+def test_owned_reply_is_skipped_and_cursor_advances(tmp_path):
+    def reply(name, owned):
+        return {
+            "id": name,
+            "text": "Привет",
+            "timestamp": NOW.isoformat(),
+            "root_post": {"id": "root-1"},
+            "replied_to": {"id": "parent-1"},
+            "is_reply_owned_by_me": owned,
+        }
+
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [reply("owned-1", True)],
+                "paging": {"next": "next-page", "cursors": {"after": "page-1"}},
+            },
+        ),
+        response(200, {"data": [reply("reply-1", False)], "paging": {}}),
+    )
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-1", max_pages=1)
+    assert first.new_events == () and first.final_cursor is not None
+    second = svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-2")
+    assert [event.event_id for event in second.new_events] == ["reply-1"]
+
+
+@pytest.mark.parametrize("limit", [0, 51, True])
+def test_live_page_limit_is_validated_before_http(limit):
+    fake = FakeHTTP()
+    with pytest.raises(ValueError, match="page limit"):
+        transport(fake).poll(InboundKind.MENTION, None, limit=limit)
+    assert fake.calls == []
+
+
+def test_provider_page_exceeding_requested_limit_keeps_cursor(tmp_path):
+    rows = [
+        {"id": f"mention-{i}", "text": "Привет", "timestamp": NOW.isoformat()}
+        for i in range(2)
+    ]
+    fake = FakeHTTP(response(200, {"data": rows}))
+    svc, _ = service(tmp_path, fake)
+    with pytest.raises(ProviderFailure, match="poll_page_invalid"):
+        svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_events=1)
+    assert "limit=1" in fake.calls[0][1]
+    assert svc.store.cursor("account-1", InboundKind.MENTION) is None
+
+
+def test_stop_during_account_preflight_is_rechecked_before_write(tmp_path, monkeypatch):
+    fake = FakeHTTP()
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    original = svc.simulator.verify_account
+
+    def stop_after_read():
+        original()
+        svc.policy.emergency_stop = True
+
+    monkeypatch.setattr(svc.simulator, "verify_account", stop_after_read)
+    with pytest.raises(PolicyDeniedError, match="emergency stop"):
+        svc.dispatch("operation-1", approval, now=NOW)
+    assert svc.store.get("operation-1").state is OutboxState.READY
+    assert fake.calls == []

@@ -297,6 +297,8 @@ class ThreadsService:
                 )
                 raise
             if container_id is None:
+                if type(self.simulator) is ThreadsHTTPTransport:
+                    self.simulator.verify_account()
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
                 )
@@ -336,6 +338,8 @@ class ThreadsService:
                     now=now,
                     provider_container_id=container_id,
                 )
+            if type(self.simulator) is ThreadsHTTPTransport:
+                self.simulator.verify_account()
             self.store.update_sending_evidence(
                 operation_id,
                 "publish_dispatch_started",
@@ -705,7 +709,13 @@ class ThreadsService:
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
             self._check_poll_policy_with_audit(stream, correlation_id, now)
-            page = self.simulator.poll(stream, cursor)
+            page = (
+                self.simulator.poll(
+                    stream, cursor, limit=min(50, max_events - fetched_count)
+                )
+                if type(self.simulator) is ThreadsHTTPTransport
+                else self.simulator.poll(stream, cursor)
+            )
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
             if interrupt_after_fetch:
@@ -732,7 +742,7 @@ class ThreadsService:
                 else cursor
             )
             cursor = page.next_cursor
-            if cursor is None:
+            if cursor is None or fetched_count >= max_events:
                 break
             seen_cursors.add(cursor)
         self._check_poll_policy_with_audit(stream, correlation_id, now)

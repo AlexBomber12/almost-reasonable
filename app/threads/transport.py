@@ -253,7 +253,6 @@ class ThreadsHTTPTransport:
     def create_container(self, item: OutboxItem) -> str:
         if item.account_ref != self.account_ref:
             raise ValueError("outbound account mismatch")
-        self._verify_account()
         params = {"media_type": "TEXT", "text": validate_content(item.content)}
         if item.publication_type is PublicationType.REPLY:
             params["reply_to_id"] = require_reference(
@@ -271,7 +270,6 @@ class ThreadsHTTPTransport:
         if item.account_ref != self.account_ref:
             raise ValueError("outbound account mismatch")
         container_id = require_reference("container ID", container_id)
-        self._verify_account()
         data = self._call(
             "POST",
             f"{self.provider_user_id}/threads_publish",
@@ -349,16 +347,20 @@ class ThreadsHTTPTransport:
             == expected_parent
         )
 
-    def _verify_account(self) -> None:
+    def verify_account(self) -> None:
         profile = self._call("GET", "me", {"fields": "id"})
         if profile.get("id") != self.provider_user_id:
             raise ProviderFailure(
                 EffectClass.PROVEN_PRE_DISPATCH, "provider_account_mismatch"
             )
 
-    def poll(self, stream: InboundKind, cursor: str | None) -> VerifiedPollPage:
+    def poll(
+        self, stream: InboundKind, cursor: str | None, *, limit: int = 50
+    ) -> VerifiedPollPage:
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
+        if type(limit) is not int or not 1 <= limit <= 50:
+            raise ValueError("invalid provider page limit")
         raw_cursor = None
         if cursor is not None:
             match = _CURSOR.fullmatch(cursor)
@@ -377,7 +379,7 @@ class ThreadsHTTPTransport:
         )
         params = {
             "fields": "id,text,timestamp,root_post,replied_to,is_reply_owned_by_me",
-            "limit": "50",
+            "limit": str(limit),
         }
         if stream is InboundKind.REPLY:
             params["reverse"] = "false"
@@ -386,7 +388,11 @@ class ThreadsHTTPTransport:
         data = self._call("GET", path, params)
         rows = data.get("data")
         paging = data.get("paging", {})
-        if not isinstance(rows, list) or len(rows) > 50 or not isinstance(paging, dict):
+        if (
+            not isinstance(rows, list)
+            or len(rows) > limit
+            or not isinstance(paging, dict)
+        ):
             raise ProviderFailure(EffectClass.PROVEN_PRE_DISPATCH, "poll_page_invalid")
         cursors = paging.get("cursors", {})
         if not isinstance(cursors, dict):
@@ -423,11 +429,13 @@ class ThreadsHTTPTransport:
                 if stream is InboundKind.REPLY:
                     if (
                         root_id != self.reply_thread_id
-                        or row.get("is_reply_owned_by_me") is not False
+                        or type(row.get("is_reply_owned_by_me")) is not bool
                     ):
                         raise ValueError("reply binding mismatch")
                     conversation_id = self.reply_thread_id
                     parent_id = require_reference("reply parent", parent_id)
+                    if row["is_reply_owned_by_me"]:
+                        continue
                 else:
                     conversation_id = require_reference(
                         "mention conversation", root_id or event_id
