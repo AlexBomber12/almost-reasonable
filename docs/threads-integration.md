@@ -1,5 +1,12 @@
 # Threads integration domain
 
+The explicitly configured offline `ThreadsStage0` composition supplies the
+verified current closed mission to bounded wakeup and inbound deliberation.
+Its durable intent binding is rechecked before approval, READY and simulated
+provider effects. The mission is mutable context only: it cannot authorize
+publication, change the exact two-draft public catalog, or alter account scopes.
+This adds no live Meta adapter or ordinary deployment.
+
 Status: deterministic simulation only. Reviewed against Meta's official Threads
 documentation on 2026-10-10. This package does not contain an HTTP client, read
 credentials, contact Meta, or enable live publication or polling.

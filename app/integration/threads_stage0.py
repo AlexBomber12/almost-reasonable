@@ -26,6 +26,13 @@ from app.behavior.deliberation import (
 )
 from app.behavior.durable_scheduler import DurableScheduler, SQLiteSchedulerRepository
 from app.behavior.russian_gate import RussianOutputPolicy
+from app.behavior.mission import (
+    CapabilityPolicyInvariants,
+    Mission,
+    MissionPurpose,
+    _MISSION_PURPOSE_TEXT,
+)
+from app.behavior.shared_mission import SharedMissionAdapter
 from app.behavior.scheduler import SchedulerOutcome
 from app.core.agent_proposals import (
     AgentDecision,
@@ -34,9 +41,11 @@ from app.core.agent_proposals import (
     ReplyProposal,
 )
 from app.core.core_self import initial_core_self
+from app.core.store import EventStore
 from app.core.provider_spend import ProviderStateStore
 from app.owner_control.store import OwnerStore
 from app.privacy.ledger import PrivacyLedger
+from app.privacy.application import PrivacyReadBlocked, PrivacyReadGate
 from app.threads.domain import (
     AccountPolicy,
     ApprovalPurpose,
@@ -62,6 +71,66 @@ PUBLIC_DRAFTS = (
 )
 MAX_INTENTS = 4096
 _REVIEWED = {f"public-{i}": content for i, content in enumerate(PUBLIC_DRAFTS)}
+STAGE0_MISSION_INVARIANTS = CapabilityPolicyInvariants(
+    initial_core_self().version,
+    "policy-v1",
+    "credentials-v1",
+    "budget-v1",
+    "simulation",
+    "tools-v1",
+    True,
+)
+
+
+class VerifiedMissionContext:
+    """Short fenced reads of the closed mission; never a model authority source."""
+
+    def __init__(self, events, gate, *, initial, invariants, clock):
+        if type(events) is not EventStore or type(gate) is not PrivacyReadGate:
+            raise ValueError("configured mission stores required")
+        if (
+            type(initial.purpose) is not MissionPurpose
+            or initial.text != _MISSION_PURPOSE_TEXT[initial.purpose]
+        ):
+            raise ValueError("initial mission must be reviewed closed content")
+        self.events, self.gate = events, gate
+        self.adapter = SharedMissionAdapter(
+            events, gate, initial=initial, invariants=invariants, clock=clock
+        )
+
+    def snapshot(self):
+        try:
+            mission = self.adapter.verified_snapshot()
+        except (
+            ValueError,
+            TypeError,
+            KeyError,
+            AttributeError,
+            OSError,
+            sqlite3.Error,
+            PrivacyReadBlocked,
+        ) as error:
+            raise ValueError("verified mission unavailable") from error
+        binding = hashlib.sha256(
+            json.dumps(
+                [
+                    mission.version,
+                    mission.text,
+                    mission.activated_at.isoformat(),
+                    mission.parent_version,
+                    mission.purpose.value,
+                ],
+                ensure_ascii=True,
+            ).encode()
+        ).hexdigest()
+        return mission.text, {"version": mission.version, "digest": binding}
+
+    def require(self, binding):
+        if type(binding) is not dict or set(binding) != {"version", "digest"}:
+            raise ValueError("mission binding missing")
+        _, current = self.snapshot()
+        if current != binding:
+            raise ValueError("verified mission changed")
 
 
 def _identity(*parts):
@@ -91,7 +160,7 @@ def _binding(item):
 class Stage0Journal:
     """Separate versioned WAL journal, bounded without forgetting effect identity."""
 
-    def __init__(self, path, account):
+    def __init__(self, path, account, *, mission_required=False):
         self.path = Path(path)
         require_reference("account", account)
         with self.transaction() as db:
@@ -104,16 +173,52 @@ class Stage0Journal:
             if tables and "stage0_schema" not in tables:
                 raise ValueError("foreign Stage 0 database")
             db.execute(
-                "CREATE TABLE IF NOT EXISTS stage0_schema(version INTEGER, account TEXT)"
+                "CREATE TABLE IF NOT EXISTS stage0_schema(version INTEGER, account TEXT, mission_required INTEGER NOT NULL DEFAULT 0, mission_initialized INTEGER NOT NULL DEFAULT 0)"
             )
-            rows = db.execute("SELECT version, account FROM stage0_schema").fetchall()
-            if rows and [tuple(row) for row in rows] != [(1, account)]:
+            columns = {row[1] for row in db.execute("PRAGMA table_info(stage0_schema)")}
+            if "mission_required" not in columns:
+                db.execute(
+                    "ALTER TABLE stage0_schema ADD COLUMN mission_required INTEGER NOT NULL DEFAULT 0"
+                )
+            if "mission_initialized" not in columns:
+                db.execute(
+                    "ALTER TABLE stage0_schema ADD COLUMN mission_initialized INTEGER NOT NULL DEFAULT 0"
+                )
+            rows = db.execute(
+                "SELECT version, account, mission_required, mission_initialized FROM stage0_schema"
+            ).fetchall()
+            self.needs_mission_initialization = mission_required and (
+                not rows or rows[0][3] == 0
+            )
+            if rows and (
+                len(rows) != 1
+                or rows[0][0] not in (1, 2)
+                or rows[0][1] != account
+                or rows[0][0] == 2
+                and bool(rows[0][2]) != mission_required
+            ):
                 raise ValueError("unsupported Stage 0 schema or account")
             if not rows:
-                db.execute("INSERT INTO stage0_schema VALUES(1,?)", (account,))
+                db.execute(
+                    "INSERT INTO stage0_schema VALUES(2,?,?,0)",
+                    (account, int(mission_required)),
+                )
+            elif rows[0][0] == 1:
+                # Legacy unfinished intents keep their old payload: no invented binding.
+                db.execute(
+                    "UPDATE stage0_schema SET version=2, mission_required=?",
+                    (int(mission_required),),
+                )
             db.execute(
-                "CREATE TABLE IF NOT EXISTS intents(operation TEXT PRIMARY KEY, phase TEXT NOT NULL CHECK(phase IN ('started','intent','linked','rejected')), payload TEXT NOT NULL CHECK(length(payload)<=4096))"
+                "CREATE TABLE IF NOT EXISTS intents(operation TEXT PRIMARY KEY, phase TEXT NOT NULL CHECK(phase IN ('started','intent','linked','rejected','held')), payload TEXT NOT NULL CHECK(length(payload)<=4096))"
             )
+            if rows and rows[0][0] == 1:
+                db.execute("ALTER TABLE intents RENAME TO old_intents")
+                db.execute(
+                    "CREATE TABLE intents(operation TEXT PRIMARY KEY, phase TEXT NOT NULL CHECK(phase IN ('started','intent','linked','rejected','held')), payload TEXT NOT NULL CHECK(length(payload)<=4096))"
+                )
+                db.execute("INSERT INTO intents SELECT * FROM old_intents")
+                db.execute("DROP TABLE old_intents")
             db.execute(
                 "CREATE TABLE IF NOT EXISTS sources(draft TEXT PRIMARY KEY, active INTEGER NOT NULL CHECK(active IN (0,1)))"
             )
@@ -124,6 +229,12 @@ class Stage0Journal:
                 )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS approvals(reference TEXT PRIMARY KEY, operation TEXT NOT NULL, binding TEXT NOT NULL, expires TEXT NOT NULL, revoked INTEGER NOT NULL, purpose TEXT NOT NULL, actor TEXT NOT NULL)"
+            )
+
+    def mark_mission_initialized(self):
+        with self.transaction() as db:
+            db.execute(
+                "UPDATE stage0_schema SET mission_initialized=1 WHERE mission_required=1"
             )
 
     @contextmanager
@@ -163,11 +274,15 @@ class Stage0Journal:
             )
             return True
 
-    def finish(self, operation, payload, *, rejected=False):
+    def finish(self, operation, payload, *, rejected=False, held=False):
         with self.transaction() as db:
             db.execute(
                 "UPDATE intents SET phase=?, payload=? WHERE operation=? AND phase='started'",
-                ("rejected" if rejected else "intent", json.dumps(payload), operation),
+                (
+                    "held" if held else "rejected" if rejected else "intent",
+                    json.dumps(payload),
+                    operation,
+                ),
             )
 
     def linked(self, operation):
@@ -240,6 +355,7 @@ class Stage0Authorization:
 
     def current_approval(self, *, account_ref, operation_id, approval_reference, now):
         self.app.guard()
+        self.app.require_mission(self.app.journal.read(operation_id))
         if account_ref != self.app.account:
             return None
         with self.app.journal.transaction() as db:
@@ -275,6 +391,7 @@ class Stage0Authorization:
                 (item.operation_id,),
             ).fetchone()
             payload = json.loads(intent[0])
+            self.app.require_mission(payload)
             source_valid = (
                 self.app.source_valid(payload)
                 and self.app.ledger.control_generation() == generation
@@ -341,6 +458,10 @@ class ThreadsStage0:
         clock,
         wakeup_policy,
         operator,
+        mission_events=None,
+        mission_gate=None,
+        initial_mission=None,
+        mission_invariants=None,
         enabled=False,
         checkpoint=lambda _point: None,
     ):
@@ -360,7 +481,40 @@ class ThreadsStage0:
         self.model, self.simulator, self.policy = model, simulator, policy
         self.owner, self.provider, self.ledger = owner, provider, ledger
         self.clock, self.operator, self.checkpoint = clock, operator, checkpoint
-        self.journal = Stage0Journal(journal_path, self.account)
+        mission_parts = (
+            mission_events,
+            mission_gate,
+            initial_mission,
+            mission_invariants,
+        )
+        if any(part is not None for part in mission_parts):
+            if (
+                not all(part is not None for part in mission_parts)
+                or type(mission_events) is not EventStore
+                or type(mission_gate) is not PrivacyReadGate
+                or type(initial_mission) is not Mission
+                or type(mission_invariants) is not CapabilityPolicyInvariants
+                or mission_invariants != STAGE0_MISSION_INVARIANTS
+                or mission_events is not provider._event_store
+                or mission_gate._store is not mission_events
+                or mission_gate._ledger is not ledger
+            ):
+                raise ValueError("mission stores and controls must match application")
+            self.mission = VerifiedMissionContext(
+                mission_events,
+                mission_gate,
+                initial=initial_mission,
+                invariants=mission_invariants,
+                clock=clock.now,
+            )
+        else:
+            self.mission = None
+        self.journal = Stage0Journal(
+            journal_path, self.account, mission_required=self.mission is not None
+        )
+        if self.mission is not None and self.journal.needs_mission_initialization:
+            self.mission.adapter.initialize_document()
+            self.journal.mark_mission_initialized()
         self.engine = DeliberationEngine(model, clock.now)
         self.authorization = Stage0Authorization(self)
         self.service = ThreadsService(
@@ -412,7 +566,7 @@ class ThreadsStage0:
             timeout,
         )
         payload = self.journal.read(operation)
-        if payload["phase"] in ("started", "rejected"):
+        if payload["phase"] in ("started", "rejected", "held"):
             raise ValueError("deliberation unavailable or rejected")
         return AgentDecision(payload["decision"])
 
@@ -426,7 +580,27 @@ class ThreadsStage0:
     def _decide(self, operation, origin, context, timeout=5):
         self.guard()
         self.checkpoint("before_deliberation")
+        try:
+            existing = self.journal.read(operation)
+        except ValueError:
+            existing = None
+        if existing is not None:
+            self.require_mission(existing)
+            return
+        mission_text = ()
+        if self.mission is not None:
+            try:
+                text, binding = self.mission.snapshot()
+            except ValueError:
+                if self.journal.start(operation, origin):
+                    self.journal.finish(operation, origin, held=True)
+                else:
+                    self.require_mission(self.journal.read(operation))
+                return
+            mission_text = (text,)
+            origin = {**origin, "mission": binding}
         if not self.journal.start(operation, origin):
+            self.require_mission(self.journal.read(operation))
             return
         self.checkpoint("after_started")
         self.guard()
@@ -438,7 +612,7 @@ class ThreadsStage0:
                 origin["correlation"],
                 context,
                 initial_core_self(),
-                (),
+                mission_text,
                 (),
                 BehaviorCapabilities(
                     "threads-stage0-v1",
@@ -465,6 +639,11 @@ class ThreadsStage0:
             "decided_at": now.isoformat(),
             "result": result.outcome.value,
         }
+        try:
+            self.require_mission(payload)
+        except ValueError:
+            self.journal.finish(operation, payload, held=True)
+            return
         proposal = result.proposal
         rejected = result.outcome not in (
             DeliberationOutcome.PROPOSED,
@@ -521,6 +700,7 @@ class ThreadsStage0:
         event = self.service.store.inbound_event(
             self.account, InboundKind(payload["kind"]), payload["event"]
         )
+
         if event is None or self._origin(
             event, resumed=payload.get("resumed", False)
         ) != {
@@ -537,6 +717,10 @@ class ThreadsStage0:
             )
             is None
         )
+
+    def require_mission(self, payload):
+        if self.mission is not None:
+            self.mission.require(payload.get("mission"))
 
     def _origin(self, event, *, resumed=False):
         return {
@@ -579,6 +763,10 @@ class ThreadsStage0:
 
     def _handoff(self, operation, payload):
         self.guard()
+        try:
+            self.require_mission(payload)
+        except ValueError as error:
+            raise PolicyDeniedError("Stage 0 mission changed") from error
         if not self.source_valid(payload):
             raise PolicyDeniedError("Stage 0 source authorization changed")
         decision = AgentDecision(payload["decision"])
@@ -697,9 +885,12 @@ class ThreadsStage0:
                 event.event_id,
                 "resume" if resume else "initial",
             )
-            self._decide(
-                operation, self._origin(event, resumed=resume), (event.content,)
-            )
+            try:
+                self._decide(
+                    operation, self._origin(event, resumed=resume), (event.content,)
+                )
+            except ValueError:
+                continue  # A stale claimed intent cannot starve another conversation.
             payload = self.journal.read(operation)
             if payload["phase"] == "intent":
                 try:
@@ -725,6 +916,10 @@ class ThreadsStage0:
             or self.journal.read(operation)["phase"] != "linked"
         ):
             raise PolicyDeniedError("unlinked synthetic publication")
+        try:
+            self.require_mission(self.journal.read(operation))
+        except ValueError as error:
+            raise PolicyDeniedError("Stage 0 mission changed") from error
         reference = _identity(
             operation, expires_at.isoformat(), purpose.value, operator.actor
         )

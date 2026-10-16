@@ -48,15 +48,19 @@ and dependent cross-participant replies. Older SQLite/WAL backups replay the cur
 ledger into read-only quarantine; B's unrelated state remains available. A challenged
 belief lowers confidence using counterevidence, stays unverified, persists into later
 context and disappears after source deletion. Mission confirmation uses genuinely
-later independent evidence and the actual mission adapter; test composition supplies
-its current text to subsequent bounded deliberation. Ordinary scheduler/Threads
-mission consumption remains absent, and recorded decisions do not prove judgment.
+later independent evidence and the actual mission adapter. INT-18 additionally
+tests the explicitly configured Stage 0 coordinator consuming that mission for
+scheduler and inbound Threads deliberation, persisting its binding, and holding
+stale or invalid mission-dependent work after restart. This remains an offline
+recorded-model/simulator composition; it is not a deployed daemon, live provider
+path, real-model judgment, or completed human calibration.
 
 Preserved mapped suites exercise actual dispatch failure classification, unknown and
 unknown_abandoned, immutable identities, outbox/inbound acknowledgement, approval
 revocation, stop/spend timing, source deletion, held model uncertainty, concurrency,
 downtime coalescing and process exits. Process-exit evidence covers private reservation/result/release, deletion intent/
-application, scheduler start/result/completion and provider dispatch; other checkpoint exceptions establish
+application, scheduler start/result/completion, mission-bound journal start/intent
+and provider dispatch; other checkpoint exceptions establish
 transaction/reopen behavior, not comprehensive OS-process crash coverage. Auth,
 event/provider, privacy, owner, scheduler, Threads and journal commits are independent.
 INT-12 adds explicitly enabled synthetic generic consolidation; arbitrary live

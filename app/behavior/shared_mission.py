@@ -222,6 +222,43 @@ class SharedMissionAdapter:
     def current_mission(self):
         return self._run(lambda _db, _repository, machine: machine.current_mission())
 
+    def initialize_document(self):
+        """Pin a legitimate root on first application configuration."""
+
+        def initialize(db, repository, machine):
+            current = machine.current_mission()
+            if (
+                db.execute(
+                    "SELECT 1 FROM shared_mission_document WHERE singleton=1"
+                ).fetchone()
+                is None
+            ):
+                if (
+                    db.execute(
+                        "SELECT 1 FROM protected_mission_shared LIMIT 1"
+                    ).fetchone()
+                    is not None
+                ):
+                    raise ValueError("mission document missing with protected history")
+                repository.save(MissionDocument(current, (), None))
+
+        self._run(initialize)
+
+    def verified_snapshot(self):
+        """Return the validated mission only if its durable document exists."""
+
+        def snapshot(db, _repository, machine):
+            if (
+                db.execute(
+                    "SELECT 1 FROM shared_mission_document WHERE singleton=1"
+                ).fetchone()
+                is None
+            ):
+                raise ValueError("mission document missing")
+            return machine.current_mission()
+
+        return self._run(snapshot)
+
     def no_change(self):
         return "no_change", self.current_mission().version
 

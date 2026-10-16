@@ -6,6 +6,14 @@ deliberation time, action-rate history, selected cadence, execution claims and
 terminal scheduler decisions. It creates no background process and has no
 Threads, research, mission-write or publication adapter.
 
+When `ThreadsStage0` is explicitly configured with a verified shared mission,
+its scheduler callback reads the current mission through `SharedMissionAdapter`
+and `PrivacyReadGate`. The journal saves a trusted version/content digest before
+the model call. Invalid or stale mission state produces a held intent and a
+`failed` scheduler outcome, never a synthetic `no_action`. The scheduler's
+existing start fence and uncertain inference identity remain unchanged; a
+mission revision does not rearm work.
+
 Use a dedicated SQLite path in a private application-owned directory, shared by
 all instances of the same scheduler lane. Do not use an EventStore, Privacy or
 owner database. The repository rejects a foreign component database and unknown

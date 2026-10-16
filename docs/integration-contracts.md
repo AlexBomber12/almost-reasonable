@@ -13,7 +13,7 @@ No fixture, H screen or recorded answer grants production authority.
 | Private web | AuthStore -> Host/Origin/CSRF WSGI -> Stage0ConversationRuntime -> privacy-fenced context/reservation -> fake gateway -> Russian gate -> durable reply release -> session/route revalidation | Ordinary ConversationService has disabled inference. INT-13 controls require explicit synthetic composition; real enrollment is absent. |
 | Private cognition | Runtime synthetic extractor -> CognitionEngine/SelfStateStore -> memory selector -> bounded private-memory v2 context and complete reply dependencies | Generic memory consolidation, research evidence bridge and real-model extraction remain absent. |
 | Shared intelligence | Closed constructor-bound approval -> screened/quarantined EventStore v6 revision -> authorized v3 context -> protected cross-participant reply edges | Four reviewed literal abstractions only; arbitrary prose and production approval are absent. |
-| Mission | SharedMissionAdapter -> independent later exact confirmation -> durable current mission; INT-14 test-only composition reads it from the reviewed store/gate during bounded Threads deliberation | No ordinary daemon/scheduler/Threads mission consumption or generic reassessment policy. |
+| Mission | SharedMissionAdapter -> independent later exact confirmation -> durable current mission; INT-18 explicitly configured Stage 0 coordinator reads it under the privacy gate for scheduler and inbound Threads deliberation and binds delayed intents | No deployed daemon, live model judgment or generic reassessment policy. |
 | Research | Authenticated private input -> sealed exact-input application grant -> fixed public fixture/worker-local handle -> OS-authenticated AF_UNIX ResearchWorkerServer -> fake search/provenance -> bounded durable Russian reply and authorized replay | Default-disabled; no arbitrary private-topic research, production issuer, real search adapter, semantic verification or belief bridge. |
 | Behavior/scheduler | SQLiteSchedulerRepository/DurableScheduler -> bounded DeliberationEngine -> closed intent/outcome -> ThreadsStage0 | A wakeup authorizes deliberation only. Uncertain started inference is held, never blindly replayed. |
 | Threads | Verified simulator polling/autonomous decision -> exact public route/catalog -> journal -> durable outbox -> separately installed operator approval -> current snapshot -> simulator dispatch/reconciliation | Two literal drafts only; no general private-derived publishing, production approval or Meta transport. |
@@ -80,8 +80,9 @@ recorded assessment controls, and emits JSON plus a readable report. Stage 0
 release readiness remains BLOCKED on human calibration and operator review.
 INT-12 closes synthetic SCN-07 consolidation; INT-13 connects authenticated
 privacy controls; INT-14 connects the versioned synthetic SCN-12 matrix across
-private, research, memory, mission and Threads paths. Ordinary mission
-consumption and all complete-MVP scenarios remain BLOCKED.
+private, research, memory, mission and Threads paths. INT-18 adds connected
+offline mission consumption and stale-intent holding; all complete-MVP
+scenarios remain BLOCKED.
 
 See [private runtime](private-conversation-runtime.md),
 [private memory](private-memory-conversation.md), [shared intelligence](shared-intelligence.md),

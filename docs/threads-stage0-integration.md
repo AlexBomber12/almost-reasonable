@@ -6,6 +6,31 @@ application coordinator. It connects actual first-party components with exact
 production entrypoint, daemon, Meta transport, credential lookup, enrollment or
 paid provider execution. Simulator confirmation means only simulated success.
 
+INT-18 adds an optional, explicit `mission_events`/`mission_gate`/`initial_mission`/
+`mission_invariants` configuration. The event store must be the provider state
+store's exact EventStore, and the gate must use that store and the configured
+privacy ledger. On first configuration the application pins a validated initial
+mission document and records completion in the journal. An interrupted pin is
+idempotently completed at restart before inference. Later reads require that
+document; missing, corrupt, deleted,
+or reassessment-required state holds work. `SharedMissionAdapter` validates the
+closed mission and independent evidence under the privacy fence. Pending
+proposals leave the active mission unchanged. Only the current mission text is
+placed in `permitted_mutable_state`; identifiers, evidence, source text and
+private provenance stay in trusted stores. Mission text grants no capabilities,
+budget, route, approval, or publication permission.
+
+Each mission-dependent start saves a trusted version and SHA-256 identity of the
+validated mission fields in the Stage 0 journal. The same binding is checked
+after inference, before materialization, during synthetic operator approval,
+and through the Threads authorization callback at READY and effect boundaries.
+A stale inference becomes a held intent; a stale publication cannot use its old
+approval. Started inference and UNKNOWN effects keep their original operation
+identity and uncertainty rules. The journal's v1-to-v2 migration preserves old
+payloads without inventing bindings. A v2 journal pins mission configuration so
+reopening without it is rejected. Reads and writes across the journal, privacy
+ledger and EventStore are short, independent transactions, not an atomic commit.
+
 ## Component flow and authority
 
 Autonomous input goes through `SQLiteSchedulerRepository` and `DurableScheduler`
