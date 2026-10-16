@@ -201,16 +201,16 @@ def test_failed_or_missing_execution_never_passes_deterministic_gate(fault):
 def test_recorded_controls_report_expected_failures_and_score_distributions():
     report = evaluate()
     assert report == evaluate()
-    assert report["summary"]["cases"] == 10
-    assert report["summary"]["recorded_outputs"] == 20
-    assert report["summary"]["observations"] == 60
+    assert report["summary"]["cases"] == 24
+    assert report["summary"]["recorded_outputs"] == 53
+    assert report["summary"]["observations"] == 157
     assert report["summary"]["real_model_trials"] == 0
     assert report["summary"]["human_calibration"] == "absent"
-    assert report["assurance_summary"]["M"] == {"passed": 10, "failed": 10}
-    assert report["assurance_summary"]["H"] == {"passed": 19, "failed": 1}
-    assert report["assurance_summary"]["G"] == {"passed": 17, "failed": 3}
-    assert report["failure_counts"]["privacy_boundary"] == 4
-    assert len({item["artifact_sha256"] for item in report["observations"]}) == 60
+    assert report["assurance_summary"]["M"] == {"passed": 21, "failed": 26}
+    assert report["assurance_summary"]["H"] == {"passed": 54, "failed": 3}
+    assert report["assurance_summary"]["G"] == {"passed": 46, "failed": 7}
+    assert report["failure_counts"]["privacy_boundary"] == 10
+    assert len({item["artifact_sha256"] for item in report["observations"]}) == 157
     assert all(item["adjudication"] is None for item in report["observations"])
 
 
