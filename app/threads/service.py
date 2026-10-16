@@ -86,6 +86,7 @@ class ThreadsService:
             raise ValueError("real transport is disabled")
         self.store = store
         self.simulator = simulator
+        self._bound_transport = simulator
         self.policy = policy
         self._account_ref = policy.account_ref
         self.clock = clock
@@ -795,7 +796,8 @@ class ThreadsService:
 
     def _require_account_binding(self) -> None:
         if (
-            self.policy.account_ref != self._account_ref
+            self.simulator is not self._bound_transport
+            or self.policy.account_ref != self._account_ref
             or self.simulator.account_ref != self._account_ref
         ):
             raise PolicyDeniedError(

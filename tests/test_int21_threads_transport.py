@@ -555,6 +555,36 @@ def test_revoked_stage_prevents_live_publication_even_with_simulation_enabled(tm
     assert fake.calls == []
 
 
+def test_rebinding_simulation_service_to_real_transport_cannot_poll(tmp_path):
+    from dataclasses import replace
+
+    from app.threads.simulator import ThreadsSimulator
+
+    fake = FakeHTTP()
+    live, _ = service(tmp_path, fake)
+    simulated = ThreadsService(
+        ThreadsStore(tmp_path / "simulation.sqlite3"),
+        ThreadsSimulator(account_ref="account-1"),
+        replace(live.policy, stage=Stage.SIMULATION, simulation_enabled=True),
+    )
+    simulated.simulator = transport(fake)
+    with pytest.raises(PolicyDeniedError, match="binding changed"):
+        simulated.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-rebound")
+    assert fake.calls == []
+
+
+def test_rebinding_live_service_transport_cannot_dispatch(tmp_path):
+    from app.threads.simulator import ThreadsSimulator
+
+    fake = FakeHTTP()
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    svc.simulator = ThreadsSimulator(account_ref="account-1")
+    with pytest.raises(PolicyDeniedError, match="binding changed"):
+        svc.dispatch("operation-1", approval, now=NOW)
+    assert fake.calls == []
+
+
 @pytest.mark.parametrize("field", ["root_post", "replied_to"])
 @pytest.mark.parametrize("value", ["bad", {}, {"id": "../bad"}, None])
 def test_malformed_present_mention_relationship_keeps_cursor(tmp_path, field, value):
