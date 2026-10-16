@@ -523,10 +523,12 @@ def test_timeout_at_dispatch_and_after_provider(tmp_path):
 
 def test_result_gate_rejects_private_canary_and_unsupported_url(tmp_path):
     canary = "private-canary"
-    for index, alteration in enumerate(("canary", "url", "english")):
+    for index, alteration in enumerate(("canary", "id", "url", "english")):
         raw = raw_response()
         if alteration == "canary":
             raw["output"][1]["content"][0]["text"] += " " + canary
+        elif alteration == "id":
+            raw["id"] = "resp_" + canary
         elif alteration == "url":
             raw["output"][1]["content"][0]["annotations"][0]["url"] = (
                 "http://unsafe.example"
@@ -545,7 +547,12 @@ def test_result_gate_rejects_private_canary_and_unsupported_url(tmp_path):
         assert result["outcome"] in {"invalid_response", "output_gate_rejected"}
         assert canary not in json.dumps(result)
         assert len(sdk.calls) == 1
-        assert store.usage_attempt("int20-ocean").outcome == result["outcome"]
+        recorded = store.usage_attempt("int20-ocean")
+        assert recorded.outcome == result["outcome"]
+        assert recorded.provider_response_id == (
+            None if alteration == "id" else "resp_synthetic"
+        )
+        assert canary not in repr(recorded)
 
 
 def test_provider_transport_is_bounded_and_sanitized(tmp_path, monkeypatch):

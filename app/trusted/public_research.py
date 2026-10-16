@@ -416,11 +416,20 @@ class PublicResearchBoundary:
                 max_search_calls=self._config.max_search_calls,
                 max_sources=3,
             )
+            # A parsed identifier can still contain a known private canary.
+            safe_response_id = (
+                evidence.response_id
+                if _screen((evidence.response_id,), self._screening) is None
+                else None
+            )
             if any(
                 source.status is not SourceStatus.RECORDED
                 for source in evidence.sources
             ):
-                return finish(_response("invalid_response", 1, usage=usage))
+                return finish(
+                    _response("invalid_response", 1, usage=usage),
+                    response_id=safe_response_id,
+                )
             values = [evidence.text, evidence.response_id]
             for source in evidence.sources:
                 values.extend(
@@ -429,7 +438,10 @@ class PublicResearchBoundary:
                     if value is not None
                 )
             if _screen(values, self._screening) is not None:
-                return finish(_response("invalid_response", 1, usage=usage))
+                return finish(
+                    _response("invalid_response", 1, usage=usage),
+                    response_id=safe_response_id,
+                )
             synthesis = build_russian_synthesis(
                 ResearchSynthesisDraft(
                     evidence.text, (), _UNCERTAINTY, (), (evidence.text,)
@@ -440,7 +452,10 @@ class PublicResearchBoundary:
                 synthesis.main_finding
             )
             if delivery.used_fallback:
-                return finish(_response("output_gate_rejected", 1, usage=usage))
+                return finish(
+                    _response("output_gate_rejected", 1, usage=usage),
+                    response_id=safe_response_id,
+                )
             report = {
                 "main_finding": delivery.text,
                 "uncertainty": synthesis.uncertainty,
@@ -458,7 +473,7 @@ class PublicResearchBoundary:
             }
             response = _response("completed", 1, report, usage)
             decode_public_response(_encode_json(response))
-            return finish(response, response_id=evidence.response_id)
+            return finish(response, response_id=safe_response_id)
         except ProviderPersistenceError:
             self._persistence_failed = True
             return _response("persistence_failure")
