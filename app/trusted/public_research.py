@@ -434,7 +434,7 @@ class PublicResearchBoundary:
                         return finish(
                             _response("spend_limit_confirmed", 1, usage=usage),
                             response_id=safe_response_id,
-                            code=safe_error_code,
+                            code=error.code,
                         )
                     return finish(
                         _response(

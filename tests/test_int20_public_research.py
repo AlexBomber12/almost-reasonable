@@ -802,12 +802,18 @@ def test_provider_quota_outcomes_are_terminal_and_recorded(
     assert len(sdk.calls) == 1
 
 
-def test_confirmed_spend_limit_suspends_future_research(tmp_path):
+@pytest.mark.parametrize("canaries", [(), ("project",)])
+def test_confirmed_spend_limit_suspends_future_research(tmp_path, canaries):
     class Limit(Exception):
         status_code = 429
         body = {"error": {"code": "project_spend_limit_exceeded"}}
 
-    worker, sdk, store = boundary(tmp_path, [Limit("private")], enabled=True)
+    worker, sdk, store = boundary(
+        tmp_path,
+        [Limit("private")],
+        enabled=True,
+        screening=ResearchScreeningContext(private_canaries=canaries),
+    )
     request = grant(worker)
     assert (
         worker.execute(request, peer_uid=os.geteuid())["outcome"]
