@@ -71,10 +71,12 @@ class PublicResearchTransport:
             raw = self._client.responses.create(**kwargs, timeout=timeout_seconds)
         except Exception as error:
             sanitized = _sanitized_sdk_error(error)
-            raise HostedSearchTransportError(
+            failure = HostedSearchTransportError(
                 _error_code(sanitized),
                 retry_after_seconds=sanitized.retry_after_seconds,
-            ) from None
+            )
+            failure.provider_code = sanitized.error_code
+            raise failure from None
         try:
             if hasattr(raw, "model_dump"):
                 raw = raw.model_dump(mode="json")

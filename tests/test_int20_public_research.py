@@ -766,25 +766,39 @@ def test_malformed_output_keeps_safe_usage_and_id(tmp_path, response_id, expecte
 
 
 @pytest.mark.parametrize(
-    "error_body,expected",
+    "error_body,expected,expected_code",
     [
-        ({"type": "rate_limit_error"}, "rate_limit"),
-        ({"type": "insufficient_quota"}, "billing_quota"),
-        ({"code": "credit_balance_exhausted"}, "billing_quota"),
-        ({}, "ambiguous_quota"),
+        ({"type": "rate_limit_error"}, "rate_limit", None),
+        ({"type": "insufficient_quota"}, "billing_quota", None),
+        (
+            {"code": "credit_balance_exhausted"},
+            "billing_quota",
+            "credit_balance_exhausted",
+        ),
+        ({"code": "provider_custom"}, "ambiguous_quota", "provider_custom"),
+        ({"code": "private-canary"}, "ambiguous_quota", None),
+        ({}, "ambiguous_quota", None),
     ],
 )
 def test_provider_quota_outcomes_are_terminal_and_recorded(
-    tmp_path, error_body, expected
+    tmp_path, error_body, expected, expected_code
 ):
     class Quota(Exception):
         status_code = 429
         body = {"error": error_body}
 
-    worker, sdk, store = boundary(tmp_path, [Quota("private")], enabled=True)
+    worker, sdk, store = boundary(
+        tmp_path,
+        [Quota("private")],
+        enabled=True,
+        screening=ResearchScreeningContext(private_canaries=("private-canary",)),
+    )
     request = grant(worker)
     assert worker.execute(request, peer_uid=os.geteuid())["outcome"] == expected
     assert store.usage_attempt(request.operation_id).outcome == expected
+    assert (
+        store.usage_attempt(request.operation_id).provider_error_code == expected_code
+    )
     assert len(sdk.calls) == 1
 
 
@@ -800,6 +814,10 @@ def test_confirmed_spend_limit_suspends_future_research(tmp_path):
         == "spend_limit_confirmed"
     )
     assert store.is_spend_suspended()
+    assert (
+        store.usage_attempt(request.operation_id).provider_error_code
+        == "project_spend_limit_exceeded"
+    )
     assert len(sdk.calls) == 1
     assert (
         worker.execute(grant(worker, operation_id="next"), peer_uid=os.geteuid())[

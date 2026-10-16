@@ -427,11 +427,14 @@ class PublicResearchBoundary:
                     safe_response_id = self._screened_response_id(
                         self._transport.last_response_id
                     )
+                    safe_error_code = self._screened_response_id(
+                        getattr(error, "provider_code", None)
+                    )
                     if error.code in CONFIRMED_SPEND_LIMIT_CODES:
                         return finish(
                             _response("spend_limit_confirmed", 1, usage=usage),
                             response_id=safe_response_id,
-                            code=error.code,
+                            code=safe_error_code,
                         )
                     return finish(
                         _response(
@@ -440,7 +443,7 @@ class PublicResearchBoundary:
                             usage=usage,
                         ),
                         response_id=safe_response_id,
-                        code=error.code if error.code in _OUTCOMES else None,
+                        code=safe_error_code,
                     )
                 return finish(_response("provider_error", 1))
             usage = self._transport.last_usage
