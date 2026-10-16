@@ -27,7 +27,7 @@
     "shared_context": "model-contract-shared-intelligence-v3",
     "research": "research-worker-stage0-v1",
     "behavior": "behavior-deliberation-v1",
-    "behavior_corpus": "stage0-recorded-anchors-v1",
+    "behavior_corpus": "stage0-recorded-anchors-v2",
     "ordinary_runtime": "disabled",
     "provider_fixture_model": "gpt-6.1-sol (fake only; no availability claim)",
     "recorded_behavior_model": "RecordedBehaviorModel; no real model",

@@ -7,6 +7,8 @@ import json
 import pytest
 
 from acceptance.behavior import evaluate
+from acceptance.behavior import CORPUS
+from app.behavior.evaluation import default_rubric
 from acceptance.human_review import (
     CONTEXT,
     PACKET_VERSION,
@@ -33,12 +35,12 @@ def fixture(pkt, reviewer="synthetic-reviewer-a"):
 def test_export_stable_blind_and_contextual():
     pkt = packet()
     assert pkt == packet()
-    assert len(pkt["items"]) == 31
+    assert len(pkt["items"]) > 31
     serialized = json.dumps(pkt, ensure_ascii=False)
     assert "recorded_scores" not in serialized
     assert "positive" not in serialized and "negative" not in serialized
     assert "acceptable_decisions" not in serialized
-    assert len({row["item_id"] for row in pkt["items"]}) == 31
+    assert len({row["item_id"] for row in pkt["items"]}) == len(pkt["items"])
     assert all(
         row["authority_state"] and row["context_sha256"] and row["dimensions"]
         for row in pkt["items"]
@@ -50,14 +52,18 @@ def test_export_stable_blind_and_contextual():
     assert any("Полярные" in str(row["source_excerpts"]) for row in pkt["items"])
     assert any("ожидает" in row["authority_state"] for row in pkt["items"])
     assert any(row["answer"]["text"].startswith("This is") for row in pkt["items"])
-    assert "non_impersonation" in pkt["uncovered_dimensions"]
+    assert pkt["uncovered_dimensions"] == []
+    assert {d for item in pkt["items"] for d in item["dimensions"]} == {
+        rule.dimension.value for rule in default_rubric() if rule.assurance.value != "G"
+    }
     positions = {row["item_id"]: index for index, row in enumerate(pkt["items"])}
     order = [
         positions[digest([PACKET_VERSION, pkt["corpus_version"], case, 1])[:20]]
         < positions[digest([PACKET_VERSION, pkt["corpus_version"], case, 2])[:20]]
         for case in ("continuity", "citations", "mission")
     ]
-    assert len(set(order)) == 2
+    assert len(order) == 3
+    assert [item["item_id"] for item in pkt["items"]] == sorted(positions)
     assert all(
         row["guidance"] and set(row["guidance"]) == set(row["dimensions"])
         for row in pkt["items"]
@@ -67,6 +73,119 @@ def test_export_stable_blind_and_contextual():
         row["case_input_sha256"] == observations[0]["case_input_sha256"]
         for row in pkt["items"]
     )
+
+
+def test_explicit_mapping_and_required_context():
+    pkt = packet()
+    corpus = strict_json(CORPUS)
+    context = strict_json(CONTEXT)["cases"]
+    for case in corpus["cases"]:
+        items = [
+            item
+            for item in pkt["items"]
+            if item["item_id"]
+            in {
+                digest([PACKET_VERSION, pkt["corpus_version"], case["id"], trial])[:20]
+                for trial in range(1, len(case["outputs"]) + 1)
+            }
+        ]
+        assert len(items) == len(case["outputs"])
+        assert all(
+            item["dimensions"] == sorted(case["review_dimensions"]) for item in items
+        )
+        assert all(
+            item["prior_conversation"] == context[case["id"]]["prior_conversation"]
+            for item in items
+        )
+        assert all(
+            item["source_excerpts"] == context[case["id"]]["source_excerpts"]
+            for item in items
+        )
+    assert next(case for case in corpus["cases"] if case["id"] == "russian")[
+        "review_dimensions"
+    ] == ["natural_russian"]
+
+
+def test_new_dimensions_have_contrasts_and_multiple_reasonable_outcomes():
+    corpus = strict_json(CORPUS)["cases"]
+    newly_covered = {
+        "independent_intellectual_development",
+        "evidence_versus_interpretation",
+        "useful_privacy_minimized_research",
+        "single_source_skepticism",
+        "owner_non_sycophancy",
+        "mission_continuity",
+        "evidence_driven_revision",
+        "semantic_platform_policy_judgment",
+        "non_impersonation",
+        "no_invented_human_biography",
+        "no_over_optimization_for_publication_frequency",
+    }
+    for dimension in newly_covered:
+        cases = [case for case in corpus if dimension in case["review_dimensions"]]
+        assert cases
+        assert any(
+            1.0 in case["recorded_scores"] and 0.25 in case["recorded_scores"]
+            for case in cases
+        )
+        assert all(
+            len({out["text"] for out in case["outputs"]}) == len(case["outputs"])
+            for case in cases
+        )
+    assert {"owner_evidence", "peer_evidence"} <= {case["id"] for case in corpus}
+    assert {"mission_continuity", "mission_abandonment"} <= {
+        case["id"] for case in corpus
+    }
+    assert {"belief_revision", "belief_retention"} <= {case["id"] for case in corpus}
+
+
+def test_old_packet_submission_rejected():
+    pkt = packet()
+    old = fixture(pkt)
+    old["packet_sha256"] = "0" * 64
+    old["corpus_version"] = "stage0-recorded-anchors-v1"
+    old["context_version"] = "stage0-review-context-v1"
+    with pytest.raises(ValueError, match="stale or mismatched"):
+        validate(pkt, old)
+
+
+def test_packet_binds_context_dimensions_and_guidance(tmp_path, monkeypatch):
+    import acceptance.human_review as review
+
+    original = packet()
+    corpus = strict_json(CORPUS)
+    context = strict_json(CONTEXT)
+    corpus["cases"][0]["review_dimensions"].append("mission_continuity")
+    altered_corpus = tmp_path / "cases.json"
+    altered_corpus.write_text(json.dumps(corpus), encoding="utf-8")
+    monkeypatch.setattr(review, "CORPUS", altered_corpus)
+    # The new mapping is digest-bound even though the answer is unchanged.
+    mapped = packet()
+    assert mapped["packet_sha256"] != original["packet_sha256"]
+    monkeypatch.setattr(review, "CORPUS", CORPUS)
+    context["cases"]["development"]["prior_conversation"].append(
+        "Сеанс 3: новый вопрос."
+    )
+    altered_context = tmp_path / "context.json"
+    altered_context.write_text(json.dumps(context), encoding="utf-8")
+    monkeypatch.setattr(review, "CONTEXT", altered_context)
+    assert packet()["packet_sha256"] != original["packet_sha256"]
+    monkeypatch.setitem(
+        review.GUIDANCE, "mission_continuity", "Новая проверочная инструкция."
+    )
+    assert packet()["packet_sha256"] != original["packet_sha256"]
+
+
+def test_invalid_dimension_mapping_fails_closed(tmp_path, monkeypatch):
+    import acceptance.human_review as review
+
+    corpus = strict_json(CORPUS)
+    corpus["cases"][0]["review_dimensions"] = ["safe_privacy_boundaries"]
+    path = tmp_path / "cases.json"
+    path.write_text(json.dumps(corpus), encoding="utf-8")
+    monkeypatch.setattr(review, "CORPUS", path)
+    with pytest.raises(ValueError, match="invalid review dimensions"):
+        packet()
 
 
 def test_complete_synthetic_evidence_never_calibrates_and_disagreement_visible():

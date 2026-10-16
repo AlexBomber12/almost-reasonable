@@ -76,11 +76,10 @@ grant G authority. There is no claim of full semantic injection immunity.
 
 ## Recorded behavior
 
-The versioned [frozen cases](../acceptance/behavior-cases.json) cover Russian output,
-continuity, disagreement, uncertainty, citation support, privacy-preserving influence,
-trolling, silence, intellectual honesty and two-phase mission evolution. Each has
-acceptable decision classes, forbidden outcomes, rubric anchors, a positive recorded
-answer and a negative control. The existing BehavioralEvaluationHarness emits bound
+The versioned [frozen cases](../acceptance/behavior-cases.json) now contain 24
+synthetic cases and 53 recorded outputs, with explicit review dimensions covering all
+21 applicable non-G rubric dimensions. They include acceptable and counterexample
+answers, plus five borderline answers. The existing BehavioralEvaluationHarness emits bound
 artifact hashes and separate G/H/M observations. Russian checks use the actual H gate;
 G fixture checks screen decisions/forbidden output and never replace application
 privacy/authorization oracles. M scores are recorded **assessment fixtures** supplied
@@ -217,7 +216,7 @@ and transport are offline synthetic fixtures. No participant deletion UI, live
 model adapter, semantic corroboration, production restore activation or
 deployment was exercised.
 
-## Offline human calibration handoff (INT-15)
+## Offline human calibration handoff (INT-16)
 
 This is preparation for fluent Russian human review, not completed calibration. Export
 uses only local synthetic inputs and makes no provider call:
@@ -237,9 +236,20 @@ appropriate. The answer, prior conversation, source excerpts and authority state
 are in the packet. Do not edit item IDs, versions or hashes. Use `evidence_class:
 "synthetic_test_fixture"` for test submissions; it cannot count as release
 calibration. The `human` value is a reviewer assertion, not verified identity.
-The version 2 packet asks only for `natural_russian` on the existing language-only
-`russian` case; that case has no evidentiary claim to score for intellectual honesty.
-The recorded-assessment corpus and its separate reporting remain unchanged.
+The `stage0-human-packet-v3` export has 64 opaque, reproducibly ordered items and
+117 item/dimension assessments. Its `uncovered_dimensions` is empty: this means
+the review material covers all 21 non-G dimensions, not that any dimension is
+calibrated or any model behavior proved. The language-only `russian` case asks only
+for `natural_russian`; it has no intellectual-honesty score. Synthetic case context
+includes prior sessions, source provenance and independence, matched owner/peer
+evidence, a private motivation and candidate public research brief, and an explicitly
+**fictional** platform-policy excerpt. It does not state current Meta policy.
+Each dimension has Russian scoring anchors. The 0.5 borderline responses invite
+reviewer notes when reasonable readings differ. Recorded author scores and control
+labels stay outside the reviewer packet. The corpus is
+`stage0-recorded-anchors-v2` and context is `stage0-review-context-v2`;
+versions, prompts, context, dimensions, guidance, outputs and hashes are bound in
+the packet SHA-256. Submissions from older packet versions fail validation.
 
 ```bash
 python -m acceptance.human_review summarize reviewer-a.json reviewer-b.json \
@@ -250,7 +260,7 @@ The command rejects invalid files and writes `summary.json` plus `summary.ru.md`
 A well-formed partial human submission reports `INCOMPLETE`; a fixture-only run
 reports `NO_HUMAN_ASSESSMENTS`. Human and synthetic test evidence have separate
 reviewer counts, score distributions, missing items, concerns, disagreements and
-adjudication items. The `stage0-human-summary-v2` JSON retains the packet SHA-256,
+adjudication items. The `stage0-human-summary-v3` JSON retains the packet SHA-256,
 corpus/context/Russian-corpus/rubric versions, reviewer metadata, and every supplied
 assessment with item, dimension, score, note and case/context/output hashes. Each
 reviewer record has `submission_sha256`: SHA-256 of the parsed submission encoded
@@ -260,7 +270,11 @@ The readable report lists missing items, disagreements and every reported concer
 with reviewer, item, dimension and explanation. Supplied notes are escaped as
 literal Markdown text in the readable report and kept verbatim in JSON.
 
-Even complete human files report `VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and
+The packet prepares semantic H/M review only. Human interpretation cannot replace
+deterministic language screening, privacy authorization or any other G check. The
+recorded scores remain author-supplied synthetic assessment fixtures, not human
+scores. No reviewer has assessed this version yet. Even complete human files report
+`VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and
 `NOT_APPROVED`: the 0.75 thresholds,
 reviewer count/independence, sample size, agreement and adjudication policy still
 need a separate decision. Review disagreements and threshold proposals, then obtain
