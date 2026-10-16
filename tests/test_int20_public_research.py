@@ -403,6 +403,10 @@ def test_trusted_installation_rejects_invalid_binding(tmp_path, field, value):
         "example。org",
         "127。0。0。1",
         "example｡org",
+        "127.1:8080?token=secret",
+        "2130706433:8080?token=secret",
+        "0x7f000001:8080?token=secret",
+        "0x7f.0x1:8080?token=secret",
     ],
 )
 def test_installation_does_not_admit_arbitrary_url(tmp_path, url):
@@ -580,6 +584,48 @@ def test_concurrent_operations_keep_their_own_provider_metadata(tmp_path, monkey
         "resp_first",
         "resp_second",
     ]
+
+
+def test_persistence_latch_stops_operation_paused_before_dispatch(
+    tmp_path, monkeypatch
+):
+    worker, sdk, store = boundary(tmp_path, enabled=True)
+    first = grant(worker, operation_id="first")
+    second = grant(worker, operation_id="second")
+    waiting = threading.Event()
+    resume = threading.Event()
+    original_spend = store.is_spend_suspended
+    original_record = store.record_attempt
+    second_guards = [0]
+
+    def spend_state():
+        if threading.current_thread().name.startswith("second"):
+            second_guards[0] += 1
+            if second_guards[0] == 3:
+                waiting.set()
+                assert resume.wait(timeout=10)
+        return original_spend()
+
+    def record(attempt, **kwargs):
+        if attempt.attempt_id == "first":
+            return False
+        return original_record(attempt, **kwargs)
+
+    monkeypatch.setattr(store, "is_spend_suspended", spend_state)
+    monkeypatch.setattr(store, "record_attempt", record)
+    with ThreadPoolExecutor(max_workers=1, thread_name_prefix="second") as executor:
+        pending = executor.submit(worker.execute, second, peer_uid=os.geteuid())
+        assert waiting.wait(timeout=10)
+        assert (
+            worker.execute(first, peer_uid=os.geteuid())["outcome"]
+            == "persistence_failure"
+        )
+        resume.set()
+        result = pending.result(timeout=10)
+    assert result["outcome"] == "persistence_failure"
+    assert result["attempts"] == 0
+    assert len(sdk.calls) == 1
+    assert store.usage_attempt(second.operation_id).outcome == "persistence_failure"
 
 
 def test_timeout_at_dispatch_and_after_provider(tmp_path):
