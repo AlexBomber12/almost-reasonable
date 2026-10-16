@@ -273,7 +273,9 @@ literal Markdown text in the readable report and kept verbatim in JSON.
 The packet prepares semantic H/M review only. Human interpretation cannot replace
 deterministic language screening, privacy authorization or any other G check. The
 recorded scores remain author-supplied synthetic assessment fixtures, not human
-scores. No reviewer has assessed this version yet. Even complete human files report
+scores. One packet-bound item received a later qualitative permissibility verdict;
+no reviewer has completed scored, dimension-level assessment of this packet.
+Even complete human files report
 `VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and
 `NOT_APPROVED`: the 0.75 thresholds,
 reviewer count/independence, sample size, agreement and adjudication policy still
@@ -283,3 +285,17 @@ remains failed regardless of human scores. The public frozen anchors are not hid
 cases, reviewer provenance is not cryptographic identity proof, and no hand-selected
 sample supports a confidence interval or claim about real model trials. The default
 acceptance runner does not import review files and remains BLOCKED.
+
+## INT-17 qualitative pilot and narrative policy
+
+The `narrative-policy-cases-v1` synthetic contrast set covers disclosed and undisclosed first-person fiction, a direct history question, factual-authority misuse, and protected private source content. Expected outcomes are M review anchors, not deterministic semantic containment. Existing recorded `behavior-rubric-v1` scores and `stage0-human-packet-v3` identities remain historical evidence under their original policy; they are not silently rescored. A below-0.75 recorded quality control does not prove impermissibility. G authorization, privacy, capability, stop, and spending checks remain independent.
+
+The offline qualitative importer accepts a single strict `qualitative-human-pilot-checkpoint-v1` file, an expected source hash, and an explicit evidence class. It preserves the source, all scenario/output identities, timestamps, notes, reviewer provenance, and subsequent product-policy clarification without assigning scores. It never enters the default acceptance runner. Example with the separately supplied local file:
+
+```sh
+python -m acceptance.qualitative docs/almost-reasonable-human-pilot-2026-10-16.json \
+  --sha256 4bb4bac24d6dd6b4563c305e2f502112e09dea9559d8406cca9a9b078eef360f \
+  --evidence-class human --output .artifacts/int17-pilot
+```
+
+The raw conversation-derived file and generated import stay untracked. Synthetic importer fixtures must declare `synthetic_test_fixture`. The eight selected responses are six `acceptable` and two `specific_error_reported`, with no supplied explanation for the reported errors. Only the first item retains its original packet binding; the other seven are adapted concrete scenarios with their own hashes. The later explicit permission for first-person fiction and choice of general profile and chat-entry disclosure is a policy clarification, not a revision of the historical verdict. This limited qualitative review does not establish 21-dimension human calibration, numerical threshold approval, operator threat/residual-risk approval, or real-model quality. Public profile wording is a local draft; semantic runtime enforcement of story provenance remains absent. Stage 0 readiness stays BLOCKED.

@@ -37,6 +37,13 @@ Cloudflare, Meta, получателей, в кэшах и других внеш
 регистрации реальных участников.
 """
 
+# Narrative disclosure is presentation policy, separate from privacy consent.
+NARRATIVE_DISCLOSURE_VERSION = "fictional-autobiography-ru-v1"
+NARRATIVE_DISCLOSURE_RU = (
+    "Almost Reasonable — ИИ-агент. Биографические истории от первого лица "
+    "могут быть художественным вымыслом."
+)
+
 OPERATOR_LEGAL_DECISIONS_RU = (
     "правовое основание и юрисдикция обработки",
     "точные условия и сроки хранения у каждого внешнего обработчика",

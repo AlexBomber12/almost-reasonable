@@ -18,3 +18,5 @@ htmlcov/
 dist/
 build/
 .artifacts/
+# Conversation-derived pilot evidence is supplied separately and never committed.
+/docs/almost-reasonable-human-pilot-2026-10-16.json

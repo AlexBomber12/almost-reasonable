@@ -15,6 +15,7 @@ from .auth import AuthenticatedSession, AuthStore, LoginStatus
 from .conversation import ConversationService
 from .privacy import ParticipantPrivacyControls, PrivacyControlError
 from app.privacy.application import PrivacyReadBlocked
+from app.privacy.notice import NARRATIVE_DISCLOSURE_RU, NARRATIVE_DISCLOSURE_VERSION
 
 
 SESSION_COOKIE = "ar_session"
@@ -392,6 +393,9 @@ class PrivateWebApplication:
             "<!doctype html><html lang=en><meta charset=utf-8>"
             "<title>Private chat</title><h1>Private chat</h1>"
             f"<p>Authenticated as {escape(session.username)}</p>"
+            '<p id="narrative-disclosure" '
+            f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
+            f"{escape(NARRATIVE_DISCLOSURE_RU)}</p>"
             + (
                 '<nav><a href="/privacy">Приватность</a></nav>'
                 if self._privacy is not None
