@@ -4,7 +4,10 @@ from dataclasses import dataclass
 from datetime import datetime
 import base64
 import json
+from queue import Empty, Queue
 import re
+from threading import BoundedSemaphore, Thread
+import time
 from typing import Protocol
 from urllib import error, parse, request
 
@@ -77,8 +80,43 @@ class HTTPSClient:
 
     def __init__(self):
         self._opener = request.build_opener(_NoRedirect)
+        self._active_request = BoundedSemaphore(1)
 
     def request(
+        self,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        body: bytes | None,
+        timeout: float,
+    ) -> HTTPResponse:
+        deadline = time.monotonic() + timeout
+        if not self._active_request.acquire(blocking=False):
+            raise TimeoutError("previous Threads request is still active")
+        result: Queue[HTTPResponse | Exception] = Queue(maxsize=1)
+
+        def perform() -> None:
+            try:
+                result.put(self._request_once(method, url, headers, body, timeout))
+            except Exception as failure:
+                result.put(failure)
+            finally:
+                self._active_request.release()
+
+        try:
+            Thread(target=perform, daemon=True).start()
+        except Exception:
+            self._active_request.release()
+            raise TimeoutError("Threads HTTP worker could not start") from None
+        try:
+            outcome = result.get(timeout=max(0, deadline - time.monotonic()))
+        except Empty:
+            raise TimeoutError("Threads HTTP deadline exceeded") from None
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    def _request_once(
         self,
         method: str,
         url: str,
@@ -139,15 +177,19 @@ class ThreadsHTTPTransport:
             "Accept": "application/json",
         }
         body = b"" if method == "POST" else None
+        uncertain = method == "POST" or publication_id is not None
+        read_failure = (
+            EffectClass.UNCERTAIN_DISPATCH
+            if uncertain
+            else EffectClass.PROVEN_PRE_DISPATCH
+        )
         try:
             response = self._client.request(method, url, headers, body, self._timeout)
         except Exception:
             response = None
         if response is None:
             raise ProviderFailure(
-                EffectClass.UNCERTAIN_DISPATCH
-                if method == "POST" or publication_id is not None
-                else EffectClass.PROVEN_PRE_DISPATCH,
+                read_failure,
                 "provider_transport_interrupted",
                 container_id=container_id,
                 publication_id=publication_id,
@@ -159,14 +201,14 @@ class ThreadsHTTPTransport:
             or len(response.body) > _MAX_RESPONSE
         ):
             raise ProviderFailure(
-                EffectClass.UNCERTAIN_DISPATCH,
+                read_failure,
                 "provider_response_invalid",
                 container_id=container_id,
                 publication_id=publication_id,
             )
         if response.status in (301, 302, 303, 307, 308):
             raise ProviderFailure(
-                EffectClass.UNCERTAIN_DISPATCH,
+                read_failure,
                 "provider_redirect_rejected",
                 container_id=container_id,
                 publication_id=publication_id,
@@ -175,14 +217,14 @@ class ThreadsHTTPTransport:
             data = json.loads(response.body)
         except (ValueError, UnicodeDecodeError):
             raise ProviderFailure(
-                EffectClass.UNCERTAIN_DISPATCH,
+                read_failure,
                 "provider_response_malformed",
                 container_id=container_id,
                 publication_id=publication_id,
             ) from None
         if not isinstance(data, dict):
             raise ProviderFailure(
-                EffectClass.UNCERTAIN_DISPATCH,
+                read_failure,
                 "provider_response_malformed",
                 container_id=container_id,
                 publication_id=publication_id,
@@ -197,7 +239,7 @@ class ThreadsHTTPTransport:
                 else EffectClass.CONFIRMED_REJECTION
                 if known_rejection and method == "POST"
                 else EffectClass.PROVEN_PRE_DISPATCH
-                if known_rejection
+                if method == "GET"
                 else EffectClass.UNCERTAIN_DISPATCH
             )
             raise ProviderFailure(
@@ -244,6 +286,11 @@ class ThreadsHTTPTransport:
                 "publication_id_missing",
                 container_id=container_id,
             ) from None
+        return PublishEvidence(publication_id, "provider_publish_id_received")
+
+    def verify_publication(
+        self, item: OutboxItem, container_id: str, publication_id: str
+    ) -> PublishEvidence:
         details = self._call(
             "GET",
             publication_id,
@@ -342,8 +389,11 @@ class ThreadsHTTPTransport:
         cursors = paging.get("cursors", {})
         if not isinstance(cursors, dict):
             raise ProviderFailure(EffectClass.PROVEN_PRE_DISPATCH, "poll_page_invalid")
-        raw_next = cursors.get("after")
-        if raw_next is not None and (
+        next_link = paging.get("next")
+        if next_link is not None and (not isinstance(next_link, str) or not next_link):
+            raise ProviderFailure(EffectClass.PROVEN_PRE_DISPATCH, "poll_page_invalid")
+        raw_next = cursors.get("after") if next_link is not None else None
+        if next_link is not None and (
             not isinstance(raw_next, str) or not raw_next or len(raw_next.encode()) > 90
         ):
             raise ProviderFailure(

@@ -14,10 +14,10 @@ Verified 2026-10-16 against Meta's official [Threads API collection](https://www
 
 The scopes above are service policy checks, not claims that the Meta app or current token actually has those permissions. The official collection documents the two-step container/publish flow, reply and mention reads, and cursor paging. It does not establish a safe retry rule for a lost write response or a numeric rate quota for this specific account. HTTP 429 therefore remains uncertain after a write; an offline fixture does not establish live rate behavior.
 
-- A trusted, explicit `ThreadsHTTPTransport` binds the local account, Meta user ID, root post ID, token and HTTP client. The destination and version are fixed to `https://graph.threads.net/v1.0`; no caller can supply a URL. OAuth bearer credentials stay in the authorization header. The standard HTTPS client verifies TLS, disables redirects and caps each response at 64 KB and each request at 10 seconds. The service accepts this transport only with an explicit `live_enabled=True` Stage 3 binding. Stage 0 still admits only the exact `ThreadsSimulator`.
-- `GET /me?fields=id` checks the authenticated account before each write. `POST /{user}/threads` creates a `TEXT` container, with `reply_to_id` for a reply. `POST /{user}/threads_publish` publishes its `creation_id`. A returned publication ID is checked with `GET /{id}` for the same owner and expected parent before confirmation. Actual returned container and publication IDs are stored in the existing columns, so no schema migration is needed.
+- A trusted, explicit `ThreadsHTTPTransport` binds the local account, Meta user ID, root post ID, token and HTTP client. The destination and version are fixed to `https://graph.threads.net/v1.0`; no caller can supply a URL. OAuth bearer credentials stay in the authorization header. The standard HTTPS client verifies TLS, disables redirects, caps each response at 64 KB, and returns or times out within the configured total caller deadline of at most 10 seconds. A timed-out write may still finish in its background worker and is classified uncertain; one in-flight request per transport prevents accumulating workers. The service accepts this transport only with an explicit `live_enabled=True` Stage 3 binding. Stage 0 still admits only the exact `ThreadsSimulator`.
+- `GET /me?fields=id` checks the authenticated account before each write. A failed preflight read is a proven no-write result. `POST /{user}/threads` creates a `TEXT` container, with `reply_to_id` for a reply. `POST /{user}/threads_publish` publishes its `creation_id`. The returned publication ID is stored durably before `GET /{id}` checks the same owner and expected parent. Actual returned container and publication IDs use existing columns, so no schema migration is needed.
 - Structured 400, 401 and 403 Graph errors reject an operation. A structured 429, server error, redirect, missing ID, malformed or oversized response, interrupted request, or failed publication verification leaves the operation `UNKNOWN` when a write may have occurred. The account remains paused. Current approval, per-draft privacy, policy, stop, capability and outbox reservations remain at the existing service boundary. An explicit pre-transmission failure may use the existing bounded retry path.
-- `GET /{root}/replies` and `GET /{user}/mentions` use bounded pages and opaque `after` cursors. The transport validates every event before returning a verified page. The service commits all fetched pages, events and the final cursor in one transaction. A malformed later page commits none of them. Reply routing requires the configured root ID and a provider parent ID. Mention records keep provider IDs.
+- `GET /{root}/replies` and `GET /{user}/mentions` use bounded pages and opaque `after` cursors. `paging.next` controls continuation; a terminal page may still carry an `after` cursor. The transport validates every event before returning a verified page. The service commits all fetched pages, events and the final cursor in one transaction. A malformed later page commits none of them. Reply routing requires the configured root ID and a provider parent ID. Mention records keep provider IDs.
 
 ## Deliberately unresolved
 
@@ -52,6 +52,12 @@ Do not edit `acceptance/scenarios.json` in this parallel PR. Proposed mappings f
 | `test_known_publication_id_reconciles_from_exact_provider_readback` | `INT-21-EXACT-ID-RECONCILIATION` |
 | `test_known_id_with_wrong_parent_remains_unresolved` | `INT-21-RECONCILIATION-BINDING` |
 | `test_reconciliation_cannot_substitute_a_different_publication_id` | `INT-21-RECONCILIATION-IDENTITY` |
+| `test_failed_account_preflight_has_proven_no_write` | `INT-21-PREFLIGHT-CLASSIFICATION` |
+| `test_terminal_page_after_cursor_does_not_fetch_again` | `INT-21-TERMINAL-PAGE` |
+| `test_publication_id_is_durable_before_readback_interruption` | `INT-21-DURABLE-PUBLICATION-ID` |
+| `test_sending_evidence_rejects_invalid_publication_id` | `INT-21-ID-VALIDATION` |
+| `test_http_adapter_enforces_total_deadline_and_one_inflight_request` | `INT-21-TOTAL-DEADLINE` |
+| `test_http_adapter_worker_error_and_start_failure_are_bounded` | `INT-21-HTTP-WORKER-FAILURE` |
 
 All responses in these tests are deterministic fakes; ordinary CI has no Meta token or connection. Release readiness remains `BLOCKED` until a separately authorized live smoke verifies the exact app, account, scopes and endpoint contract.
 
@@ -95,6 +101,8 @@ tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advan
 tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advance_cursor[payload4]
 tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advance_cursor[payload5]
 tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advance_cursor[payload6]
+tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advance_cursor[payload7]
+tests/test_int21_threads_transport.py::test_malformed_mention_pages_do_not_advance_cursor[payload8]
 tests/test_int21_threads_transport.py::test_valid_reply_and_mention_parent_are_preserved
 tests/test_int21_threads_transport.py::test_invalid_stored_cursor_and_stream_rejected_before_http
 tests/test_int21_threads_transport.py::test_account_preflight_prevents_publication_to_wrong_profile
@@ -103,4 +111,12 @@ tests/test_int21_threads_transport.py::test_later_malformed_page_does_not_commit
 tests/test_int21_threads_transport.py::test_known_publication_id_reconciles_from_exact_provider_readback
 tests/test_int21_threads_transport.py::test_known_id_with_wrong_parent_remains_unresolved
 tests/test_int21_threads_transport.py::test_reconciliation_cannot_substitute_a_different_publication_id
+tests/test_int21_threads_transport.py::test_failed_account_preflight_has_proven_no_write[profile_reply0]
+tests/test_int21_threads_transport.py::test_failed_account_preflight_has_proven_no_write[profile_reply1]
+tests/test_int21_threads_transport.py::test_failed_account_preflight_has_proven_no_write[profile_reply2]
+tests/test_int21_threads_transport.py::test_terminal_page_after_cursor_does_not_fetch_again
+tests/test_int21_threads_transport.py::test_publication_id_is_durable_before_readback_interruption
+tests/test_int21_threads_transport.py::test_sending_evidence_rejects_invalid_publication_id
+tests/test_int21_threads_transport.py::test_http_adapter_enforces_total_deadline_and_one_inflight_request
+tests/test_int21_threads_transport.py::test_http_adapter_worker_error_and_start_failure_are_bounded
 ```

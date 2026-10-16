@@ -33,6 +33,7 @@ class FakeHTTP:
         self.responses = deque(responses)
         self.calls = []
         self.profile_id = "user-1"
+        self.profile_reply = None
 
     def request(self, method, url, headers, body, timeout):
         assert TOKEN not in url
@@ -40,7 +41,7 @@ class FakeHTTP:
         assert headers["Authorization"] == f"Bearer {TOKEN}"
         assert 0 < timeout <= 10
         if method == "GET" and "/me?fields=id" in url:
-            return response(200, {"id": self.profile_id})
+            return self.profile_reply or response(200, {"id": self.profile_id})
         self.calls.append((method, url, body))
         value = self.responses.popleft()
         if isinstance(value, Exception):
@@ -277,7 +278,13 @@ def test_disabled_real_transport_and_missing_current_approval(tmp_path):
 def test_mentions_poll_persists_cursor_and_pending_event(tmp_path):
     row = {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
     fake = FakeHTTP(
-        response(200, {"data": [row], "paging": {"cursors": {"after": "opaque/+="}}}),
+        response(
+            200,
+            {
+                "data": [row],
+                "paging": {"next": "next-page", "cursors": {"after": "opaque/+="}},
+            },
+        ),
         response(200, {"data": [], "paging": {}}),
     )
     svc, _ = service(tmp_path, fake)
@@ -413,7 +420,9 @@ def test_transport_rejects_foreign_outbound_items(tmp_path):
         {"data": "wrong"},
         {"data": [], "paging": []},
         {"data": [], "paging": {"cursors": []}},
-        {"data": [], "paging": {"cursors": {"after": ""}}},
+        {"data": [], "paging": {"next": "next-page", "cursors": {"after": ""}}},
+        {"data": [], "paging": {"next": 17, "cursors": {"after": "next"}}},
+        {"data": [], "paging": {"next": "next-page"}},
         {"data": [17]},
         {
             "data": [
@@ -516,7 +525,13 @@ def test_explicit_live_binding_requires_real_transport_and_stage_3(tmp_path):
 def test_later_malformed_page_does_not_commit_earlier_events(tmp_path):
     row = {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
     fake = FakeHTTP(
-        response(200, {"data": [row], "paging": {"cursors": {"after": "next"}}}),
+        response(
+            200,
+            {
+                "data": [row],
+                "paging": {"next": "next-page", "cursors": {"after": "next"}},
+            },
+        ),
         HTTPResponse(200, b'{"data": ['),
     )
     svc, _ = service(tmp_path, fake)
@@ -589,3 +604,147 @@ def test_reconciliation_cannot_substitute_a_different_publication_id(
     item = svc.reconcile("operation-1", correlation_id="reconcile-1", now=NOW)
     assert item.state is OutboxState.UNKNOWN
     assert item.provider_publication_id == "post-1"
+
+
+@pytest.mark.parametrize(
+    "profile_reply",
+    [
+        response(429, {"error": {"code": 4}}),
+        response(500, {"error": {"code": 1}}),
+        HTTPResponse(200, b"{"),
+    ],
+)
+def test_failed_account_preflight_has_proven_no_write(tmp_path, profile_reply):
+    fake = FakeHTTP()
+    fake.profile_reply = profile_reply
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    item = svc.dispatch("operation-1", approval, now=NOW)
+    assert item.state is OutboxState.READY
+    assert item.provider_container_id is None
+    assert fake.calls == []
+
+
+def test_terminal_page_after_cursor_does_not_fetch_again(tmp_path):
+    row = {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
+    fake = FakeHTTP(
+        response(200, {"data": [row], "paging": {"cursors": {"after": "terminal"}}})
+    )
+    svc, _ = service(tmp_path, fake)
+    result = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
+    assert result.pages == 1
+    assert result.final_cursor is None
+    assert [event.event_id for event in result.new_events] == ["mention-1"]
+    assert len(fake.calls) == 1
+
+
+def test_publication_id_is_durable_before_readback_interruption(tmp_path, monkeypatch):
+    from app.threads.simulator import SimulatedCrash
+
+    fake = FakeHTTP(
+        response(200, {"id": "container-1"}),
+        response(200, {"id": "post-1"}),
+        response(200, details()),
+    )
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    monkeypatch.setattr(
+        svc.simulator,
+        "verify_publication",
+        lambda *_: (_ for _ in ()).throw(SimulatedCrash(transmission_possible=True)),
+    )
+    with pytest.raises(SimulatedCrash):
+        svc.dispatch("operation-1", approval, now=NOW)
+    sending = svc.store.get("operation-1")
+    assert (sending.state, sending.provider_publication_id) == (
+        OutboxState.SENDING,
+        "post-1",
+    )
+    restarted, _ = service(tmp_path, fake, authorization=auth)
+    assert (
+        restarted.recover_sending("operation-1", now=NOW).state is OutboxState.UNKNOWN
+    )
+    reconciled = restarted.reconcile(
+        "operation-1", correlation_id="reconcile-1", now=NOW
+    )
+    assert (reconciled.state, reconciled.provider_publication_id) == (
+        OutboxState.CONFIRMED,
+        "post-1",
+    )
+    assert len([call for call in fake.calls if call[0] == "POST"]) == 2
+
+
+def test_sending_evidence_rejects_invalid_publication_id(tmp_path):
+    fake = FakeHTTP()
+    svc, auth = service(tmp_path, fake)
+    ready(svc, auth)
+    with pytest.raises(ValueError, match="publication ID"):
+        svc.store.update_sending_evidence(
+            "operation-1", "invalid_id", now=NOW, provider_publication_id="../bad"
+        )
+
+
+def test_http_adapter_enforces_total_deadline_and_one_inflight_request(monkeypatch):
+    from threading import Event
+    from app.threads.transport import HTTPSClient
+
+    release = Event()
+    finished = Event()
+
+    class SlowOpener:
+        def open(self, req, timeout):
+            release.wait(1)
+            finished.set()
+
+            class Reply:
+                status = 200
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_):
+                    return None
+
+                def read(self, _limit):
+                    return b"{}"
+
+            return Reply()
+
+    monkeypatch.setattr(
+        "app.threads.transport.request.build_opener", lambda *_: SlowOpener()
+    )
+    client = HTTPSClient()
+    with pytest.raises(TimeoutError, match="deadline"):
+        client.request("GET", "https://example.invalid", {}, None, 0.01)
+    with pytest.raises(TimeoutError, match="still active"):
+        client.request("GET", "https://example.invalid", {}, None, 0.01)
+    release.set()
+    assert finished.wait(1)
+
+
+def test_http_adapter_worker_error_and_start_failure_are_bounded(monkeypatch):
+    from app.threads.transport import HTTPSClient
+
+    class FailingOpener:
+        def open(self, _req, timeout):
+            raise OSError("socket broke")
+
+    monkeypatch.setattr(
+        "app.threads.transport.request.build_opener", lambda *_: FailingOpener()
+    )
+    client = HTTPSClient()
+    with pytest.raises(OSError, match="socket broke"):
+        client.request("GET", "https://example.invalid", {}, None, 1)
+
+    class BrokenThread:
+        def __init__(self, **_kwargs):
+            pass
+
+        def start(self):
+            raise RuntimeError("no thread")
+
+    monkeypatch.setattr("app.threads.transport.Thread", BrokenThread)
+    with pytest.raises(TimeoutError, match="could not start"):
+        client.request("GET", "https://example.invalid", {}, None, 1)
+    with pytest.raises(TimeoutError, match="could not start"):
+        client.request("GET", "https://example.invalid", {}, None, 1)

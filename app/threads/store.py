@@ -937,20 +937,25 @@ class ThreadsStore:
         *,
         now: datetime,
         provider_container_id: str | None = None,
+        provider_publication_id: str | None = None,
     ) -> None:
         require_reference("operation ID", operation_id)
         require_reference("dispatch evidence", evidence)
         if provider_container_id is not None:
             require_reference("provider container ID", provider_container_id)
+        if provider_publication_id is not None:
+            require_reference("provider publication ID", provider_publication_id)
         require_aware_time("evidence time", now)
         with self._open() as connection:
             changed = connection.execute(
                 "UPDATE threads_outbox SET dispatch_evidence=?, "
-                "provider_container_id=COALESCE(?, provider_container_id), updated_at=? "
+                "provider_container_id=COALESCE(?, provider_container_id), "
+                "provider_publication_id=COALESCE(?, provider_publication_id), updated_at=? "
                 "WHERE operation_id=? AND state=?",
                 (
                     evidence,
                     provider_container_id,
+                    provider_publication_id,
                     now.isoformat(),
                     operation_id,
                     OutboxState.SENDING.value,

@@ -371,6 +371,17 @@ class ThreadsService:
                 )
                 raise
             evidence = self.simulator.publish(item, container_id)
+            if type(self.simulator) is ThreadsHTTPTransport:
+                self.store.update_sending_evidence(
+                    operation_id,
+                    "publication_id_received_verification_pending",
+                    now=now,
+                    provider_container_id=container_id,
+                    provider_publication_id=evidence.publication_id,
+                )
+                evidence = self.simulator.verify_publication(
+                    item, container_id, evidence.publication_id
+                )
         except SimulatedCrash as error:
             marker = (
                 "transmission_possible"
