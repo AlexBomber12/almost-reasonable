@@ -2,9 +2,10 @@
 
 Stage 0 readiness is **BLOCKED**. The acceptance package executes all 12 scenario
 mappings and distinguishes connected synthetic checks from remaining requirements.
-Missing complete cross-channel attack
-coverage and fluent-human calibration prevent Stage 0 acceptance. Complete
-MVP acceptance is also BLOCKED. Synthetic success does not grant rollout authority.
+The connected synthetic SCN-12 cross-channel matrix is complete; fluent-human
+calibration and operator threat/risk review still prevent Stage 0 acceptance.
+Complete MVP acceptance is also BLOCKED. Synthetic success does not grant
+rollout authority.
 
 ## Reproduce
 
