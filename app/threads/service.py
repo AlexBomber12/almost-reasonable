@@ -89,6 +89,12 @@ class ThreadsService:
         self.store = store
         self.simulator = simulator
         self._bound_transport = simulator
+        self._bound_provider_user_id = (
+            simulator.provider_user_id if live_enabled else None
+        )
+        self._bound_reply_thread_id = (
+            simulator.reply_thread_id if live_enabled else None
+        )
         self.policy = policy
         self._account_ref = policy.account_ref
         self.clock = clock
@@ -801,6 +807,13 @@ class ThreadsService:
         if (
             self.simulator is not self._bound_transport
             or self.live_enabled is not self._bound_live_enabled
+            or (
+                self.live_enabled
+                and (
+                    self.simulator.provider_user_id != self._bound_provider_user_id
+                    or self.simulator.reply_thread_id != self._bound_reply_thread_id
+                )
+            )
             or self.policy.account_ref != self._account_ref
             or self.simulator.account_ref != self._account_ref
         ):

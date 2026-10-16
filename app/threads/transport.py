@@ -14,6 +14,7 @@ from urllib import error, parse, request
 from .domain import (
     InboundEvent,
     InboundKind,
+    MAX_PROVIDER_RESPONSE_BYTES,
     OutboxItem,
     PublicationType,
     require_reference,
@@ -31,9 +32,10 @@ from .simulator import (
 _HOST = "https://graph.threads.net"
 _VERSION = "v1.0"
 _SOURCE = "meta-threads-v1"
-_MAX_RESPONSE = 2_097_152
+_MAX_RESPONSE = MAX_PROVIDER_RESPONSE_BYTES
 _PAGE_LIMIT = 10
-_CURSOR = re.compile(r"c-([A-Za-z0-9_-]{1,124})\Z")
+_MAX_CURSOR_LENGTH = 2 + 4 * ((_MAX_RESPONSE + 2) // 3)
+_CURSOR = re.compile(r"c-([A-Za-z0-9_-]+)\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -391,6 +393,8 @@ class ThreadsHTTPTransport:
             raise ValueError("invalid provider page timeout")
         raw_cursor = None
         if cursor is not None:
+            if not isinstance(cursor, str) or len(cursor) > _MAX_CURSOR_LENGTH:
+                raise ValueError("invalid stored cursor")
             match = _CURSOR.fullmatch(cursor)
             if match is None:
                 raise ValueError("invalid stored cursor")
@@ -429,15 +433,19 @@ class ThreadsHTTPTransport:
         if next_link is not None and (not isinstance(next_link, str) or not next_link):
             raise ProviderFailure(EffectClass.PROVEN_PRE_DISPATCH, "poll_page_invalid")
         raw_next = cursors.get("after") if next_link is not None else None
-        if next_link is not None and (
-            not isinstance(raw_next, str) or not raw_next or len(raw_next.encode()) > 90
-        ):
-            raise ProviderFailure(
-                EffectClass.PROVEN_PRE_DISPATCH, "poll_cursor_invalid"
-            )
+        raw_next_bytes = None
+        if next_link is not None:
+            try:
+                if not isinstance(raw_next, str) or not raw_next:
+                    raise ValueError("invalid cursor")
+                raw_next_bytes = raw_next.encode()
+            except (ValueError, UnicodeEncodeError):
+                raise ProviderFailure(
+                    EffectClass.PROVEN_PRE_DISPATCH, "poll_cursor_invalid"
+                ) from None
         next_cursor = (
-            "c-" + base64.urlsafe_b64encode(raw_next.encode()).decode().rstrip("=")
-            if raw_next is not None
+            "c-" + base64.urlsafe_b64encode(raw_next_bytes).decode().rstrip("=")
+            if raw_next_bytes is not None
             else None
         )
         events = []

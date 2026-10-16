@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import fcntl
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Iterator
 
@@ -15,6 +16,7 @@ from .domain import (
     DeferredInboundEvent,
     InboundEvent,
     InboundKind,
+    MAX_PROVIDER_RESPONSE_BYTES,
     OutboxItem,
     OutboxState,
     PublicationType,
@@ -28,6 +30,8 @@ from .domain import (
 
 SCHEMA_VERSION = 10
 MAX_PENDING_INBOUND_EVENTS = 100
+_MAX_STORED_CURSOR_LENGTH = 2 + 4 * ((MAX_PROVIDER_RESPONSE_BYTES + 2) // 3)
+_OPAQUE_CURSOR = re.compile(r"c-[A-Za-z0-9_-]+\Z")
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
     OutboxState.PROPOSED: {
@@ -1174,7 +1178,12 @@ class ThreadsStore:
         require_reference("verified source reference", verified_source_ref)
         for cursor in (expected_cursor, next_cursor):
             if cursor is not None:
-                require_reference("pagination cursor", cursor)
+                if not (
+                    isinstance(cursor, str)
+                    and len(cursor) <= _MAX_STORED_CURSOR_LENGTH
+                    and _OPAQUE_CURSOR.fullmatch(cursor) is not None
+                ):
+                    require_reference("pagination cursor", cursor)
         if type(reset_cursor) is not bool or (reset_cursor and next_cursor is not None):
             raise ValueError("invalid cursor reset")
         require_aware_time("poll commit time", now)

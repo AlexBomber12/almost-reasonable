@@ -12,6 +12,7 @@ MAX_CONTENT_CHARS = 500
 MAX_CONTENT_BYTES = 8_192
 MAX_INBOUND_CONTENT_BYTES = 16_384
 MAX_REFERENCE_LENGTH = 128
+MAX_PROVIDER_RESPONSE_BYTES = 2_097_152
 REQUIRED_PUBLISH_SCOPES = frozenset(("threads_basic", "threads_content_publish"))
 REQUIRED_REPLY_READ_SCOPES = frozenset(("threads_basic", "threads_read_replies"))
 REQUIRED_MENTION_SCOPES = frozenset(("threads_basic", "threads_manage_mentions"))

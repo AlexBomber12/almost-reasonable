@@ -430,6 +430,7 @@ def test_transport_rejects_foreign_outbound_items(tmp_path):
         {"data": [], "paging": {"next": "next-page", "cursors": {"after": ""}}},
         {"data": [], "paging": {"next": 17, "cursors": {"after": "next"}}},
         {"data": [], "paging": {"next": "next-page"}},
+        {"data": [], "paging": {"next": "next-page", "cursors": {"after": "\ud800"}}},
         {"data": [17]},
         {
             "data": [
@@ -492,6 +493,8 @@ def test_invalid_stored_cursor_and_stream_rejected_before_http():
         client.poll(InboundKind.REPLY, "../../other")
     with pytest.raises(ValueError, match="cursor"):
         client.poll(InboundKind.REPLY, "c-_w")
+    with pytest.raises(ValueError, match="cursor"):
+        client.poll(InboundKind.REPLY, 17)
     assert fake.calls == []
 
 
@@ -582,6 +585,19 @@ def test_rebinding_live_service_transport_cannot_dispatch(tmp_path):
     svc.simulator = ThreadsSimulator(account_ref="account-1")
     with pytest.raises(PolicyDeniedError, match="binding changed"):
         svc.dispatch("operation-1", approval, now=NOW)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("reply_thread_id", "other-root"), ("provider_user_id", "other-user")],
+)
+def test_live_provider_binding_change_prevents_poll(tmp_path, field, value):
+    fake = FakeHTTP()
+    svc, _ = service(tmp_path, fake)
+    setattr(svc.simulator, field, value)
+    with pytest.raises(PolicyDeniedError, match="binding changed"):
+        svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-rebound")
     assert fake.calls == []
 
 
@@ -970,6 +986,60 @@ def test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor(tmp_path):
     assert third.duplicate_count == 1
     assert all("reverse=false" in call[1] for call in fake.calls)
     assert "after=page-1" in fake.calls[1][1] and "after=page-1" in fake.calls[2][1]
+
+
+def test_long_opaque_provider_cursor_persists_and_resumes(tmp_path):
+    raw_cursor = "opaque/+=!" * 30
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [
+                    {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
+                ],
+                "paging": {"next": "next-page", "cursors": {"after": raw_cursor}},
+            },
+        ),
+        response(200, {"data": [], "paging": {}}),
+    )
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_pages=1)
+    assert len(first.final_cursor) > 128
+    assert svc.store.cursor("account-1", InboundKind.MENTION) == first.final_cursor
+    second = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
+    assert second.final_cursor is None
+    assert "after=opaque%2F%2B%3D%21" in fake.calls[1][1]
+
+
+def test_oversized_stored_cursor_rejected_before_http():
+    from app.threads.transport import _MAX_CURSOR_LENGTH
+
+    fake = FakeHTTP()
+    with pytest.raises(ValueError, match="stored cursor"):
+        transport(fake).poll(InboundKind.MENTION, "c-" + "A" * _MAX_CURSOR_LENGTH)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("invalid_kind", ["oversized", "wrong_type"])
+def test_store_rejects_invalid_bounded_cursor(tmp_path, invalid_kind):
+    from app.threads.transport import _MAX_CURSOR_LENGTH
+
+    store = ThreadsStore(tmp_path / "cursor.sqlite3")
+    invalid_cursor = (
+        "c-" + "A" * _MAX_CURSOR_LENGTH if invalid_kind == "oversized" else 17
+    )
+    with pytest.raises(ValueError, match="pagination cursor"):
+        store.commit_poll_page(
+            correlation_id="poll-1",
+            account_ref="account-1",
+            stream=InboundKind.MENTION,
+            verified_source_ref="meta-threads-v1",
+            expected_cursor=None,
+            next_cursor=invalid_cursor,
+            events=(),
+            now=NOW,
+            precommit_check=lambda: None,
+        )
 
 
 @pytest.mark.parametrize("reset,next_cursor", [(True, "cursor-1"), (1, None)])
