@@ -180,6 +180,17 @@ deliberation. The proposal then uses verified polling, journal, the literal draf
 catalog, independent SyntheticOperator approval, outbox and simulator. Ordinary
 scheduler/Threads mission consumption remains absent.
 
+The synthetic extractor copies the poison statement from the private memory
+snapshot it actually receives and declares no semantic parent. The connected
+journey checks the protected contextual edge to that exact poison operation,
+its source union and counts before deletion and after reopening storage. A
+focused control removes contextual binding at the cognition/store seam: the
+SCN-12 provenance assertion fails on the missing edge, then passes with normal
+binding. HTTP deletion removes the derivative and dependent reply payloads;
+they remain unavailable after restart and current-ledger replay into an older
+quarantined backup. A later authenticated conversation sees neither the removed
+statement nor its private canary.
+
 The connected G checks cover foreign-context and worker-request canaries, model
 input provenance, malicious private/public proposals, rejected shared poison
 even with permissive H screening, current mission/version, no unauthorized

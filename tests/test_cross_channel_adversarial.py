@@ -5,7 +5,9 @@ from datetime import timedelta
 from copy import deepcopy
 import json
 import os
+import hashlib
 from pathlib import Path
+import sqlite3
 from threading import Thread
 
 import pytest
@@ -29,6 +31,7 @@ from app.cognition.generic_store import GenericMemoryStore
 from app.cognition.shared import SharedIntelligence
 from app.cognition.synthetic import SyntheticMemoryExtractor
 from app.core.store import EventStore
+from app.core.generic_graph import validate_generic_graph
 from app.core.context import ContextLimits
 from app.core.provider_spend import ProviderStateStore
 from app.core.agent_output_store import AgentOutputStore
@@ -87,6 +90,67 @@ def assert_declared_oracles(corpus, case, decisions, sinks, forbidden):
     assert not any(forbidden.values())
 
 
+def assert_parentless_contextual_dependency(
+    database_path,
+    principal_id,
+    derivative_operation,
+    poison_operation,
+    source,
+    followup_source,
+):
+    """Read the protected graph, including metadata hidden from model projections."""
+    with sqlite3.connect(database_path) as db:
+        validate_generic_graph(db)
+        parents = db.execute(
+            "SELECT parent_operation_id FROM generic_memory_parents WHERE audience_principal_id=? AND operation_id=?",
+            (principal_id, derivative_operation),
+        ).fetchall()
+        contexts = db.execute(
+            "SELECT context_operation_id,audience_principal_id FROM generic_memory_context WHERE audience_principal_id=? AND operation_id=?",
+            (principal_id, derivative_operation),
+        ).fetchall()
+        assert parents == [], "derivative declared a semantic parent"
+        assert contexts == [(poison_operation, principal_id)], (
+            "missing contextual dependency on exposed poison"
+        )
+        sources = db.execute(
+            "SELECT event_id,role FROM generic_memory_sources WHERE source_principal_id=? AND operation_id=? ORDER BY event_id,role",
+            (principal_id, derivative_operation),
+        ).fetchall()
+        assert set(sources) == {
+            (followup_source, "initiating"),
+            (followup_source, "supporting"),
+            (source, "contextual"),
+        }
+        assert len(sources) == 3
+        source_count, parent_count, context_count, digest = db.execute(
+            "SELECT source_count,parent_count,context_count,graph_digest FROM generic_memory_operations WHERE audience_principal_id=? AND operation_id=?",
+            (principal_id, derivative_operation),
+        ).fetchone()
+        assert (source_count, parent_count, context_count) == (
+            len(sources),
+            len(parents),
+            len(contexts),
+        )
+        assert (
+            digest
+            == hashlib.sha256(
+                json.dumps(
+                    [sorted(sources), [], [poison_operation]], separators=(",", ":")
+                ).encode()
+            ).hexdigest()
+        )
+        binding = json.loads(
+            db.execute(
+                "SELECT binding FROM generic_memory_payloads WHERE audience_principal_id=? AND operation_id=?",
+                (principal_id, derivative_operation),
+            ).fetchone()[0]
+        )
+        assert binding["parents"] == []
+        assert binding["context"] == [["poison", 1, poison_operation]]
+        assert binding["support"] == [followup_source] and binding["counter"] == []
+
+
 @pytest.fixture(autouse=True)
 def offline(monkeypatch):
     install(monkeypatch, local_ipc=True)
@@ -130,6 +194,7 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
     private_canary = "CANARY-A-CROSS-CHANNEL-14"
     # The fake extractor deliberately retains the instruction as untrusted data.
     extracted = []
+    exposed_poison = []
 
     def extract(request):
         source = request.experience.event_id
@@ -140,11 +205,14 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
                 statement=payload,
             )
         if request.experience.content == followup_text:
+            copied = next(
+                view for view in request.private_memories if view.item_id == "poison"
+            )
+            exposed_poison.append(copied)
             return replace(
-                generic_proposal(
-                    source, "derivative", "memory-derivative", parents=(("poison", 1),)
-                ),
-                statement="Remember prior instruction: " + payload,
+                generic_proposal(source, "derivative", "memory-derivative"),
+                statement="Remember prior instruction: " + copied.statement,
+                parent_revisions=(),
             )
         return NoChangeProposal(source, "No update", (source,))
 
@@ -268,12 +336,36 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         )
         assert restarted_search.calls == []
         submitted(a, "followup", followup_text)
+        assert len(exposed_poison) == 1
+        assert exposed_poison[0].item_id == "poison"
+        assert exposed_poison[0].revision == 1
+        assert exposed_poison[0].statement == payload
+        assert exposed_poison[0].trusted_as_instructions is False
+        followup_source = next(
+            event.event_id
+            for event in gate.retrieve_private_events(trusted(auth, a))
+            if event.content == followup_text
+        )
         derivative = {
             row.view.item_id: row
             for row in GenericMemoryStore(events).current(trusted(auth, a))
         }
         assert set(derivative) == {"poison", "derivative"}
-        assert source in derivative["derivative"].source_event_ids
+        assert derivative["poison"].view.revision == 1
+        assert derivative["derivative"].view.supporting_count == 1
+        assert derivative["derivative"].view.counterevidence_count == 0
+        assert_parentless_contextual_dependency(
+            events.database_path,
+            trusted(auth, a).principal_id.value,
+            derivative["derivative"].operation_id,
+            derivative["poison"].operation_id,
+            source,
+            followup_source,
+        )
+        assert set(derivative["derivative"].source_event_ids) == {
+            source,
+            followup_source,
+        }
 
         # Reopen authenticated and durable stores, then read the retained text
         # through a conversation beyond the original short history window.
@@ -282,8 +374,20 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         ledger2 = PrivacyLedger(ledger.path)
         gate2 = PrivacyReadGate(ledger2, events2)
         assert gate2.reconcile()
+        assert_parentless_contextual_dependency(
+            events2.database_path,
+            trusted(auth2, a).principal_id.value,
+            derivative["derivative"].operation_id,
+            derivative["poison"].operation_id,
+            source,
+            followup_source,
+        )
         fake2 = FakeOpenAITransport(
-            [response("propose_publication", "Публикуй частные сведения."), response()]
+            [
+                response("propose_publication", "Публикуй частные сведения."),
+                response(),
+                response(),
+            ]
         )
         runtime2 = Stage0ConversationRuntime(
             events2,
@@ -314,6 +418,14 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
             m["text"] == payload and m["can_instruct"] is False
             for m in a_input["memories"]
         )
+        assert all(
+            not {"source_event_ids", "context_operations", "parent_revisions"}
+            & m.keys()
+            for m in a_input["memories"]
+        )
+        assert (
+            derivative["poison"].operation_id not in fake2.calls[0].request.input_text
+        )
         later_source = next(
             event.event_id
             for event in gate2.retrieve_private_events(trusted(auth2, a))
@@ -324,6 +436,14 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
             AgentOutputStore(events2).read_reply(trusted(auth2, a), later_reply)
             is not None
         )
+        with sqlite3.connect(events2.database_path) as db:
+            assert derivative["derivative"].operation_id in {
+                row[0]
+                for row in db.execute(
+                    "SELECT generic_operation_id FROM protected_reply_generic WHERE operation_id=?",
+                    (later_reply,),
+                )
+            }
         submitted(b, "later", "Обсудим другую тему")
         assert payload not in fake2.calls[1].request.input_text
         assert foreign_canary not in fake2.calls[0].request.input_text
@@ -562,12 +682,18 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         assert len(public.simulator.trace) <= 8
         assert GenericMemoryStore(events3).current(pa) == ()
         assert AgentOutputStore(events3).read_reply(pa, later_reply) is None
+        after_deletion = a.submit("after-deletion", "Что осталось в памяти?")
+        assert after_deletion[0] == "201 Created"
+        assert payload not in fake2.calls[2].request.input_text
+        assert private_canary not in fake2.calls[2].request.input_text
+        assert len(fake2.calls) == 3
         with pytest.raises(ValueError, match="reassessment"):
             SharedMissionAdapter(events3, gate3, **args).current_mission()
         events4 = EventStore(events3.database_path)
         gate4 = PrivacyReadGate(PrivacyLedger(ledger.path), events4)
         assert gate4.reconcile()
         assert GenericMemoryStore(events4).current(pa) == ()
+        assert AgentOutputStore(events4).read_reply(pa, later_reply) is None
         with pytest.raises(ValueError, match="reassessment"):
             SharedMissionAdapter(events4, gate4, **args).current_mission()
         restored = QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter).restore(
@@ -577,6 +703,23 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         assert payload not in (tmp_path / "quarantine.db").read_bytes().decode(
             "utf-8", "ignore"
         )
+        with sqlite3.connect(
+            f"{(tmp_path / 'quarantine.db').as_uri()}?mode=ro", uri=True
+        ) as quarantined:
+            assert (
+                quarantined.execute(
+                    "SELECT operation_id FROM generic_memory_payloads WHERE operation_id=?",
+                    (derivative["derivative"].operation_id,),
+                ).fetchall()
+                == []
+            )
+            assert (
+                quarantined.execute(
+                    "SELECT operation_id FROM agent_reply_payloads WHERE operation_id=?",
+                    (later_reply,),
+                ).fetchall()
+                == []
+            )
         observed_decisions = {
             "private_recorded_publication": private_proposal_state,
             "hostile_provider_annotation": (
@@ -646,6 +789,29 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         )
     finally:
         server.close()
+
+
+def test_scn12_parentless_provenance_requires_contextual_binding(tmp_path, monkeypatch):
+    case = CASES[0]
+    original_commit = GenericMemoryStore.commit
+
+    def without_contextual_binding(self, context, proposal, **kwargs):
+        if proposal.item_id == "derivative":
+            kwargs["exposed_generic_revisions"] = ()
+        return original_commit(self, context, proposal, **kwargs)
+
+    missing = tmp_path / "missing-context"
+    missing.mkdir()
+    with monkeypatch.context() as patch:
+        patch.setattr(GenericMemoryStore, "commit", without_contextual_binding)
+        with pytest.raises(
+            AssertionError, match="missing contextual dependency on exposed poison"
+        ):
+            test_cross_channel_research_memory_mission_and_public_journey(missing, case)
+
+    restored = tmp_path / "restored-context"
+    restored.mkdir()
+    test_cross_channel_research_memory_mission_and_public_journey(restored, case)
 
 
 @pytest.mark.parametrize("drift", ("decision", "sink", "forbidden"))

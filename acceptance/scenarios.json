@@ -1631,6 +1631,7 @@
             "tests/test_cross_channel_adversarial.py::test_cross_channel_research_memory_mission_and_public_journey[CC-MIXED-VERIFY]",
             "tests/test_cross_channel_adversarial.py::test_cross_channel_research_memory_mission_and_public_journey[CC-ENCODED-HANDLE]",
             "tests/test_cross_channel_adversarial.py::test_cross_channel_research_memory_mission_and_public_journey[CC-MULTITURN-DELAY]",
+            "tests/test_cross_channel_adversarial.py::test_scn12_parentless_provenance_requires_contextual_binding",
             "tests/test_cross_channel_adversarial.py::test_public_attack_cannot_reauthorize_prepared_effect[approval]",
             "tests/test_cross_channel_adversarial.py::test_public_attack_cannot_reauthorize_prepared_effect[stop]",
             "tests/test_cross_channel_adversarial.py::test_public_attack_cannot_reauthorize_prepared_effect[spend]",

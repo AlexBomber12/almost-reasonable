@@ -132,7 +132,11 @@ def test_scn12_requires_every_connected_case_and_effect_control():
     manifest, execution, coverage, behavior, metadata = input_evidence()
     scenario = next(row for row in manifest["scenarios"] if row["id"] == "SCN-12")
     connected = scenario["evidence"][0]["node_ids"]
-    assert len(connected) == 9
+    assert len(connected) == 10
+    assert (
+        "tests/test_cross_channel_adversarial.py::"
+        "test_scn12_parentless_provenance_requires_contextual_binding"
+    ) in connected
     for node in connected:
         omitted = deepcopy(execution)
         omitted["results"][node] = {
