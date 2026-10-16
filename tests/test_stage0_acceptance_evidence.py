@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 import json
+import sqlite3
 import subprocess
 import sys
 
@@ -10,6 +11,7 @@ import pytest
 from acceptance.behavior import evaluate
 from acceptance.manifest import ROOT, load_manifest, validate_manifest
 from acceptance.report import build_report, readable, test_status as status
+from app.integration.threads_stage0 import Stage0Journal
 
 
 def manifest_nodes(manifest):
@@ -35,6 +37,14 @@ def test_manifest_matches_actual_full_pytest_collection():
     assert {row["id"] for row in manifest["scenarios"]} == {
         f"SCN-{i:02d}" for i in range(1, 13)
     }
+
+
+def test_manifest_journal_version_matches_newly_initialized_database(tmp_path):
+    journal = Stage0Journal(tmp_path / "stage0.sqlite", "synthetic-account")
+    with sqlite3.connect(journal.path) as db:
+        versions = db.execute("SELECT version FROM stage0_schema").fetchall()
+    assert len(versions) == 1
+    assert load_manifest()["configuration"]["stage0_journal"] == versions[0][0]
 
 
 @pytest.mark.parametrize(

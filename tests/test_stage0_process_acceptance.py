@@ -81,6 +81,76 @@ def execute_child(tmp_path, boundary):
     assert result.returncode == 23, result.stderr.decode()
 
 
+def mission_crash_child(directory, point):
+    import os
+    from test_threads_stage0_integration import mission_application, wake
+
+    guard = pytest.MonkeyPatch()
+    install(guard)
+    app, *_ = mission_application(
+        Path(directory), [{"decision": "no_action", "reason_category": "low_value"}]
+    )
+    app.checkpoint = lambda at: os._exit(23) if at == point else None
+    app.run((wake("process-mission"),))
+    raise AssertionError("mission exit checkpoint was not reached")
+
+
+@pytest.mark.parametrize(
+    "point,phase", [("after_started", "started"), ("after_intent", "intent")]
+)
+def test_mission_process_exit_retains_exact_binding_without_reinference(
+    tmp_path, point, phase
+):
+    from app.behavior.mission import Mission
+    from app.core.provider_spend import ProviderStateStore
+    from test_behavior_mission import invariants
+    from test_cognition_pipeline import NOW as ROOT_TIME
+    from test_threads_stage0_integration import setup, wake
+
+    code = (
+        "import sys; sys.path.insert(0, 'tests'); "
+        "from test_stage0_process_acceptance import mission_crash_child; "
+        "mission_crash_child(sys.argv[1], sys.argv[2])"
+    )
+    result = subprocess.run(
+        [sys.executable, "-c", code, str(tmp_path), point],
+        capture_output=True,
+        timeout=15,
+        check=False,
+    )
+    assert result.returncode == 23, result.stderr.decode()
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    initial = Mission(
+        "mission-v1",
+        "Исследовать проверяемые идеи и поддерживать содержательный диалог",
+        ROOT_TIME,
+        None,
+    )
+    app, model, _, _ = setup(
+        tmp_path / "stage",
+        [],
+        mission=dict(
+            provider=ProviderStateStore(events),
+            ledger=ledger,
+            mission_events=events,
+            mission_gate=gate,
+            initial_mission=initial,
+            mission_invariants=invariants(),
+        ),
+    )
+    operation = app.wakeup_operation("process-mission")
+    payload = app.journal.read(operation)
+    assert payload["phase"] == phase
+    assert payload["mission"]["version"] == "mission-v1"
+    assert len(payload["mission"]["digest"]) == 64
+    app.run((wake("process-mission"),))
+    assert app.journal.read(operation)["mission"] == payload["mission"]
+    assert model.requests == []
+
+
 @pytest.mark.parametrize(
     "point,state",
     [
