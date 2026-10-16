@@ -9,8 +9,8 @@ from app.research.provider import (
 )
 from app.research.provenance import MAX_PROVIDER_RESPONSE_UTF8_BYTES
 from app.trusted.openai_credential_files import build_worker_openai_transport
+from app.trusted.openai_gateway import GatewayOutcome, _classify_error
 from app.trusted.openai_transport import OpenAITransportError, _sanitized_sdk_error
-from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES
 
 
 class PublicResearchTransport:
@@ -86,19 +86,9 @@ class PublicResearchTransport:
 
 
 def _error_code(error: OpenAITransportError) -> str:
-    if error.error_code in CONFIRMED_SPEND_LIMIT_CODES:
+    outcome = _classify_error(error)
+    if outcome is GatewayOutcome.SPEND_LIMIT_CONFIRMED:
         return error.error_code
-    if error.timeout:
-        return "timeout"
-    if error.connection:
-        return "connection_error"
-    return {
-        400: "invalid_request",
-        401: "authentication_error",
-        403: "permission_error",
-        429: "rate_limit",
-        500: "server_error",
-        502: "server_error",
-        503: "server_error",
-        504: "server_error",
-    }.get(error.status_code, "provider_error")
+    return (
+        "provider_error" if outcome is GatewayOutcome.UNKNOWN_ERROR else outcome.value
+    )

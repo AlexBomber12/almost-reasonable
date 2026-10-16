@@ -609,6 +609,23 @@ def test_error_mapping_and_provider_refusal(tmp_path):
     assert _error_code(OpenAITransportError(timeout=True)) == "timeout"
     assert _error_code(OpenAITransportError(connection=True)) == "connection_error"
     assert _error_code(OpenAITransportError(status_code=403)) == "permission_error"
+    assert _error_code(OpenAITransportError(status_code=429)) == "ambiguous_quota"
+    assert (
+        _error_code(
+            OpenAITransportError(status_code=429, error_type="insufficient_quota")
+        )
+        == "billing_quota"
+    )
+    assert (
+        _error_code(
+            OpenAITransportError(status_code=429, error_type="rate_limit_error")
+        )
+        == "rate_limit"
+    )
+    assert (
+        _error_code(OpenAITransportError(error_code="credit_balance_exhausted"))
+        == "billing_quota"
+    )
     assert (
         _error_code(OpenAITransportError(error_code="project_spend_limit_exceeded"))
         == "project_spend_limit_exceeded"
@@ -621,6 +638,29 @@ def test_error_mapping_and_provider_refusal(tmp_path):
         worker.execute(grant(worker), peer_uid=os.geteuid())["outcome"]
         == "invalid_response"
     )
+    assert len(sdk.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "error_body,expected",
+    [
+        ({"type": "rate_limit_error"}, "rate_limit"),
+        ({"type": "insufficient_quota"}, "billing_quota"),
+        ({"code": "credit_balance_exhausted"}, "billing_quota"),
+        ({}, "ambiguous_quota"),
+    ],
+)
+def test_provider_quota_outcomes_are_terminal_and_recorded(
+    tmp_path, error_body, expected
+):
+    class Quota(Exception):
+        status_code = 429
+        body = {"error": error_body}
+
+    worker, sdk, store = boundary(tmp_path, [Quota("private")], enabled=True)
+    request = grant(worker)
+    assert worker.execute(request, peer_uid=os.geteuid())["outcome"] == expected
+    assert store.usage_attempt(request.operation_id).outcome == expected
     assert len(sdk.calls) == 1
 
 

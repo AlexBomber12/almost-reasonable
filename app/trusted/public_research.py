@@ -74,6 +74,8 @@ _OUTCOMES = frozenset(
         "duplicate_operation",
         "timeout",
         "rate_limit",
+        "billing_quota",
+        "ambiguous_quota",
         "server_error",
         "connection_error",
         "authentication_error",
