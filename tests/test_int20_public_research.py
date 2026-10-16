@@ -411,6 +411,11 @@ def test_trusted_installation_rejects_invalid_binding(tmp_path, field, value):
         "65535:8080?token=secret",
         "127?token=secret",
         "0x7f?token=secret",
+        "127.?token=secret",
+        "0x7f.?token=secret",
+        "127.:8080",
+        "127.1.?token=secret",
+        "internal?token=secret",
     ],
 )
 def test_installation_does_not_admit_arbitrary_url(tmp_path, url):

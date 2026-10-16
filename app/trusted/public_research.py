@@ -73,8 +73,9 @@ _IPV6_LIKE = re.compile(
     r"(?i)(?<![\w])(?:\[[0-9a-f:.]+\]|[0-9a-f]{0,4}:(?:[0-9a-f]{0,4}:)+[0-9a-f]{0,4})(?::\d{1,5})?(?![\w])"
 )
 _NUMERIC_HOST = re.compile(
-    r"(?i)(?<![\w])(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){1,3}(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]{6,}|\d{8,12})(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]+|\d{1,12})(?::\d{1,5}(?:[?/#]|$)|\?\S+)"
+    r"(?i)(?<![\w])(?:0x[0-9a-f]+|\d+)(?:\.(?:0x[0-9a-f]+|\d+)){1,3}\.?(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]{6,}|\d{8,12})(?::\d{1,5})?(?![\w])|(?<![\w])(?:0x[0-9a-f]+|\d{1,12})\.?(?::\d{1,5}(?:[?/#]|$)|\?\S+)"
 )
+_INLINE_QUERY = re.compile(r"\S\?\S+")
 _FAILURE = "Исследование недоступно; проверенные выводы не сформированы."
 _UNCERTAINTY = (
     "Ссылки проверены только структурно; фактическая достоверность не оценена."
@@ -151,6 +152,7 @@ def _question_has_url(value: str) -> bool:
         or _IPV4_LIKE.search(normalized) is not None
         or _IPV6_LIKE.search(normalized) is not None
         or _NUMERIC_HOST.search(normalized) is not None
+        or _INLINE_QUERY.search(normalized) is not None
     )
 
 
