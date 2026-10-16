@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import hashlib
 import hmac
+import math
 import re
 import secrets
 import socket
@@ -146,6 +147,7 @@ def decode_public_response(payload: bytes) -> dict[str, object]:
     if (
         len(payload) > 24 * 1024
         or value["version"] != PUBLIC_RESEARCH_VERSION
+        or type(value["outcome"]) is not str
         or value["outcome"] not in _OUTCOMES
         or type(value["attempts"]) is not int
         or value["attempts"] not in (0, 1)
@@ -160,6 +162,7 @@ def decode_public_response(payload: bytes) -> dict[str, object]:
             type(item) is not int or not 0 <= item <= 10_000_000
             for item in usage.values()
         )
+        or usage["total_tokens"] != usage["input_tokens"] + usage["output_tokens"]
     ):
         raise WorkerProtocolError("invalid public research usage")
     report = value["report"]
@@ -337,13 +340,19 @@ class PublicResearchBoundary:
             return _response("authorization_denied")
         if self._persistence_failed:
             return _response("persistence_failure")
+        admitted = False
+        attempts = 0
+        started_at = None
+        began = None
+        usage = None
         try:
             blocked = self._guard(grant)
             if blocked is not None:
                 return _response(blocked)
             began = self._monotonic()
+            started_at = self._utcnow()
             reservation = self._store.reserve_attempt(
-                request.operation_id, request.operation_id, self._utcnow()
+                request.operation_id, request.operation_id, started_at
             )
             if reservation is not AttemptReservationStatus.CREATED:
                 return _response(
@@ -351,16 +360,29 @@ class PublicResearchBoundary:
                     if reservation is AttemptReservationStatus.SPEND_SUSPENDED
                     else "duplicate_operation"
                 )
+            admitted = True
+
+            def finish(result, *, response_id=None, code=None):
+                return self._record_terminal(
+                    request.operation_id,
+                    result,
+                    started_at,
+                    began,
+                    response_id=response_id,
+                    code=code,
+                )
+
             blocked = self._guard(grant)
             if blocked is not None:
-                return _response(blocked)
+                return finish(_response(blocked))
             provider_request = _build_request(grant.brief, self._config)
             if self._monotonic() - began >= self._config.timeout_seconds:
-                return _response("timeout")
+                return finish(_response("timeout"))
             blocked = self._guard(grant)
             if blocked is not None:
-                return _response(blocked)
+                return finish(_response(blocked))
             try:
+                attempts = 1
                 provider_result = self._transport.call(
                     provider_request, timeout_seconds=self._config.timeout_seconds
                 )
@@ -369,18 +391,23 @@ class PublicResearchBoundary:
 
                 if isinstance(error, HostedSearchTransportError):
                     if error.code in CONFIRMED_SPEND_LIMIT_CODES:
-                        self._record_confirmed_spend(request.operation_id, error.code)
-                        return _response("spend_limit_confirmed", 1)
-                    return _response(
-                        error.code if error.code in _OUTCOMES else "provider_error", 1
+                        return finish(
+                            _response("spend_limit_confirmed", 1), code=error.code
+                        )
+                    return finish(
+                        _response(
+                            error.code if error.code in _OUTCOMES else "provider_error",
+                            1,
+                        ),
+                        code=error.code if error.code in _OUTCOMES else None,
                     )
-                return _response("provider_error", 1)
+                return finish(_response("provider_error", 1))
             usage = self._transport.last_usage
             if self._monotonic() - began >= self._config.overall_timeout_seconds:
-                return _response("timeout", 1, usage=usage)
+                return finish(_response("timeout", 1, usage=usage))
             blocked = self._guard(grant)
             if blocked is not None:
-                return _response(blocked, 1, usage=usage)
+                return finish(_response(blocked, 1, usage=usage))
             evidence = parse_hosted_search_response(
                 provider_result,
                 retrieved_at=self._utcnow(),
@@ -391,7 +418,7 @@ class PublicResearchBoundary:
                 source.status is not SourceStatus.RECORDED
                 for source in evidence.sources
             ):
-                return _response("invalid_response", 1, usage=usage)
+                return finish(_response("invalid_response", 1, usage=usage))
             values = [evidence.text, evidence.response_id]
             for source in evidence.sources:
                 values.extend(
@@ -400,7 +427,7 @@ class PublicResearchBoundary:
                     if value is not None
                 )
             if _screen(values, self._screening) is not None:
-                return _response("invalid_response", 1, usage=usage)
+                return finish(_response("invalid_response", 1, usage=usage))
             synthesis = build_russian_synthesis(
                 ResearchSynthesisDraft(
                     evidence.text, (), _UNCERTAINTY, (), (evidence.text,)
@@ -411,7 +438,7 @@ class PublicResearchBoundary:
                 synthesis.main_finding
             )
             if delivery.used_fallback:
-                return _response("output_gate_rejected", 1, usage=usage)
+                return finish(_response("output_gate_rejected", 1, usage=usage))
             report = {
                 "main_finding": delivery.text,
                 "uncertainty": synthesis.uncertainty,
@@ -429,41 +456,70 @@ class PublicResearchBoundary:
             }
             response = _response("completed", 1, report, usage)
             decode_public_response(_encode_json(response))
-            return response
+            return finish(response, response_id=evidence.response_id)
         except ProviderPersistenceError:
             self._persistence_failed = True
             return _response("persistence_failure")
         except (TypeError, ValueError, UnicodeError):
-            return _response("invalid_response", 1)
+            result = _response("invalid_response", attempts, usage=usage)
+            if admitted:
+                return self._record_terminal(
+                    request.operation_id, result, started_at, began
+                )
+            return result
 
-    def _record_confirmed_spend(self, operation_id: str, code: str) -> None:
-        record = ProviderAttemptRecord(
-            operation_id,
-            operation_id,
-            "openai",
-            self._config.model,
-            self._config.version,
-            PUBLIC_RESEARCH_VERSION,
-            "research-no-core-self-v1",
-            None,
-            self._utcnow(),
-            0,
-            None,
-            None,
-            None,
-            None,
-            "spend_limit_confirmed",
-            0,
-            None,
-            None,
-            None,
-            CostEstimateStatus.USAGE_UNAVAILABLE,
-            code,
-        )
-        if not self._store.record_attempt(
-            record, confirmed_spend_limit_code=code, require_reservation=True
-        ):
-            raise ProviderPersistenceError("spend suspension persistence failed")
+    def _record_terminal(
+        self,
+        operation_id,
+        result,
+        started_at,
+        began,
+        *,
+        response_id=None,
+        code=None,
+    ):
+        usage = result["usage"]
+        try:
+            elapsed = self._monotonic() - began
+            if not math.isfinite(elapsed) or elapsed < 0:
+                raise ValueError("invalid operation duration")
+            record = ProviderAttemptRecord(
+                operation_id,
+                operation_id,
+                "openai",
+                self._config.model,
+                self._config.version,
+                PUBLIC_RESEARCH_VERSION,
+                "research-no-core-self-v1",
+                response_id,
+                started_at,
+                int(elapsed * 1000),
+                usage["input_tokens"] if usage is not None else None,
+                None,
+                usage["output_tokens"] if usage is not None else None,
+                usage["total_tokens"] if usage is not None else None,
+                result["outcome"],
+                0,
+                None,
+                None,
+                None,
+                CostEstimateStatus.PRICING_UNAVAILABLE
+                if usage is not None
+                else CostEstimateStatus.USAGE_UNAVAILABLE,
+                code,
+            )
+            if not self._store.record_attempt(
+                record,
+                confirmed_spend_limit_code=code
+                if code in CONFIRMED_SPEND_LIMIT_CODES
+                else None,
+                require_reservation=True,
+            ):
+                raise ProviderPersistenceError("research evidence persistence failed")
+        except (ProviderPersistenceError, TypeError, ValueError):
+            self._persistence_failed = True
+            return _response("persistence_failure")
+        return result
 
 
 def _build_request(brief, config):

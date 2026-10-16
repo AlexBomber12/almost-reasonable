@@ -105,6 +105,16 @@ def test_distinct_topic_usage_and_consumption_survive_restart(tmp_path):
     assert sdk.calls[0]["store"] is False
     assert sdk.calls[0]["max_tool_calls"] == 1
     assert store.attempt_exists("int20-ocean")
+    recorded = store.usage_attempt("int20-ocean")
+    assert (recorded.outcome, recorded.provider_response_id) == (
+        "completed",
+        "resp_synthetic",
+    )
+    assert (recorded.input_tokens, recorded.output_tokens, recorded.total_tokens) == (
+        100,
+        50,
+        150,
+    )
     restarted, again, _ = boundary(tmp_path, enabled=True)
     assert (
         restarted.execute(grant(restarted), peer_uid=os.geteuid())["outcome"]
@@ -196,6 +206,10 @@ def test_provider_errors_and_invalid_results_are_consumed(tmp_path):
             "invalid_response",
         }
         assert store.attempt_exists(request.operation_id)
+        assert store.usage_attempt(request.operation_id).outcome in {
+            "server_error",
+            "invalid_response",
+        }
         assert (
             worker.execute(request, peer_uid=os.geteuid())["outcome"]
             == "duplicate_operation"
@@ -227,6 +241,7 @@ def test_request_and_response_framing_is_closed():
     "change",
     [
         {"version": "wrong"},
+        {"outcome": []},
         {"outcome": "invented"},
         {"attempts": True},
         {"attempts": 2},
@@ -234,6 +249,7 @@ def test_request_and_response_framing_is_closed():
         {"report": {}},
         {"usage": {}},
         {"usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": True}},
+        {"usage": {"input_tokens": 1, "output_tokens": 2, "total_tokens": 4}},
     ],
 )
 def test_response_envelope_rejects_untrusted_authority(change):
@@ -490,17 +506,19 @@ def test_concurrent_duplicate_has_one_provider_contact(tmp_path):
 def test_timeout_at_dispatch_and_after_provider(tmp_path):
     worker, sdk, store = boundary(tmp_path, enabled=True)
     request = grant(worker)
-    worker._monotonic = iter((0, 31)).__next__
+    worker._monotonic = iter((0, 31, 31)).__next__
     assert worker.execute(request, peer_uid=os.geteuid())["outcome"] == "timeout"
     assert sdk.calls == [] and store.attempt_exists(request.operation_id)
+    assert store.usage_attempt(request.operation_id).outcome == "timeout"
 
     other = tmp_path / "other"
     other.mkdir()
-    worker, sdk, _ = boundary(other, enabled=True)
+    worker, sdk, store = boundary(other, enabled=True)
     request = grant(worker)
-    worker._monotonic = iter((0, 0, 71)).__next__
+    worker._monotonic = iter((0, 0, 71, 71)).__next__
     assert worker.execute(request, peer_uid=os.geteuid())["outcome"] == "timeout"
     assert len(sdk.calls) == 1
+    assert store.usage_attempt(request.operation_id).total_tokens == 150
 
 
 def test_result_gate_rejects_private_canary_and_unsupported_url(tmp_path):
@@ -517,7 +535,7 @@ def test_result_gate_rejects_private_canary_and_unsupported_url(tmp_path):
             raw["output"][1]["content"][0]["text"] = "English only answer"
         folder = tmp_path / str(index)
         folder.mkdir()
-        worker, sdk, _ = boundary(
+        worker, sdk, store = boundary(
             folder,
             [raw],
             enabled=True,
@@ -527,6 +545,7 @@ def test_result_gate_rejects_private_canary_and_unsupported_url(tmp_path):
         assert result["outcome"] in {"invalid_response", "output_gate_rejected"}
         assert canary not in json.dumps(result)
         assert len(sdk.calls) == 1
+        assert store.usage_attempt("int20-ocean").outcome == result["outcome"]
 
 
 def test_provider_transport_is_bounded_and_sanitized(tmp_path, monkeypatch):
@@ -560,6 +579,10 @@ def test_provider_transport_is_bounded_and_sanitized(tmp_path, monkeypatch):
     for malformed in (
         None,
         {**raw_response(), "usage": {}},
+        {
+            **raw_response(),
+            "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 149},
+        },
         {**raw_response(), "output": {}},
         {**raw_response(), "output": "x" * 600000},
     ):
@@ -639,6 +662,40 @@ def test_unrecorded_spend_limit_fails_closed(tmp_path, monkeypatch):
         == "persistence_failure"
     )
     assert len(sdk.calls) == 1
+
+
+def test_unrecorded_success_fails_closed(tmp_path, monkeypatch):
+    worker, sdk, store = boundary(tmp_path, enabled=True)
+    request = grant(worker)
+    monkeypatch.setattr(store, "record_attempt", lambda *args, **kwargs: False)
+    assert (
+        worker.execute(request, peer_uid=os.geteuid())["outcome"]
+        == "persistence_failure"
+    )
+    assert (
+        worker.execute(request, peer_uid=os.geteuid())["outcome"]
+        == "persistence_failure"
+    )
+    assert len(sdk.calls) == 1
+
+
+def test_invalid_pre_admission_state_and_duration_fail_closed(tmp_path):
+    worker, sdk, store = boundary(tmp_path, enabled=True)
+    request = grant(worker)
+    worker._stop = lambda: (_ for _ in ()).throw(ValueError("private"))
+    assert (
+        worker.execute(request, peer_uid=os.geteuid())["outcome"] == "invalid_response"
+    )
+    assert not store.attempt_exists(request.operation_id)
+    assert sdk.calls == []
+
+    worker._stop = lambda: False
+    worker._monotonic = iter((5, 5, 4, 3)).__next__
+    assert (
+        worker.execute(request, peer_uid=os.geteuid())["outcome"]
+        == "persistence_failure"
+    )
+    assert store.attempt_exists(request.operation_id)
 
 
 def test_provider_dispatch_exception_and_post_response_stop(tmp_path, monkeypatch):

@@ -61,9 +61,15 @@ class PublicResearchTransport:
                 raise ValueError("oversized response")
             usage = raw.get("usage")
             if usage is not None:
-                if type(usage) is not dict or any(
-                    type(usage.get(key)) is not int or not 0 <= usage[key] <= 10_000_000
-                    for key in ("input_tokens", "output_tokens", "total_tokens")
+                if (
+                    type(usage) is not dict
+                    or any(
+                        type(usage.get(key)) is not int
+                        or not 0 <= usage[key] <= 10_000_000
+                        for key in ("input_tokens", "output_tokens", "total_tokens")
+                    )
+                    or usage["total_tokens"]
+                    != usage["input_tokens"] + usage["output_tokens"]
                 ):
                     raise ValueError("invalid usage")
                 self.last_usage = {
