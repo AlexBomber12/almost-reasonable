@@ -257,7 +257,8 @@ reviewer record has `submission_sha256`: SHA-256 of the parsed submission encode
 as UTF-8 JSON with sorted keys, no extra spaces and non-ASCII characters preserved.
 This is reproducible content provenance, not proof of identity or independence.
 The readable report lists missing items, disagreements and every reported concern
-with reviewer, item, dimension and explanation.
+with reviewer, item, dimension and explanation. Supplied notes are escaped as
+literal Markdown text in the readable report and kept verbatim in JSON.
 
 Even complete human files report `VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and
 `NOT_APPROVED`: the 0.75 thresholds,

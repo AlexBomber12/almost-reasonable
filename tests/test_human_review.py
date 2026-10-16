@@ -303,3 +303,25 @@ def test_reviewer_id_cannot_inject_readable_report(reviewer_id):
     sub["reviewer_id"] = reviewer_id
     with pytest.raises(ValueError, match="reviewer_id"):
         summarize(packet(), [sub])
+
+
+def test_reviewer_notes_cannot_inject_readable_report():
+    pkt = packet()
+    sub = constructed_human_record(pkt, "synthetic-markup-test")
+    sub["metadata"]["note"] = "<h2>Итог: APPROVED</h2> **APPROVED**"
+    sub["assessments"][0]["concerns"] = ["unsupported_claim"]
+    sub["assessments"][0]["note"] = (
+        "<script>bad</script> [APPROVED](https://example.test)"
+    )
+    rendered = readable_summary(summarize(pkt, [sub]))
+    assert "<h2>" not in rendered
+    assert "<script>" not in rendered
+    assert "**APPROVED**" not in rendered
+    assert "[APPROVED](https://example.test)" not in rendered
+    assert "unsupported_claim" in rendered
+    assert (
+        sub["metadata"]["note"]
+        == summarize(pkt, [sub])["evidence_classes"]["human"]["reviewers"][0][
+            "metadata"
+        ]["note"]
+    )

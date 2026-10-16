@@ -4,6 +4,7 @@ import argparse
 from collections import Counter, defaultdict
 from datetime import datetime
 import hashlib
+import html
 import json
 import math
 from pathlib import Path
@@ -420,6 +421,13 @@ def write_json(path, value):
     )
 
 
+def safe_markdown_note(value):
+    """Show supplied text literally in an operator Markdown report."""
+
+    encoded = html.escape(json.dumps(value, ensure_ascii=False))
+    return re.sub(r"([\\`*_{}\[\]()#+.!|>~-])", r"\\\1", encoded)
+
+
 def readable_summary(result):
     lines = [
         "# Сводка оценок Stage 0",
@@ -445,7 +453,7 @@ def readable_summary(result):
             "",
         ]
         lines += [
-            f"- {row['reviewer_id']}: {row['metadata']['reviewed_at']}; SHA-256 файла: {row['submission_sha256']}; примечание: {json.dumps(row['metadata']['note'], ensure_ascii=False)}"
+            f"- {row['reviewer_id']}: {row['metadata']['reviewed_at']}; SHA-256 файла: {row['submission_sha256']}; примечание: {safe_markdown_note(row['metadata']['note'])}"
             for row in group["reviewers"]
         ] or ["- Нет записей."]
         lines += ["", "### Пропущенные оценки", ""]
@@ -465,7 +473,7 @@ def readable_summary(result):
         lines += [
             f"- {row['reviewer_id']} / {row['item_id']} / {row['dimension']}: "
             + ", ".join(row["concerns"])
-            + f"; оценка={row['score']}; пояснение={json.dumps(row['note'], ensure_ascii=False)}"
+            + f"; оценка={row['score']}; пояснение={safe_markdown_note(row['note'])}"
             for row in group["concern_items"]
         ] or ["- Нет."]
         lines += [
