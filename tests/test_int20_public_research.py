@@ -1,6 +1,7 @@
 """Connected, credential-free public research worker regressions."""
 
 from dataclasses import replace
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime, timedelta
 import json
 import multiprocessing
@@ -8,6 +9,7 @@ import os
 from pathlib import Path
 import socket
 import time
+import threading
 
 import pytest
 
@@ -398,6 +400,9 @@ def test_trusted_installation_rejects_invalid_binding(tmp_path, field, value):
         "127.0.0.1",
         "[::1]:8080?token=secret",
         "2001:db8::1",
+        "example。org",
+        "127。0。0。1",
+        "example｡org",
     ],
 )
 def test_installation_does_not_admit_arbitrary_url(tmp_path, url):
@@ -508,8 +513,6 @@ def test_persistence_failure_latches_and_sanitizes(tmp_path, monkeypatch):
 
 
 def test_concurrent_duplicate_has_one_provider_contact(tmp_path):
-    from concurrent.futures import ThreadPoolExecutor
-
     worker, sdk, store = boundary(tmp_path, enabled=True)
     request = grant(worker)
     with ThreadPoolExecutor(max_workers=2) as executor:
@@ -522,6 +525,61 @@ def test_concurrent_duplicate_has_one_provider_contact(tmp_path):
     assert sorted(outcomes) == ["completed", "duplicate_operation"]
     assert len(sdk.calls) == 1
     assert store.attempt_exists(request.operation_id)
+
+
+def test_concurrent_operations_keep_their_own_provider_metadata(tmp_path, monkeypatch):
+    worker, sdk, store = boundary(tmp_path, [], enabled=True)
+    first = grant(worker, operation_id="first", question=QUESTION)
+    second = grant(
+        worker, operation_id="second", question="How do ocean currents circulate?"
+    )
+
+    def create(**kwargs):
+        question = json.loads(kwargs["input"])["question"]
+        response = raw_response()
+        if question == QUESTION:
+            response["id"] = "resp_first"
+            response["usage"] = {
+                "input_tokens": 100,
+                "output_tokens": 11,
+                "total_tokens": 111,
+            }
+        else:
+            response["id"] = "resp_second"
+            response["usage"] = {
+                "input_tokens": 200,
+                "output_tokens": 22,
+                "total_tokens": 222,
+            }
+        sdk.calls.append(kwargs)
+        return response
+
+    monkeypatch.setattr(sdk, "create", create)
+    call = worker._transport.call
+    rendezvous = threading.Barrier(2)
+
+    def concurrent_call(*args, **kwargs):
+        response = call(*args, **kwargs)
+        rendezvous.wait(timeout=10)
+        return response
+
+    monkeypatch.setattr(worker._transport, "call", concurrent_call)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = list(
+            executor.map(
+                lambda request: worker.execute(request, peer_uid=os.geteuid()),
+                (first, second),
+            )
+        )
+    assert [result["outcome"] for result in results] == ["completed", "completed"]
+    assert [result["usage"]["total_tokens"] for result in results] == [111, 222]
+    assert [
+        store.usage_attempt(request.operation_id).provider_response_id
+        for request in (first, second)
+    ] == [
+        "resp_first",
+        "resp_second",
+    ]
 
 
 def test_timeout_at_dispatch_and_after_provider(tmp_path):

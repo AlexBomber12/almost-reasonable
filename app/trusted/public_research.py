@@ -135,7 +135,9 @@ def encode_public_request(request: PublicResearchRequest) -> bytes:
 
 
 def _question_has_url(value: str) -> bool:
-    normalized = unicodedata.normalize("NFKC", value)
+    normalized = unicodedata.normalize("NFKC", value).translate(
+        str.maketrans({"。": ".", "．": ".", "｡": "."})
+    )
     normalized = "".join(
         character for character in normalized if unicodedata.category(character) != "Cf"
     )

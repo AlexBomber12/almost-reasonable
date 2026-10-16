@@ -2,6 +2,7 @@
 
 import math
 import re
+import threading
 
 from app.research.provider import (
     HostedSearchRequest,
@@ -28,8 +29,23 @@ class PublicResearchTransport:
         if client is None or not hasattr(client, "responses"):
             raise TypeError("OpenAI Responses client required")
         self._client = client
-        self.last_usage: dict[str, int] | None = None
-        self.last_response_id: str | None = None
+        self._attempt = threading.local()
+
+    @property
+    def last_usage(self) -> dict[str, int] | None:
+        return getattr(self._attempt, "usage", None)
+
+    @last_usage.setter
+    def last_usage(self, value: dict[str, int] | None) -> None:
+        self._attempt.usage = value
+
+    @property
+    def last_response_id(self) -> str | None:
+        return getattr(self._attempt, "response_id", None)
+
+    @last_response_id.setter
+    def last_response_id(self, value: str | None) -> None:
+        self._attempt.response_id = value
 
     @classmethod
     def from_protected_file(cls, *, project_id: str, organization_id: str):
