@@ -980,6 +980,79 @@ def test_mission_source_deletion_holds_ready_effect_and_new_work(tmp_path):
     assert len(app.model.requests) == 1
 
 
+@pytest.mark.parametrize("purpose", ["ABANDON_UNKNOWN", "RECOVER_RECONCILIATION"])
+@pytest.mark.parametrize("invalidate", ["revision", "deletion"])
+def test_stale_mission_allows_purpose_bound_unknown_cleanup(
+    tmp_path, purpose, invalidate
+):
+    from app.privacy.application import EventStoreErasureAdapter
+    from app.privacy.deletion import DeletionCoordinator
+    from app.threads.domain import ApprovalPurpose
+    from app.threads.simulator import Fault
+    from app.threads.service import PolicyDeniedError
+    from test_privacy_deletion import context, request
+
+    app, events, gate, tick, adapter, proposal, confirmations, config = (
+        mission_application(
+            tmp_path, [{"decision": "propose_publication", "draft": DRAFT}]
+        )
+    )
+    if invalidate == "deletion":
+        confirm_mission(events, gate, tick, adapter, proposal, confirmations)
+    operation, publication_approval = ready(app, app.operator, "uncertain-mission")
+    app.simulator.set_fault(operation, "publish", Fault.AFTER_PUBLISH_SUCCESS)
+    assert (
+        app.service.dispatch(operation, publication_approval, now=app.clock.now()).state
+        is OutboxState.UNKNOWN
+    )
+    if purpose == "RECOVER_RECONCILIATION":
+        app.service.store.claim_reconciliation(
+            operation_id=operation,
+            correlation_id="interrupted-mission-claim",
+            account_ref=app.account,
+            actor_reference="synthetic-account-actor",
+            now=app.clock.now(),
+        )
+    if invalidate == "revision":
+        confirm_mission(events, gate, tick, adapter, proposal, confirmations)
+    else:
+        assert (
+            DeletionCoordinator(gate._ledger, EventStoreErasureAdapter(events))
+            .delete(context(), request(content_reference="event-a"))
+            .disposition.value
+            == "applied"
+        )
+        assert gate.reconcile()
+    restarted = construct_from(app, **config)
+    with pytest.raises(PolicyDeniedError):
+        restarted.approve(
+            operation,
+            restarted.operator,
+            expires_at=NOW + timedelta(hours=1),
+            purpose=ApprovalPurpose.PUBLICATION,
+        )
+    admin = restarted.approve(
+        operation,
+        restarted.operator,
+        expires_at=NOW + timedelta(hours=1),
+        purpose=ApprovalPurpose[purpose],
+    )
+    before_effects = tuple(restarted.simulator.trace)
+    if purpose == "ABANDON_UNKNOWN":
+        assert (
+            restarted.service.abandon_unknown(
+                operation, admin, now=app.clock.now()
+            ).state
+            is OutboxState.UNKNOWN_ABANDONED
+        )
+    else:
+        restarted.service.recover_reconciliation_claim(
+            operation, admin, now=app.clock.now()
+        )
+        assert restarted.service.store.get(operation).state is OutboxState.UNKNOWN
+    assert tuple(restarted.simulator.trace) == before_effects
+
+
 def test_configured_inbound_uses_mission_without_private_source(tmp_path):
     app, _, _, _, adapter, _, _, _ = mission_application(
         tmp_path, [{"decision": "reply", "content": PUBLIC_DRAFTS[1]}]

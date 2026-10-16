@@ -355,7 +355,6 @@ class Stage0Authorization:
 
     def current_approval(self, *, account_ref, operation_id, approval_reference, now):
         self.app.guard()
-        self.app.require_mission(self.app.journal.read(operation_id))
         if account_ref != self.app.account:
             return None
         with self.app.journal.transaction() as db:
@@ -916,10 +915,11 @@ class ThreadsStage0:
             or self.journal.read(operation)["phase"] != "linked"
         ):
             raise PolicyDeniedError("unlinked synthetic publication")
-        try:
-            self.require_mission(self.journal.read(operation))
-        except ValueError as error:
-            raise PolicyDeniedError("Stage 0 mission changed") from error
+        if purpose is ApprovalPurpose.PUBLICATION:
+            try:
+                self.require_mission(self.journal.read(operation))
+            except ValueError as error:
+                raise PolicyDeniedError("Stage 0 mission changed") from error
         reference = _identity(
             operation, expires_at.isoformat(), purpose.value, operator.actor
         )

@@ -30,6 +30,9 @@ identity and uncertainty rules. The journal's v1-to-v2 migration preserves old
 payloads without inventing bindings. A v2 journal pins mission configuration so
 reopening without it is rejected. Reads and writes across the journal, privacy
 ledger and EventStore are short, independent transactions, not an atomic commit.
+Purpose-bound abandonment and interrupted-reconciliation cleanup of an existing
+UNKNOWN effect remain available after mission invalidation; they never create a
+new publication effect.
 
 ## Component flow and authority
 
