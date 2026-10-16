@@ -242,8 +242,20 @@ python -m acceptance.human_review summarize reviewer-a.json reviewer-b.json \
 ```
 
 The command rejects invalid files and writes `summary.json` plus `summary.ru.md`.
-A well-formed partial file reports `INCOMPLETE`. Even complete files report
-`VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and `NOT_APPROVED`: the 0.75 thresholds,
+A well-formed partial human submission reports `INCOMPLETE`; a fixture-only run
+reports `NO_HUMAN_ASSESSMENTS`. Human and synthetic test evidence have separate
+reviewer counts, score distributions, missing items, concerns, disagreements and
+adjudication items. The `stage0-human-summary-v2` JSON retains the packet SHA-256,
+corpus/context/Russian-corpus/rubric versions, reviewer metadata, and every supplied
+assessment with item, dimension, score, note and case/context/output hashes. Each
+reviewer record has `submission_sha256`: SHA-256 of the parsed submission encoded
+as UTF-8 JSON with sorted keys, no extra spaces and non-ASCII characters preserved.
+This is reproducible content provenance, not proof of identity or independence.
+The readable report lists missing items, disagreements and every reported concern
+with reviewer, item, dimension and explanation.
+
+Even complete human files report `VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED` and
+`NOT_APPROVED`: the 0.75 thresholds,
 reviewer count/independence, sample size, agreement and adjudication policy still
 need a separate decision. Review disagreements and threshold proposals, then obtain
 an explicit operator threat/residual-risk decision. A failed deterministic G check

@@ -13,6 +13,7 @@ from acceptance.human_review import (
     blank_review,
     digest,
     packet,
+    readable_summary,
     strict_json,
     summarize,
     validate,
@@ -75,12 +76,15 @@ def test_complete_synthetic_evidence_never_calibrates_and_disagreement_visible()
     second["assessments"][0]["score"] = 1
     first["assessments"][0]["concerns"] = ["ambiguous"]
     result = summarize(pkt, [first, second])
-    assert result["status"] == "VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED"
+    assert result["status"] == "NO_HUMAN_ASSESSMENTS"
     assert result["calibration"] == "NOT_APPROVED"
-    assert result["reviewers_supplied"] == 2
-    assert result["human_claimed_reviewers"] == 0
-    assert result["disagreements"] and result["adjudication_items"]
-    assert result["concerns"] == {"ambiguous": 1}
+    assert result["evidence_classes"]["synthetic_test_fixture"]["reviewer_count"] == 2
+    assert result["evidence_classes"]["human"]["reviewer_count"] == 0
+    assert result["evidence_classes"]["synthetic_test_fixture"]["disagreements"]
+    assert result["evidence_classes"]["synthetic_test_fixture"]["adjudication_items"]
+    assert result["evidence_classes"]["synthetic_test_fixture"]["concerns"] == {
+        "ambiguous": 1
+    }
     assert "G" in result["limitations"][-1]
 
 
@@ -90,8 +94,14 @@ def test_incomplete_is_distinct_from_invalid():
     sub["assessments"].pop()
     sub["assessments"][0]["score"] = None
     result = summarize(pkt, [sub])
-    assert result["status"] == "INCOMPLETE"
-    assert len(result["missing_assessments"]) == 2
+    assert result["status"] == "NO_HUMAN_ASSESSMENTS"
+    assert (
+        result["evidence_classes"]["synthetic_test_fixture"]["status"] == "INCOMPLETE"
+    )
+    assert (
+        len(result["evidence_classes"]["synthetic_test_fixture"]["missing_assessments"])
+        == 2
+    )
 
 
 @pytest.mark.parametrize(
@@ -145,3 +155,121 @@ def test_missing_required_context_blocks_export(tmp_path, monkeypatch):
     monkeypatch.setattr(review, "CONTEXT", path)
     with pytest.raises(ValueError, match="insufficient review context"):
         packet()
+
+
+def constructed_human_record(pkt, reviewer, score=0.2):
+    """Synthetic test construction exercising the human evidence-class branch."""
+    sub = fixture(pkt, reviewer)
+    sub["evidence_class"] = "human"
+    sub["metadata"]["note"] = "Synthetic test construction, not a real reviewer"
+    for row in sub["assessments"]:
+        row["score"] = score
+    return sub
+
+
+def test_fixture_cannot_change_human_summary():
+    pkt = packet()
+    human = constructed_human_record(pkt, "synthetic-human-branch")
+    human["assessments"][0]["concerns"] = ["unsupported_claim"]
+    human["assessments"][0]["note"] = "Synthetic test note"
+    baseline = summarize(pkt, [human])
+    synthetic = fixture(pkt, "synthetic-fixture")
+    for row in synthetic["assessments"]:
+        row["score"] = 1.0
+    synthetic["assessments"][0]["score"] = None
+    combined = summarize(pkt, [human, synthetic])
+    assert (
+        combined["evidence_classes"]["human"] == baseline["evidence_classes"]["human"]
+    )
+    assert combined["status"] == baseline["status"]
+    assert combined["evidence_classes"]["human"]["disagreements"] == []
+    assert combined["evidence_classes"]["synthetic_test_fixture"]["missing_assessments"]
+
+
+def test_fixture_only_has_no_human_calibration_observations():
+    result = summarize(packet(), [fixture(packet())])
+    assert result["status"] == "NO_HUMAN_ASSESSMENTS"
+    assert result["calibration"] == "NOT_APPROVED"
+    assert result["evidence_classes"]["human"]["reviewer_count"] == 0
+    assert result["evidence_classes"]["human"]["assessments_supplied"] == 0
+    assert result["evidence_classes"]["human"]["score_distributions"] == {}
+
+
+def test_human_disagreement_and_concern_remain_attributed():
+    pkt = packet()
+    first = constructed_human_record(pkt, "synthetic-human-a")
+    second = constructed_human_record(pkt, "synthetic-human-b")
+    second["assessments"][0]["score"] = 0.9
+    first["assessments"][0]["concerns"] = ["unsupported_claim"]
+    first["assessments"][0]["note"] = "Synthetic source excerpt does not support claim"
+    result = summarize(pkt, [first, second])
+    human = result["evidence_classes"]["human"]
+    disagreement = human["disagreements"][0]
+    assert disagreement["item_id"] == first["assessments"][0]["item_id"]
+    assert disagreement["dimension"] == first["assessments"][0]["dimension"]
+    assert {x["reviewer_id"] for x in disagreement["scores"]} == {
+        "synthetic-human-a",
+        "synthetic-human-b",
+    }
+    concern = human["concern_items"][0]
+    assert concern["reviewer_id"] == "synthetic-human-a"
+    assert concern["item_id"] == first["assessments"][0]["item_id"]
+    assert concern["dimension"] == first["assessments"][0]["dimension"]
+    assert concern["note"] == "Synthetic source excerpt does not support claim"
+
+
+def test_summary_retains_packet_reviewer_and_every_assessment():
+    pkt = packet()
+    sub = constructed_human_record(pkt, "synthetic-human-only")
+    sub["assessments"][0]["concerns"] = ["unsupported_claim"]
+    sub["assessments"][0]["note"] = "Synthetic test explanation"
+    result = summarize(pkt, [sub])
+    assert result["summary_format_version"]
+    assert result["packet_sha256"] == pkt["packet_sha256"]
+    for key in (
+        "corpus_version",
+        "context_version",
+        "russian_corpus_version",
+        "rubric_version",
+    ):
+        assert result[key] == pkt[key]
+    human = result["evidence_classes"]["human"]
+    assert human["reviewer_count"] == 1
+    assert human["reviewers"][0]["reviewer_id"] == sub["reviewer_id"]
+    assert human["reviewers"][0]["metadata"] == sub["metadata"]
+    assert human["reviewers"][0]["submission_sha256"] == digest(sub)
+    assert len(human["observations"]) == len(sub["assessments"])
+    assert human["observations"][0] == {
+        "reviewer_id": sub["reviewer_id"],
+        "evidence_class": "human",
+        **sub["assessments"][0],
+    }
+    assert human["disagreements"] == []
+    assert human["concern_items"][0]["note"] == "Synthetic test explanation"
+
+
+def test_incomplete_classes_and_readable_attribution():
+    pkt = packet()
+    human = constructed_human_record(pkt, "synthetic-human-partial")
+    synthetic = fixture(pkt, "synthetic-fixture-partial")
+    human["assessments"][0]["score"] = None
+    synthetic["assessments"].pop()
+    human["assessments"][1]["concerns"] = ["unsupported_claim"]
+    human["assessments"][1]["note"] = (
+        "Synthetic test note: source does not support answer"
+    )
+    result = summarize(pkt, [human, synthetic])
+    assert result["status"] == "INCOMPLETE"
+    assert len(result["evidence_classes"]["human"]["missing_assessments"]) == 1
+    assert (
+        len(result["evidence_classes"]["synthetic_test_fixture"]["missing_assessments"])
+        == 1
+    )
+    readable = readable_summary(result)
+    assert pkt["packet_sha256"] in readable
+    assert "synthetic-human-partial" in readable
+    assert human["assessments"][1]["item_id"] in readable
+    assert human["assessments"][1]["dimension"] in readable
+    assert "unsupported_claim" in readable
+    assert "Synthetic test note: source does not support answer" in readable
+    assert "synthetic-fixture-partial" in readable

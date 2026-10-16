@@ -21,6 +21,7 @@ ROOT = Path(__file__).resolve().parent
 CONTEXT = ROOT / "human_review_context.json"
 PACKET_VERSION = "stage0-human-packet-v1"
 REVIEW_VERSION = "stage0-human-review-v1"
+SUMMARY_VERSION = "stage0-human-summary-v2"
 DIMENSIONS = {
     rule.dimension.value: rule
     for rule in default_rubric()
@@ -267,28 +268,41 @@ def validate(pkt, submission):
     return expected, found
 
 
-def summarize(pkt, submissions):
-    if not submissions:
-        raise ValueError("supply at least one review file")
-    reviewer_ids = set()
+def _summarize_class(pkt, submissions):
+    """Keep all observations and aggregates within one declared evidence class."""
+
+    expected_count = len(blank_review(pkt)["assessments"])
     scores = defaultdict(list)
     concerns = Counter()
     item_scores = defaultdict(list)
     missing = []
-    synthetic = 0
-    for sub in submissions:
+    observations = []
+    reviewers = []
+    for sub in sorted(submissions, key=lambda value: value["reviewer_id"]):
         expected, found = validate(pkt, sub)
         reviewer = sub["reviewer_id"]
-        if reviewer in reviewer_ids:
-            raise ValueError("duplicate reviewer_id")
-        reviewer_ids.add(reviewer)
-        synthetic += sub["evidence_class"] == "synthetic_test_fixture"
+        reviewers.append(
+            {
+                "reviewer_id": reviewer,
+                "evidence_class": sub["evidence_class"],
+                "review_version": sub["review_version"],
+                "metadata": sub["metadata"],
+                "submission_sha256": digest(sub),
+            }
+        )
         missing.extend(
             {"reviewer_id": reviewer, "item_id": key[0], "dimension": key[1]}
             for key in sorted(expected.keys() - found)
         )
         for row in sub["assessments"]:
             key = (row["item_id"], row["dimension"])
+            observations.append(
+                {
+                    "reviewer_id": reviewer,
+                    "evidence_class": sub["evidence_class"],
+                    **row,
+                }
+            )
             concerns.update(row["concerns"])
             if row["score"] is None:
                 missing.append(
@@ -297,41 +311,83 @@ def summarize(pkt, submissions):
                 continue
             scores[row["dimension"]].append(row["score"])
             item_scores[key].append({"reviewer_id": reviewer, "score": row["score"]})
+    observations.sort(
+        key=lambda row: (row["reviewer_id"], row["item_id"], row["dimension"])
+    )
+    missing.sort(key=lambda row: (row["reviewer_id"], row["item_id"], row["dimension"]))
     disagreements = [
         {"item_id": key[0], "dimension": key[1], "scores": values}
         for key, values in sorted(item_scores.items())
         if len(values) > 1 and len({v["score"] for v in values}) > 1
     ]
+    concern_items = [
+        {
+            "reviewer_id": row["reviewer_id"],
+            "item_id": row["item_id"],
+            "dimension": row["dimension"],
+            "concerns": row["concerns"],
+            "note": row["note"],
+            "score": row["score"],
+        }
+        for row in observations
+        if row["concerns"]
+    ]
     return {
-        "status": "INCOMPLETE"
+        "status": "NO_REVIEWERS"
+        if not submissions
+        else "INCOMPLETE"
         if missing
-        else "VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED",
-        "calibration": "NOT_APPROVED",
-        "reviewers_supplied": len(submissions),
-        "human_claimed_reviewers": len(submissions) - synthetic,
-        "synthetic_test_reviewers": synthetic,
+        else "COMPLETE_VALIDATED_RECORDS",
+        "reviewer_count": len(submissions),
+        "reviewers": reviewers,
+        "assessment_records_supplied": len(observations),
         "assessments_supplied": sum(map(len, item_scores.values())),
-        "expected_assessments": len(blank_review(pkt)["assessments"])
-        * len(submissions),
+        "expected_assessments": expected_count * len(submissions),
         "missing_assessments": missing,
+        "observations": observations,
         "score_distributions": {
             key: dict(sorted(Counter(values).items()))
             for key, values in sorted(scores.items())
         },
         "concerns": dict(sorted(concerns.items())),
+        "concern_items": concern_items,
         "disagreements": disagreements,
         "adjudication_items": sorted(
             {(x["item_id"], x["dimension"]) for x in disagreements}
             | {(x["item_id"], x["dimension"]) for x in missing}
-            | {
-                (row["item_id"], row["dimension"])
-                for sub in submissions
-                for row in sub["assessments"]
-                if any(
-                    x in row["concerns"] for x in ("ambiguous", "insufficient_context")
-                )
-            }
+            | {(row["item_id"], row["dimension"]) for row in concern_items}
         ),
+    }
+
+
+def summarize(pkt, submissions):
+    if not submissions:
+        raise ValueError("supply at least one review file")
+    reviewer_ids = set()
+    by_class = {"human": [], "synthetic_test_fixture": []}
+    for sub in submissions:
+        validate(pkt, sub)
+        reviewer = sub["reviewer_id"]
+        if reviewer in reviewer_ids:
+            raise ValueError("duplicate reviewer_id")
+        reviewer_ids.add(reviewer)
+        by_class[sub["evidence_class"]].append(sub)
+    classes = {name: _summarize_class(pkt, rows) for name, rows in by_class.items()}
+    human = classes["human"]
+    return {
+        "summary_format_version": SUMMARY_VERSION,
+        "packet_sha256": pkt["packet_sha256"],
+        "corpus_version": pkt["corpus_version"],
+        "context_version": pkt["context_version"],
+        "russian_corpus_version": pkt["russian_corpus_version"],
+        "rubric_version": pkt["rubric_version"],
+        "status": "NO_HUMAN_ASSESSMENTS"
+        if not human["reviewer_count"]
+        else "INCOMPLETE"
+        if human["missing_assessments"]
+        else "VALID_REVIEW_EVIDENCE_POLICY_UNRESOLVED",
+        "calibration": "NOT_APPROVED",
+        "evidence_classes": classes,
         "uncovered_dimensions": pkt["uncovered_dimensions"],
         "policy_decisions": [
             "reviewer count and independence",
@@ -353,6 +409,71 @@ def write_json(path, value):
         json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
         encoding="utf-8",
     )
+
+
+def readable_summary(result):
+    lines = [
+        "# Сводка оценок Stage 0",
+        "",
+        f"Формат: {result['summary_format_version']}; пакет SHA-256: {result['packet_sha256']}.",
+        f"Корпус: {result['corpus_version']}; контекст: {result['context_version']}; русский корпус: {result['russian_corpus_version']}; рубрика: {result['rubric_version']}.",
+        f"Статус человеческих записей: {result['status']}; калибровка: {result['calibration']}.",
+        "Заявленный класс human не доказывает личность или независимость рецензента. Синтетические записи не входят в человеческие итоги.",
+        "",
+    ]
+    for name, title in (
+        ("human", "Заявленные человеческие оценки"),
+        ("synthetic_test_fixture", "Синтетические тестовые записи"),
+    ):
+        group = result["evidence_classes"][name]
+        lines += [
+            f"## {title}",
+            "",
+            f"Рецензентов: {group['reviewer_count']}; записей: {group['assessment_records_supplied']}; оценок: {group['assessments_supplied']}/{group['expected_assessments']}; пропусков: {len(group['missing_assessments'])}.",
+            f"Состояние записей: {group['status']}.",
+            "",
+            "### Рецензенты и происхождение",
+            "",
+        ]
+        lines += [
+            f"- {row['reviewer_id']}: {row['metadata']['reviewed_at']}; SHA-256 файла: {row['submission_sha256']}; примечание: {json.dumps(row['metadata']['note'], ensure_ascii=False)}"
+            for row in group["reviewers"]
+        ] or ["- Нет записей."]
+        lines += ["", "### Пропущенные оценки", ""]
+        lines += [
+            f"- {row['reviewer_id']} / {row['item_id']} / {row['dimension']}"
+            for row in group["missing_assessments"]
+        ] or ["- Нет."]
+        lines += ["", "### Разногласия", ""]
+        lines += [
+            f"- {row['item_id']} / {row['dimension']}: "
+            + ", ".join(
+                f"{score['reviewer_id']}={score['score']}" for score in row["scores"]
+            )
+            for row in group["disagreements"]
+        ] or ["- Нет."]
+        lines += ["", "### Сообщенные проблемы", ""]
+        lines += [
+            f"- {row['reviewer_id']} / {row['item_id']} / {row['dimension']}: "
+            + ", ".join(row["concerns"])
+            + f"; оценка={row['score']}; пояснение={json.dumps(row['note'], ensure_ascii=False)}"
+            for row in group["concern_items"]
+        ] or ["- Нет."]
+        lines += [
+            "",
+            "Распределения: "
+            + json.dumps(group["score_distributions"], ensure_ascii=False),
+            "Проблемы по категориям: "
+            + json.dumps(group["concerns"], ensure_ascii=False),
+            "",
+        ]
+    lines += [
+        "Непокрытые измерения: " + ", ".join(result["uncovered_dimensions"]),
+        "Нерешенные решения: " + "; ".join(result["policy_decisions"]),
+        "G-проверки остаются отдельными; эти оценки не утверждают пороги или готовность к выпуску.",
+        "",
+    ]
+    return "\n".join(lines)
 
 
 def main():
@@ -411,24 +532,11 @@ def main():
         result = summarize(pkt, [strict_json(path) for path in args.reviews])
         args.output.mkdir(parents=True, exist_ok=True)
         write_json(args.output / "summary.json", result)
-        lines = [
-            "# Сводка оценок Stage 0",
-            "",
-            f"Статус: {result['status']}; калибровка: {result['calibration']}",
-            f"Рецензентов: {result['reviewers_supplied']} (синтетических тестовых: {result['synthetic_test_reviewers']}); оценок: {result['assessments_supplied']}/{result['expected_assessments']}.",
-            f"Пропущено: {len(result['missing_assessments'])}; разногласий: {len(result['disagreements'])}; требует разбора: {len(result['adjudication_items'])}.",
-            "",
-            "Распределения: "
-            + json.dumps(result["score_distributions"], ensure_ascii=False),
-            "Проблемы: " + json.dumps(result["concerns"], ensure_ascii=False),
-            "Непокрытые измерения: " + ", ".join(result["uncovered_dimensions"]),
-            "",
-            "Нерешенные решения: " + "; ".join(result["policy_decisions"]),
-            "",
-        ]
-        (args.output / "summary.ru.md").write_text("\n".join(lines), encoding="utf-8")
+        (args.output / "summary.ru.md").write_text(
+            readable_summary(result), encoding="utf-8"
+        )
         print(
-            f"{result['status']}: {result['assessments_supplied']} assessments; {len(result['missing_assessments'])} missing"
+            f"{result['status']}: {result['evidence_classes']['human']['assessments_supplied']} human assessments; {result['evidence_classes']['synthetic_test_fixture']['assessments_supplied']} synthetic test assessments"
         )
 
 
