@@ -543,6 +543,18 @@ def test_live_activation_rejects_non_boolean_values(tmp_path, activation):
     assert fake.calls == []
 
 
+def test_revoked_stage_prevents_live_publication_even_with_simulation_enabled(tmp_path):
+    fake = FakeHTTP()
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    svc.policy.stage = Stage.SIMULATION
+    svc.policy.simulation_enabled = True
+    with pytest.raises(PolicyDeniedError, match="requires Stage 3"):
+        svc.dispatch("operation-1", approval, now=NOW)
+    assert svc.store.get("operation-1").state is OutboxState.READY
+    assert fake.calls == []
+
+
 @pytest.mark.parametrize("field", ["root_post", "replied_to"])
 @pytest.mark.parametrize("value", ["bad", {}, {"id": "../bad"}, None])
 def test_malformed_present_mention_relationship_keeps_cursor(tmp_path, field, value):
@@ -614,6 +626,27 @@ def test_known_id_with_wrong_parent_remains_unresolved(tmp_path):
         svc.reconcile("operation-1", correlation_id="reconcile-1", now=NOW).state
         is OutboxState.UNKNOWN
     )
+
+
+@pytest.mark.parametrize("relation", ["bad", {}, {"id": "../bad"}])
+def test_malformed_publication_parent_cannot_confirm_or_reconcile(tmp_path, relation):
+    malformed = details()
+    malformed["replied_to"] = relation
+    fake = FakeHTTP(
+        response(200, {"id": "container-1"}),
+        response(200, {"id": "post-1"}),
+        response(200, malformed),
+        response(200, malformed),
+    )
+    svc, auth = service(tmp_path, fake)
+    approval = ready(svc, auth)
+    item = svc.dispatch("operation-1", approval, now=NOW)
+    assert (item.state, item.provider_publication_id) == (OutboxState.UNKNOWN, "post-1")
+    assert (
+        svc.reconcile("operation-1", correlation_id="reconcile-1", now=NOW).state
+        is OutboxState.UNKNOWN
+    )
+    assert len(fake.calls) == 4
 
 
 def test_reconciliation_cannot_substitute_a_different_publication_id(

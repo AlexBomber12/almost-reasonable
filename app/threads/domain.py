@@ -157,6 +157,8 @@ class AccountPolicy:
     ) -> tuple[str, ...]:
         self.validate()
         blockers = []
+        if live_transport_enabled and self.stage is not Stage.STAGE_3:
+            blockers.append("live Threads transport requires Stage 3")
         if self.stage is Stage.DISABLED:
             blockers.append("public stage is disabled")
         elif self.stage is Stage.STAGE_3:

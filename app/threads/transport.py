@@ -348,12 +348,22 @@ class ThreadsHTTPTransport:
             if item.publication_type is PublicationType.REPLY
             else None
         )
+        if replied is None:
+            actual_parent = None
+        elif isinstance(replied, dict):
+            try:
+                actual_parent = require_reference(
+                    "publication parent", replied.get("id")
+                )
+            except ValueError:
+                return False
+        else:
+            return False
         return (
             details.get("id") == publication_id
             and isinstance(owner, dict)
             and owner.get("id") == self.provider_user_id
-            and (replied.get("id") if isinstance(replied, dict) else None)
-            == expected_parent
+            and actual_parent == expected_parent
         )
 
     def verify_account(self) -> None:
