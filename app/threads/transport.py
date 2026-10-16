@@ -441,8 +441,20 @@ class ThreadsHTTPTransport:
                     raise ValueError("unaware event time")
                 root = row.get("root_post")
                 replied = row.get("replied_to")
-                root_id = root.get("id") if isinstance(root, dict) else None
-                parent_id = replied.get("id") if isinstance(replied, dict) else None
+                if "root_post" in row and not isinstance(root, dict):
+                    raise ValueError("invalid root relation")
+                if "replied_to" in row and not isinstance(replied, dict):
+                    raise ValueError("invalid reply relation")
+                root_id = (
+                    require_reference("root post", root.get("id"))
+                    if isinstance(root, dict)
+                    else None
+                )
+                parent_id = (
+                    require_reference("reply parent", replied.get("id"))
+                    if isinstance(replied, dict)
+                    else None
+                )
                 if stream is InboundKind.REPLY:
                     if (
                         root_id != self.reply_thread_id

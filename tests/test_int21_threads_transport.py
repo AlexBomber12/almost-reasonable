@@ -529,6 +529,32 @@ def test_explicit_live_binding_requires_real_transport_and_stage_3(tmp_path):
         )
 
 
+@pytest.mark.parametrize("activation", ["false", 1, None])
+def test_live_activation_rejects_non_boolean_values(tmp_path, activation):
+    fake = FakeHTTP()
+    svc, _ = service(tmp_path, fake)
+    with pytest.raises(ValueError, match="Boolean"):
+        ThreadsService(
+            ThreadsStore(tmp_path / "invalid-live.sqlite3"),
+            transport(fake),
+            svc.policy,
+            live_enabled=activation,
+        )
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("field", ["root_post", "replied_to"])
+@pytest.mark.parametrize("value", ["bad", {}, {"id": "../bad"}, None])
+def test_malformed_present_mention_relationship_keeps_cursor(tmp_path, field, value):
+    row = {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
+    row[field] = value
+    fake = FakeHTTP(response(200, {"data": [row], "paging": {}}))
+    svc, _ = service(tmp_path, fake)
+    with pytest.raises(ProviderFailure, match="poll_page_invalid"):
+        svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
+    assert svc.store.cursor("account-1", InboundKind.MENTION) is None
+
+
 def test_later_malformed_page_does_not_commit_earlier_events(tmp_path):
     row = {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
     fake = FakeHTTP(

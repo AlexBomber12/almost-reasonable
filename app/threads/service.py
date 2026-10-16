@@ -73,6 +73,8 @@ class ThreadsService:
         live_enabled: bool = False,
     ):
         policy.validate()
+        if type(live_enabled) is not bool:
+            raise ValueError("live transport activation must be Boolean")
         if simulator.account_ref != policy.account_ref:
             raise ValueError("transport account does not match policy")
         if live_enabled and (
