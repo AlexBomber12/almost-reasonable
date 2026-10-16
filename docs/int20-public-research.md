@@ -1,0 +1,32 @@
+# INT-20 bounded public research
+
+Verified 2026-10-16 against the current official OpenAI documentation:
+
+- [Models](https://developers.openai.com/api/docs/models): `gpt-6-luna` and `gpt-6.1-sol` support Responses and web search. The existing research configuration selects `gpt-6-luna`; ordinary inference and one-shot smoke configurations are unchanged.
+- [Web search guide](https://developers.openai.com/api/docs/guides/tools-web-search): the Responses `web_search` tool accepts `external_web_access` and `search_context_size`. A `web_search_call` records the action and optional consulted sources; output text may carry `url_citation` annotations. These are structural source records, not verification of a claim.
+- [Responses create reference](https://developers.openai.com/api/reference/resources/responses/methods/create): `store=false`, `max_output_tokens`, `max_tool_calls`, `truncation="disabled"`, and `include=["web_search_call.action.sources"]` are supported. Responses expose status, output, optional usage token counts, and error fields. The adapter rejects unsupported shapes; it does not fall back to a different model, tool or schema.
+
+## Implemented boundary
+
+`public-research-v1` is a separate, default-disabled request and result contract. A request contains only an operation ID, one bounded public question, and an opaque random grant handle. It has no fields for private motivation, history, participant identity, credentials, URLs, tools, project, or control objects. The worker constructs the brief with the existing screening pipeline and fixes the model, web-search tool, project, storage, output token limit, one search call, one provider attempt and timeout. The SDK adapter is inside the trusted worker; its production constructor uses the protected credential file and fixed OpenAI endpoint. Normal tests inject a fake SDK client and block external network and credential loading.
+
+The only issuer in this change is `install_synthetic_authorization`, a trusted local bootstrap method used by offline tests. It installs an exact brief digest, operation ID, peer UID, complete provider configuration, a validity window of at most ten minutes, and one execution allowance. No IPC or ordinary chat operation installs or renews a grant. Screening establishes a bounded shape; it does not approve disclosure. Production authorization and private-topic abstraction are unavailable. Therefore this change does not enable production paid research.
+
+The worker checks the peer UID and exact handle, question, operation, digest, configuration, validity and stop/spend state. It atomically reserves the operation in `ProviderStateStore` before contacting the provider. The operation ID is the durable one-use key: concurrent duplicates, restarts, timeouts and lost responses cannot renew it. Revocation consumes the same key and marks the in-memory grant revoked. If the worker restarts, no grant is re-created automatically; an independently trusted synthetic bootstrap would have to install one, and the existing reservation still denies a consumed operation. An unrecorded or uncertain provider attempt is never retried. This preserves the uncertainty of a possibly transmitted request.
+
+Provider output is bounded and parsed through the existing provenance parser. Unsupported URLs, malformed annotations and invented source metadata fail closed. The Russian output gate runs before a bounded result is returned. Results include explicit outcome, provider usage when available, source records, and an uncertainty statement. A confirmed provider spend-limit code durably suspends further attempts. `claim_status=unverified` and `semantic_support=not_evaluated` remain distinct from structural metadata validation. Results do not alter beliefs, memory, missions, consent, publication or participant state.
+
+## Offline evidence and integration proposal
+
+The connected process test `test_spawned_real_worker_ipc_and_lost_response` starts an actual worker process and sends two framed AF_UNIX requests through it. A fake SDK response for a public ocean-current question completes once; the duplicate is denied. The fake response text is deliberately synthetic and does not establish a fact about ocean currents. `test_distinct_topic_usage_and_consumption_survive_restart` demonstrates that a new worker cannot repeat the consumed operation. Other `test_int20_public_research.py` cases cover exact binding, disabled mode, expiry, revocation, stop/spend state, provider refusal/errors, malformed output, URL and Russian gates, request/result bounds, private canaries, timeout at dispatch and after contact, and persistence failure. Process-exit tests cover admission, dispatch and result boundaries. The Stage 0 fixture tests remain unchanged.
+
+Proposed mappings for a later integration PR, without editing `acceptance/scenarios.json` here:
+
+| Scenario | Exact test ID |
+| --- | --- |
+| `SCN-04` research boundary | `tests/test_int20_public_research.py::test_spawned_real_worker_ipc_and_lost_response` |
+| `SCN-04` durable one-use admission | `tests/test_int20_public_research.py::test_distinct_topic_usage_and_consumption_survive_restart` |
+| `SCN-08` stop and spend | `tests/test_int20_public_research.py::test_authority_and_controls_fail_closed` |
+| `SCN-12` private canary and provenance | `tests/test_int20_public_research.py::test_result_gate_rejects_private_canary_and_unsupported_url` |
+
+These are synthetic tests only. Real provider access, model quality, semantic source support, private-topic abstraction, production authorization, research-to-cognition integration, participant enrollment, deployment and release promotion remain unvalidated or unavailable. Stage 0 readiness remains **BLOCKED**.
