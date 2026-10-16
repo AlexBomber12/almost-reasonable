@@ -18,7 +18,7 @@ This is an explicit, offline Stage 0 path. `Stage0ConversationRuntime` composes
 `RussianOutputPolicy` and `AgentOutputStore`. Its constructor accepts only the
 exact `FakeOpenAITransport` class. It cannot construct an SDK client, read
 provider credentials, select arbitrary tools, or contact a provider. The existing
-CLI and ordinary `ConversationService` still use disabled inference. No listener,
+The ordinary CLI and `ConversationService` still use disabled inference. INT-19 adds a separate, explicit `--worker-socket` CLI composition; see [private-worker-conversation.md](private-worker-conversation.md). No listener,
 deployment service, scheduler, mission, research or Threads implementation changes.
 
 ## Enabling the synthetic fixture

@@ -1,7 +1,15 @@
-"""Remove only additive v6 objects when constructing genuine historical fixtures."""
+"""Remove later schema objects when constructing genuine historical fixtures."""
+
+from app.core.store import _SCHEMA_V5
+
+
+def remove_v8(db):
+    db.execute("DROP TABLE agent_reply_resolutions")
+    db.execute(_SCHEMA_V5[0])
 
 
 def remove_v7(db):
+    remove_v8(db)
     db.execute("DROP TABLE protected_reply_generic")
     for index in (
         "generic_memory_sources_event",

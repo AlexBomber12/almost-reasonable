@@ -3,10 +3,13 @@
 from dataclasses import dataclass, field
 from pathlib import Path
 import socket
+import struct
 import time
 
 from app.core.agent_proposals import ProposalValidation
 from app.core.model_contract import ModelRequest
+from app.cognition.conversation_context import MemoryModelRequest
+from app.cognition.shared_context import SharedModelRequest
 from app.core.provider_contract import require_identifier
 from app.trusted.openai_worker_protocol import (
     InferenceRequest,
@@ -43,15 +46,23 @@ class OpenAIWorkerClient:
         *,
         connection_lifetime_seconds: float = 320.0,
         io_timeout_seconds: float = 5.0,
+        expected_worker_uid: int | None = None,
     ):
         self._socket_path = _validate_socket_path(socket_path)
         validate_timing(connection_lifetime_seconds, io_timeout_seconds)
         self._connection_lifetime = connection_lifetime_seconds
         self._io_timeout = io_timeout_seconds
+        if expected_worker_uid is not None and (
+            type(expected_worker_uid) is not int
+            or not 0 <= expected_worker_uid <= 2**32 - 2
+            or not hasattr(socket, "SO_PEERCRED")
+        ):
+            raise ValueError("expected worker UID is invalid")
+        self._expected_worker_uid = expected_worker_uid
 
     def infer(
         self,
-        request: ModelRequest,
+        request: ModelRequest | MemoryModelRequest | SharedModelRequest,
         *,
         operation_id: str,
         correlation_id: str,
@@ -76,6 +87,13 @@ class OpenAIWorkerClient:
         try:
             connection.settimeout(min(self._io_timeout, self._connection_lifetime))
             connection.connect(self._socket_path)
+            if self._expected_worker_uid is not None:
+                credentials = connection.getsockopt(
+                    socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+                )
+                _pid, uid, _gid = struct.unpack("iII", credentials)
+                if uid != self._expected_worker_uid:
+                    raise WorkerProtocolError("worker peer authentication failed")
             transmitted = True
             send_frame(
                 connection,

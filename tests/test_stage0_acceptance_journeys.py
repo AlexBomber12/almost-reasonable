@@ -145,7 +145,7 @@ def test_authenticated_memory_shared_restart_delete_and_old_quarantine(
     assert a_context["memories"][0]["text"] == "Астрономия"
     assert "CANARY-B-ACCEPTANCE-10" not in fake.calls[-1].request.input_text
     backup = tmp_path / "old.db"
-    create_sqlite_backup(events2.database_path, backup, 7, clock())
+    create_sqlite_backup(events2.database_path, backup, 8, clock())
     result = DeletionCoordinator(ledger, EventStoreErasureAdapter(events2)).delete(
         context(), request(content_reference=source)
     )
@@ -156,7 +156,7 @@ def test_authenticated_memory_shared_restart_delete_and_old_quarantine(
     b_history = json.loads(b.request("GET", "/api/history")[2])["messages"]
     assert sum(row["role"] == "agent" for row in b_history) == 1
     quarantine = tmp_path / "quarantine.db"
-    restore = QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter).restore(
+    restore = QuarantinedRestore(ledger, 8, EventStoreRestoreAdapter).restore(
         backup, quarantine, clock()
     )
     assert restore.activation_eligible

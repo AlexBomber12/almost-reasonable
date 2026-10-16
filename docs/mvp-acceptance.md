@@ -238,7 +238,9 @@ A focused negative control removes that edge and fails the SCN-12 provenance
 oracle; the deletion chain also checks a later model input and the old backup.
 The mission-to-Threads read in this INT-14 matrix is an explicit test-only
 composition. INT-18 separately connects explicitly configured offline
-scheduler/Threads mission consumption. Real-model resistance, fluent-human H/M
+scheduler/Threads mission consumption. INT-19 separately connects explicit
+private HTTP to an isolated fake inference worker with typed memory/shared
+context and conservative result recovery. Real-model resistance, fluent-human H/M
 calibration, operator review, live providers and production activation remain absent.
 
 Qualitative permissibility, reviewer doubts or insufficient context, provisional quality scores, and deterministic G outcomes are distinct. A score below 0.75 does not automatically make a response impermissible. An ambiguous answer without an identified factual or policy error may be `acceptable_with_doubts`. No subjective verdict overrides failed authorization, privacy, capability, stop, or spending checks.

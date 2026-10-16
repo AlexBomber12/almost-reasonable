@@ -53,7 +53,7 @@ def test_populated_genuine_v5_atomic_upgrade_and_interruption(shared, tmp_path):
         assert db.execute("SELECT version FROM schema_metadata").fetchone() == (5,)
         assert db.execute("SELECT * FROM event_envelopes").fetchall() == original
     upgraded = EventStore(events.database_path)
-    assert upgraded.diagnostics().schema_version == 7
+    assert upgraded.diagnostics().schema_version == 8
     with upgraded._open() as db:
         assert db.execute("SELECT * FROM event_envelopes").fetchall() == original
 
@@ -76,17 +76,17 @@ def test_v6_old_backup_shared_payloads_obey_later_deletion(shared, tmp_path, del
         clock=lambda: NOW,
     ).submit(principal("b"), "received", "Обсудим вопросы")
     backup = tmp_path / "v6-backup.db"
-    create_sqlite_backup(events.database_path, backup, 7, NOW)
+    create_sqlite_backup(events.database_path, backup, 8, NOW)
     if deleted:
         DeletionCoordinator(ledger, EventStoreErasureAdapter(events)).delete(
             context(), request(content_reference=a)
         )
     quarantine = tmp_path / "quarantine.db"
-    restored = QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter).restore(
+    restored = QuarantinedRestore(ledger, 8, EventStoreRestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert restored.activation_eligible
-    assert _schema_version(quarantine) == 7
+    assert _schema_version(quarantine) == 8
     with sqlite3.connect(f"file:{quarantine}?immutable=1", uri=True) as db:
         assert db.execute("SELECT COUNT(*) FROM shared_payloads").fetchone() == (
             0 if deleted else 1,

@@ -20,6 +20,7 @@ from app.core.provider_contract import (
 from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore
 from app.trusted.openai_gateway import GatewayResult, TrustedOpenAIGateway
+from app.core.model_contract import ModelRequest
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_protocol import (
     IPC_REJECTED,
@@ -213,7 +214,12 @@ class OpenAIWorkerServer:
                         response = WorkerResponse("timeout", 0, _TIMEOUT_RU, None)
                     else:
                         try:
-                            result = self._gateway.submit(
+                            submit = (
+                                self._gateway.submit
+                                if type(request.model_request) is ModelRequest
+                                else self._gateway.submit_context
+                            )
+                            result = submit(
                                 request.model_request,
                                 correlation_id=request.correlation_id,
                                 operation_id=request.operation_id,

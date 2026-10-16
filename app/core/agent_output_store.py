@@ -507,7 +507,17 @@ class AgentOutputStore:
         self, context: TrustedPrincipalContext, operation_id: str, outcome: str
     ) -> None:
         """Commit a bounded terminal decision without fabricating reply text."""
-        if outcome not in {"no_action", "failed", "invalid", "unsupported", "skipped"}:
+        if outcome not in {
+            "no_action",
+            "failed",
+            "invalid",
+            "unsupported",
+            "skipped",
+            "unavailable",
+            "stopped",
+            "rejected",
+            "spend_suspended",
+        }:
             raise EventValidationError("invalid conversation outcome")
         self._resolve(context, operation_id, outcome, None)
 

@@ -46,7 +46,7 @@ def test_additive_migration_preserves_held_drafts_and_v4_backup(tmp_path):
             )
         }
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 7
+    assert upgraded.diagnostics().schema_version == 8
     assert AgentOutputStore(upgraded).read_reply(principal("a"), "reply-1") == reply
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM agent_reply_resolutions").fetchall() == []
@@ -74,7 +74,7 @@ def test_v5_migration_fault_rolls_back_schema_and_metadata(tmp_path):
         assert schema_objects(db) == schema
         assert db.execute("PRAGMA user_version").fetchone() == (4,)
         assert db.execute("SELECT version FROM schema_metadata").fetchone() == (4,)
-    assert EventStore(path).diagnostics().schema_version == 7
+    assert EventStore(path).diagnostics().schema_version == 8
 
 
 @pytest.mark.parametrize(

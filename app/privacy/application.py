@@ -181,12 +181,12 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7}:
+    if schema_version in {6, 7, 8}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version == 7:
+    if schema_version in {7, 8}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
@@ -250,9 +250,9 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version == 7:
+        if schema_version in {7, 8}:
             erase_generic_source(db, request.content_reference)
-        if schema_version in {6, 7}:
+        if schema_version in {6, 7, 8}:
             erase_shared_source(db, request.content_reference)
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
         _validate_graph(db, schema_version)

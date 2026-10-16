@@ -177,13 +177,32 @@ def build_openai_request(
     request: ModelRequest, config: OpenAIProviderConfig
 ) -> OpenAIRequest:
     """Build the complete Responses request from two explicitly trusted inputs."""
-
     if type(request) is not ModelRequest:
         raise TypeError("request must be a ModelRequest")
+    return _build_openai_request(request, config)
+
+
+def build_worker_context_request(
+    request, config: OpenAIProviderConfig
+) -> OpenAIRequest:
+    """Worker-only extension for the typed context protocol."""
+    from app.cognition.conversation_context import MemoryModelRequest
+    from app.cognition.shared_context import SharedModelRequest
+
+    if type(request) not in {MemoryModelRequest, SharedModelRequest}:
+        raise TypeError("request must be a typed context request")
+    return _build_openai_request(request, config)
+
+
+def _build_openai_request(request, config: OpenAIProviderConfig) -> OpenAIRequest:
     if type(config) is not OpenAIProviderConfig:
         raise TypeError("config must be an OpenAIProviderConfig")
     _validate_config(config)
-    input_text = serialize_model_request(request)
+    input_text = (
+        serialize_model_request(request)
+        if type(request) is ModelRequest
+        else request.serialize()
+    )
     provider_request = OpenAIRequest(
         model=config.model,
         input_text=input_text,
