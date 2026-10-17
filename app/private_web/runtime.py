@@ -57,6 +57,7 @@ from .research_bridge import (
     started_id,
     render_report,
 )
+from .public_research import PublicResearchBridge
 from app.research.authorization import SyntheticPublicResearchFixture
 from app.research.brief import ResearchScreeningContext, _normalized
 from app.trusted.openai_worker_protocol import WorkerProtocolError
@@ -102,13 +103,13 @@ class _DurableConversationRuntime(ConversationService):
         cognition_capabilities: CognitionCapabilities = CognitionCapabilities(),
         shared_intelligence: SharedIntelligence | None = None,
         context_limits: ContextLimits = ContextLimits(32_000, 99),
-        research_bridge: SyntheticResearchBridge | None = None,
+        research_bridge: SyntheticResearchBridge | PublicResearchBridge | None = None,
         provider_state: ProviderStateStore | None = None,
     ):
         if privacy_gate._store is not event_store:
             raise ValueError("privacy gate must bind the application database")
         if research_bridge is not None and (
-            type(research_bridge) is not SyntheticResearchBridge
+            type(research_bridge) not in {SyntheticResearchBridge, PublicResearchBridge}
             or research_bridge._store is not event_store
             or research_bridge._gate is not privacy_gate
         ):
@@ -357,7 +358,7 @@ class _DurableConversationRuntime(ConversationService):
                         if (
                             self._research is not None
                             and self._research.enabled
-                            and result.outcome is GatewayOutcome.COMPLETED
+                            and result.outcome == GatewayOutcome.COMPLETED
                             and isinstance(result.validation.proposal, ResearchProposal)
                         ):
                             persisted = self._research_turn(
@@ -566,11 +567,16 @@ class _DurableConversationRuntime(ConversationService):
             db.close()
 
     def _research_turn(self, route, operation, proposal):
-        try:
-            fixture = SyntheticPublicResearchFixture(proposal.brief)
-        except ValueError:
-            fixture = None
-        worker_id = "research-stage0:" + (fixture.value if fixture else "denied")
+        public = type(self._research) is PublicResearchBridge
+        if public:
+            subject = proposal.brief
+            worker_id = operation.operation_id
+        else:
+            try:
+                subject = SyntheticPublicResearchFixture(proposal.brief)
+            except ValueError:
+                subject = None
+            worker_id = "research-stage0:" + (subject.value if subject else "denied")
 
         # A short fence captures current authority and sources and commits intent.
         # No privacy fence or SQLite transaction remains held across IPC.
@@ -587,7 +593,7 @@ class _DurableConversationRuntime(ConversationService):
                 self._research.record(
                     self._provider,
                     operation,
-                    fixture,
+                    subject,
                     "research_suspended",
                     self._clock(),
                     require_reservation=False,
@@ -611,9 +617,8 @@ class _DurableConversationRuntime(ConversationService):
             caps = self._capabilities()
             if caps.emergency_stop_active:
                 return "research_stopped"
-            if (
-                caps.provider_spend_suspended
-                or self._research._client._worker_state.is_spend_suspended()
+            if caps.provider_spend_suspended or (
+                not public and self._research._client._worker_state.is_spend_suspended()
             ):
                 return "research_suspended"
             if (
@@ -621,7 +626,7 @@ class _DurableConversationRuntime(ConversationService):
                 or not self._current_request.get()()
             ):
                 return "research_unavailable"
-            if not self._research.permits(route.principal, operation, fixture):
+            if not self._research.permits(route.principal, operation, subject):
                 return "research_denied"
             return None
 
@@ -651,7 +656,11 @@ class _DurableConversationRuntime(ConversationService):
             outcome = self._gate.authorized(current)
         if outcome is None:
             try:
-                response = self._research._client.execute(fixture)
+                response = (
+                    self._research.execute(operation.operation_id)
+                    if public
+                    else self._research._client.execute(subject)
+                )
             except (OSError, WorkerProtocolError):
                 # Contact may have consumed the worker identity. Never resend.
                 response = None
@@ -681,7 +690,7 @@ class _DurableConversationRuntime(ConversationService):
             if blocked is not None:
                 outcome = blocked
             return self._research.record(
-                self._provider, operation, fixture, outcome, self._clock()
+                self._provider, operation, subject, outcome, self._clock()
             )
 
         if not self._gate.authorized(record):
@@ -819,9 +828,20 @@ class _DurableConversationRuntime(ConversationService):
                     "research_rejected": FAILURE_RU,
                 }.get(state)
                 return SubmittedMessage(message_status, ModelState(state), message)
-            fixture = SyntheticPublicResearchFixture(evidence.model_identifier)
+            if self._research is None:
+                return SubmittedMessage(message_status, ModelState.RESEARCH_DENIED)
+            public = type(self._research) is PublicResearchBridge
+            if public:
+                grant = self._research._grants.get(operation_id)
+                subject = grant.request.question if grant is not None else None
+            else:
+                try:
+                    subject = SyntheticPublicResearchFixture(evidence.model_identifier)
+                except ValueError:
+                    return SubmittedMessage(message_status, ModelState.RESEARCH_DENIED)
             if (
                 self._research is not None
+                and not public
                 and self._research._client._worker_state.is_spend_suspended()
             ):
                 return SubmittedMessage(
@@ -830,7 +850,7 @@ class _DurableConversationRuntime(ConversationService):
             if not self._current_request.get()():
                 return SubmittedMessage(message_status, ModelState.RESEARCH_UNAVAILABLE)
             if self._research is None or not self._research.permits(
-                route.principal, reply.operation, fixture
+                route.principal, reply.operation, subject
             ):
                 return SubmittedMessage(message_status, ModelState.RESEARCH_DENIED)
         if reply.result_state is ResultState.PERSISTED:
@@ -929,6 +949,8 @@ class Stage0ConversationRuntime(_DurableConversationRuntime):
             raise TypeError("Stage 0 requires an exact offline fake transport")
         if "provider_state" in kwargs:
             raise ValueError("Stage 0 provider state is bound to its application store")
+        if type(kwargs.get("research_bridge")) is PublicResearchBridge:
+            raise ValueError("Stage 0 cannot admit public research")
         super().__init__(event_store, privacy_gate, transport, **kwargs)
 
 
@@ -948,8 +970,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise ValueError("worker provider state must use a separate database")
         if (
             kwargs.get("research_bridge") is not None
-            or kwargs.get("memory_extractor") is not None
-        ):
+            and type(kwargs["research_bridge"]) is not PublicResearchBridge
+        ) or kwargs.get("memory_extractor") is not None:
             raise ValueError("worker conversation cannot run synthetic effects")
         super().__init__(
             event_store, privacy_gate, client, provider_state=provider_state, **kwargs

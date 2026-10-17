@@ -14,6 +14,13 @@ from app.core.context import ContextLimits, PrivateContextAssembler
 from app.core.store import EventStore
 from app.core.openai_worker_client import OpenAIWorkerClient
 from app.core.provider_spend import ProviderStateStore
+from app.core.public_research_authority import load_operator_approval
+from app.core.public_research_client import PublicResearchClient
+from app.core.events import (
+    AuthenticatedSourceReference,
+    ParticipantId,
+    TrustedPrincipalContext,
+)
 from app.owner_control.store import OwnerStore
 from app.privacy.application import PrivacyReadGate
 from app.privacy.ledger import PrivacyLedger
@@ -23,6 +30,7 @@ from .auth import AuthStore
 from .conversation import ConversationService, _utc_now
 from .privacy import ParticipantPrivacyControls
 from .runtime import WorkerConversationRuntime
+from .public_research import PublicResearchBridge
 from .wsgi import PrivateWebApplication, PrivateWebConfig
 
 
@@ -47,6 +55,10 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--worker-socket")
     serve.add_argument("--worker-uid", type=int)
     serve.add_argument("--ipc-state-db")
+    serve.add_argument("--enable-public-research", action="store_true")
+    serve.add_argument("--public-research-socket")
+    serve.add_argument("--public-research-worker-uid", type=int)
+    serve.add_argument("--public-research-approval")
     serve.add_argument("--privacy-ledger")
     serve.add_argument("--owner-directory")
     serve.add_argument("--listen-host", default="127.0.0.1")
@@ -154,11 +166,26 @@ def main(
             or not (Path(args.owner_directory) / "owner.sqlite").is_file()
         ):
             raise SystemExit("worker mode requires existing application stores")
+        research_options = (
+            args.public_research_socket,
+            args.public_research_worker_uid,
+            args.public_research_approval,
+        )
+        if args.enable_public_research != all(
+            item is not None for item in research_options
+        ):
+            raise SystemExit(
+                "public research requires explicit enablement, socket, UID and approval"
+            )
     elif (
         args.privacy_ledger is not None
         or args.owner_directory is not None
         or args.worker_uid is not None
         or args.ipc_state_db is not None
+        or args.enable_public_research
+        or args.public_research_socket is not None
+        or args.public_research_worker_uid is not None
+        or args.public_research_approval is not None
     ):
         raise SystemExit("privacy and owner stores require worker mode")
     auth = AuthStore(args.auth_db)
@@ -177,6 +204,29 @@ def main(
             raise SystemExit("privacy reconciliation failed")
         owner = OwnerStore(args.owner_directory)
         shared = SharedIntelligence(event_store, gate, clock=_utc_now)
+        research = None
+        if args.enable_public_research:
+            approval = load_operator_approval(
+                args.public_research_approval, role="application"
+            )
+            research = PublicResearchBridge(
+                event_store,
+                gate,
+                PublicResearchClient(
+                    args.public_research_socket,
+                    expected_worker_uid=args.public_research_worker_uid,
+                ),
+                enabled=True,
+                clock=_utc_now,
+                approval_path=args.public_research_approval,
+            )
+            research.install_approval(
+                approval,
+                TrustedPrincipalContext(
+                    ParticipantId(approval.principal_id),
+                    AuthenticatedSourceReference(approval.authenticated_source_ref),
+                ),
+            )
         conversations = WorkerConversationRuntime(
             event_store,
             gate,
@@ -184,6 +234,7 @@ def main(
             provider_state=ProviderStateStore(EventStore(args.ipc_state_db)),
             emergency_stop=owner.active,
             shared_intelligence=shared,
+            research_bridge=research,
         )
         privacy = ParticipantPrivacyControls(
             auth, event_store, ledger, gate, clock=conversations._clock

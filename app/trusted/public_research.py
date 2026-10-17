@@ -297,6 +297,8 @@ class PublicResearchBoundary:
         self._grants = {}
         self._persistence_failed = False
         self._execution_lock = threading.Lock()
+        self._operator_approval = None
+        self._operator_approval_path = None
 
     def install_synthetic_authorization(
         self,
@@ -307,6 +309,8 @@ class PublicResearchBoundary:
         expires_at: datetime,
     ) -> PublicResearchRequest:
         """Install one exact synthetic brief in a trusted test bootstrap only."""
+        if self._operator_approval is not None:
+            raise ValueError("operator and synthetic approvals cannot be combined")
         issued_at = self._utcnow()
         if (
             type(operation_id) is not str
@@ -336,12 +340,61 @@ class PublicResearchBoundary:
         )
         return request
 
+    def install_operator_authorization(self, approval, *, approval_path):
+        """Install the public projection of an operator-owned local approval."""
+        from app.core.public_research_authority import (
+            WorkerApproval,
+            load_operator_approval,
+        )
+
+        if type(approval) is not WorkerApproval:
+            raise TypeError("operator worker approval required")
+        if self._grants:
+            raise ValueError("one operator approval per worker")
+        if load_operator_approval(approval_path, role="worker") != approval:
+            raise ValueError("operator approval file changed")
+        if not approval.issued_at <= self._utcnow() < approval.expires_at:
+            raise ValueError("operator approval is not current")
+        request = approval.request
+        encode_public_request(request)
+        built = build_safe_research_brief(
+            ResearchRecordSet((ResearchQuestion(request.question),)),
+            result_budget=3,
+            trusted_config_version="public-research-brief-v1",
+            screening=self._screening,
+        )
+        if built.brief is None or built.brief.question != request.question:
+            raise ValueError("operator public brief declined")
+        digest = hashlib.sha256(built.brief.to_json().encode("utf-8")).hexdigest()
+        self._grants[request.operation_id] = _Grant(
+            request,
+            approval.peer_uid,
+            built.brief,
+            digest,
+            self._config,
+            approval.issued_at,
+            approval.expires_at,
+        )
+        self._operator_approval = approval
+        self._operator_approval_path = approval_path
+
     def revoke(self, operation_id: str) -> None:
         grant = self._grants[operation_id]
         grant.revoked = True
         self._store.reserve_attempt(operation_id, operation_id, self._utcnow())
 
     def _guard(self, grant: _Grant) -> str | None:
+        if self._operator_approval_path is not None:
+            from app.core.public_research_authority import load_operator_approval
+
+            try:
+                if (
+                    load_operator_approval(self._operator_approval_path, role="worker")
+                    != self._operator_approval
+                ):
+                    return "authorization_denied"
+            except (OSError, ValueError, TypeError, UnicodeError):
+                return "authorization_denied"
         if (
             grant.revoked
             or self._grants.get(grant.request.operation_id) is not grant
