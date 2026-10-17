@@ -12,6 +12,7 @@ MAX_CONTENT_CHARS = 500
 MAX_CONTENT_BYTES = 8_192
 MAX_INBOUND_CONTENT_BYTES = 16_384
 MAX_REFERENCE_LENGTH = 128
+MAX_PROVIDER_RESPONSE_BYTES = 2_097_152
 REQUIRED_PUBLISH_SCOPES = frozenset(("threads_basic", "threads_content_publish"))
 REQUIRED_REPLY_READ_SCOPES = frozenset(("threads_basic", "threads_read_replies"))
 REQUIRED_MENTION_SCOPES = frozenset(("threads_basic", "threads_manage_mentions"))
@@ -153,14 +154,17 @@ class AccountPolicy:
             raise ValueError("invalid account scopes")
 
     def publication_blockers(
-        self, publication_type: PublicationType
+        self, publication_type: PublicationType, *, live_transport_enabled: bool = False
     ) -> tuple[str, ...]:
         self.validate()
         blockers = []
+        if live_transport_enabled and self.stage is not Stage.STAGE_3:
+            blockers.append("live Threads transport requires Stage 3")
         if self.stage is Stage.DISABLED:
             blockers.append("public stage is disabled")
         elif self.stage is Stage.STAGE_3:
-            blockers.append("live Threads transport is not implemented")
+            if not live_transport_enabled:
+                blockers.append("live Threads transport is not implemented")
         elif not self.simulation_enabled:
             blockers.append("simulation capability is disabled")
         if not self.account_authorized:

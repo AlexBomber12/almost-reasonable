@@ -34,6 +34,7 @@ from .simulator import (
     ThreadsSimulator,
     simulated_provider_id,
 )
+from .transport import ConfirmedPublication, ThreadsTransport, ThreadsHTTPTransport
 from .store import (
     ActiveEffectWorkerError,
     PollCommitDeadlineError,
@@ -62,25 +63,47 @@ class ThreadsService:
     def __init__(
         self,
         store: ThreadsStore,
-        simulator: ThreadsSimulator,
+        simulator: ThreadsTransport,
         policy: AccountPolicy,
         *,
         clock: Callable[[], float] = time.monotonic,
         utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
         authorization_provider: CurrentAuthorizationProvider | None = None,
         poll_guard: Callable[[], None] | None = None,
+        live_enabled: bool = False,
     ):
         policy.validate()
+        if type(live_enabled) is not bool:
+            raise ValueError("live transport activation must be Boolean")
         if simulator.account_ref != policy.account_ref:
-            raise ValueError("simulator account does not match policy")
+            raise ValueError("transport account does not match policy")
+        if live_enabled and (
+            type(simulator) is not ThreadsHTTPTransport
+            or policy.stage is not Stage.STAGE_3
+        ):
+            raise ValueError("live transport requires explicit Stage 3 binding")
+        if not live_enabled and type(simulator) is not ThreadsSimulator:
+            raise ValueError(
+                "real transport is disabled without exact ThreadsSimulator"
+            )
         self.store = store
         self.simulator = simulator
+        self._bound_transport = simulator
+        self._bound_provider_user_id = (
+            simulator.provider_user_id if live_enabled else None
+        )
+        self._bound_reply_thread_id = (
+            simulator.reply_thread_id if live_enabled else None
+        )
+        self._bound_source_ref = simulator.source_ref if live_enabled else None
         self.policy = policy
         self._account_ref = policy.account_ref
         self.clock = clock
         self.utc_now = utc_now
         self.authorization_provider = authorization_provider
         self.poll_guard = poll_guard
+        self.live_enabled = live_enabled
+        self._bound_live_enabled = live_enabled
 
     def propose(
         self,
@@ -287,6 +310,8 @@ class ThreadsService:
                 )
                 raise
             if container_id is None:
+                if type(self.simulator) is ThreadsHTTPTransport:
+                    self.simulator.verify_account()
                 self.store.update_sending_evidence(
                     operation_id, "container_dispatch_started", now=now
                 )
@@ -326,6 +351,8 @@ class ThreadsService:
                     now=now,
                     provider_container_id=container_id,
                 )
+            if type(self.simulator) is ThreadsHTTPTransport:
+                self.simulator.verify_account()
             self.store.update_sending_evidence(
                 operation_id,
                 "publish_dispatch_started",
@@ -361,6 +388,17 @@ class ThreadsService:
                 )
                 raise
             evidence = self.simulator.publish(item, container_id)
+            if type(self.simulator) is ThreadsHTTPTransport:
+                self.store.update_sending_evidence(
+                    operation_id,
+                    "publication_id_received_verification_pending",
+                    now=now,
+                    provider_container_id=container_id,
+                    provider_publication_id=evidence.publication_id,
+                )
+                evidence = self.simulator.verify_publication(
+                    item, container_id, evidence.publication_id
+                )
         except SimulatedCrash as error:
             marker = (
                 "transmission_possible"
@@ -500,7 +538,10 @@ class ThreadsService:
                     release_lock_required=True,
                     precommit_check=self._require_account_binding,
                 )
-            elif result is ReconciliationResult.CONFIRMED:
+            elif (
+                result is ReconciliationResult.CONFIRMED
+                and type(self.simulator) is ThreadsSimulator
+            ):
                 reconciled = self.store.transition(
                     operation_id,
                     OutboxState.CONFIRMED,
@@ -509,6 +550,25 @@ class ThreadsService:
                     provider_publication_id=simulated_provider_id(
                         "thread", operation_id
                     ),
+                    reconciliation_status="verified_success",
+                    reconciliation_correlation_id=correlation_id,
+                    release_lock_target_operation_id=operation_id,
+                    release_lock_kind="reconciliation",
+                    release_lock_required=True,
+                    precommit_check=self._require_account_binding,
+                )
+            elif (
+                type(result) is ConfirmedPublication
+                and type(self.simulator) is ThreadsHTTPTransport
+                and result.publication_id == item.provider_publication_id
+            ):
+                reconciled = self.store.transition(
+                    operation_id,
+                    OutboxState.CONFIRMED,
+                    reason="reconciliation_verified_success",
+                    now=now,
+                    provider_publication_id=result.publication_id,
+                    dispatch_evidence=result.evidence,
                     reconciliation_status="verified_success",
                     reconciliation_correlation_id=correlation_id,
                     release_lock_target_operation_id=operation_id,
@@ -651,8 +711,17 @@ class ThreadsService:
         interrupt_after_fetch: bool,
     ) -> PollResult:
         started = self.clock()
-        cursor = self.store.cursor(self._account_ref, stream)
-        initial_cursor = cursor
+        expected_source_ref = (
+            self._bound_source_ref if self.live_enabled else self.simulator.source_ref
+        )
+        stored_cursor = self.store.cursor(self._account_ref, stream)
+        route_changed = (
+            self.live_enabled
+            and stored_cursor is not None
+            and not self.simulator.owns_cursor(stream, stored_cursor)
+        )
+        cursor = None if route_changed else stored_cursor
+        initial_cursor = stored_cursor
         seen_cursors = {cursor}
         pending_events = []
         final_cursor = cursor
@@ -662,7 +731,18 @@ class ThreadsService:
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
             self._check_poll_policy_with_audit(stream, correlation_id, now)
-            page = self.simulator.poll(stream, cursor)
+            if type(self.simulator) is ThreadsHTTPTransport:
+                remaining = timeout_seconds - (self.clock() - started)
+                if remaining <= 0:
+                    raise PollingError("poll time limit reached")
+                page = self.simulator.poll(
+                    stream,
+                    cursor,
+                    limit=min(10, max_events - fetched_count),
+                    timeout=remaining,
+                )
+            else:
+                page = self.simulator.poll(stream, cursor)
             if self.clock() - started >= timeout_seconds:
                 raise PollingError("poll time limit reached")
             if interrupt_after_fetch:
@@ -670,7 +750,7 @@ class ThreadsService:
             if (
                 not page.is_verified()
                 or page.account_ref != self._account_ref
-                or page.source_ref != self.simulator.source_ref
+                or page.source_ref != expected_source_ref
                 or page.requested_cursor != cursor
             ):
                 raise PollingError("poll page source is not verified")
@@ -681,9 +761,15 @@ class ThreadsService:
             pending_events.extend(page.events)
             fetched_count += len(page.events)
             pages += 1
-            final_cursor = page.next_cursor if page.next_cursor is not None else cursor
+            final_cursor = (
+                page.next_cursor
+                if page.next_cursor is not None
+                else None
+                if self.live_enabled and stream is InboundKind.MENTION
+                else cursor
+            )
             cursor = page.next_cursor
-            if cursor is None:
+            if cursor is None or fetched_count >= max_events:
                 break
             seen_cursors.add(cursor)
         self._check_poll_policy_with_audit(stream, correlation_id, now)
@@ -695,9 +781,16 @@ class ThreadsService:
                 correlation_id=correlation_id,
                 account_ref=self._account_ref,
                 stream=stream,
-                verified_source_ref=self.simulator.source_ref,
+                verified_source_ref=expected_source_ref,
                 expected_cursor=initial_cursor,
                 next_cursor=final_cursor,
+                reset_cursor=(
+                    (
+                        route_changed
+                        or (self.live_enabled and stream is InboundKind.MENTION)
+                    )
+                    and final_cursor is None
+                ),
                 events=pending_events,
                 now=now,
                 lock_wait_seconds=min(5.0, remaining),
@@ -713,7 +806,9 @@ class ThreadsService:
 
     def stage_3_readiness(self) -> tuple[str, ...]:
         stage_3_policy = replace(self.policy, stage=Stage.STAGE_3)
-        return stage_3_policy.publication_blockers(PublicationType.POST)
+        return stage_3_policy.publication_blockers(
+            PublicationType.POST, live_transport_enabled=self.live_enabled
+        )
 
     def _require_owned_item(self, operation_id: str) -> OutboxItem:
         self._require_account_binding()
@@ -724,7 +819,17 @@ class ThreadsService:
 
     def _require_account_binding(self) -> None:
         if (
-            self.policy.account_ref != self._account_ref
+            self.simulator is not self._bound_transport
+            or self.live_enabled is not self._bound_live_enabled
+            or (
+                self.live_enabled
+                and (
+                    self.simulator.provider_user_id != self._bound_provider_user_id
+                    or self.simulator.reply_thread_id != self._bound_reply_thread_id
+                    or self.simulator.source_ref != self._bound_source_ref
+                )
+            )
+            or self.policy.account_ref != self._account_ref
             or self.simulator.account_ref != self._account_ref
         ):
             raise PolicyDeniedError(
@@ -762,7 +867,9 @@ class ThreadsService:
         self, item: OutboxItem, approval: Approval, *, now: datetime
     ) -> Approval:
         self._require_account_binding()
-        blockers = self.policy.publication_blockers(item.publication_type)
+        blockers = self.policy.publication_blockers(
+            item.publication_type, live_transport_enabled=self.live_enabled
+        )
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
         validate_approval(
@@ -816,7 +923,9 @@ class ThreadsService:
             raise PolicyDeniedError(
                 "current draft privacy authorization is unavailable"
             )
-        blockers = self.policy.publication_blockers(item.publication_type)
+        blockers = self.policy.publication_blockers(
+            item.publication_type, live_transport_enabled=self.live_enabled
+        )
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
         return snapshot.approval
@@ -910,6 +1019,7 @@ class ThreadsService:
         common = {
             "now": now,
             "provider_container_id": error.container_id,
+            "provider_publication_id": error.publication_id,
             "dispatch_evidence": error.evidence,
             "release_account_effect_lock": True,
             "account_effect_lock_required": True,
@@ -971,8 +1081,12 @@ class ThreadsService:
             else REQUIRED_MENTION_SCOPES
         )
         if (
-            self.policy.stage is not Stage.SIMULATION
-            or not self.policy.simulation_enabled
+            (
+                self.policy.stage is not Stage.STAGE_3
+                if self.live_enabled
+                else self.policy.stage is not Stage.SIMULATION
+            )
+            or (not self.live_enabled and not self.policy.simulation_enabled)
             or not self.policy.account_authorized
             or not required <= self.policy.scopes
             or self.policy.emergency_stop

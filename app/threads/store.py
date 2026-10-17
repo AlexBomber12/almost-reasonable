@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 import fcntl
 import json
 from pathlib import Path
+import re
 import sqlite3
 from typing import Iterator
 
@@ -15,6 +16,7 @@ from .domain import (
     DeferredInboundEvent,
     InboundEvent,
     InboundKind,
+    MAX_PROVIDER_RESPONSE_BYTES,
     OutboxItem,
     OutboxState,
     PublicationType,
@@ -28,6 +30,8 @@ from .domain import (
 
 SCHEMA_VERSION = 10
 MAX_PENDING_INBOUND_EVENTS = 100
+_MAX_STORED_CURSOR_LENGTH = 67 + 4 * ((MAX_PROVIDER_RESPONSE_BYTES + 2) // 3)
+_OPAQUE_CURSOR = re.compile(r"c-(?:[0-9a-f]{64}_)?[A-Za-z0-9_-]+\Z")
 UNRESOLVED_STATES = (OutboxState.UNKNOWN, OutboxState.UNKNOWN_ABANDONED)
 _ALLOWED_TRANSITIONS = {
     OutboxState.PROPOSED: {
@@ -937,20 +941,25 @@ class ThreadsStore:
         *,
         now: datetime,
         provider_container_id: str | None = None,
+        provider_publication_id: str | None = None,
     ) -> None:
         require_reference("operation ID", operation_id)
         require_reference("dispatch evidence", evidence)
         if provider_container_id is not None:
             require_reference("provider container ID", provider_container_id)
+        if provider_publication_id is not None:
+            require_reference("provider publication ID", provider_publication_id)
         require_aware_time("evidence time", now)
         with self._open() as connection:
             changed = connection.execute(
                 "UPDATE threads_outbox SET dispatch_evidence=?, "
-                "provider_container_id=COALESCE(?, provider_container_id), updated_at=? "
+                "provider_container_id=COALESCE(?, provider_container_id), "
+                "provider_publication_id=COALESCE(?, provider_publication_id), updated_at=? "
                 "WHERE operation_id=? AND state=?",
                 (
                     evidence,
                     provider_container_id,
+                    provider_publication_id,
                     now.isoformat(),
                     operation_id,
                     OutboxState.SENDING.value,
@@ -1155,6 +1164,7 @@ class ThreadsStore:
         verified_source_ref: str,
         expected_cursor: str | None,
         next_cursor: str | None,
+        reset_cursor: bool = False,
         events: Iterable[InboundEvent],
         now: datetime,
         lock_wait_seconds: float = 5.0,
@@ -1168,7 +1178,14 @@ class ThreadsStore:
         require_reference("verified source reference", verified_source_ref)
         for cursor in (expected_cursor, next_cursor):
             if cursor is not None:
-                require_reference("pagination cursor", cursor)
+                if not (
+                    isinstance(cursor, str)
+                    and len(cursor) <= _MAX_STORED_CURSOR_LENGTH
+                    and _OPAQUE_CURSOR.fullmatch(cursor) is not None
+                ):
+                    require_reference("pagination cursor", cursor)
+        if type(reset_cursor) is not bool or (reset_cursor and next_cursor is not None):
+            raise ValueError("invalid cursor reset")
         require_aware_time("poll commit time", now)
         if type(lock_wait_seconds) not in {int, float} or not (
             0 < lock_wait_seconds <= 5.0
@@ -1179,7 +1196,13 @@ class ThreadsStore:
         if not callable(precommit_check):
             raise ValueError("invalid poll commit authorization fence")
         page = tuple(events)
-        committed_cursor = next_cursor if next_cursor is not None else expected_cursor
+        committed_cursor = (
+            None
+            if reset_cursor
+            else next_cursor
+            if next_cursor is not None
+            else expected_cursor
+        )
         cursor_identity = content_fingerprint(
             f"{expected_cursor is not None}:{expected_cursor or ''}\0"
             f"{committed_cursor is not None}:{committed_cursor or ''}"
