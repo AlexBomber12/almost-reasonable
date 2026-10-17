@@ -1,0 +1,1 @@
+"""Local owner console assets."""

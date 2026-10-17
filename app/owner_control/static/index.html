@@ -1,0 +1,7 @@
+<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Управление частным пилотом</title><link rel="stylesheet" href="/owner.css"></head>
+<body><main><h1>Частный пилот</h1><p>Управление приложением. Состояние воркера проверяется отдельно.</p>
+<section id="login-panel"><h2>Вход владельца</h2><form id="login-form"><label>Имя <input name="username" autocomplete="username" required></label><label>Пароль <input name="password" type="password" autocomplete="current-password" required></label><button>Войти</button></form></section>
+<section id="control-panel" hidden><h2>Состояние</h2><dl id="status"></dl><p id="scope">Stop приложения не меняет Stop воркера и не отменяет запрос к провайдеру, который уже выполняется.</p><button id="refresh">Обновить</button><button id="stop">Включить Stop приложения</button><button id="resume">Снять Stop приложения</button><button id="logout">Выйти</button><h2>Последние действия владельца</h2><ul id="audit"></ul></section>
+<p id="message" role="status" aria-live="polite"></p></main><script src="/owner.js" defer></script></body></html>
