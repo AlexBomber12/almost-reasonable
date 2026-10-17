@@ -551,6 +551,118 @@ def test_renewed_approval_reference_can_be_revoked(tmp_path):
         worker.close()
 
 
+def test_interrupted_sending_is_recoverable_without_retransmission(
+    tmp_path, monkeypatch
+):
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Восстанавливаю отправку."},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        original = app.service.store.update_sending_evidence
+
+        def crash_after_marker(*args, **kwargs):
+            result = original(*args, **kwargs)
+            if args[1] == "publish_dispatch_started":
+                raise SystemExit("simulated process crash")
+            return result
+
+        monkeypatch.setattr(
+            app.service.store, "update_sending_evidence", crash_after_marker
+        )
+        with pytest.raises(SystemExit, match="process crash"):
+            app.dispatch(operation)
+        assert app.draft(operation).state is OutboxState.SENDING
+        writes = len([call for call in http.calls if call[0] == "POST"])
+        assert app.recover_sending(operation).state is OutboxState.UNKNOWN
+        assert len([call for call in http.calls if call[0] == "POST"]) == writes
+    finally:
+        worker.close()
+
+
+def test_interrupted_reconciliation_claim_has_purpose_bound_operator_recovery(
+    tmp_path,
+):
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Восстанавливаю сверку."},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        http.fail_readback = True
+        assert app.dispatch(operation).state is OutboxState.UNKNOWN
+        writes = len([call for call in http.calls if call[0] == "POST"])
+        app.service.store.claim_reconciliation(
+            operation_id=operation,
+            correlation_id="interrupted-claim",
+            account_ref=app.account,
+            actor_reference="local-operator",
+            now=NOW,
+        )
+        with app.owner._connection() as db:
+            db.execute("UPDATE owner_stop SET active=1")
+        recovery = app.approve_reconciliation_recovery(
+            operation, expires_at=NOW + timedelta(minutes=5)
+        )
+        assert recovery.state is OutboxState.UNKNOWN
+        assert (
+            app.recover_reconciliation_claim(
+                operation, recovery.approval_reference
+            ).state
+            is OutboxState.UNKNOWN
+        )
+        assert len([call for call in http.calls if call[0] == "POST"]) == writes
+    finally:
+        worker.close()
+
+
+def test_public_recovery_rejects_foreign_target_and_requires_unknown_state(
+    tmp_path, monkeypatch
+):
+    import app.integration.threads_runtime as module
+
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {
+            "decision": "propose_publication",
+            "draft": "Проверяю границы восстановления.",
+        },
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        original_read = app.journal.read
+        monkeypatch.setattr(
+            app.journal,
+            "read",
+            lambda value: {**original_read(value), "runtime_version": "foreign"},
+        )
+        with pytest.raises(PolicyDeniedError, match="not linked"):
+            app.recover_sending(operation)
+        monkeypatch.setattr(app.journal, "read", original_read)
+        with pytest.raises(PolicyDeniedError, match="unknown state"):
+            app.approve_reconciliation_recovery(
+                operation, expires_at=NOW + timedelta(minutes=5)
+            )
+        http.fail_readback = True
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        assert app.dispatch(operation).state is OutboxState.UNKNOWN
+        monkeypatch.setattr(module, "MAX_INTENTS", 0)
+        with pytest.raises(ValueError, match="capacity"):
+            app.approve_reconciliation_recovery(
+                operation, expires_at=NOW + timedelta(minutes=5)
+            )
+        with pytest.raises(PolicyDeniedError, match="approval unavailable"):
+            app.recover_reconciliation_claim(operation, "missing-reference")
+    finally:
+        worker.close()
+
+
 def test_approval_rejects_completed_draft_and_missing_current_record(
     tmp_path, monkeypatch
 ):

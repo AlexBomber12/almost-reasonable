@@ -130,6 +130,59 @@ def test_operator_poll_and_reconcile_attempts_use_distinct_correlation_ids(
     capsys.readouterr()
 
 
+def test_operator_recovery_commands_route_exact_operation_and_approval(
+    monkeypatch, capsys
+):
+    import ops.int24_threads_runtime as module
+    from datetime import UTC, datetime, timedelta
+
+    now = datetime(2026, 10, 17, 12, tzinfo=UTC)
+    seen = []
+
+    class FakeRuntime:
+        clock = SimpleNamespace(now=lambda: now)
+
+        def recover_sending(self, operation):
+            seen.append(("sending", operation))
+            return {"state": "unknown"}
+
+        def approve_reconciliation_recovery(self, operation, *, expires_at):
+            seen.append(("approve", operation, expires_at))
+            return PublicApprovalResult(
+                operation, OutboxState.UNKNOWN, "recovery-reference"
+            )
+
+        def recover_reconciliation_claim(self, operation, reference):
+            seen.append(("claim", operation, reference))
+            return {"state": "unknown"}
+
+    monkeypatch.setattr(module, "_config", lambda _: {})
+    monkeypatch.setattr(module, "_runtime", lambda _: FakeRuntime())
+    base = ["--activate-live", "--config", "/unused"]
+    assert module.main(["recover-sending", "operation-1", *base]) == 0
+    assert module.main(["approve-reconciliation-recovery", "operation-1", *base]) == 0
+    output = capsys.readouterr().out.strip().splitlines()
+    assert json.loads(output[-1])["approval_reference"] == "recovery-reference"
+    with pytest.raises(SystemExit):
+        module.main(["recover-reconciliation", "operation-1", *base])
+    assert (
+        module.main(
+            [
+                "recover-reconciliation",
+                "operation-1",
+                "recovery-reference",
+                *base,
+            ]
+        )
+        == 0
+    )
+    assert seen == [
+        ("sending", "operation-1"),
+        ("approve", "operation-1", now + timedelta(minutes=15)),
+        ("claim", "operation-1", "recovery-reference"),
+    ]
+
+
 @pytest.mark.parametrize(
     ("project", "organization"),
     [

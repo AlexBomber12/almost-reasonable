@@ -110,9 +110,13 @@ def main(argv=None):
             "revoke",
             "dispatch",
             "reconcile",
+            "recover-sending",
+            "approve-reconciliation-recovery",
+            "recover-reconciliation",
         ),
     )
     parser.add_argument("value", nargs="?")
+    parser.add_argument("reference", nargs="?")
     parser.add_argument("--config")
     parser.add_argument("--activate-live", action="store_true")
     parser.add_argument("--expires-minutes", type=int, default=15)
@@ -176,6 +180,24 @@ def main(argv=None):
         result = {"revoked": args.value}
     elif args.command == "dispatch":
         result = app.dispatch(args.value)
+    elif args.command == "recover-sending":
+        result = app.recover_sending(args.value)
+    elif args.command == "approve-reconciliation-recovery":
+        if not 1 <= args.expires_minutes <= 60:
+            parser.error("approval expiry must be 1 to 60 minutes")
+        approval = app.approve_reconciliation_recovery(
+            args.value,
+            expires_at=app.clock.now() + timedelta(minutes=args.expires_minutes),
+        )
+        result = {
+            "operation_id": approval.operation_id,
+            "state": approval.state.value,
+            "approval_reference": approval.approval_reference,
+        }
+    elif args.command == "recover-reconciliation":
+        if args.reference is None:
+            parser.error("recovery approval reference is required")
+        result = app.recover_reconciliation_claim(args.value, args.reference)
     else:
         result = app.reconcile(
             args.value,

@@ -86,7 +86,6 @@ class PublicAuthorization:
         self.app = app
 
     def current_approval(self, *, account_ref, operation_id, approval_reference, now):
-        self.app.guard()
         if account_ref != self.app.account:
             return None
         with self.app.journal.transaction() as db:
@@ -94,6 +93,8 @@ class PublicAuthorization:
                 "SELECT * FROM approvals WHERE reference=? AND operation=?",
                 (approval_reference, operation_id),
             ).fetchone()
+        if row is not None and row["purpose"] == ApprovalPurpose.PUBLICATION.value:
+            self.app.guard()
         return (
             None
             if row is None
@@ -529,6 +530,20 @@ class ThreadsRuntime(ThreadsStage0):
         self.guard()
         return self.service.store.get(operation)
 
+    def _public_recovery_item(self, operation):
+        item = self.service.store.get(operation)
+        payload = self.journal.read(operation)
+        if (
+            item.account_ref != self.account
+            or item.source_provenance is not SourceProvenance.PUBLIC
+            or payload.get("runtime_version") != PUBLIC_RUNTIME_VERSION
+            or payload["phase"] != "linked"
+            or payload.get("draft") != item.draft_id
+            or payload.get("content") != item.content
+        ):
+            raise PolicyDeniedError("public recovery target is not linked")
+        return item
+
     def approve(self, operation, *, expires_at):
         self.guard()
         actor = self.operator.authenticate()
@@ -634,3 +649,72 @@ class ThreadsRuntime(ThreadsStage0):
         return self.service.reconcile(
             operation, correlation_id=correlation_id, now=self.clock.now()
         )
+
+    def recover_sending(self, operation):
+        self.operator.authenticate()
+        self._public_recovery_item(operation)
+        return self.service.recover_sending(operation, now=self.clock.now())
+
+    def approve_reconciliation_recovery(self, operation, *, expires_at):
+        actor = self.operator.authenticate()
+        item = self._public_recovery_item(operation)
+        if item.state is not OutboxState.UNKNOWN:
+            raise PolicyDeniedError("reconciliation recovery requires unknown state")
+        reference = _identity(
+            operation,
+            ApprovalPurpose.RECOVER_RECONCILIATION.value,
+            expires_at.isoformat(),
+            actor,
+        )
+        issue_approval(
+            reference=reference,
+            account_ref=self.account,
+            operation_id=operation,
+            expires_at=expires_at,
+            purpose=ApprovalPurpose.RECOVER_RECONCILIATION,
+        )
+        with self.journal.transaction() as db:
+            if (
+                db.execute("SELECT count(*) FROM approvals").fetchone()[0]
+                >= MAX_INTENTS
+            ):
+                raise ValueError("approval capacity reached")
+            db.execute(
+                "INSERT OR IGNORE INTO approvals VALUES(?,?,?,?,0,?,?)",
+                (
+                    reference,
+                    operation,
+                    _binding(item),
+                    expires_at.isoformat(),
+                    ApprovalPurpose.RECOVER_RECONCILIATION.value,
+                    actor,
+                ),
+            )
+            db.execute(
+                "INSERT INTO public_audit(operation,action,actor,at,reference) "
+                "VALUES(?,?,?,?,?)",
+                (
+                    operation,
+                    "approve_reconciliation_recovery",
+                    actor,
+                    self.clock.now().isoformat(),
+                    reference,
+                ),
+            )
+        return PublicApprovalResult(operation, item.state, reference)
+
+    def recover_reconciliation_claim(self, operation, approval_reference):
+        self.operator.authenticate()
+        self._public_recovery_item(operation)
+        approval = self.authorization.current_approval(
+            account_ref=self.account,
+            operation_id=operation,
+            approval_reference=approval_reference,
+            now=self.clock.now(),
+        )
+        if approval is None:
+            raise PolicyDeniedError("reconciliation recovery approval unavailable")
+        self.service.recover_reconciliation_claim(
+            operation, approval, now=self.clock.now()
+        )
+        return self.service.store.get(operation)
