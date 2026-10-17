@@ -7,6 +7,8 @@ from pathlib import Path
 import sqlite3
 
 from app.core.provider_contract import require_identifier
+from app.core.provider_spend import ProviderStateStore
+from app.core.store import EventStore
 from app.integration.threads_stage0 import _identity
 from app.integration.threads_runtime import PUBLIC_RUNTIME_VERSION
 from app.core.public_behavior import public_context_digest
@@ -108,6 +110,7 @@ def main(argv=None):
         socket_gid=config["application_gid"],
         attest=_attestor(config["journal_path"], config["account_ref"]),
         adapter=PublicSDKAdapter(sdk, model=config["model"]),
+        provider_store=ProviderStateStore(EventStore(Path(config["event_store_path"]))),
     )
     server.start()
     try:

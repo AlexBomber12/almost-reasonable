@@ -215,7 +215,7 @@ def test_worker_rejects_missing_or_unreviewed_billing_scope(
         module.main(["--config", "/unused/config"])
 
 
-def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch):
+def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
     import ops.int24_public_worker as module
 
     config = {
@@ -225,6 +225,7 @@ def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch):
         "openai_key_file": "/unused/key",
         "socket_path": "/unused/socket",
         "attempts_path": "/unused/attempts",
+        "event_store_path": str(tmp_path / "events.sqlite"),
         "application_uid": 1001,
         "application_gid": 1002,
         "journal_path": "/unused/journal",

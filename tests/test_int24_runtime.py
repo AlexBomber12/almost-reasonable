@@ -144,6 +144,7 @@ def setup(
         permitted_uid=os.getuid(),
         attest=app.attest_worker_request,
         adapter=PublicSDKAdapter(sdk, model="fake-model"),
+        provider_store=provider,
     )
     worker.start()
     return app, worker, sdk, http, clock

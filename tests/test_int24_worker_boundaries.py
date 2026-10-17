@@ -3,6 +3,7 @@
 import json
 import os
 from pathlib import Path
+import sqlite3
 import struct
 from threading import Thread
 
@@ -12,6 +13,8 @@ import app.behavior.worker_client as client_module
 import app.trusted.public_behavior_worker as worker_module
 from app.behavior.worker_client import PublicBehaviorClient
 from app.core.public_behavior import PublicBehaviorRequest
+from app.core.provider_spend import ProviderStateStore
+from app.core.store import EventStore
 from app.trusted.public_behavior_worker import PublicSDKAdapter, PublicWorkerServer
 
 
@@ -56,6 +59,32 @@ def test_sdk_adapter_rejects_malformed_model_output(output):
 def test_sdk_adapter_requires_explicit_client_and_model():
     with pytest.raises(ValueError):
         PublicSDKAdapter(object(), model="")
+
+
+def test_sdk_adapter_rejects_malformed_usage():
+    sdk = SDK(json.dumps(GOOD))
+
+    def create(**_kwargs):
+        return type(
+            "Response",
+            (),
+            {
+                "output_text": json.dumps(GOOD),
+                "usage": type(
+                    "Usage",
+                    (),
+                    {"input_tokens": -1, "output_tokens": 2, "total_tokens": 1},
+                )(),
+            },
+        )()
+
+    sdk.create = create
+    adapter = PublicSDKAdapter(sdk, model="test-model")
+    request = PublicBehaviorRequest(
+        "operation-1", "operation-1", "autonomous_wakeup", (), (), 5
+    )
+    with pytest.raises(ValueError, match="usage"):
+        adapter.complete(request)
 
 
 class Socket:
@@ -115,12 +144,13 @@ def start_server(
         socket_gid=gid,
         attest=attest,
         adapter=PublicSDKAdapter(sdk, model="test-model"),
+        provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
     )
     server.start()
     return server, sdk
 
 
-def exchange(server, *, expected_uid=None):
+def exchange(server, *, expected_uid=None, request=REQUEST):
     thread = Thread(target=server.serve_once)
     thread.start()
     client = PublicBehaviorClient(
@@ -128,7 +158,7 @@ def exchange(server, *, expected_uid=None):
         expected_uid=os.getuid() if expected_uid is None else expected_uid,
     )
     try:
-        return client.complete(REQUEST, 5)
+        return client.complete(request, 5)
     finally:
         thread.join(timeout=5)
         assert not thread.is_alive()
@@ -141,6 +171,109 @@ def test_worker_reserves_once_before_sdk_and_denies_replay(tmp_path):
         with pytest.raises(Exception):
             exchange(server)
         assert sdk.calls == 1
+    finally:
+        server.close()
+
+
+def test_worker_records_public_sdk_usage_in_shared_provider_store(tmp_path):
+    store = ProviderStateStore(EventStore(tmp_path / "events.sqlite"))
+
+    class UsageSDK(SDK):
+        def create(self, **kwargs):
+            self.calls += 1
+            return type(
+                "Response",
+                (),
+                {
+                    "output_text": json.dumps(GOOD),
+                    "id": "resp-public-1",
+                    "usage": type(
+                        "Usage",
+                        (),
+                        {"input_tokens": 10, "output_tokens": 4, "total_tokens": 14},
+                    )(),
+                },
+            )()
+
+    sdk = UsageSDK(json.dumps(GOOD))
+    server = PublicWorkerServer(
+        tmp_path / "worker.sock",
+        tmp_path / "attempts.sqlite",
+        permitted_uid=os.getuid(),
+        attest=lambda _: True,
+        adapter=PublicSDKAdapter(sdk, model="test-model"),
+        provider_store=store,
+    )
+    server.start()
+    try:
+        assert exchange(server) == GOOD
+        record = store.usage_attempt("operation-1")
+        assert record.input_tokens == 10
+        assert record.output_tokens == 4
+        assert record.total_tokens == 14
+        assert record.provider_response_id == "resp-public-1"
+        assert record.outcome == "completed"
+        assert sdk.calls == 1
+    finally:
+        server.close()
+
+
+def test_worker_suspends_spend_after_confirmed_provider_limit(tmp_path):
+    store = ProviderStateStore(EventStore(tmp_path / "events.sqlite"))
+
+    class SpendLimit(Exception):
+        status_code = 429
+        body = {"error": {"code": "project_spend_limit_exceeded"}}
+
+    class SpendSDK(SDK):
+        def create(self, **kwargs):
+            self.calls += 1
+            raise SpendLimit("fake provider limit")
+
+    sdk = SpendSDK(json.dumps(GOOD))
+    server = PublicWorkerServer(
+        tmp_path / "worker.sock",
+        tmp_path / "attempts.sqlite",
+        permitted_uid=os.getuid(),
+        attest=lambda _: True,
+        adapter=PublicSDKAdapter(sdk, model="test-model"),
+        provider_store=store,
+    )
+    server.start()
+    try:
+        with pytest.raises(Exception):
+            exchange(server)
+        assert store.is_spend_suspended()
+        assert store.usage_attempt("operation-1").provider_error_code == (
+            "project_spend_limit_exceeded"
+        )
+        with pytest.raises(Exception):
+            exchange(server, request={**REQUEST, "correlation_id": "operation-2"})
+        assert sdk.calls == 1
+    finally:
+        server.close()
+
+
+def test_worker_does_not_return_proposal_when_accounting_commit_fails(
+    tmp_path, monkeypatch
+):
+    store = ProviderStateStore(EventStore(tmp_path / "events.sqlite"))
+    sdk = SDK(json.dumps(GOOD))
+    server = PublicWorkerServer(
+        tmp_path / "worker.sock",
+        tmp_path / "attempts.sqlite",
+        permitted_uid=os.getuid(),
+        attest=lambda _: True,
+        adapter=PublicSDKAdapter(sdk, model="test-model"),
+        provider_store=store,
+    )
+    server.start()
+    try:
+        monkeypatch.setattr(store, "record_attempt", lambda *_a, **_k: False)
+        with pytest.raises(Exception):
+            exchange(server)
+        assert sdk.calls == 1
+        assert store.attempt_exists("operation-1")
     finally:
         server.close()
 
@@ -189,6 +322,7 @@ def test_worker_configuration_and_lifecycle_guards(tmp_path):
             permitted_uid=0,
             attest=lambda _: True,
             adapter=object(),
+            provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
         )
     with pytest.raises(ValueError):
         PublicWorkerServer(
@@ -197,6 +331,7 @@ def test_worker_configuration_and_lifecycle_guards(tmp_path):
             permitted_uid=0,
             attest=lambda _: True,
             adapter=object(),
+            provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
             socket_gid=-1,
         )
     server, _ = start_server(tmp_path)
@@ -230,6 +365,7 @@ def test_worker_bounds_serialized_result_and_idempotent_close(tmp_path):
         permitted_uid=os.getuid(),
         attest=lambda _: True,
         adapter=HugeAdapter(),
+        provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
     )
     server.start()
     try:
@@ -250,6 +386,7 @@ def test_worker_attempt_database_requires_protected_storage(tmp_path):
             permitted_uid=os.getuid(),
             attest=lambda _: True,
             adapter=object(),
+            provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
         )
     attempts = tmp_path / "attempts.sqlite"
     attempts.write_text("unsafe")
@@ -261,6 +398,41 @@ def test_worker_attempt_database_requires_protected_storage(tmp_path):
             permitted_uid=os.getuid(),
             attest=lambda _: True,
             adapter=object(),
+            provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
+        )
+
+
+def test_worker_rejects_stale_attempt_table_without_unique_operation(tmp_path):
+    attempts = tmp_path / "attempts.sqlite"
+    with sqlite3.connect(attempts) as db:
+        db.execute("CREATE TABLE attempts(operation TEXT)")
+    attempts.chmod(0o600)
+    with pytest.raises(ValueError, match="attempt schema"):
+        PublicWorkerServer(
+            tmp_path / "worker.sock",
+            attempts,
+            permitted_uid=os.getuid(),
+            attest=lambda _: True,
+            adapter=PublicSDKAdapter(SDK(json.dumps(GOOD)), model="test-model"),
+            provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
+        )
+
+
+def test_worker_rejects_wrong_attempt_schema_version(tmp_path):
+    attempts = tmp_path / "attempts.sqlite"
+    with sqlite3.connect(attempts) as db:
+        db.execute("CREATE TABLE attempts(operation TEXT PRIMARY KEY)")
+        db.execute("CREATE TABLE attempt_schema(version TEXT NOT NULL)")
+        db.execute("INSERT INTO attempt_schema VALUES('foreign-version')")
+    attempts.chmod(0o600)
+    with pytest.raises(ValueError, match="schema version"):
+        PublicWorkerServer(
+            tmp_path / "worker.sock",
+            attempts,
+            permitted_uid=os.getuid(),
+            attest=lambda _: True,
+            adapter=PublicSDKAdapter(SDK(json.dumps(GOOD)), model="test-model"),
+            provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
         )
 
 
@@ -275,6 +447,7 @@ def test_failed_socket_setup_removes_bound_path_and_allows_restart(
         socket_gid=os.getgid(),
         attest=lambda _: True,
         adapter=PublicSDKAdapter(SDK(json.dumps(GOOD)), model="test-model"),
+        provider_store=ProviderStateStore(EventStore(tmp_path / "events.sqlite")),
     )
 
     def fail_setup(*_args):
