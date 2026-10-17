@@ -161,10 +161,15 @@ def main(argv=None):
     elif args.command == "approve":
         if not 1 <= args.expires_minutes <= 60:
             parser.error("approval expiry must be 1 to 60 minutes")
-        result = app.approve(
+        approval = app.approve(
             args.value,
             expires_at=app.clock.now() + timedelta(minutes=args.expires_minutes),
         )
+        result = {
+            "operation_id": approval.operation_id,
+            "state": approval.state.value,
+            "approval_reference": approval.approval_reference,
+        }
     elif args.command == "revoke":
         app.revoke(args.value)
         result = {"revoked": args.value}

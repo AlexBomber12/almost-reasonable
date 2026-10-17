@@ -8,7 +8,9 @@ import pytest
 
 from app.core.public_behavior import PublicBehaviorRequest, public_context_digest
 from app.integration.threads_runtime import PUBLIC_RUNTIME_VERSION
+from app.integration.threads_runtime import PublicApprovalResult
 from app.integration.threads_stage0 import Stage0Journal, _identity
+from app.threads.domain import OutboxState
 from app.trusted.openai_transport import OPENAI_API_BASE_URL
 from ops.int24_public_worker import _attestor
 from ops.int24_threads_runtime import main
@@ -57,6 +59,39 @@ def test_default_operator_entrypoint_remains_disabled(capsys):
     assert json.loads(capsys.readouterr().out)["ready"] is False
     with pytest.raises(SystemExit):
         main(["dispatch", "operation-1"])
+
+
+def test_operator_approve_command_exposes_exact_revocable_reference(
+    monkeypatch, capsys
+):
+    import ops.int24_threads_runtime as module
+    from datetime import datetime, UTC
+
+    now = datetime(2026, 10, 17, 12, tzinfo=UTC)
+
+    class FakeRuntime:
+        clock = SimpleNamespace(now=lambda: now)
+
+        def approve(self, operation, *, expires_at):
+            assert operation == "operation-1"
+            assert expires_at > now
+            return PublicApprovalResult(
+                operation, OutboxState.READY, "renewed-reference"
+            )
+
+    monkeypatch.setattr(module, "_config", lambda _: {})
+    monkeypatch.setattr(module, "_runtime", lambda _: FakeRuntime())
+    assert (
+        module.main(
+            ["approve", "operation-1", "--activate-live", "--config", "/unused"]
+        )
+        == 0
+    )
+    assert json.loads(capsys.readouterr().out) == {
+        "operation_id": "operation-1",
+        "state": "ready",
+        "approval_reference": "renewed-reference",
+    }
 
 
 @pytest.mark.parametrize(

@@ -74,6 +74,13 @@ class LocalOperator:
         return self.actor
 
 
+@dataclass(frozen=True, slots=True)
+class PublicApprovalResult:
+    operation_id: str
+    state: OutboxState
+    approval_reference: str
+
+
 class PublicAuthorization:
     def __init__(self, app):
         self.app = app
@@ -564,8 +571,10 @@ class ThreadsRuntime(ThreadsStage0):
             )
         if item.state is OutboxState.READY:
             self.service._check_ready_policy(item, approval, now=self.clock.now())
-            return self.service.store.get(operation)
-        return self.service.authorize(operation, approval, now=self.clock.now())
+            approved = self.service.store.get(operation)
+        else:
+            approved = self.service.authorize(operation, approval, now=self.clock.now())
+        return PublicApprovalResult(operation, approved.state, reference)
 
     def revoke(self, reference):
         actor = self.operator.authenticate()

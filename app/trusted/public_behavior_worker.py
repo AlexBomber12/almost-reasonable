@@ -178,8 +178,7 @@ class PublicWorkerServer:
                     {"operation_id": request.operation_id, "proposal": proposal},
                     ensure_ascii=False,
                 ).encode()
-                if len(result) <= 4096:
-                    send_frame(connection, result, deadline=deadline, io_timeout=10)
+                send_frame(connection, result, deadline=deadline, io_timeout=10)
             except Exception:
                 return
 

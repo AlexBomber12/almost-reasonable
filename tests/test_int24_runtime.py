@@ -614,3 +614,28 @@ def test_overlong_model_draft_is_durably_rejected(tmp_path):
         assert http.calls == []
     finally:
         worker.close()
+
+
+def test_model_draft_above_response_envelope_is_durably_rejected(tmp_path):
+    draft = "Я" * 2000
+    app, worker, sdk, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": draft},
+    )
+    sdk.create = lambda **_kwargs: type(
+        "Response",
+        (),
+        {
+            "output_text": json.dumps(
+                {"decision": "propose_publication", "draft": draft},
+                ensure_ascii=False,
+            )
+        },
+    )()
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        assert app.journal.read(operation)["phase"] == "rejected"
+        assert http.calls == []
+    finally:
+        worker.close()

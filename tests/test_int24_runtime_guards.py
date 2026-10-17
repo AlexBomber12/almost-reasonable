@@ -522,13 +522,31 @@ def test_expired_ready_approval_can_be_renewed_for_exact_same_draft(tmp_path):
         app.approve(operation, expires_at=NOW + timedelta(minutes=1))
         old_reference = app.draft(operation).approval_reference
         clock.advance(timedelta(minutes=2))
-        assert (
-            app.approve(operation, expires_at=clock.now() + timedelta(minutes=5)).state
-            is OutboxState.READY
-        )
+        renewed = app.approve(operation, expires_at=clock.now() + timedelta(minutes=5))
+        assert renewed.state is OutboxState.READY
+        assert renewed.approval_reference != old_reference
         assert app.dispatch(operation).state is OutboxState.CONFIRMED
-        assert app.draft(operation).approval_reference != old_reference
+        assert app.draft(operation).approval_reference == renewed.approval_reference
         assert len([call for call in http.calls if call[0] == "POST"]) == 2
+    finally:
+        worker.close()
+
+
+def test_renewed_approval_reference_can_be_revoked(tmp_path):
+    app, worker, _, http, clock = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Отзываю новое одобрение."},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=1))
+        clock.advance(timedelta(minutes=2))
+        renewed = app.approve(operation, expires_at=clock.now() + timedelta(minutes=5))
+        app.revoke(renewed.approval_reference)
+        with pytest.raises(PolicyDeniedError, match="approval unavailable"):
+            app.dispatch(operation)
+        assert http.calls == []
     finally:
         worker.close()
 
