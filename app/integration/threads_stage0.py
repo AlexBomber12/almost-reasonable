@@ -270,7 +270,7 @@ class Stage0Journal:
                 raise ValueError("Stage 0 journal capacity reached")
             db.execute(
                 "INSERT INTO intents VALUES(?,'started',?)",
-                (operation, json.dumps(origin)),
+                (operation, json.dumps(origin, ensure_ascii=False)),
             )
             return True
 
@@ -280,7 +280,7 @@ class Stage0Journal:
                 "UPDATE intents SET phase=?, payload=? WHERE operation=? AND phase='started'",
                 (
                     "held" if held else "rejected" if rejected else "intent",
-                    json.dumps(payload),
+                    json.dumps(payload, ensure_ascii=False),
                     operation,
                 ),
             )
