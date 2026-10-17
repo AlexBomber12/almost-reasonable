@@ -2,8 +2,10 @@
 
 import argparse
 import json
+import os
 from pathlib import Path
 import signal
+import stat
 
 from app.core.provider_spend import ProviderStateStore
 from app.core.public_research_authority import load_operator_approval
@@ -47,6 +49,32 @@ class PublicResearchStop:
             return True
 
 
+def _validate_provider_database(path: Path) -> None:
+    """Keep durable reservations in a worker-owned, non-replaceable location."""
+    if not path.is_absolute():
+        raise ValueError("provider database path must be absolute")
+    try:
+        parent = path.parent.lstat()
+        database = path.lstat()
+        if (
+            path.parent.resolve(strict=True) != path.parent
+            or path.resolve(strict=True) != path
+        ):
+            raise ValueError("provider database path uses a symbolic link")
+    except FileNotFoundError:
+        raise ValueError("existing research provider database required") from None
+    if (
+        not stat.S_ISDIR(parent.st_mode)
+        or parent.st_uid != os.geteuid()
+        or stat.S_IMODE(parent.st_mode) != 0o700
+        or not stat.S_ISREG(database.st_mode)
+        or database.st_uid != os.geteuid()
+        or stat.S_IMODE(database.st_mode) != 0o600
+        or database.st_nlink != 1
+    ):
+        raise ValueError("unsafe research provider database")
+
+
 def build_worker(
     *,
     socket_path: Path,
@@ -58,8 +86,7 @@ def build_worker(
     trusted_ipc_gid: int | None = None,
     transport: PublicResearchTransport | None = None,
 ):
-    if not provider_database.is_file():
-        raise ValueError("existing research provider database required")
+    _validate_provider_database(provider_database)
     approval = load_operator_approval(approval_path, role="worker")
     stop = PublicResearchStop(stop_path)
     boundary = PublicResearchBoundary(

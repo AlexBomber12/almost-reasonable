@@ -5,6 +5,7 @@ from datetime import timedelta, timezone
 import hashlib
 import json
 import os
+from pathlib import Path
 import runpy
 import signal
 import socket
@@ -599,6 +600,7 @@ def test_worker_bootstrap_uses_local_stop_and_reviewed_file(tmp_path):
             transport=PublicResearchTransport(SDK([])),
         )
     EventStore(tmp_path / "worker.db")
+    (tmp_path / "worker.db").chmod(0o600)
     server = build_worker(
         socket_path=tmp_path / "research.sock",
         provider_database=tmp_path / "worker.db",
@@ -616,6 +618,43 @@ def test_worker_bootstrap_uses_local_stop_and_reviewed_file(tmp_path):
         server._boundary._guard(server._boundary._grants[data["operation_id"]])
         == "emergency_stop"
     )
+
+
+def test_worker_database_must_remain_worker_owned_and_nonreplaceable(tmp_path):
+    check = public_research_worker._validate_provider_database
+    database = tmp_path / "worker.db"
+    with pytest.raises(ValueError, match="absolute"):
+        check(Path(database.name))
+    with pytest.raises(ValueError, match="existing"):
+        check(database)
+    database.write_bytes(b"sqlite-placeholder")
+    database.chmod(0o600)
+    check(database)
+    database.chmod(0o644)
+    with pytest.raises(ValueError, match="unsafe"):
+        check(database)
+    database.chmod(0o600)
+    tmp_path.chmod(0o777)
+    try:
+        with pytest.raises(ValueError, match="unsafe"):
+            check(database)
+    finally:
+        tmp_path.chmod(0o700)
+    link = tmp_path / "link.db"
+    link.symlink_to(database)
+    with pytest.raises(ValueError, match="symbolic link"):
+        check(link)
+    parent_link = tmp_path / "linked-dir"
+    parent_link.symlink_to(tmp_path, target_is_directory=True)
+    with pytest.raises(ValueError, match="symbolic link"):
+        check(parent_link / database.name)
+    extra_link = tmp_path / "hardlink.db"
+    os.link(database, extra_link)
+    with pytest.raises(ValueError, match="unsafe"):
+        check(database)
+    extra_link.unlink()
+    with pytest.raises(ValueError, match="unsafe"):
+        check(tmp_path)
 
 
 def test_worker_cli_lifecycle_and_module_entry(tmp_path, monkeypatch):

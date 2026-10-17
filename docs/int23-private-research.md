@@ -61,8 +61,9 @@ must be a protected `0400` file in a worker-owned `0700` directory, containing
 exactly `{"version":"public-research-stop-v1","stop":false}` to allow work;
 removing or changing it stops new attempts. The protected provider credential
 file is required by the production constructor. Provision the worker's provider
-database in its protected directory before starting the worker; startup rejects
-a missing database so a restart cannot silently replace one-use reservations.
+database as a worker-owned `0600` regular file in a worker-owned `0700`
+directory before starting the worker; startup rejects a missing, linked, or
+insecure database so a restart cannot silently replace one-use reservations.
 Provider database ownership stays worker-side. This procedure must not be run
 during offline tests.
 
