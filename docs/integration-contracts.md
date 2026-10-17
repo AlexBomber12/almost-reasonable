@@ -1,6 +1,6 @@
 # Integration contracts and Stage 0 evidence
 
-This inventory follows the executable INT-01 through INT-22 synthetic slices,
+This inventory follows the executable INT-01 through INT-25 synthetic slices,
 including EventStore v8, ThreadsStore v10 and the independent Stage 0 journal v2.
 Ordinary runtime defaults remain disabled. Explicit offline compositions use
 synthetic identities, temporary SQLite/WAL stores, fake responses and ThreadsSimulator.
@@ -11,14 +11,14 @@ No fixture, H screen or recorded answer grants production authority.
 | Owner | Actual connected boundary | Remaining boundary |
 | --- | --- | --- |
 | Private web | AuthStore -> Host/Origin/CSRF WSGI -> INT-19 WorkerConversationRuntime -> privacy-fenced context/reservation -> INT-22 bounded AF_UNIX worker -> fake SDK adapter -> Russian gate -> durable reply release -> session/route revalidation | Ordinary ConversationService has disabled inference. INT-22 adds a separate protected activation and durable five-operation allowance; no paid pilot, real enrollment or live-model validation occurred. |
-| Private cognition | Runtime synthetic extractor -> CognitionEngine/SelfStateStore -> memory selector -> bounded private-memory v2 context and complete reply dependencies | Generic memory consolidation, research evidence bridge and real-model extraction remain absent. |
+| Private cognition | Runtime synthetic extractor -> CognitionEngine/SelfStateStore -> memory selector -> bounded private-memory v2 context and complete reply dependencies | Synthetic generic consolidation exists; live-model memory extraction and behavioral evaluation remain absent. |
 | Shared intelligence | Closed constructor-bound approval -> screened/quarantined EventStore v6 revision -> authorized v3 context -> protected cross-participant reply edges | Four reviewed literal abstractions only; arbitrary prose and production approval are absent. |
 | Mission | SharedMissionAdapter -> independent later exact confirmation -> durable current mission; INT-18 explicitly configured Stage 0 coordinator reads it under the privacy gate for scheduler and inbound Threads deliberation and binds delayed intents | No deployed daemon, live model judgment or generic reassessment policy. |
-| Research | Authenticated private input -> sealed exact-input application grant -> fixed public fixture/worker-local handle -> OS-authenticated AF_UNIX ResearchWorkerServer -> fake search/provenance -> bounded durable Russian reply and authorized replay. INT-20 separately exercises a bounded public question with a fake SDK and durable one-use grant. | Default-disabled; INT-20 has no private-to-public production issuer, arbitrary private-topic abstraction, semantic verification or belief bridge. |
+| Research | Authenticated private input -> INT-23 exact-input application approval -> fixed public question -> authenticated AF_UNIX public-research worker -> fake SDK search -> bounded unverified Russian reply and durable authorized replay. INT-11's earlier fixed-fixture bridge remains separate. | Default-disabled; no production grant issuer, arbitrary private-topic abstraction, semantic source-support verification or belief bridge. |
 | Behavior/scheduler | SQLiteSchedulerRepository/DurableScheduler -> bounded DeliberationEngine -> closed intent/outcome -> ThreadsStage0 | A wakeup authorizes deliberation only. Uncertain started inference is held, never blindly replayed. |
-| Threads | Verified simulator polling/autonomous decision -> exact public route/catalog -> journal -> durable outbox -> separately installed operator approval -> current snapshot -> simulator dispatch/reconciliation. INT-21 adds a separate explicitly enabled Threads HTTP adapter and fake HTTP contract tests. | Two literal drafts only; no general private-derived publishing, production approval, verified Meta account/scopes or live transport validation. |
+| Threads | INT-24 explicitly enabled runtime -> separate bounded public worker -> durable intent/outbox -> exact local operator approval -> current control snapshot -> fake Threads HTTP dispatch/reconciliation. Verified fake inbound replies bind the provider parent. | No production approval, verified Meta account/scopes, live transport validation or semantic public-behavior evaluation. |
 | Privacy | Authenticated WSGI notice/grant/revoke/delete/status -> separate ledger -> v8 erasure adapter -> gated startup replay; consistent backup -> current-ledger replay -> sealed read-only quarantine | Synthetic ingress only; no public participant dispatch, real enrollment or production restore activation. Eligibility is not activation. |
-| Owner | Independently provisioned OwnerStore/OwnerApplication -> hashed sessions/CSRF/replay -> atomic stop/operation/audit; current callback composed into synthetic runtime/scheduler/Threads | INT-22 retains separate application Stop/spend and worker Stop/spend controls. No claim of one deployed global stop, complete usage inspection or participant authority. |
+| Owner | Independently provisioned OwnerStore/OwnerApplication -> hashed sessions/CSRF/replay -> atomic stop/operation/audit. INT-25 composes the same application Stop into private and public runtimes. | INT-22 worker Stop/spend remains separately protected. No deployed global control, complete usage inspection or participant authority. |
 
 ## Authority, context and effects
 
@@ -85,8 +85,13 @@ offline mission consumption and stale-intent holding. INT-19 adds the explicit
 private HTTP to isolated fake-worker path. INT-20 records standalone public
 research worker evidence; INT-21 records offline Threads HTTP contract evidence.
 INT-22 connects the authenticated private path to a pilot bootstrap with a fake
-SDK in a separate worker process. INT-23 and INT-24 remain pending independent
-verification. All complete-MVP scenarios and H/M calibration remain BLOCKED.
+SDK in a separate worker process. INT-23 adds an approved private-to-public-research
+connection; INT-24 adds the public worker, approval, outbox and fake Threads HTTP
+runtime. INT-25 composes them under shared application Stop and private canaries.
+The connected slices do not establish semantic research verification, live-model
+memory extraction, human behavioral evaluation, operational recovery or production
+network and credential validation. All complete-MVP scenarios and H/M calibration
+remain BLOCKED.
 
 See [private runtime](private-conversation-runtime.md),
 [private worker connection](private-worker-conversation.md),

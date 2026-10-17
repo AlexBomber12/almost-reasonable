@@ -1,6 +1,7 @@
 """Scoped application guards; not an OS sandbox or spawned-child egress proof."""
 
 import http.client
+import multiprocessing
 import socket
 import urllib.request
 
@@ -32,3 +33,27 @@ def install(monkeypatch, *, local_ipc=False):
         "app.trusted.openai_credential_files.build_worker_openai_transport",
     ):
         monkeypatch.setattr(name, forbidden)
+
+
+def _guarded_spawn_target(target, args, kwargs):
+    """Install the same application guards in a fresh spawn interpreter."""
+    from pytest import MonkeyPatch
+
+    with MonkeyPatch.context() as patch:
+        install(patch, local_ipc=True)
+        target(*args, **kwargs)
+
+
+def install_spawn_guard(monkeypatch):
+    """Wrap mapped spawn targets without changing their production composition."""
+    context = multiprocessing.get_context("spawn")
+    original = context.Process
+
+    def guarded_process(*, target, args=(), kwargs=None, **options):
+        return original(
+            target=_guarded_spawn_target,
+            args=(target, args, kwargs or {}),
+            **options,
+        )
+
+    monkeypatch.setattr(context, "Process", guarded_process)
