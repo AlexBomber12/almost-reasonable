@@ -1,7 +1,7 @@
 """Exact local approval, one-use worker and fail-closed client controls."""
 
 from dataclasses import replace
-from datetime import timedelta
+from datetime import timedelta, timezone
 import hashlib
 import json
 import os
@@ -259,6 +259,7 @@ def test_worker_operator_approval_validation_and_changed_file(tmp_path):
     for field, value in (
         ("reviewer", "different-local-operator"),
         ("reviewed_at", (NOW - timedelta(minutes=1)).isoformat()),
+        ("reviewed_at", NOW.astimezone(timezone(timedelta(hours=1))).isoformat()),
     ):
         worker_path.write_text(json.dumps({**original, field: value}))
         assert approved._guard(grant) == "authorization_denied"
@@ -302,6 +303,7 @@ def test_operator_files_bind_exact_input_and_public_projection(tmp_path):
     for field, value in (
         ("reviewer", "different-local-operator"),
         ("reviewed_at", (NOW - timedelta(minutes=1)).isoformat()),
+        ("reviewed_at", NOW.astimezone(timezone(timedelta(hours=1))).isoformat()),
     ):
         app_path.write_text(json.dumps({**original, field: value}))
         assert not bridge.permits(who, operation, QUESTION)
@@ -466,6 +468,8 @@ def test_lost_or_crashed_attempt_is_not_retried(tmp_path, monkeypatch, failure):
     [
         {"purpose": "private"},
         {"execution_allowance": 2},
+        {"execution_allowance": True},
+        {"execution_allowance": 1.0},
         {"peer_uid": True},
         {"reviewer": ""},
         {"expires_at": (NOW + timedelta(minutes=11)).isoformat()},

@@ -6,6 +6,7 @@ application and worker receive different projections of the operator decision.
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,7 @@ class WorkerApproval:
     expires_at: datetime
     reviewer: str
     reviewed_at: datetime
+    file_sha256: str
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -39,6 +41,7 @@ class ApplicationApproval:
     expires_at: datetime
     reviewer: str
     reviewed_at: datetime
+    file_sha256: str
 
 
 def load_operator_approval(path: str | Path, *, role: str):
@@ -99,6 +102,7 @@ def load_operator_approval(path: str | Path, *, role: str):
     if (
         type(data) is not dict
         or set(data) != expected
+        or type(data["execution_allowance"]) is not int
         or any(
             data[key] != value
             for key, value in (
@@ -132,6 +136,7 @@ def load_operator_approval(path: str | Path, *, role: str):
         data["operation_id"], data["question"], data["authorization"]
     )
     encode_public_request(request)
+    file_sha256 = hashlib.sha256(raw).hexdigest()
     if role == "worker":
         return WorkerApproval(
             request,
@@ -140,6 +145,7 @@ def load_operator_approval(path: str | Path, *, role: str):
             expires,
             data["reviewer"],
             reviewed,
+            file_sha256,
         )
     if (
         type(data["principal_id"]) is not str
@@ -166,4 +172,5 @@ def load_operator_approval(path: str | Path, *, role: str):
         expires,
         data["reviewer"],
         reviewed,
+        file_sha256,
     )
