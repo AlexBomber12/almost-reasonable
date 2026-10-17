@@ -51,9 +51,18 @@ def load_operator_approval(path: str | Path, *, role: str):
         raise ValueError("invalid approval location")
     if path.resolve(strict=True) != path:
         raise ValueError("approval path must not contain links")
-    parent = path.parent.stat()
-    if parent.st_mode & 0o022:
-        raise ValueError("approval directory is writable by other accounts")
+    for directory in (path.parent, *path.parent.parents):
+        info = directory.lstat()
+        if (
+            directory.resolve(strict=True) != directory
+            or not stat.S_ISDIR(info.st_mode)
+            or info.st_uid not in {0, os.geteuid()}
+            or (
+                info.st_mode & 0o022
+                and (directory == path.parent or not info.st_mode & stat.S_ISVTX)
+            )
+        ):
+            raise ValueError("unsafe approval directory")
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(descriptor)

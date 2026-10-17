@@ -11,7 +11,9 @@ screen are inputs to this decision, never proof of public status.
 ## Local provisioning
 
 Use two separate owner-only files in directories with no group or world write
-permission. The application file stays application-side. The worker file contains
+permission. Every directory on each path must be owned by root or the
+corresponding service UID; a shared writable ancestor must have the sticky bit.
+The application file stays application-side. The worker file contains
 only the public projection. The files have the exact fields shown below; no HTTP
 route creates them. An operator creates them locally after reviewing the existing
 authenticated event and exact public question. The two files share a newly

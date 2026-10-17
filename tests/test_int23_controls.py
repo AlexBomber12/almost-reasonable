@@ -10,6 +10,7 @@ import runpy
 import signal
 import socket
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -554,6 +555,37 @@ def test_operator_file_bounds_and_parent_policy(tmp_path, monkeypatch):
     try:
         with pytest.raises(ValueError):
             load_operator_approval(worker_path, role="worker")
+    finally:
+        tmp_path.chmod(0o700)
+
+
+def test_operator_approval_rejects_untrusted_parent_and_ancestor(tmp_path, monkeypatch):
+    _, _, _, _, _, worker_path = _local(tmp_path)
+    protected = tmp_path / "protected"
+    protected.mkdir(mode=0o700)
+    nested_approval = protected / "approval.json"
+    nested_approval.write_bytes(worker_path.read_bytes())
+    nested_approval.chmod(0o600)
+    load_operator_approval(nested_approval, role="worker")
+
+    original_lstat = Path.lstat
+    for untrusted_directory in (protected, tmp_path):
+
+        def untrusted_lstat(self, *, follow_symlinks=True):
+            info = original_lstat(self)
+            if self == untrusted_directory:
+                return SimpleNamespace(st_mode=info.st_mode, st_uid=os.geteuid() + 1)
+            return info
+
+        with monkeypatch.context() as patch:
+            patch.setattr(Path, "lstat", untrusted_lstat)
+            with pytest.raises(ValueError, match="unsafe approval directory"):
+                load_operator_approval(nested_approval, role="worker")
+
+    tmp_path.chmod(0o777)
+    try:
+        with pytest.raises(ValueError, match="unsafe approval directory"):
+            load_operator_approval(nested_approval, role="worker")
     finally:
         tmp_path.chmod(0o700)
 
