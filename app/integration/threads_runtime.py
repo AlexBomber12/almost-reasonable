@@ -144,6 +144,7 @@ class PublicAuthorization:
                 except ValueError:
                     valid = False
             valid = valid and self.app.ledger.control_generation() == generation
+            self.app.guard()
             current = (
                 None
                 if approval is None

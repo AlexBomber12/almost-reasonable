@@ -9,6 +9,7 @@ from threading import Thread
 import pytest
 
 import app.behavior.worker_client as client_module
+import app.trusted.public_behavior_worker as worker_module
 from app.behavior.worker_client import PublicBehaviorClient
 from app.core.public_behavior import PublicBehaviorRequest
 from app.trusted.public_behavior_worker import PublicSDKAdapter, PublicWorkerServer
@@ -261,3 +262,29 @@ def test_worker_attempt_database_requires_protected_storage(tmp_path):
             attest=lambda _: True,
             adapter=object(),
         )
+
+
+@pytest.mark.parametrize("failing_setup", ["chown", "chmod"])
+def test_failed_socket_setup_removes_bound_path_and_allows_restart(
+    tmp_path, monkeypatch, failing_setup
+):
+    server = PublicWorkerServer(
+        tmp_path / "worker.sock",
+        tmp_path / "attempts.sqlite",
+        permitted_uid=os.getuid(),
+        socket_gid=os.getgid(),
+        attest=lambda _: True,
+        adapter=PublicSDKAdapter(SDK(json.dumps(GOOD)), model="test-model"),
+    )
+
+    def fail_setup(*_args):
+        raise OSError("simulated socket setup failure")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(worker_module.os, failing_setup, fail_setup)
+        with pytest.raises(OSError, match="setup failure"):
+            server.start()
+    assert not server.socket_path.exists()
+    assert server.listener is None
+    server.start()
+    server.close()

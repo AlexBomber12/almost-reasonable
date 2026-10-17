@@ -141,13 +141,17 @@ class PublicWorkerServer:
             listener.bind(str(self.socket_path))
         finally:
             os.umask(previous)
-        if self.socket_gid is not None:
-            os.chown(self.socket_path, -1, self.socket_gid)
-        os.chmod(self.socket_path, 0o660 if self.socket_gid is not None else 0o600)
         identity = self.socket_path.lstat()
         self.socket_identity = (identity.st_dev, identity.st_ino)
-        listener.listen(4)
         self.listener = listener
+        try:
+            if self.socket_gid is not None:
+                os.chown(self.socket_path, -1, self.socket_gid)
+            os.chmod(self.socket_path, 0o660 if self.socket_gid is not None else 0o600)
+            listener.listen(4)
+        except BaseException:
+            self.close()
+            raise
 
     def serve_once(self):
         if self.listener is None:

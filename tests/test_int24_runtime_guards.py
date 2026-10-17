@@ -475,6 +475,39 @@ def test_privacy_generation_change_during_authorization_snapshot_denies_effect(
         worker.close()
 
 
+@pytest.mark.parametrize("control", ["owner", "spend"])
+def test_control_change_during_authorization_snapshot_denies_effect(
+    tmp_path, monkeypatch, control
+):
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Проверяю поздний стоп."},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        item = app.draft(operation)
+        original_source_valid = app.source_valid
+
+        def activate_control(payload):
+            if control == "owner":
+                with app.owner._connection() as db:
+                    db.execute("UPDATE owner_stop SET active=1")
+            else:
+                monkeypatch.setattr(app.provider, "is_spend_suspended", lambda: True)
+            return original_source_valid(payload)
+
+        monkeypatch.setattr(app, "source_valid", activate_control)
+        with pytest.raises(PolicyDeniedError, match="controls"):
+            app.authorization.current_publication_authorization(
+                item=item, approval_reference=item.approval_reference, now=NOW
+            )
+        assert http.calls == []
+    finally:
+        worker.close()
+
+
 def test_expired_ready_approval_can_be_renewed_for_exact_same_draft(tmp_path):
     app, worker, _, http, clock = setup(
         tmp_path,
