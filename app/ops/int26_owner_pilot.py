@@ -13,6 +13,7 @@ from wsgiref.simple_server import make_server
 from app.core.store import EventStore
 from app.owner_control.store import OwnerStore
 from app.owner_control.wsgi import OwnerApplication
+from app.private_web.cli import IPv6WSGIServer
 from app.private_web.wsgi import PrivateWebConfig
 from app.privacy.ledger import PrivacyLedger
 
@@ -126,7 +127,12 @@ def main(argv=None, *, server_factory=make_server):
         application = build_application(args)
     except ValueError as error:
         parser.error(str(error))
-    server = server_factory(args.listen_host, args.port, application)
+    server_options = (
+        {"server_class": IPv6WSGIServer}
+        if ip_address(args.listen_host).version == 6
+        else {}
+    )
+    server = server_factory(args.listen_host, args.port, application, **server_options)
     print(f"Owner console listening on {args.listen_host}:{args.port}")
     server.serve_forever()
     return 0

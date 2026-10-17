@@ -37,7 +37,7 @@ async function refresh() {
   show('Реестр приватности', data.privacy.ledger_ready ? 'Доступен' : 'Недоступен');
   for (const item of data.audit) {
     const row = document.createElement('li');
-    const actions = {stop_control: 'изменение Stop', session_control: 'управление сеансом'};
+    const actions = {stop: 'включение Stop', resume: 'снятие Stop', stop_control: 'изменение Stop', session_control: 'управление сеансом'};
     const results = {applied: 'выполнено', rejected: 'отклонено'};
     row.textContent = `${item.occurred_at}: ${actions[item.action_type] || 'действие владельца'}, ${results[item.result] || 'результат записан'}`;
     byId('audit').append(row);

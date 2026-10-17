@@ -18,6 +18,7 @@ from app.core.store import EventStore
 from app.ops.int26_owner_pilot import build_application, main
 from app.owner_control.store import OwnerStore
 from app.owner_control.wsgi import OwnerApplication
+from app.private_web.cli import IPv6WSGIServer
 from app.private_web.wsgi import PrivateWebConfig
 from app.privacy.ledger import PrivacyLedger
 from app.trusted.private_pilot import PilotAllowance, load_activation
@@ -173,7 +174,16 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
     assert not OwnerStore(args.owner_directory).active()
     assert change(app, cookie, csrf, True)[0] == 200
     assert OwnerStore(args.owner_directory).active()
-    assert len(call(app, cookie=cookie)[1]["audit"]) == 3
+    audit = call(app, cookie=cookie)[1]["audit"]
+    assert len(audit) == 3
+    assert {item["action_type"] for item in audit} == {
+        "stop",
+        "resume",
+        "session_control",
+    }
+    script = call(app, "/owner.js")[1]
+    assert "stop: 'включение Stop'" in script
+    assert "resume: 'снятие Stop'" in script
     assert call(app, "/logout", "POST", cookie=cookie, csrf=csrf)[0] == 200
     assert call(app, cookie=cookie)[0] == 401
 
@@ -316,12 +326,15 @@ def test_launcher_uses_validated_composition(tmp_path, monkeypatch, capsys):
         def serve_forever(self):
             seen.append("served")
 
-    def factory(host, port, application):
-        seen.append((host, port, isinstance(application, OwnerApplication)))
+    def factory(host, port, application, **options):
+        seen.append((host, port, isinstance(application, OwnerApplication), options))
         return Server()
 
     assert main(values, server_factory=factory) == 0
-    assert seen == [("127.0.0.1", 18026, True), "served"]
+    assert seen == [("127.0.0.1", 18026, True, {}), "served"]
+    seen.clear()
+    assert main([*values, "--listen-host", "::1"], server_factory=factory) == 0
+    assert seen == [("::1", 18026, True, {"server_class": IPv6WSGIServer}), "served"]
     assert "Owner console" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main([*values, "--listen-host", "0.0.0.0"], server_factory=factory)
