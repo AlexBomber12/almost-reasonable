@@ -44,13 +44,10 @@ class ApplicationApproval:
     file_sha256: str
 
 
-def load_operator_approval(path: str | Path, *, role: str):
-    """Read a local operator-reviewed file with no writable shared path component."""
-    path = Path(path)
-    if role not in {"application", "worker"} or not path.is_absolute():
-        raise ValueError("invalid approval location")
-    if path.resolve(strict=True) != path:
-        raise ValueError("approval path must not contain links")
+def validate_trusted_directories(path: Path) -> None:
+    """Require a trusted owner and non-replaceable route to a protected file."""
+    if not path.is_absolute():
+        raise ValueError("protected path must be absolute")
     for directory in (path.parent, *path.parent.parents):
         info = directory.lstat()
         if (
@@ -63,6 +60,16 @@ def load_operator_approval(path: str | Path, *, role: str):
             )
         ):
             raise ValueError("unsafe approval directory")
+
+
+def load_operator_approval(path: str | Path, *, role: str):
+    """Read a local operator-reviewed file with no writable shared path component."""
+    path = Path(path)
+    if role not in {"application", "worker"} or not path.is_absolute():
+        raise ValueError("invalid approval location")
+    if path.resolve(strict=True) != path:
+        raise ValueError("approval path must not contain links")
+    validate_trusted_directories(path)
     descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     try:
         info = os.fstat(descriptor)

@@ -8,7 +8,10 @@ import signal
 import stat
 
 from app.core.provider_spend import ProviderStateStore
-from app.core.public_research_authority import load_operator_approval
+from app.core.public_research_authority import (
+    load_operator_approval,
+    validate_trusted_directories,
+)
 from app.core.store import EventStore
 from app.trusted.openai_credential_files import read_protected_worker_file
 from app.trusted.openai_transport import TrustedTransportConfigurationError
@@ -25,6 +28,7 @@ class PublicResearchStop:
 
     def active(self):
         try:
+            validate_trusted_directories(self.path)
 
             def unique(pairs):
                 value = {}
@@ -45,7 +49,12 @@ class PublicResearchStop:
                 or type(value["stop"]) is not bool
                 or value["stop"]
             )
-        except (TrustedTransportConfigurationError, UnicodeDecodeError, ValueError):
+        except (
+            TrustedTransportConfigurationError,
+            UnicodeDecodeError,
+            ValueError,
+            OSError,
+        ):
             return True
 
 
@@ -54,6 +63,7 @@ def _validate_provider_database(path: Path) -> None:
     if not path.is_absolute():
         raise ValueError("provider database path must be absolute")
     try:
+        validate_trusted_directories(path)
         parent = path.parent.lstat()
         database = path.lstat()
         if (

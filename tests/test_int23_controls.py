@@ -18,7 +18,10 @@ from app.core.context import ContextLimits, PrivateContextAssembler
 from app.core.agent_proposals import ProposalValidation, ResearchProposal
 from app.core.openai_worker_client import ClientResult, OpenAIWorkerClient
 from app.core.provider_spend import ProviderStateStore
-from app.core.public_research_authority import load_operator_approval
+from app.core.public_research_authority import (
+    load_operator_approval,
+    validate_trusted_directories,
+)
 from app.core.public_research_client import PublicResearchClient
 from app.research.brief import ResearchScreeningContext
 from app.core.store import EventStore
@@ -656,6 +659,8 @@ def test_worker_database_must_remain_worker_owned_and_nonreplaceable(tmp_path):
     check = public_research_worker._validate_provider_database
     database = tmp_path / "worker.db"
     with pytest.raises(ValueError, match="absolute"):
+        validate_trusted_directories(Path("relative.json"))
+    with pytest.raises(ValueError, match="absolute"):
         check(Path(database.name))
     with pytest.raises(ValueError, match="existing"):
         check(database)
@@ -678,7 +683,7 @@ def test_worker_database_must_remain_worker_owned_and_nonreplaceable(tmp_path):
         check(link)
     parent_link = tmp_path / "linked-dir"
     parent_link.symlink_to(tmp_path, target_is_directory=True)
-    with pytest.raises(ValueError, match="symbolic link"):
+    with pytest.raises(ValueError, match="unsafe approval directory"):
         check(parent_link / database.name)
     extra_link = tmp_path / "hardlink.db"
     os.link(database, extra_link)
@@ -687,6 +692,24 @@ def test_worker_database_must_remain_worker_owned_and_nonreplaceable(tmp_path):
     extra_link.unlink()
     with pytest.raises(ValueError, match="unsafe"):
         check(tmp_path)
+
+    protected = tmp_path / "protected"
+    protected.mkdir(mode=0o700)
+    nested_database = protected / "worker.db"
+    nested_database.write_bytes(b"sqlite-placeholder")
+    nested_database.chmod(0o600)
+    stop_path = protected / "stop.json"
+    stop_path.write_text('{"version":"public-research-stop-v1","stop":false}')
+    stop_path.chmod(0o400)
+    check(nested_database)
+    assert not PublicResearchStop(stop_path).active()
+    tmp_path.chmod(0o777)
+    try:
+        with pytest.raises(ValueError, match="unsafe approval directory"):
+            check(nested_database)
+        assert PublicResearchStop(stop_path).active()
+    finally:
+        tmp_path.chmod(0o700)
 
 
 def test_worker_cli_lifecycle_and_module_entry(tmp_path, monkeypatch):

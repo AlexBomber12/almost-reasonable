@@ -61,11 +61,13 @@ and `--organization-id`. A separate worker account may use
 `--socket-group-gid` for a trusted application/worker IPC group. The stop file
 must be a protected `0400` file in a worker-owned `0700` directory, containing
 exactly `{"version":"public-research-stop-v1","stop":false}` to allow work;
-removing or changing it stops new attempts. The protected provider credential
+its ancestors must meet the trusted-directory rule above. Removing or changing
+the stop file stops new attempts. The protected provider credential
 file is required by the production constructor. Provision the worker's provider
 database as a worker-owned `0600` regular file in a worker-owned `0700`
 directory before starting the worker; startup rejects a missing, linked, or
-insecure database so a restart cannot silently replace one-use reservations.
+insecure database or ancestor so a restart cannot silently replace one-use
+reservations.
 Provider database ownership stays worker-side. This procedure must not be run
 during offline tests.
 
