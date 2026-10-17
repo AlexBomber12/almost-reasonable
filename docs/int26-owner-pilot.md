@@ -47,7 +47,8 @@ python -B -m app.ops.int26_owner_pilot \
   --allowed-host owner.example.invalid \
   --allowed-origin https://owner.example.invalid \
   --participant-origin https://chat.example.invalid \
-  --allowed-client 192.0.2.25
+  --allowed-client 192.0.2.25 \
+  --trusted-proxy 127.0.0.1
 ```
 
 The launcher binds `127.0.0.1:18026` by default. The HTTPS reverse proxy must

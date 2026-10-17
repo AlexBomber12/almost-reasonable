@@ -188,6 +188,22 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
     assert call(app, cookie=cookie)[0] == 401
 
 
+def test_documented_proxy_source_admission(tmp_path):
+    args = settings(tmp_path)
+    args.allowed_client = ["192.0.2.25"]
+    args.trusted_proxy = ["127.0.0.1"]
+    app = build_application(args)
+    assert call(app, "/login", HTTP_X_FORWARDED_FOR="192.0.2.25")[0] == 200
+    assert call(app, "/login", HTTP_X_FORWARDED_FOR="127.0.0.2")[0] == 403
+    assert call(app, "/login")[0] == 400
+    assert (
+        call(app, "/login", REMOTE_ADDR="127.0.0.2", HTTP_X_FORWARDED_FOR="192.0.2.25")[
+            0
+        ]
+        == 403
+    )
+
+
 def test_invalid_configuration_does_not_create_stores(tmp_path):
     args = settings(tmp_path)
     args.listen_host = "0.0.0.0"
