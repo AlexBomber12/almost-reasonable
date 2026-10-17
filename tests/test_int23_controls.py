@@ -254,9 +254,18 @@ def test_worker_operator_approval_validation_and_changed_file(tmp_path):
         load_operator_approval(worker_path, role="worker"),
         approval_path=worker_path,
     )
+    original = json.loads(worker_path.read_text())
+    grant = approved._grants[approval.request.operation_id]
+    for field, value in (
+        ("reviewer", "different-local-operator"),
+        ("reviewed_at", (NOW - timedelta(minutes=1)).isoformat()),
+    ):
+        worker_path.write_text(json.dumps({**original, field: value}))
+        assert approved._guard(grant) == "authorization_denied"
+        worker_path.write_text(json.dumps(original))
+        assert approved._guard(grant) is None
     data["question"] = "Why do rainbows form?"
     worker_path.write_text(json.dumps(data))
-    grant = approved._grants[approval.request.operation_id]
     assert approved._guard(grant) == "authorization_denied"
 
 
@@ -289,6 +298,15 @@ def test_operator_files_bind_exact_input_and_public_projection(tmp_path):
             "initiating_event_id": event.event_id,
         },
     )()
+    original = json.loads(app_path.read_text())
+    for field, value in (
+        ("reviewer", "different-local-operator"),
+        ("reviewed_at", (NOW - timedelta(minutes=1)).isoformat()),
+    ):
+        app_path.write_text(json.dumps({**original, field: value}))
+        assert not bridge.permits(who, operation, QUESTION)
+        app_path.write_text(json.dumps(original))
+        assert bridge.permits(who, operation, QUESTION)
     modified = json.loads(app_path.read_text())
     modified["question"] = "What causes ocean tides?"
     app_path.write_text(json.dumps(modified))

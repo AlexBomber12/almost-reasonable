@@ -23,6 +23,8 @@ class WorkerApproval:
     peer_uid: int
     issued_at: datetime
     expires_at: datetime
+    reviewer: str
+    reviewed_at: datetime
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -35,6 +37,8 @@ class ApplicationApproval:
     input_sha256: str
     issued_at: datetime
     expires_at: datetime
+    reviewer: str
+    reviewed_at: datetime
 
 
 def load_operator_approval(path: str | Path, *, role: str):
@@ -129,7 +133,14 @@ def load_operator_approval(path: str | Path, *, role: str):
     )
     encode_public_request(request)
     if role == "worker":
-        return WorkerApproval(request, data["peer_uid"], issued, expires)
+        return WorkerApproval(
+            request,
+            data["peer_uid"],
+            issued,
+            expires,
+            data["reviewer"],
+            reviewed,
+        )
     if (
         type(data["principal_id"]) is not str
         or not data["principal_id"]
@@ -153,4 +164,6 @@ def load_operator_approval(path: str | Path, *, role: str):
         data["input_sha256"],
         issued,
         expires,
+        data["reviewer"],
+        reviewed,
     )
