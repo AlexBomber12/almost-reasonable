@@ -94,6 +94,42 @@ def test_operator_approve_command_exposes_exact_revocable_reference(
     }
 
 
+def test_operator_poll_and_reconcile_attempts_use_distinct_correlation_ids(
+    monkeypatch, capsys
+):
+    import ops.int24_threads_runtime as module
+    from datetime import UTC, datetime
+
+    now = datetime(2026, 10, 17, 12, tzinfo=UTC)
+    seen = []
+
+    class FakeRuntime:
+        clock = SimpleNamespace(now=lambda: now)
+
+        def poll(self, stream, *, correlation_id, **_kwargs):
+            seen.append((stream.value, correlation_id))
+            return {"polled": stream.value}
+
+        def reconcile(self, operation, *, correlation_id):
+            seen.append((operation, correlation_id))
+            return {"reconciled": operation}
+
+    monkeypatch.setattr(module, "_config", lambda _: {})
+    monkeypatch.setattr(module, "_runtime", lambda _: FakeRuntime())
+    for command, value in (
+        ("poll", "reply"),
+        ("poll", "mention"),
+        ("reconcile", "operation-1"),
+        ("reconcile", "operation-1"),
+    ):
+        assert (
+            module.main([command, value, "--activate-live", "--config", "/unused"]) == 0
+        )
+    assert len({correlation for _, correlation in seen}) == len(seen)
+    assert all(correlation for _, correlation in seen)
+    capsys.readouterr()
+
+
 @pytest.mark.parametrize(
     ("project", "organization"),
     [

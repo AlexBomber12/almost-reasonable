@@ -8,6 +8,7 @@ import argparse
 from datetime import UTC, datetime, time, timedelta
 import json
 from pathlib import Path
+from uuid import uuid4
 
 from app.behavior.scheduler import WakeupEvent, WakeupPolicy
 from app.behavior.worker_client import PublicBehaviorClient
@@ -149,7 +150,7 @@ def main(argv=None):
     elif args.command == "poll":
         result = app.poll(
             InboundKind(args.value),
-            correlation_id="poll-" + str(int(app.clock.now().timestamp())),
+            correlation_id="poll-" + uuid4().hex,
             max_pages=1,
             max_events=10,
             timeout_seconds=10,
@@ -178,7 +179,7 @@ def main(argv=None):
     else:
         result = app.reconcile(
             args.value,
-            correlation_id="reconcile-" + str(int(app.clock.now().timestamp())),
+            correlation_id="reconcile-" + uuid4().hex,
         )
     print(json.dumps(result, default=str, ensure_ascii=False))
     return 0
