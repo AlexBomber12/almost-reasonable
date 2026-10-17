@@ -158,14 +158,15 @@ class ReadBoundary:
         fields = (
             "id,text,media_type,timestamp,root_post,replied_to,is_reply_owned_by_me"
         )
-        if "reply" in c["streams"]:
-            expected.append(
-                f"https://graph.threads.net/v1.0/{c['reply_thread_id']}/replies?{parse.urlencode({'fields': fields, 'limit': '10', 'reverse': 'false'})}"
-            )
-        if "mention" in c["streams"]:
-            expected.append(
-                f"https://graph.threads.net/v1.0/{c['provider_user_id']}/mentions?{parse.urlencode({'fields': fields, 'limit': '10'})}"
-            )
+        for stream in c["streams"]:
+            if stream == "reply":
+                expected.append(
+                    f"https://graph.threads.net/v1.0/{c['reply_thread_id']}/replies?{parse.urlencode({'fields': fields, 'limit': '10', 'reverse': 'false'})}"
+                )
+            else:
+                expected.append(
+                    f"https://graph.threads.net/v1.0/{c['provider_user_id']}/mentions?{parse.urlencode({'fields': fields, 'limit': '10'})}"
+                )
         if (
             self.requests >= len(expected)
             or method != "GET"

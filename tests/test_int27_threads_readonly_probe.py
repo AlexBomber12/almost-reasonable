@@ -325,6 +325,24 @@ def test_single_streams_and_page_contract_rejection(setup):
         assert receipt["outcome"] == "contract_malformed" and len(client.calls) == 2
 
 
+def test_reviewed_reverse_stream_order_is_observed(setup):
+    config, save, *_ = setup
+    config["streams"] = ["mention", "reply"]
+    save()
+    receipt, client = run(
+        setup,
+        [response({"id": "provider"}), response({"data": []}), response({"data": []})],
+    )
+    assert receipt["outcome"] == "observed"
+    assert [row["operation"] for row in receipt["observed"]] == [
+        "account",
+        "mention",
+        "reply",
+    ]
+    assert "/mentions?" in client.calls[1][1]
+    assert "/replies?" in client.calls[2][1]
+
+
 def test_boundaries_reject_fourth_request_and_response_link(setup):
     client = FakeHTTP([response({"id": "provider", "next": "https://evil.example"})])
     boundary = probe.ReadBoundary(client, setup[0], 30, lambda: 0)
