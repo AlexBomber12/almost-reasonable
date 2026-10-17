@@ -1,11 +1,10 @@
 """Explicit credential-holding worker for the bounded INT-22 private pilot."""
 
 import argparse
+from collections.abc import Callable
 import json
-import os
 from pathlib import Path
 import signal
-import stat
 
 from app.cognition.conversation_context import MemoryModelRequest
 from app.cognition.shared_context import SharedModelRequest
@@ -19,7 +18,6 @@ from app.core.store import EventStore
 from app.trusted.openai_credential_files import (
     TrustedTransportConfigurationError,
     build_worker_openai_transport,
-    read_protected_worker_file,
 )
 from app.trusted.openai_gateway import TrustedOpenAIGateway
 from app.trusted.openai_worker_protocol import InferenceRequest, WorkerResponse
@@ -32,6 +30,8 @@ from app.trusted.private_pilot import (
     PilotAuthorityError,
     _unique,
     load_activation,
+    protected_state_identity,
+    read_pilot_control,
 )
 
 
@@ -68,7 +68,7 @@ class PilotStop:
     def active(self) -> bool:
         try:
             value = json.loads(
-                read_protected_worker_file(self.path, maximum_bytes=1024),
+                read_pilot_control(self.path, maximum_bytes=1024),
                 object_pairs_hook=_unique,
             )
             return not (
@@ -77,7 +77,12 @@ class PilotStop:
                 and value["version"] == STOP_VERSION
                 and value["stop"] is False
             )
-        except (TrustedTransportConfigurationError, UnicodeDecodeError, ValueError):
+        except (
+            PilotAuthorityError,
+            TrustedTransportConfigurationError,
+            UnicodeDecodeError,
+            ValueError,
+        ):
             return True
 
 
@@ -91,11 +96,13 @@ class PilotRequestGate:
         *,
         activation_path: Path,
         stop: PilotStop,
+        provider_state_current: Callable[[], bool] | None = None,
     ):
         self.activation = activation
         self.allowance = allowance
         self.activation_path = activation_path
         self.stop = stop
+        self.provider_state_current = provider_state_current
 
     def current(self) -> bool:
         try:
@@ -109,6 +116,10 @@ class PilotRequestGate:
         if (
             type(request.model_request) not in {MemoryModelRequest, SharedModelRequest}
             or not self.current()
+            or (
+                self.provider_state_current is not None
+                and not self.provider_state_current()
+            )
         ):
             return WorkerResponse("authorization_rejected", 0, _REJECT_RU, None)
         try:
@@ -120,7 +131,14 @@ class PilotRequestGate:
         return None
 
     def paid_transport_blocked(self) -> bool:
-        return self.stop.active() or not self.current()
+        return (
+            self.stop.active()
+            or not self.current()
+            or (
+                self.provider_state_current is not None
+                and not self.provider_state_current()
+            )
+        )
 
 
 def build_worker(
@@ -136,12 +154,20 @@ def build_worker(
 
     activation = load_activation(activation_path)
     allowance = PilotAllowance(allowance_database, activation)
-    _require_provider_database(provider_database)
+    provider_identity = _require_provider_database(provider_database)
+
+    def provider_state_current() -> bool:
+        try:
+            return _require_provider_database(provider_database) == provider_identity
+        except PilotAuthorityError:
+            return False
+
     gate = PilotRequestGate(
         activation,
         allowance,
         activation_path=activation_path,
         stop=PilotStop(stop_path),
+        provider_state_current=provider_state_current,
     )
     transport = build_worker_openai_transport(
         project_id=activation.project_id,
@@ -164,24 +190,12 @@ def build_worker(
     )
 
 
-def _require_provider_database(path: Path) -> None:
+def _require_provider_database(
+    path: Path,
+) -> tuple[tuple[tuple[int, int], ...], int, int]:
     """A missing worker spend ledger cannot silently restart unsuspended."""
 
-    try:
-        parent = path.parent.lstat()
-        entry = path.lstat()
-        if (
-            not stat.S_ISDIR(parent.st_mode)
-            or parent.st_uid != os.geteuid()
-            or stat.S_IMODE(parent.st_mode) != 0o700
-            or not stat.S_ISREG(entry.st_mode)
-            or entry.st_uid != os.geteuid()
-            or stat.S_IMODE(entry.st_mode) != 0o600
-            or entry.st_nlink != 1
-        ):
-            raise PilotAuthorityError("unsafe provider state")
-    except OSError:
-        raise PilotAuthorityError("provider state unavailable") from None
+    return protected_state_identity(path)
 
 
 def main(argv: list[str] | None = None) -> int:

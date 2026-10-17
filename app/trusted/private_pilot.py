@@ -44,6 +44,65 @@ class PilotAuthorityError(RuntimeError):
     """The pilot has no current, intact authority or allowance state."""
 
 
+def protected_ancestry(path: Path) -> tuple[tuple[int, int], ...]:
+    """Inspect every directory component of a worker-owned protected path."""
+
+    if not isinstance(path, Path) or not path.is_absolute() or path == Path("/"):
+        raise PilotAuthorityError("invalid protected path")
+    directories = tuple(reversed(path.parent.parents)) + (path.parent,)
+    identities = []
+    try:
+        for directory in directories:
+            entry = directory.lstat()
+            mode = stat.S_IMODE(entry.st_mode)
+            sticky_root = entry.st_uid == 0 and mode == 0o1777
+            if (
+                not stat.S_ISDIR(entry.st_mode)
+                or entry.st_uid not in {0, os.geteuid()}
+                or ((mode & 0o022) != 0 and not sticky_root)
+            ):
+                raise PilotAuthorityError("unsafe protected ancestry")
+            identities.append((entry.st_dev, entry.st_ino))
+        parent = path.parent.lstat()
+        if parent.st_uid != os.geteuid() or stat.S_IMODE(parent.st_mode) != 0o700:
+            raise PilotAuthorityError("unsafe protected parent")
+    except OSError:
+        raise PilotAuthorityError("protected ancestry unavailable") from None
+    return tuple(identities)
+
+
+def protected_state_identity(
+    path: Path,
+) -> tuple[tuple[tuple[int, int], ...], int, int]:
+    """Pin a worker-owned 0600 regular state file and its ancestry."""
+
+    ancestry = protected_ancestry(path)
+    try:
+        entry = path.lstat()
+        if (
+            not stat.S_ISREG(entry.st_mode)
+            or entry.st_uid != os.geteuid()
+            or stat.S_IMODE(entry.st_mode) != 0o600
+            or entry.st_nlink != 1
+        ):
+            raise PilotAuthorityError("unsafe protected state")
+    except OSError:
+        raise PilotAuthorityError("protected state unavailable") from None
+    if protected_ancestry(path) != ancestry:
+        raise PilotAuthorityError("protected ancestry changed")
+    return ancestry, entry.st_dev, entry.st_ino
+
+
+def read_pilot_control(path: Path, *, maximum_bytes: int) -> bytes:
+    """Apply the INT-22 ancestry policy around the shared protected-file reader."""
+
+    ancestry = protected_ancestry(path)
+    payload = read_protected_worker_file(path, maximum_bytes=maximum_bytes)
+    if protected_ancestry(path) != ancestry:
+        raise PilotAuthorityError("protected ancestry changed")
+    return payload
+
+
 @dataclass(frozen=True, slots=True)
 class PilotActivation:
     pilot_id: str
@@ -75,7 +134,7 @@ def load_activation(path: Path, *, now: datetime | None = None) -> PilotActivati
     """Read an exact worker-owned 0400 artifact on every authorization check."""
 
     try:
-        payload = read_protected_worker_file(path, maximum_bytes=4096)
+        payload = read_pilot_control(path, maximum_bytes=4096)
         value = json.loads(payload, object_pairs_hook=_unique)
         if type(value) is not dict or value.keys() != _FIELDS:
             raise ValueError("invalid activation fields")
@@ -118,6 +177,7 @@ def load_activation(path: Path, *, now: datetime | None = None) -> PilotActivati
             sha256(payload).hexdigest(),
         )
     except (
+        PilotAuthorityError,
         TrustedTransportConfigurationError,
         UnicodeDecodeError,
         ValueError,
@@ -138,7 +198,7 @@ class PilotAllowance:
             raise PilotAuthorityError("invalid allowance configuration")
         self.path = path
         self.activation = activation
-        self._inspect_file()
+        self._identity = protected_state_identity(path)
         self.remaining()
 
     @classmethod
@@ -152,14 +212,8 @@ class PilotAllowance:
         ):
             raise PilotAuthorityError("invalid allowance configuration")
         try:
-            parent = path.parent.lstat()
-            if (
-                not stat.S_ISDIR(parent.st_mode)
-                or parent.st_uid != os.geteuid()
-                or stat.S_IMODE(parent.st_mode) != 0o700
-                or path.exists()
-                or path.is_symlink()
-            ):
+            protected_ancestry(path)
+            if path.exists() or path.is_symlink():
                 raise PilotAuthorityError("unsafe allowance location")
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_RDWR | os.O_CLOEXEC, 0o600)
             os.close(fd)
@@ -181,21 +235,8 @@ class PilotAllowance:
             raise PilotAuthorityError("allowance initialization failed") from None
 
     def _inspect_file(self) -> None:
-        try:
-            parent = self.path.parent.lstat()
-            entry = self.path.lstat()
-            if (
-                not stat.S_ISDIR(parent.st_mode)
-                or parent.st_uid != os.geteuid()
-                or stat.S_IMODE(parent.st_mode) != 0o700
-                or not stat.S_ISREG(entry.st_mode)
-                or entry.st_uid != os.geteuid()
-                or stat.S_IMODE(entry.st_mode) != 0o600
-                or entry.st_nlink != 1
-            ):
-                raise PilotAuthorityError("unsafe allowance file")
-        except OSError:
-            raise PilotAuthorityError("allowance file unavailable") from None
+        if protected_state_identity(self.path) != self._identity:
+            raise PilotAuthorityError("allowance location changed")
 
     def _transact(self, operation_id: str | None) -> int | bool:
         self._inspect_file()
@@ -213,17 +254,21 @@ class PilotAllowance:
                 ]:
                     raise PilotAuthorityError("allowance binding changed")
                 used = connection.execute("SELECT count(*) FROM consumed").fetchone()[0]
-                if operation_id is None:
-                    return max(0, self.activation.max_operations - used)
-                if used >= self.activation.max_operations:
-                    return False
-                existing = connection.execute(
-                    "SELECT 1 FROM consumed WHERE operation_id=?", (operation_id,)
-                ).fetchone()
-                if existing is not None:
-                    return False
-                connection.execute("INSERT INTO consumed VALUES (?)", (operation_id,))
-                return True
+                result = max(0, self.activation.max_operations - used)
+                if operation_id is not None:
+                    result = False
+                    if used < self.activation.max_operations:
+                        existing = connection.execute(
+                            "SELECT 1 FROM consumed WHERE operation_id=?",
+                            (operation_id,),
+                        ).fetchone()
+                        if existing is None:
+                            connection.execute(
+                                "INSERT INTO consumed VALUES (?)", (operation_id,)
+                            )
+                            result = True
+            self._inspect_file()
+            return result
         except sqlite3.Error:
             raise PilotAuthorityError("allowance state unavailable") from None
 

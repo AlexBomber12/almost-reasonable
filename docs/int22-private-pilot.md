@@ -28,7 +28,20 @@ the provider, SDK parameters, tools, billing scope, or storage behavior. The
 gateway still owns provider attempt accounting and confirmed spend suspension.
 Cost estimates are not treated as a spend enforcement mechanism.
 
-The artifact must be worker-owned `0400` in a worker-owned `0700` directory. It
+The artifact must be worker-owned `0400` in a worker-owned `0700` directory. Every
+directory from the filesystem root through that parent must be a real directory
+owned by root or the worker UID, with no group or world write bit. The sole
+exception is a root-owned `01777` sticky directory such as `/tmp`; the immediate
+parent still must be worker-owned `0700`. The same ancestry rule applies to the
+emergency-stop file, allowance database, and provider state database. Symlink
+components and unsafe ownership or permissions fail closed. The worker checks
+the control paths on each authorization and pins the directory and file identity
+of both databases across the running worker's transactions. A moved ancestor or
+replacement database blocks further provider contact. This protects against
+untrusted path manipulation; it does not prevent a privileged operator who can
+restore all trusted state from doing so.
+
+The artifact
 has exact fields:
 
 ```json
@@ -142,6 +155,9 @@ tests exercise concurrent allowance reservations,
 expiry, malformed and changed artifacts, wrong application peer UID, worker
 stop/spend readiness, malformed SDK output, and in-flight session revocation,
 source deletion, application Stop and application spend suspension.
+`test_int22_paths.py` covers unsafe and symlinked ancestors, a redirected old
+allowance snapshot, protected-path changes after admission, and accepted sticky
+temporary-directory ancestry.
 
 These tests execute process separation, AF_UNIX peer checks under the test UID,
 typed IPC, closed SDK request construction, SQLite consumption and private

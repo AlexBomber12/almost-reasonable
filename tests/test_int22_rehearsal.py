@@ -149,6 +149,56 @@ def test_authenticated_http_to_fake_sdk_reply_history_restart_and_quota(tmp_path
     assert sum(item["role"] == "agent" for item in history["messages"]) == 4
 
 
+@pytest.mark.parametrize(
+    "change",
+    [
+        "activation_ancestor",
+        "stop_ancestor",
+        "allowance_ancestor",
+        "provider_ancestor",
+        "provider_swap",
+    ],
+)
+def test_unsafe_or_redirected_worker_path_denies_sdk_contact(tmp_path, change):
+    control_root = tmp_path / "controls"
+    control_root.mkdir(mode=0o700)
+    path, _ = activation_file(control_root)
+    stop_root = tmp_path / "stop-control"
+    stop_root.mkdir(mode=0o700)
+    stop = stop_root / "stop.json"
+    stop.write_text(
+        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": False})
+    )
+    stop.chmod(0o400)
+    worker_dir = tmp_path / "worker"
+    worker_dir.mkdir(mode=0o700)
+    allowance_dir = worker_dir / "allowance"
+    allowance_dir.mkdir(mode=0o700)
+    provider_dir = worker_dir / "provider"
+    provider_dir.mkdir(mode=0o700)
+    allowance = allowance_dir / "allowance.sqlite3"
+    PilotAllowance.initialize(allowance, load_activation(path))
+    provider = provider_dir / "provider.sqlite3"
+    socket = worker_dir / "worker.sock"
+    _auth, _events, _ledger, _gate, _app_instance, alice, _bob = _app(tmp_path, socket)
+    paths = (str(socket), str(provider), str(allowance), str(path), str(stop))
+    process, pipe = _start(paths, 1)
+    if change == "activation_ancestor":
+        control_root.chmod(0o777)
+    elif change == "stop_ancestor":
+        stop_root.chmod(0o777)
+    elif change == "allowance_ancestor":
+        allowance_dir.chmod(0o777)
+    elif change == "provider_ancestor":
+        provider_dir.chmod(0o777)
+    else:
+        provider.rename(provider_dir / "saved.sqlite3")
+        EventStore(provider)
+    result = json.loads(alice.submit("one", "Синтетический вопрос")[2])
+    assert result["model_state"] != "completed"
+    assert _finish(process, pipe) == []
+
+
 @pytest.mark.parametrize("failure", ["wrong_peer", "malformed_sdk"])
 def test_worker_rejects_wrong_peer_and_malformed_sdk_response(tmp_path, failure):
     path, value = activation_file(tmp_path)
