@@ -139,12 +139,20 @@ def _owner_stopped(directory: Path) -> bool:
 
 
 class ReadBoundary:
-    def __init__(self, client, config: dict, deadline: float, monotonic=time.monotonic):
-        self.client, self.config, self.deadline, self.monotonic = (
+    def __init__(
+        self,
+        client,
+        config: dict,
+        deadline: float,
+        monotonic=time.monotonic,
+        wall_clock=lambda: datetime.now(UTC),
+    ):
+        self.client, self.config, self.deadline, self.monotonic, self.wall_clock = (
             client,
             config,
             deadline,
             monotonic,
+            wall_clock,
         )
         self.requests = 0
         self.observed = []
@@ -177,6 +185,9 @@ class ReadBoundary:
             raise ProbeRejected(self.last_category)
         if _owner_stopped(Path(c["owner_directory"])):
             self.last_category = "owner_stop"
+            raise ProbeRejected(self.last_category)
+        if self.wall_clock() >= datetime.fromisoformat(c["expires_at"]):
+            self.last_category = "configuration_expired"
             raise ProbeRejected(self.last_category)
         remaining = self.deadline - self.monotonic()
         if remaining <= 0:
@@ -243,9 +254,14 @@ class ReadBoundary:
 
 
 def run(
-    config_path: Path, *, revision: str, client=None, now=None, monotonic=time.monotonic
+    config_path: Path,
+    *,
+    revision: str,
+    client=None,
+    clock=lambda: datetime.now(UTC),
+    monotonic=time.monotonic,
 ) -> dict:
-    started = now or datetime.now(UTC)
+    started = clock()
     receipt = {
         "version": VERSION,
         "revision": revision,
@@ -272,7 +288,13 @@ def run(
             for key in ("account_ref", "provider_user_id", "reply_thread_id", "streams")
         }
         token = _protected_file(Path(c["token_file"]), 512).decode("ascii").strip()
-        boundary = ReadBoundary(client or HTTPSClient(), c, deadline, monotonic)
+        boundary = ReadBoundary(
+            client or HTTPSClient(),
+            c,
+            deadline,
+            monotonic,
+            clock,
+        )
         transport = ThreadsHTTPTransport(
             account_ref=c["account_ref"],
             provider_user_id=c["provider_user_id"],

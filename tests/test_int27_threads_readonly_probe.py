@@ -80,10 +80,14 @@ def setup(tmp_path):
     return config, save, config_path, owner, token_path
 
 
-def run(setup, responses, *, after=None, monotonic=lambda: 0):
+def run(setup, responses, *, after=None, monotonic=lambda: 0, wall_clock=None):
     client = FakeHTTP(responses, after)
     receipt = probe.run(
-        setup[2], revision=REV, client=client, now=NOW, monotonic=monotonic
+        setup[2],
+        revision=REV,
+        client=client,
+        clock=wall_clock or (lambda: NOW),
+        monotonic=monotonic,
     )
     return receipt, client
 
@@ -173,9 +177,9 @@ def test_protected_file_checks_mode_and_ancestry(setup, tmp_path):
     unsafe.mkdir(mode=0o777)
     unsafe.chmod(0o777)
     assert (
-        probe.run(unsafe / "missing", revision=REV, client=FakeHTTP([]), now=NOW)[
-            "outcome"
-        ]
+        probe.run(
+            unsafe / "missing", revision=REV, client=FakeHTTP([]), clock=lambda: NOW
+        )["outcome"]
         == "configuration_invalid"
     )
     with pytest.raises(probe.ProbeRejected):
@@ -224,6 +228,23 @@ def test_stop_change_blocks_second_request(setup):
     assert len(client.calls) == 1
 
 
+def test_expiry_before_and_between_requests_blocks_dispatch(setup):
+    times = iter([NOW, NOW + timedelta(minutes=16)])
+    receipt, client = run(
+        setup,
+        [response({"id": "provider"})],
+        wall_clock=lambda: next(times),
+    )
+    assert receipt["outcome"] == "configuration_expired"
+    assert client.calls == []
+    times = iter([NOW, NOW, NOW + timedelta(minutes=16)])
+    receipt, client = run(
+        setup, [response({"id": "provider"})], wall_clock=lambda: next(times)
+    )
+    assert receipt["outcome"] == "configuration_expired"
+    assert len(client.calls) == 1
+
+
 @pytest.mark.parametrize(
     "method,url,body",
     [
@@ -234,14 +255,14 @@ def test_stop_change_blocks_second_request(setup):
     ],
 )
 def test_boundary_rejects_method_host_body_and_caller_urls(setup, method, url, body):
-    boundary = probe.ReadBoundary(FakeHTTP([]), setup[0], 30, lambda: 0)
+    boundary = probe.ReadBoundary(FakeHTTP([]), setup[0], 30, lambda: 0, lambda: NOW)
     with pytest.raises(probe.ProbeRejected, match="request_rejected"):
         boundary.request(method, url, {}, body, 5)
     assert boundary.requests == 0
 
 
 def test_deadline_prevents_dispatch(setup):
-    boundary = probe.ReadBoundary(FakeHTTP([]), setup[0], 0, lambda: 0)
+    boundary = probe.ReadBoundary(FakeHTTP([]), setup[0], 0, lambda: 0, lambda: NOW)
     with pytest.raises(probe.ProbeRejected, match="deadline_exceeded"):
         boundary.request(
             "GET", "https://graph.threads.net/v1.0/me?fields=id", {}, None, 5
@@ -345,7 +366,7 @@ def test_reviewed_reverse_stream_order_is_observed(setup):
 
 def test_boundaries_reject_fourth_request_and_response_link(setup):
     client = FakeHTTP([response({"id": "provider", "next": "https://evil.example"})])
-    boundary = probe.ReadBoundary(client, setup[0], 30, lambda: 0)
+    boundary = probe.ReadBoundary(client, setup[0], 30, lambda: 0, lambda: NOW)
     boundary.request("GET", "https://graph.threads.net/v1.0/me?fields=id", {}, None, 5)
     assert len(client.calls) == 1
     boundary.requests = 3
