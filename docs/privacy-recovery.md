@@ -9,7 +9,7 @@ participant web ingress exists in an explicit synthetic composition; production
 activation and restore activation remain absent.
 
 Status: foundations plus INT-13 authenticated synthetic participant controls and
-EventStore v7 erasure and quarantine integration. This does **not** enroll real
+EventStore v8 erasure and quarantine integration. This does **not** enroll real
 participants, activate a private-to-public
 path, switch a production database, or make Stage 2 privacy complete.
 

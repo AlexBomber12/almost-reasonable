@@ -17,6 +17,7 @@ from app.core.provider_contract import (
     PricingConfig,
     ProviderUsage,
     build_openai_request,
+    build_worker_context_request,
     estimate_cost,
     require_identifier,
     validate_pricing_config,
@@ -125,11 +126,34 @@ class TrustedOpenAIGateway:
     ) -> GatewayResult:
         if type(request) is not ModelRequest:
             raise TypeError("request must be a ModelRequest")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
+    def submit_context(
+        self, request, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
+        from app.cognition.conversation_context import MemoryModelRequest
+        from app.cognition.shared_context import SharedModelRequest
+
+        if type(request) not in {MemoryModelRequest, SharedModelRequest}:
+            raise TypeError("request must be a typed context request")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
+    def _submit(
+        self, request, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
         require_identifier("correlation id", correlation_id)
         require_identifier("operation id", operation_id)
         if len(operation_id) > MAX_OPERATION_ID_LENGTH:
             raise ValueError("invalid operation id")
-        provider_request = build_openai_request(request, self._config)
+        provider_request = (
+            build_openai_request(request, self._config)
+            if type(request) is ModelRequest
+            else build_worker_context_request(request, self._config)
+        )
         if (
             self._config.deployment_stage is not DeploymentStage.STAGE_1
             or not self._config.paid_calls_enabled
@@ -307,7 +331,11 @@ class TrustedOpenAIGateway:
             model_identifier=self._config.model,
             provider_config_version=self._config.version,
             prompt_version=self._config.prompt_version,
-            core_self_version=request.core_self_version,
+            core_self_version=(
+                request.core_self_version
+                if type(request) is ModelRequest
+                else request.conversation.core_self_version
+            ),
             provider_response_id=response_id,
             started_at=started_at,
             duration_ms=round(duration * 1000),

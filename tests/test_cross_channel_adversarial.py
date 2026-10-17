@@ -645,7 +645,7 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         )
 
         old_backup = tmp_path / "before-deletion.db"
-        create_sqlite_backup(events3.database_path, old_backup, 7, clock())
+        create_sqlite_backup(events3.database_path, old_backup, 8, clock())
         assert (
             post(
                 a,
@@ -696,7 +696,7 @@ def test_cross_channel_research_memory_mission_and_public_journey(tmp_path, case
         assert AgentOutputStore(events4).read_reply(pa, later_reply) is None
         with pytest.raises(ValueError, match="reassessment"):
             SharedMissionAdapter(events4, gate4, **args).current_mission()
-        restored = QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter).restore(
+        restored = QuarantinedRestore(ledger, 8, EventStoreRestoreAdapter).restore(
             old_backup, tmp_path / "quarantine.db", clock()
         )
         assert restored.activation_eligible

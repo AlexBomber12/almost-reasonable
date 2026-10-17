@@ -617,7 +617,7 @@ if (logout) logout.addEventListener('click', async () => {
         return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body
 
     def _checked_history(self, session, environ):
-        from .runtime import Stage0ConversationRuntime
+        from .runtime import Stage0ConversationRuntime, WorkerConversationRuntime
 
         def current_authorized():
             return self._session_current(session, environ)
@@ -629,7 +629,10 @@ if (logout) logout.addEventListener('click', async () => {
             )
         scope = (
             self._conversations.authenticated_request(current_authorized)
-            if isinstance(self._conversations, Stage0ConversationRuntime)
+            if isinstance(
+                self._conversations,
+                (Stage0ConversationRuntime, WorkerConversationRuntime),
+            )
             else nullcontext()
         )
         with scope:
@@ -657,14 +660,17 @@ if (logout) logout.addEventListener('click', async () => {
             ) from None
         if type(payload) is not dict or set(payload) != {"message_id", "content"}:
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Malformed message request.")
-        from .runtime import Stage0ConversationRuntime
+        from .runtime import Stage0ConversationRuntime, WorkerConversationRuntime
 
         def current_authorized():
             return self._session_current(session, environ)
 
         scope = (
             self._conversations.authenticated_request(current_authorized)
-            if isinstance(self._conversations, Stage0ConversationRuntime)
+            if isinstance(
+                self._conversations,
+                (Stage0ConversationRuntime, WorkerConversationRuntime),
+            )
             else nullcontext()
         )
         try:

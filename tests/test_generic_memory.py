@@ -226,7 +226,7 @@ def test_later_trusted_conversation_uses_consolidated_private_memory(tmp_path):
     fresh.submit(principal("b"), "later", "Что помнишь?")
     assert json.loads(fake.calls[-1].request.input_text)["memories"] == []
     backup = tmp_path / "old.db"
-    create_sqlite_backup(reopened.database_path, backup, 7, RUNTIME_NOW)
+    create_sqlite_backup(reopened.database_path, backup, 8, RUNTIME_NOW)
     first = sorted(
         GenericMemoryStore(reopened).current(principal("a")),
         key=lambda read: read.view.item_id,
@@ -242,7 +242,7 @@ def test_later_trusted_conversation_uses_consolidated_private_memory(tmp_path):
     assert GenericMemoryStore(reopened).current(principal("a")) == ()
     quarantine = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 8, EventStoreRestoreAdapter)
         .restore(backup, quarantine, RUNTIME_NOW)
         .activation_eligible
     )
@@ -289,7 +289,7 @@ def test_undeclared_exposed_memory_is_erased_before_later_model_input(tmp_path):
         "m2",
     }
     backup = tmp_path / "before-erasure.db"
-    create_sqlite_backup(store.database_path, backup, 7, RUNTIME_NOW)
+    create_sqlite_backup(store.database_path, backup, 8, RUNTIME_NOW)
     assert (
         delete_source(
             (store, ledger, gate, fake, runtime), original_source
@@ -315,7 +315,7 @@ def test_undeclared_exposed_memory_is_erased_before_later_model_input(tmp_path):
     assert fresh_gate.read_reply(a, fresh._operation_id(later_event)) is not None
     quarantine = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 7, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 8, EventStoreRestoreAdapter)
         .restore(backup, quarantine, RUNTIME_NOW)
         .activation_eligible
     )
@@ -1978,7 +1978,7 @@ def test_genuine_v6_migration_rolls_back_atomically_then_preserves_rows(tmp_path
         assert db.execute("PRAGMA user_version").fetchone() == (6,)
         assert db.execute("SELECT * FROM event_envelopes").fetchall() == input_rows
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 7
+    assert upgraded.diagnostics().schema_version == 8
     assert GenericMemoryStore(upgraded).current(principal("a")) == ()
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT * FROM event_envelopes").fetchall() == input_rows

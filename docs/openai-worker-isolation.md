@@ -8,8 +8,7 @@ environment variables are present.
 
 ## Process and trust architecture
 
-The application authenticates a participant, retrieves only that participant's
-authorized private context, and builds the existing secretless `ModelRequest`.
+The v1 application client accepts an already authorized secretless `ModelRequest`. INT-19 adds an explicit private-web runtime with typed memory/shared context over `openai-worker-context-v2`; see [private-worker-conversation.md](private-worker-conversation.md).
 `OpenAIWorkerClient` sends that value plus application-generated operation and
 correlation identifiers over an AF_UNIX socket. It neither imports the OpenAI
 transport nor constructs an SDK client, and it has no parameter for credentials,

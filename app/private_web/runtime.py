@@ -6,14 +6,23 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 import hashlib
+import os
 
-from app.cognition.conversation_context import MemoryConversationAssembler
+from app.cognition.conversation_context import (
+    MemoryConversationAssembler,
+    MemoryModelRequest,
+)
 from app.cognition.pipeline import CognitionEngine
 from app.cognition.contracts import CognitionCapabilities
 from app.cognition.synthetic import SyntheticMemoryExtractor
 from app.cognition.shared import SharedIntelligence
-from app.cognition.shared_context import assemble_shared
+from app.cognition.shared_context import SharedModelRequest, assemble_shared
 from app.core.self_state_store import SelfStateStore
+from app.core.openai_worker_client import (
+    OpenAIWorkerClient,
+    CLIENT_COMMUNICATION_FAILURE,
+    CLIENT_OUTCOME_UNCERTAIN,
+)
 from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.action_policy import ActionPolicy, CapabilityState, TrustedActionContext
 from app.core.agent_output_store import AgentOutputStore, ReplyOperation, ResultState
@@ -62,6 +71,12 @@ from .conversation import (
 )
 
 
+_WORKER_FAILURE_RU = "Сервис модели временно недоступен. Попробуйте позже."
+_WORKER_STOPPED_RU = "Новые запросы к модели временно остановлены."
+_WORKER_SPEND_RU = "Запросы к модели приостановлены из-за лимита расходов."
+_WORKER_REJECTED_RU = "Ответ модели отклонён проверкой безопасности."
+
+
 class _Snapshot:
     def __init__(self, events):
         self.events = events
@@ -70,19 +85,14 @@ class _Snapshot:
         return self.events
 
 
-class Stage0ConversationRuntime(ConversationService):
-    """Synthetic-only runtime using existing privacy, provider and policy stores.
-
-    Construction requires an exact fake transport, never an arbitrary adapter.
-    The gateway's Stage 1 execution switch is used only inside this closed offline
-    fixture boundary; the normal provider configuration remains inert Stage 0.
-    """
+class _DurableConversationRuntime(ConversationService):
+    """Shared privacy, reservation, policy and release lifecycle."""
 
     def __init__(
         self,
         event_store: EventStore,
         privacy_gate: PrivacyReadGate,
-        transport: FakeOpenAITransport,
+        transport: FakeOpenAITransport | OpenAIWorkerClient,
         *,
         emergency_stop: Callable[[], bool] = lambda: False,
         delivery_enabled: Callable[[], bool] = lambda: True,
@@ -93,9 +103,8 @@ class Stage0ConversationRuntime(ConversationService):
         shared_intelligence: SharedIntelligence | None = None,
         context_limits: ContextLimits = ContextLimits(32_000, 99),
         research_bridge: SyntheticResearchBridge | None = None,
+        provider_state: ProviderStateStore | None = None,
     ):
-        if type(transport) is not FakeOpenAITransport:
-            raise TypeError("Stage 0 requires an exact offline fake transport")
         if privacy_gate._store is not event_store:
             raise ValueError("privacy gate must bind the application database")
         if research_bridge is not None and (
@@ -110,7 +119,7 @@ class Stage0ConversationRuntime(ConversationService):
         )
         self._gate = privacy_gate
         self._outputs = AgentOutputStore(event_store)
-        self._provider = ProviderStateStore(event_store)
+        self._provider = provider_state or ProviderStateStore(event_store)
         self._stop = emergency_stop
         self._delivery = delivery_enabled
         self._checkpoint = checkpoint
@@ -131,6 +140,7 @@ class Stage0ConversationRuntime(ConversationService):
             )
         self._shared = shared_intelligence
         self._limits = context_limits
+        self._worker = transport if type(transport) is OpenAIWorkerClient else None
         self._transport = transport
         self._clock = clock
         self._cognition = (
@@ -154,15 +164,22 @@ class Stage0ConversationRuntime(ConversationService):
         )
         self._memory_bridge = (
             None
-            if self._cognition is None and self._shared is None
+            if self._worker is not None
+            or (self._cognition is None and self._shared is None)
             else _MemoryFakeBridge(transport)
         )
-        self._gateway = TrustedOpenAIGateway(
-            store=self._provider,
-            transport=transport if self._memory_bridge is None else self._memory_bridge,
-            config=self._config,
-            emergency_stop=emergency_stop,
-            utcnow=clock,
+        self._gateway = (
+            None
+            if self._worker is not None
+            else TrustedOpenAIGateway(
+                store=self._provider,
+                transport=transport
+                if self._memory_bridge is None
+                else self._memory_bridge,
+                config=self._config,
+                emergency_stop=emergency_stop,
+                utcnow=clock,
+            )
         )
         super().__init__(
             event_store, PrivateContextAssembler(event_store, self._limits), clock=clock
@@ -184,13 +201,24 @@ class Stage0ConversationRuntime(ConversationService):
 
     def _capabilities(self):
         return CapabilityState(
-            "private-runtime-stage0-v1",
+            "private-runtime-worker-v1"
+            if self._worker is not None
+            else "private-runtime-stage0-v1",
             self._stop(),
             self._provider.is_spend_suspended(),
             self._delivery(),
             False,
             True,
         )
+
+    def _skip_outcome(self, caps):
+        if self._worker is None:
+            return "skipped"
+        if caps.emergency_stop_active:
+            return "stopped"
+        if caps.provider_spend_suspended:
+            return "spend_suspended"
+        return "unavailable"
 
     def _input(self, principal, message_id, content):
         # Exact participant/message identity survives a renewed session. The original
@@ -236,7 +264,7 @@ class Stage0ConversationRuntime(ConversationService):
         def admit():
             if self._input(principal, message_id, content) is not None:
                 return SubmittedMessage(MessageStatus.DUPLICATE, ModelState.UNAVAILABLE)
-            return super(Stage0ConversationRuntime, self).submit(
+            return super(_DurableConversationRuntime, self).submit(
                 principal, message_id, content
             )
 
@@ -254,7 +282,7 @@ class Stage0ConversationRuntime(ConversationService):
                 previous = self._outputs.read_reply(principal, operation_id)
                 if previous is not None:
                     return previous, None
-                if self._memory_bridge is not None:
+                if self._memory_bridge is not None or self._worker is not None:
                     return self._reserve_memory(
                         principal, event_id, correlation, operation_id
                     )
@@ -273,8 +301,10 @@ class Stage0ConversationRuntime(ConversationService):
                     "conversation:"
                     + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
                     correlation,
-                    self._config.model,
-                    self._config.prompt_version,
+                    "worker-owned" if self._worker is not None else self._config.model,
+                    "worker-context-v2"
+                    if self._worker is not None
+                    else self._config.prompt_version,
                     context.core_self.version,
                     tuple(sorted(event.event_id for event in events)),
                 )
@@ -297,7 +327,7 @@ class Stage0ConversationRuntime(ConversationService):
                 ):
                     self._gate.authorized(
                         lambda: self._outputs.resolve_without_reply(
-                            principal, operation_id, "skipped"
+                            principal, operation_id, self._skip_outcome(caps)
                         )
                     )
                 else:
@@ -316,11 +346,13 @@ class Stage0ConversationRuntime(ConversationService):
                     ):
                         self._gate.authorized(
                             lambda: self._outputs.resolve_without_reply(
-                                principal, operation_id, "skipped"
+                                principal, operation_id, self._skip_outcome(caps)
                             )
                         )
                     else:
-                        result = self._infer(context, correlation, operation_id)
+                        result = self._infer(
+                            context, correlation, operation_id, principal
+                        )
                         self._checkpoint("after_model")
                         if (
                             self._research is not None
@@ -377,8 +409,10 @@ class Stage0ConversationRuntime(ConversationService):
                     "conversation:"
                     + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
                     correlation,
-                    self._config.model,
-                    "private-memory-stage0-v2"
+                    "worker-owned" if self._worker is not None else self._config.model,
+                    "worker-context-v2"
+                    if self._worker is not None
+                    else "private-memory-stage0-v2"
                     if self._shared is None
                     else "shared-stage0-v3",
                     request.conversation.core_self_version,
@@ -392,7 +426,43 @@ class Stage0ConversationRuntime(ConversationService):
         finally:
             db.close()
 
-    def _infer(self, context, correlation, operation_id):
+    def _infer(self, context, correlation, operation_id, principal):
+        if self._worker is not None:
+            request = (
+                context
+                if type(context) in {MemoryModelRequest, SharedModelRequest}
+                else build_model_request(context)
+            )
+            marker = "ipc:" + operation_id
+
+            def admit_worker():
+                caps = self._capabilities()
+                if caps.emergency_stop_active:
+                    return "emergency_stop"
+                if caps.provider_spend_suspended:
+                    return "spend_suspended"
+                if (
+                    not caps.private_reply_drafts_enabled
+                    or not self._current_request.get()()
+                ):
+                    return "authorization_rejected"
+                if self._outputs.read_reply(principal, operation_id) is None:
+                    raise PrivacyReadBlocked("reply_sources_unavailable")
+                return self._provider.reserve_attempt(
+                    marker, "worker-ipc", self._clock()
+                )
+
+            self._checkpoint("before_worker_admission")
+            reservation = self._gate.authorized(admit_worker)
+            if reservation is not AttemptReservationStatus.CREATED:
+                return self._worker_result(
+                    CLIENT_OUTCOME_UNCERTAIN
+                    if reservation is AttemptReservationStatus.DUPLICATE
+                    else reservation
+                )
+            return self._worker.infer(
+                request, correlation_id=correlation, operation_id=operation_id
+            )
         if self._memory_bridge is None:
             return self._gateway.submit(
                 build_model_request(context),
@@ -410,6 +480,12 @@ class Stage0ConversationRuntime(ConversationService):
             )
         finally:
             self._memory_bridge.payload.reset(token)
+
+    @staticmethod
+    def _worker_result(outcome):
+        from app.core.openai_worker_client import ClientResult
+
+        return ClientResult("", "", outcome, 0, None)
 
     def _research_screening(self, route, operation):
         """Capture material dependencies solely for local output rejection.
@@ -648,8 +724,20 @@ class Stage0ConversationRuntime(ConversationService):
     def _commit(self, route, operation, result):
         caps = self._capabilities()
         if caps.emergency_stop_active or caps.provider_spend_suspended:
-            outcome = "skipped"
-        elif result.outcome is GatewayOutcome.COMPLETED:
+            outcome = (
+                ("stopped" if caps.emergency_stop_active else "spend_suspended")
+                if self._worker is not None
+                else "skipped"
+            )
+        elif self._worker is not None and not self._current_request.get()():
+            return
+        elif self._worker is not None and result.outcome == CLIENT_OUTCOME_UNCERTAIN:
+            return
+        elif (
+            self._worker is not None and result.outcome == CLIENT_COMMUNICATION_FAILURE
+        ):
+            outcome = "unavailable"
+        elif result.outcome == GatewayOutcome.COMPLETED:
             decision = ActionPolicy().evaluate(result.validation, route, caps)
             if isinstance(decision.proposal, NoActionProposal):
                 outcome = "no_action"
@@ -665,8 +753,8 @@ class Stage0ConversationRuntime(ConversationService):
                     route, operation, grant, self._capabilities()
                 )
                 return True
-        elif result.outcome is GatewayOutcome.INVALID_PROPOSAL:
-            outcome = "invalid"
+        elif result.outcome == GatewayOutcome.INVALID_PROPOSAL:
+            outcome = "rejected" if self._worker is not None else "invalid"
         elif result.outcome in {
             GatewayOutcome.DUPLICATE_OPERATION,
             GatewayOutcome.PERSISTENCE_FAILURE,
@@ -677,7 +765,30 @@ class Stage0ConversationRuntime(ConversationService):
             GatewayOutcome.EMERGENCY_STOP,
             GatewayOutcome.SPEND_SUSPENDED,
         }:
-            outcome = "skipped"
+            outcome = (
+                (
+                    "stopped"
+                    if result.outcome == GatewayOutcome.EMERGENCY_STOP
+                    else "spend_suspended"
+                )
+                if self._worker is not None
+                else "skipped"
+            )
+        elif self._worker is not None and result.outcome in {
+            GatewayOutcome.DISABLED,
+            "authorization_rejected",
+            "invalid_ipc_request",
+            GatewayOutcome.INVALID_RESPONSE,
+            GatewayOutcome.INVALID_REQUEST,
+            GatewayOutcome.REFUSED,
+            GatewayOutcome.INCOMPLETE,
+            GatewayOutcome.UNSUPPORTED_OUTPUT,
+        }:
+            outcome = (
+                "unavailable"
+                if result.outcome == GatewayOutcome.DISABLED
+                else "rejected"
+            )
         else:
             outcome = "failed"
         self._outputs.resolve_without_reply(
@@ -723,12 +834,19 @@ class Stage0ConversationRuntime(ConversationService):
             ):
                 return SubmittedMessage(message_status, ModelState.RESEARCH_DENIED)
         if reply.result_state is ResultState.PERSISTED:
+            if self._worker is not None and not self._current_request.get()():
+                return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
             caps = self._capabilities()
             if (
                 caps.emergency_stop_active
                 or caps.provider_spend_suspended
                 or not caps.private_reply_drafts_enabled
             ):
+                if self._worker is not None:
+                    return SubmittedMessage(
+                        message_status,
+                        ModelState(self._skip_outcome(caps)),
+                    )
                 return SubmittedMessage(message_status, ModelState.SKIPPED)
             validation = ProposalValidation(ReplyProposal(reply.content), None)
             grant = ActionPolicy().evaluate(validation, route, caps)
@@ -741,7 +859,23 @@ class Stage0ConversationRuntime(ConversationService):
             )
             return SubmittedMessage(message_status, ModelState.COMPLETED, reply.content)
         if resolution is not None:
-            return SubmittedMessage(message_status, ModelState(resolution[0]))
+            state = ModelState(resolution[0])
+            message = (
+                {
+                    ModelState.UNAVAILABLE: _WORKER_FAILURE_RU,
+                    ModelState.STOPPED: _WORKER_STOPPED_RU,
+                    ModelState.SPEND_SUSPENDED: _WORKER_SPEND_RU,
+                    ModelState.REJECTED: _WORKER_REJECTED_RU,
+                    ModelState.FAILED: _WORKER_FAILURE_RU,
+                }.get(state)
+                if self._worker is not None
+                else None
+            )
+            return SubmittedMessage(message_status, state, message)
+        if self._worker is not None and self._provider.attempt_exists(
+            "ipc:" + operation_id
+        ):
+            return SubmittedMessage(message_status, ModelState.UNCERTAIN)
         return SubmittedMessage(message_status, ModelState.PENDING)
 
     def history(self, principal) -> tuple[HistoryItem, ...]:
@@ -784,4 +918,39 @@ class _MemoryFakeBridge:
         return self._transport.call(
             replace(request, input_text=self.payload.get()),
             timeout_seconds=timeout_seconds,
+        )
+
+
+class Stage0ConversationRuntime(_DurableConversationRuntime):
+    """Exact fake-only offline fixture; never accepts an arbitrary adapter."""
+
+    def __init__(self, event_store, privacy_gate, transport, **kwargs):
+        if type(transport) is not FakeOpenAITransport:
+            raise TypeError("Stage 0 requires an exact offline fake transport")
+        if "provider_state" in kwargs:
+            raise ValueError("Stage 0 provider state is bound to its application store")
+        super().__init__(event_store, privacy_gate, transport, **kwargs)
+
+
+class WorkerConversationRuntime(_DurableConversationRuntime):
+    """Explicit application-only worker connection using durable reply policy."""
+
+    def __init__(self, event_store, privacy_gate, client, *, provider_state, **kwargs):
+        if type(client) is not OpenAIWorkerClient:
+            raise TypeError("worker runtime requires an exact worker client")
+        if client._expected_worker_uid is None:
+            raise ValueError("worker runtime requires an authenticated worker UID")
+        if type(provider_state) is not ProviderStateStore:
+            raise TypeError("worker runtime requires an exact provider state store")
+        if os.path.samefile(
+            provider_state._event_store.database_path, event_store.database_path
+        ):
+            raise ValueError("worker provider state must use a separate database")
+        if (
+            kwargs.get("research_bridge") is not None
+            or kwargs.get("memory_extractor") is not None
+        ):
+            raise ValueError("worker conversation cannot run synthetic effects")
+        super().__init__(
+            event_store, privacy_gate, client, provider_state=provider_state, **kwargs
         )

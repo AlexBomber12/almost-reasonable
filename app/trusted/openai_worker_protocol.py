@@ -17,6 +17,9 @@ from app.core.agent_proposals import (
     parse_agent_proposal,
 )
 from app.core.context import ContextRole, ContextTrust, ConversationSegment
+from app.cognition.conversation_context import MemoryModelRequest, ModelMemory
+from app.cognition.shared import SharedRecord
+from app.cognition.shared_context import SharedModelRequest
 from app.core.model_contract import (
     MAX_MODEL_REQUEST_UTF8_BYTES,
     ModelRequest,
@@ -31,6 +34,7 @@ from app.core.provider_contract import (
 
 
 PROTOCOL_VERSION = "openai-worker-v1"
+CONTEXT_PROTOCOL_VERSION = "openai-worker-context-v2"
 OPERATION_INFER = "infer"
 FRAME_PREFIX_BYTES = 4
 MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
@@ -86,7 +90,9 @@ class WorkerProtocolError(ValueError):
 class InferenceRequest:
     operation_id: str
     correlation_id: str
-    model_request: ModelRequest = field(repr=False)
+    model_request: ModelRequest | MemoryModelRequest | SharedModelRequest = field(
+        repr=False
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,9 +112,17 @@ def encode_request(request: InferenceRequest) -> bytes:
     if len(request.operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
         raise ValueError("invalid operation id")
     require_identifier("correlation id", request.correlation_id)
-    model_json = serialize_model_request(request.model_request)
+    model = request.model_request
+    if type(model) is ModelRequest:
+        model_json = serialize_model_request(model)
+        version = PROTOCOL_VERSION
+    elif type(model) in {MemoryModelRequest, SharedModelRequest}:
+        model_json = model.serialize()
+        version = CONTEXT_PROTOCOL_VERSION
+    else:
+        raise TypeError("unsupported model request")
     payload = {
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": version,
         "operation_type": OPERATION_INFER,
         "operation_id": request.operation_id,
         "correlation_id": request.correlation_id,
@@ -131,7 +145,7 @@ def decode_request(payload: bytes) -> InferenceRequest:
             "model_request",
         },
     )
-    if value["protocol_version"] != PROTOCOL_VERSION:
+    if value["protocol_version"] not in {PROTOCOL_VERSION, CONTEXT_PROTOCOL_VERSION}:
         raise WorkerProtocolError("unsupported protocol version")
     if value["operation_type"] != OPERATION_INFER:
         raise WorkerProtocolError("unsupported operation")
@@ -140,11 +154,130 @@ def decode_request(payload: bytes) -> InferenceRequest:
         if len(operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
             raise ValueError("invalid operation id")
         correlation_id = require_identifier("correlation id", value["correlation_id"])
-        model_request = _parse_model_request(value["model_request"])
-        serialize_model_request(model_request)
+        if value["protocol_version"] == PROTOCOL_VERSION:
+            model_request = _parse_model_request(value["model_request"])
+            serialize_model_request(model_request)
+        else:
+            model_request = _parse_context_request(value["model_request"])
     except (TypeError, ValueError):
         raise WorkerProtocolError("invalid inference request") from None
     return InferenceRequest(operation_id, correlation_id, model_request)
+
+
+def _parse_context_request(value: object) -> MemoryModelRequest | SharedModelRequest:
+    if type(value) is not dict:
+        raise WorkerProtocolError("invalid context request")
+    shared = value.get("contract_version") == "model-contract-shared-intelligence-v3"
+    base_fields = {
+        "contract_version",
+        "task",
+        "core_self",
+        "conversation",
+        "history_omitted",
+        "allowed_decisions",
+        "memories",
+        "memories_omitted",
+    }
+    _require_exact_dict(
+        value,
+        base_fields | {"shared_intellectual_state", "shared_omitted"}
+        if shared
+        else base_fields,
+    )
+    if value["contract_version"] not in {
+        "model-contract-private-memory-v2",
+        "model-contract-shared-intelligence-v3",
+    }:
+        raise WorkerProtocolError("invalid context contract")
+    base = {key: value[key] for key in base_fields - {"memories", "memories_omitted"}}
+    base["contract_version"] = "model-contract-v1"
+    conversation = _parse_model_request(base)
+    memories = value["memories"]
+    if type(memories) is not list:
+        raise WorkerProtocolError("invalid memories")
+    private = MemoryModelRequest(
+        conversation,
+        tuple(_parse_memory(item) for item in memories),
+        value["memories_omitted"],
+    )
+    if shared:
+        records = value["shared_intellectual_state"]
+        if type(records) is not list:
+            raise WorkerProtocolError("invalid shared records")
+        request = SharedModelRequest(
+            private,
+            tuple(_parse_shared(item) for item in records),
+            value["shared_omitted"],
+        )
+    else:
+        request = private
+    request.serialize()
+    return request
+
+
+def _parse_memory(value: object) -> ModelMemory:
+    fields = {
+        "kind",
+        "text",
+        "status",
+        "confidence",
+        "stance",
+        "priority",
+        "revision_reason",
+        "supporting_evidence_count",
+        "counterevidence_count",
+        "reason_for_interest",
+        "alternatives",
+        "rationale",
+        "constraints",
+        "review_condition",
+        "verification",
+        "provenance",
+        "trust",
+        "can_instruct",
+    }
+    _require_exact_dict(value, fields)
+    if value["trust"] != "untrusted_memory_data" or value["can_instruct"] is not False:
+        raise WorkerProtocolError("invalid memory trust")
+    if (
+        type(value["alternatives"]) is not list
+        or type(value["constraints"]) is not list
+    ):
+        raise WorkerProtocolError("invalid memory collections")
+    return ModelMemory(
+        value["kind"],
+        value["text"],
+        value["status"],
+        value["confidence"],
+        value["stance"],
+        value["priority"],
+        value["revision_reason"],
+        value["supporting_evidence_count"],
+        value["counterevidence_count"],
+        value["reason_for_interest"],
+        tuple(value["alternatives"]),
+        value["rationale"],
+        tuple(value["constraints"]),
+        value["review_condition"],
+        value["verification"],
+        value["provenance"],
+    )
+
+
+def _parse_shared(value: object) -> SharedRecord:
+    if type(value) is not dict:
+        raise WorkerProtocolError("invalid shared record")
+    _require_exact_dict(
+        value,
+        set(ModelMemory.__dataclass_fields__)
+        | {"trust", "can_instruct", "scope", "revision", "kind"},
+    )
+    if value["scope"] != "approved_shared_abstract":
+        raise WorkerProtocolError("invalid shared scope")
+    memory = _parse_memory(
+        {key: item for key, item in value.items() if key not in {"scope", "revision"}}
+    )
+    return SharedRecord("worker_projection", memory, value["revision"], value["kind"])
 
 
 def encode_response(response: WorkerResponse) -> bytes:

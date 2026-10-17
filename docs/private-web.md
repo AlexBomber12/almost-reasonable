@@ -156,7 +156,7 @@ server-error retries, then creates a new ID only after an acknowledged success.
 HTML renders participant content with escaping; JSON is served only as
 `application/json`.
 
-## Disabled model execution and integration hook
+## Disabled default and explicit worker mode
 
 `ConversationService` accepts the narrow `InferenceAdapter` protocol. Its safe
 default is `DisabledInferenceAdapter`, which performs no network or provider
@@ -164,12 +164,13 @@ operation and returns `unavailable`. `SyntheticInferenceAdapter` records the
 already privacy-scoped context in memory for deterministic tests and returns
 `pending`.
 
-The adapter result cannot contain deliverable response text: the public result
-always has `response: null`. The chat page explicitly says model responses are
-unavailable or pending. The module does not import or instantiate
-`OpenAIWorkerClient`. After the Stage 1 worker work lands, a future integration
-may implement this seam only after the Russian-output, action-policy, privacy,
-usage, and response-delivery gates are complete.
+The disabled adapter result cannot contain deliverable response text. INT-19
+adds a separate `--worker-socket` CLI mode that composes matching authentication,
+privacy, owner-stop, provider-spend and worker-client controls. This path uses
+`WorkerConversationRuntime` for Russian-screened, policy-controlled durable
+replies and history; it does not widen the ordinary adapter. See
+[private-worker-conversation.md](private-worker-conversation.md) for required
+configuration and current limits.
 
 ## Before Stage 2 enrollment
 

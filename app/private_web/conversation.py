@@ -29,6 +29,10 @@ _MESSAGE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\Z")
 class ModelState(StrEnum):
     UNAVAILABLE = "unavailable"
     PENDING = "pending"
+    UNCERTAIN = "uncertain"
+    STOPPED = "stopped"
+    REJECTED = "rejected"
+    SPEND_SUSPENDED = "spend_suspended"
     COMPLETED = "completed"
     NO_ACTION = "no_action"
     FAILED = "failed"

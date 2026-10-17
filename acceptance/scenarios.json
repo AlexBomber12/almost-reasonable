@@ -19,7 +19,7 @@
     "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11"
   },
   "configuration": {
-    "event_store": 7,
+    "event_store": 8,
     "threads_store": 10,
     "stage0_journal": 2,
     "core_self": "core-self-v1",
@@ -29,6 +29,7 @@
     "behavior": "behavior-deliberation-v1",
     "behavior_corpus": "stage0-recorded-anchors-v2",
     "ordinary_runtime": "disabled",
+    "private_worker": "openai-worker-context-v2 (explicit mode; fake process proof only)",
     "provider_fixture_model": "gpt-6.1-sol (fake only; no availability claim)",
     "recorded_behavior_model": "RecordedBehaviorModel; no real model",
     "research_transport": "FakeHostedSearchTransport; no credentials",
@@ -122,6 +123,38 @@
             "tests/test_stage0_process_acceptance.py::test_real_private_process_exit_preserves_operation_without_model_replay[after_reply_commit-completed]",
             "tests/test_stage0_process_acceptance.py::test_real_private_process_exit_preserves_operation_without_model_replay[before_release-completed]"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI -> WorkerConversationRuntime -> AF_UNIX OpenAIWorkerServer",
+          "components": [
+            "AuthStore",
+            "PrivacyReadGate",
+            "WorkerConversationRuntime",
+            "OpenAIWorkerClient",
+            "OpenAIWorkerServer",
+            "EventStore v8",
+            "FakeOpenAITransport"
+          ],
+          "sink": "Russian HTTP reply, separate-process provider input, durable history and replay",
+          "risks": [
+            "restart",
+            "crash",
+            "adversarial",
+            "concurrency"
+          ],
+          "scope": "Synthetic A/B and deterministic fake provider only; explicit worker mode, no paid or pilot authority.",
+          "node_ids": [
+            "tests/test_int19_worker_runtime.py::test_connected_http_worker_process_isolation_restart_and_no_retry",
+            "tests/test_int19_worker_runtime.py::test_existing_private_memory_crosses_worker_with_deletion_dependency",
+            "tests/test_int19_worker_runtime.py::test_actual_worker_boundary_uncertainty_survives_restart[response_loss]",
+            "tests/test_int19_worker_runtime.py::test_actual_worker_boundary_uncertainty_survives_restart[malformed_response]",
+            "tests/test_int19_worker_runtime.py::test_actual_worker_boundary_uncertainty_survives_restart[unauthorized]",
+            "tests/test_int19_worker_runtime.py::test_controls_change_while_separate_worker_is_in_flight[stop-stopped]",
+            "tests/test_int19_worker_runtime.py::test_controls_change_while_separate_worker_is_in_flight[spend-spend_suspended]",
+            "tests/test_int19_worker_runtime.py::test_controls_change_while_separate_worker_is_in_flight[revoke-uncertain]",
+            "tests/test_int19_worker_runtime.py::test_client_rejects_wrong_worker_uid_before_private_transmission"
+          ]
         }
       ],
       "missing_connections": [],
@@ -188,6 +221,29 @@
           "node_ids": [
             "tests/test_shared_intelligence.py::test_exact_approval_replay_cas_and_inherited_sources",
             "tests/test_shared_intelligence.py::test_permissive_h_screen_cannot_promote_injection_or_private_paraphrase"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Authenticated private WSGI -> typed shared context -> AF_UNIX worker",
+          "components": [
+            "WorkerConversationRuntime",
+            "SharedIntelligence",
+            "MemoryConversationAssembler",
+            "OpenAIWorkerServer",
+            "PrivacyReadGate"
+          ],
+          "sink": "allowlisted shared model input, protected reply edges and deletion-invalidated history",
+          "risks": [
+            "adversarial",
+            "restart"
+          ],
+          "scope": "Existing synthetic closed approval and fake provider; no arbitrary sharing authority.",
+          "node_ids": [
+            "tests/test_int19_worker_runtime.py::test_shared_context_crosses_worker_without_private_provenance_and_erases",
+            "tests/test_int19_worker_runtime.py::test_context_protocol_round_trip_has_no_protected_identifiers",
+            "tests/test_int19_worker_runtime.py::test_deletion_before_reply_release_blocks_worker_draft",
+            "tests/test_event_store_v8.py::test_v7_worker_outcome_migration_is_atomic"
           ]
         }
       ],
@@ -1817,7 +1873,7 @@
   "owner_concurrency": "Reproduced rollback-journal disappearance between exists() and lstat(); regression failed before fix. One lstat now handles only FileNotFoundError as optional absence. Unsafe entries and actual lock/storage errors remain fail-closed. Controlled writer-lock/revocation test verifies current auth after waiting. 20 unchanged pre-fix stress runs passed; historical CI causality cannot be proven from a generic sanitized error alone. Twenty independent post-fix executions of existing concurrency and both timing regressions also passed without retries.",
   "stage_capabilities": {
     "Stage 0": {
-      "private": "synthetic AuthStore/WSGI plus fake runtime",
+      "private": "synthetic AuthStore/WSGI plus fake Stage 0 runtime and explicit INT-19 AF_UNIX fake-worker composition",
       "shared": "four reviewed literal abstractions only",
       "research": "explicit authenticated private handoff to two public worker fixtures; exact independent application/worker grants; arbitrary topics and production disabled",
       "Threads": "two catalog drafts and simulator only",
