@@ -44,7 +44,7 @@ def pytest_sessionfinish(session, exitstatus):
 
 @pytest.fixture(autouse=True)
 def acceptance_offline(request, monkeypatch):
-    from acceptance.guards import install
+    from acceptance.guards import install, install_spawn_guard
 
     mapped = {
         node
@@ -75,3 +75,8 @@ def acceptance_offline(request, monkeypatch):
                 )
             ),
         )
+        if request.node.nodeid == (
+            "tests/test_int23_connected.py::"
+            "test_authenticated_wsgi_two_workers_and_durable_reply"
+        ):
+            install_spawn_guard(monkeypatch)

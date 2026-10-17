@@ -884,6 +884,23 @@
           "node_ids": [
             "tests/test_int25_connected.py::test_private_research_public_draft_stop_and_restart_replay"
           ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Mapped INT-23 spawn context -> fresh child interpreter",
+          "components": [
+            "acceptance.guards",
+            "PublicResearchServer",
+            "OpenAIWorkerServer"
+          ],
+          "sink": "child-process network and credential construction denied; AF_UNIX allowed",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Application test guard only; no OS network isolation claim.",
+          "node_ids": [
+            "tests/test_int25_guarded_spawn.py::test_spawned_mapped_worker_has_offline_guards"
+          ]
         }
       ],
       "missing_connections": [],

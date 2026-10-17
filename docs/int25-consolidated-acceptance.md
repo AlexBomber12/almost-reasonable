@@ -18,7 +18,10 @@ runs the independent INT-24 public worker, observes an approval-bound outbox dra
 applies local approval and dispatches through fake Threads HTTP. A private canary
 must be absent from the public research request, public worker SDK input and fake
 Threads request. The same application OwnerStore Stop prevents new private and
-public work. Child workers install application offline guards themselves.
+public work. INT-25 child workers install application offline guards themselves.
+The mapped INT-23 test uses an acceptance wrapper to install those guards in its
+spawned interpreters. A separate child-process regression proves Internet sockets,
+DNS, live HTTP and default credential construction are denied there.
 
 Existing mapped recovery checks additionally cover INT-22 allowance persistence,
 INT-23 lost research responses, and INT-24 started inference, unknown publication,

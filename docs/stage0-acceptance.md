@@ -68,8 +68,9 @@ model consolidation and production restore activation remain absent.
 
 Scoped guards reject Internet sockets, DNS, HTTP and production credential factories
 for mapped acceptance tests. AF_UNIX is allowed only for mapped local worker IPC,
-including INT-19 through INT-25 connected paths. The INT-25 spawned inference and
-research workers explicitly install the same guards. Other process fixtures have
+including INT-19 through INT-25 connected paths. INT-25 child workers explicitly
+install the same guards; the mapped INT-23 spawn targets use an acceptance wrapper
+with a child-process denial regression. Other process fixtures have
 their own stated scope. These application-test guards do not establish OS network
 isolation; no live provider or Threads requests are part of this gate.
 
