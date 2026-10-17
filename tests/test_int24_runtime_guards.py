@@ -26,6 +26,70 @@ def no_action_result():
     )
 
 
+def test_application_reservation_assertion_requires_started_journal(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, _ = setup(
+        tmp_path, {"decision": "no_action", "reason_category": "other"}
+    )
+    try:
+        operation = app.wakeup_operation("wake-1")
+        request = PublicBehaviorRequest(
+            operation, operation, "autonomous_wakeup", (), (), 5
+        )
+        with pytest.raises(ValueError, match="not reserved"):
+            app.reservation_evidence(request)
+        monkeypatch.setattr(
+            app.engine,
+            "deliberate",
+            lambda _input: DeliberationResult(
+                DeliberationOutcome.PROPOSED, None, None, 1, 1
+            ),
+        )
+        app._decide(
+            operation, {"kind": "wake", "event": "wake-1", "correlation": operation}, ()
+        )
+        assert app.journal.read(operation)["phase"] == "rejected"
+    finally:
+        worker.close()
+
+
+def test_worker_socket_timeout_keeps_started_operation_uncertain(tmp_path, monkeypatch):
+    import app.behavior.worker_client as client_module
+
+    app, worker, _, _, _ = setup(
+        tmp_path, {"decision": "no_action", "reason_category": "other"}
+    )
+
+    class TimedOutSocket:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return None
+
+        def settimeout(self, _seconds):
+            return None
+
+        def connect(self, _path):
+            raise TimeoutError("simulated lost connection")
+
+    try:
+        monkeypatch.setattr(
+            client_module.socket, "socket", lambda *_a: TimedOutSocket()
+        )
+        operation = app.wakeup_operation("wake-1")
+        with pytest.raises(ValueError, match="uncertain"):
+            app._decide(
+                operation,
+                {"kind": "wake", "event": "wake-1", "correlation": operation},
+                (),
+            )
+        assert app.journal.read(operation)["phase"] == "started"
+    finally:
+        worker.close()
+
+
 def mission_file(tmp_path, *, version="mission-v1", purpose=None):
     from app.behavior.mission import MissionPurpose, _MISSION_PURPOSE_TEXT
 

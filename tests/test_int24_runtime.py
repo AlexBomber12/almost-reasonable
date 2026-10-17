@@ -30,7 +30,16 @@ class FakeSDK:
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return type("Response", (), {"output_text": json.dumps(self.proposal)})()
+        proposal = {
+            "decision": self.proposal["decision"],
+            "content": None,
+            "draft": None,
+            "reason_category": None,
+        }
+        proposal.update(self.proposal)
+        return type(
+            "Response", (), {"status": "completed", "output_text": json.dumps(proposal)}
+        )()
 
 
 class FakeHTTP:
@@ -270,7 +279,7 @@ def test_unsupported_worker_decision_is_rejected_without_outbox(tmp_path):
     try:
         run_once(app, worker)
         operation = app.wakeup_operation("wake-1")
-        assert app.journal.read(operation)["phase"] == "rejected"
+        assert app.journal.read(operation)["phase"] == "started"
         assert http.calls == []
     finally:
         worker.close()
@@ -397,7 +406,7 @@ def test_local_uid_mismatch_cannot_approve(tmp_path):
 
 
 def test_default_operator_readiness_never_opens_credentials_or_network(capsys):
-    from ops.int24_threads_runtime import main
+    from app.ops.int24_threads_runtime import main
 
     assert main(["readiness"]) == 0
     assert "runtime_disabled" in capsys.readouterr().out
@@ -627,10 +636,16 @@ def test_model_draft_above_response_envelope_is_durably_rejected(tmp_path):
         "Response",
         (),
         {
+            "status": "completed",
             "output_text": json.dumps(
-                {"decision": "propose_publication", "draft": draft},
+                {
+                    "decision": "propose_publication",
+                    "draft": draft,
+                    "content": None,
+                    "reason_category": None,
+                },
                 ensure_ascii=False,
-            )
+            ),
         },
     )()
     try:

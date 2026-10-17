@@ -4,7 +4,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import sqlite3
 
 from app.core.provider_contract import require_identifier
 from app.core.provider_spend import ProviderStateStore
@@ -35,28 +34,33 @@ def _billing_scope(config):
     return project, organization
 
 
-def _attestor(path, account):
+def _attestor(account):
+    """Verify the app UID's bounded assertion; never open the app journal."""
+
     def attest(request):
-        try:
-            with sqlite3.connect(
-                Path(path).absolute().as_uri() + "?mode=ro", uri=True
-            ) as db:
-                marker = db.execute(
-                    "SELECT version,account FROM public_runtime_schema"
-                ).fetchall()
-                row = db.execute(
-                    "SELECT phase,payload FROM intents WHERE operation=?",
-                    (request.operation_id,),
-                ).fetchone()
-        except sqlite3.Error:
+        value = request.reservation
+        if type(value) is not dict or set(value) != {
+            "account",
+            "kind",
+            "event",
+            "resumed",
+            "runtime_version",
+            "phase",
+            "context_digest",
+            "mission",
+            "timeout",
+        }:
             return False
         if (
-            marker != [(PUBLIC_RUNTIME_VERSION, account)]
-            or row is None
-            or row[0] != "started"
+            value["account"] != account
+            or value["phase"] != "started"
+            or value["runtime_version"] != PUBLIC_RUNTIME_VERSION
+            or value["kind"] not in ("wake", "reply", "mention")
+            or type(value["event"]) is not str
+            or type(value["resumed"]) is not bool
+            or type(value["timeout"]) not in (int, float)
         ):
             return False
-        value = json.loads(row[1])
         expected = (
             _identity(account, "wake", value["event"])
             if value["kind"] == "wake"
@@ -70,9 +74,10 @@ def _attestor(path, account):
         return (
             request.operation_id == expected == request.correlation_id
             and value.get("runtime_version") == PUBLIC_RUNTIME_VERSION
-            and request.trigger == value["trigger"]
+            and request.trigger
+            == ("autonomous_wakeup" if value["kind"] == "wake" else "public_message")
             and public_context_digest(request.context) == value["context_digest"]
-            and request.mission == tuple(value["mission_text"])
+            and request.mission == tuple(value["mission"])
             and 0 < request.deadline_seconds <= value["timeout"]
         )
 
@@ -108,9 +113,11 @@ def main(argv=None):
         Path(config["attempts_path"]),
         permitted_uid=config["application_uid"],
         socket_gid=config["application_gid"],
-        attest=_attestor(config["journal_path"], config["account_ref"]),
+        attest=_attestor(config["account_ref"]),
         adapter=PublicSDKAdapter(sdk, model=config["model"]),
-        provider_store=ProviderStateStore(EventStore(Path(config["event_store_path"]))),
+        provider_store=ProviderStateStore(
+            EventStore(Path(config["worker_event_store_path"]))
+        ),
     )
     server.start()
     try:

@@ -1,7 +1,10 @@
 """Manual operator and worker entrypoint routing without credentials or HTTP."""
 
 import json
+import os
+import runpy
 import sys
+from dataclasses import replace
 from types import SimpleNamespace
 
 import pytest
@@ -12,8 +15,8 @@ from app.integration.threads_runtime import PublicApprovalResult
 from app.integration.threads_stage0 import Stage0Journal, _identity
 from app.threads.domain import OutboxState
 from app.trusted.openai_transport import OPENAI_API_BASE_URL
-from ops.int24_public_worker import _attestor
-from ops.int24_threads_runtime import main
+from app.ops.int24_public_worker import _attestor
+from app.ops.int24_threads_runtime import main
 
 
 def test_worker_attestor_requires_exact_started_application_identity(tmp_path):
@@ -32,7 +35,7 @@ def test_worker_attestor_requires_exact_started_application_identity(tmp_path):
     request = PublicBehaviorRequest(
         operation, operation, "autonomous_wakeup", (), (), 5
     )
-    attest = _attestor(journal.path, "account-1")
+    attest = _attestor("account-1")
     assert attest(request) is False
     with journal.transaction() as db:
         db.execute("CREATE TABLE public_runtime_schema(version TEXT, account TEXT)")
@@ -41,6 +44,18 @@ def test_worker_attestor_requires_exact_started_application_identity(tmp_path):
             (PUBLIC_RUNTIME_VERSION, "account-1"),
         )
     journal.start(operation, origin)
+    evidence = {
+        "account": "account-1",
+        "kind": "wake",
+        "event": "wake-1",
+        "resumed": False,
+        "runtime_version": PUBLIC_RUNTIME_VERSION,
+        "phase": "started",
+        "context_digest": public_context_digest(()),
+        "mission": (),
+        "timeout": 5,
+    }
+    request = replace(request, reservation=evidence)
     assert attest(request) is True
     assert (
         attest(
@@ -50,8 +65,18 @@ def test_worker_attestor_requires_exact_started_application_identity(tmp_path):
         )
         is False
     )
-    journal.finish(operation, origin, rejected=True)
-    assert attest(request) is False
+    assert (
+        attest(replace(request, reservation=evidence | {"phase": "finished"})) is False
+    )
+    mission = "Сохранять публичную добросовестность"
+    mission_request = replace(
+        request, mission=(mission,), reservation=evidence | {"mission": (mission,)}
+    )
+    assert attest(mission_request) is True
+    assert attest(replace(mission_request, mission=("changed",))) is False
+    assert (
+        attest(replace(request, reservation=evidence | {"account": "other"})) is False
+    )
 
 
 def test_default_operator_entrypoint_remains_disabled(capsys):
@@ -64,7 +89,7 @@ def test_default_operator_entrypoint_remains_disabled(capsys):
 def test_operator_approve_command_exposes_exact_revocable_reference(
     monkeypatch, capsys
 ):
-    import ops.int24_threads_runtime as module
+    import app.ops.int24_threads_runtime as module
     from datetime import datetime, UTC
 
     now = datetime(2026, 10, 17, 12, tzinfo=UTC)
@@ -97,7 +122,7 @@ def test_operator_approve_command_exposes_exact_revocable_reference(
 def test_operator_poll_and_reconcile_attempts_use_distinct_correlation_ids(
     monkeypatch, capsys
 ):
-    import ops.int24_threads_runtime as module
+    import app.ops.int24_threads_runtime as module
     from datetime import UTC, datetime
 
     now = datetime(2026, 10, 17, 12, tzinfo=UTC)
@@ -133,7 +158,7 @@ def test_operator_poll_and_reconcile_attempts_use_distinct_correlation_ids(
 def test_operator_recovery_commands_route_exact_operation_and_approval(
     monkeypatch, capsys
 ):
-    import ops.int24_threads_runtime as module
+    import app.ops.int24_threads_runtime as module
     from datetime import UTC, datetime, timedelta
 
     now = datetime(2026, 10, 17, 12, tzinfo=UTC)
@@ -195,7 +220,7 @@ def test_operator_recovery_commands_route_exact_operation_and_approval(
 def test_worker_rejects_missing_or_unreviewed_billing_scope(
     monkeypatch, project, organization
 ):
-    import ops.int24_public_worker as module
+    import app.ops.int24_public_worker as module
 
     monkeypatch.setattr(
         module,
@@ -216,7 +241,7 @@ def test_worker_rejects_missing_or_unreviewed_billing_scope(
 
 
 def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
-    import ops.int24_public_worker as module
+    import app.ops.int24_public_worker as module
 
     config = {
         "worker_enabled": True,
@@ -225,10 +250,9 @@ def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
         "openai_key_file": "/unused/key",
         "socket_path": "/unused/socket",
         "attempts_path": "/unused/attempts",
-        "event_store_path": str(tmp_path / "events.sqlite"),
+        "worker_event_store_path": str(tmp_path / "events.sqlite"),
         "application_uid": 1001,
         "application_gid": 1002,
-        "journal_path": "/unused/journal",
         "account_ref": "account-1",
         "model": "reviewed-model",
     }
@@ -270,13 +294,160 @@ def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
     assert seen["organization"] == "org-reviewed"
     assert seen["base_url"] == OPENAI_API_BASE_URL
     assert seen["max_retries"] == 0
+    assert (
+        seen["server"][1]["provider_store"]._event_store.database_path
+        == tmp_path / "events.sqlite"
+    )
     assert seen["started"] is True
     assert seen["closed"] is True
 
 
 def test_worker_main_stays_disabled_without_activation(monkeypatch):
-    import ops.int24_public_worker as module
+    import app.ops.int24_public_worker as module
 
     monkeypatch.setattr(module, "_private_config", lambda _: {"worker_enabled": False})
     with pytest.raises(ValueError, match="disabled"):
         module.main(["--config", "/unused/config"])
+
+
+def test_worker_reads_only_its_protected_configuration(tmp_path):
+    import app.ops.int24_public_worker as module
+
+    path = tmp_path / "worker.json"
+    path.write_text(json.dumps({"worker_enabled": False}))
+    path.chmod(0o400)
+    assert module._private_config(path) == {"worker_enabled": False}
+
+
+def test_entrypoint_module_guards_remain_covered_without_live_activation(monkeypatch):
+    monkeypatch.setattr(sys, "argv", ["int24_threads_runtime", "readiness"])
+    with pytest.raises(SystemExit) as result:
+        runpy.run_module("app.ops.int24_threads_runtime", run_name="__main__")
+    assert result.value.code == 0
+    monkeypatch.setattr(sys, "argv", ["int24_public_worker"])
+    with pytest.raises(SystemExit):
+        runpy.run_module("app.ops.int24_public_worker", run_name="__main__")
+
+
+def test_operator_protected_config_and_runtime_use_application_owned_state(
+    tmp_path, monkeypatch
+):
+    import app.ops.int24_threads_runtime as module
+
+    config_path = tmp_path / "operator.json"
+    config_path.write_text(json.dumps({"activation_reviewed": True}))
+    config_path.chmod(0o400)
+    assert module._config(config_path) == {"activation_reviewed": True}
+    config_path.chmod(0o600)
+    config_path.write_text("{}")
+    config_path.chmod(0o400)
+    with pytest.raises(ValueError, match="reviewed activation"):
+        module._config(config_path)
+    assert module.Clock().now().tzinfo is not None
+
+    seen = []
+    monkeypatch.setattr(
+        module, "read_protected_worker_file", lambda *_a, **_k: b"fake-token"
+    )
+    monkeypatch.setattr(
+        module,
+        "ThreadsRuntime",
+        lambda *args, **kwargs: seen.append((args, kwargs)) or object(),
+    )
+    config = {
+        "threads_token_file": str(tmp_path / "token"),
+        "account_ref": "account-1",
+        "provider_user_id": "user-1",
+        "reply_thread_id": "root-1",
+        "scopes": ["threads_basic"],
+        "journal_path": str(tmp_path / "journal.sqlite"),
+        "scheduler_path": str(tmp_path / "scheduler.sqlite"),
+        "threads_path": str(tmp_path / "threads.sqlite"),
+        "worker_socket": str(tmp_path / "worker.sock"),
+        "worker_uid": os.getuid(),
+        "owner_directory": str(tmp_path / "owner"),
+        "event_store_path": str(tmp_path / "app-events.sqlite"),
+        "ledger_path": str(tmp_path / "ledger.sqlite"),
+        "operator_uid": os.getuid(),
+        "operator_actor": "operator-1",
+    }
+    module._runtime(config)
+    assert (
+        seen[-1][1]["provider"]._event_store.database_path
+        == tmp_path / "app-events.sqlite"
+    )
+    assert seen[-1][1]["mission"] is None
+    monkeypatch.setattr(module, "PublicMissionContext", lambda *_a, **_k: "mission")
+    module._runtime(config | {"public_mission_path": str(tmp_path / "mission.json")})
+    assert seen[-1][1]["mission"] == "mission"
+
+
+def test_operator_remaining_routes_and_expiry_guards(monkeypatch, capsys):
+    import app.ops.int24_threads_runtime as module
+
+    calls = []
+
+    class FakeRuntime:
+        clock = SimpleNamespace(now=lambda: module.Clock().now())
+
+        def readiness(self):
+            return ("live_unreviewed",)
+
+        def run(self, events):
+            calls.append(("run", events))
+            return {"run": True}
+
+        def process_inbound(self, stream, limit):
+            calls.append(("process", stream, limit))
+            return {"process": True}
+
+        def draft(self, operation):
+            calls.append(("draft", operation))
+            return {"draft": True}
+
+        def revoke(self, approval):
+            calls.append(("revoke", approval))
+
+        def dispatch(self, operation):
+            calls.append(("dispatch", operation))
+            return {"dispatch": True}
+
+    monkeypatch.setattr(module, "_config", lambda _: {})
+    monkeypatch.setattr(module, "_runtime", lambda _: FakeRuntime())
+    with pytest.raises(SystemExit):
+        module.main(["readiness", "--activate-live"])
+    for command, value in (
+        ("readiness", None),
+        ("wakeup", "wake-1"),
+        ("process", "reply"),
+        ("draft", "operation-1"),
+        ("revoke", "approval-1"),
+        ("dispatch", "operation-1"),
+    ):
+        args = (
+            [command]
+            + ([value] if value else [])
+            + ["--activate-live", "--config", "/unused"]
+        )
+        assert module.main(args) == 0
+    for command in ("approve", "approve-reconciliation-recovery"):
+        with pytest.raises(SystemExit):
+            module.main(
+                [
+                    command,
+                    "operation-1",
+                    "--activate-live",
+                    "--config",
+                    "/unused",
+                    "--expires-minutes",
+                    "0",
+                ]
+            )
+    assert {call[0] for call in calls} == {
+        "run",
+        "process",
+        "draft",
+        "revoke",
+        "dispatch",
+    }
+    assert "live_unreviewed" in capsys.readouterr().out

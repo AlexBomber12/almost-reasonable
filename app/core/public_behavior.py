@@ -24,6 +24,7 @@ class PublicBehaviorRequest:
     context: tuple[str, ...]
     mission: tuple[str, ...]
     deadline_seconds: float
+    reservation: dict | None = None
 
     def encode(self) -> bytes:
         require_reference("operation ID", self.operation_id)
@@ -56,6 +57,20 @@ class PublicBehaviorRequest:
             "mission": self.mission,
             "deadline_seconds": self.deadline_seconds,
         }
+        if self.reservation is not None:
+            if type(self.reservation) is not dict or set(self.reservation) != {
+                "account",
+                "kind",
+                "event",
+                "resumed",
+                "runtime_version",
+                "phase",
+                "context_digest",
+                "mission",
+                "timeout",
+            }:
+                raise ValueError("invalid application reservation evidence")
+            value["reservation"] = self.reservation
         data = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
         if len(data) > MAX_FRAME:
             raise ValueError("public request too large")
@@ -70,15 +85,27 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
         if (
             type(value) is not dict
             or set(value)
-            != {
-                "version",
-                "operation_id",
-                "correlation_id",
-                "trigger",
-                "context",
-                "mission",
-                "deadline_seconds",
-            }
+            not in (
+                {
+                    "version",
+                    "operation_id",
+                    "correlation_id",
+                    "trigger",
+                    "context",
+                    "mission",
+                    "deadline_seconds",
+                },
+                {
+                    "version",
+                    "operation_id",
+                    "correlation_id",
+                    "trigger",
+                    "context",
+                    "mission",
+                    "deadline_seconds",
+                    "reservation",
+                },
+            )
             or value["version"] != VERSION
         ):
             raise ValueError("invalid public request")
@@ -91,6 +118,7 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
             tuple(value["context"]),
             tuple(value["mission"]),
             value["deadline_seconds"],
+            value.get("reservation"),
         )
         request.encode()
         return request

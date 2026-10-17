@@ -1,6 +1,7 @@
 """Isolated public inference server with OS peer authentication and attempt fence."""
 
 from datetime import UTC, datetime
+from dataclasses import asdict
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,31 @@ from app.trusted.openai_transport import _sanitized_sdk_error
 from app.trusted.openai_worker_protocol import receive_frame, send_frame
 
 ATTEMPTS_SCHEMA_VERSION = "public-attempts-v1"
+
+# Root object and nullable fields fit the strict Structured Outputs subset. The
+# exact public variant is reconstructed below and checked by the local parser.
+PUBLIC_PROPOSAL_FORMAT = {
+    "type": "json_schema",
+    "name": "threads_public_proposal_v1",
+    "strict": True,
+    "schema": {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "decision": {
+                "type": "string",
+                "enum": ["reply", "propose_publication", "no_action"],
+            },
+            "content": {"type": ["string", "null"]},
+            "draft": {"type": ["string", "null"]},
+            "reason_category": {
+                "type": ["string", "null"],
+                "enum": ["not_warranted", "duplicate", "low_value", "other", None],
+            },
+        },
+        "required": ["decision", "content", "draft", "reason_category"],
+    },
+}
 
 
 class PublicSDKAdapter:
@@ -74,6 +100,7 @@ class PublicSDKAdapter:
                 },
             ],
             tools=[],
+            text={"format": PUBLIC_PROPOSAL_FORMAT},
             store=False,
             max_output_tokens=512,
             timeout=request.deadline_seconds,
@@ -94,10 +121,39 @@ class PublicSDKAdapter:
                 self.last_usage = values
             else:
                 raise ValueError("invalid public model usage")
-        text = raw.output_text
+        if getattr(raw, "status", None) != "completed":
+            raise ValueError("incomplete public model response")
+        for item in getattr(raw, "output", ()):
+            for part in getattr(item, "content", ()):
+                if getattr(part, "type", None) == "refusal" or getattr(
+                    part, "refusal", None
+                ):
+                    raise ValueError("public model refused")
+        text = getattr(raw, "output_text", None)
         if type(text) is not str or len(text.encode()) > 4096:
             raise ValueError("invalid public model output")
-        proposal = json.loads(text, object_pairs_hook=_unique_fields)
+        value = json.loads(text, object_pairs_hook=_unique_fields)
+        if type(value) is not dict or set(value) != {
+            "decision",
+            "content",
+            "draft",
+            "reason_category",
+        }:
+            raise ValueError("invalid public model proposal")
+        decision = value["decision"]
+        fields = {
+            "reply": ("content", "draft", "reason_category"),
+            "propose_publication": ("draft", "content", "reason_category"),
+            "no_action": ("reason_category", "content", "draft"),
+        }
+        if decision not in fields or any(
+            value[field] is not None for field in fields[decision][1:]
+        ):
+            raise ValueError("invalid public model proposal")
+        proposal = {
+            "decision": decision,
+            fields[decision][0]: value[fields[decision][0]],
+        }
         if not parse_behavior_proposal(proposal).valid:
             raise ValueError("invalid public model proposal")
         return proposal
@@ -227,19 +283,28 @@ class PublicWorkerServer:
                     )
                 started_at = datetime.now(UTC)
                 began = time.monotonic()
-                if (
-                    self.provider_store.reserve_attempt(
-                        request.operation_id, request.correlation_id, started_at
+                reservation = self.provider_store.reserve_attempt(
+                    request.operation_id, request.correlation_id, started_at
+                )
+                if reservation is AttemptReservationStatus.SPEND_SUSPENDED:
+                    suspended = self.provider_store.suspension()
+                    record = self.provider_store.usage_attempt(suspended.attempt_id)
+                    self._send_result(
+                        connection,
+                        deadline,
+                        request.operation_id,
+                        "spend_suspended",
+                        record=record,
                     )
-                    is not AttemptReservationStatus.CREATED
-                ):
+                    return
+                if reservation is not AttemptReservationStatus.CREATED:
                     return
                 try:
                     proposal = self.adapter.complete(request)
                 except Exception as error:
                     code = _sanitized_sdk_error(error).error_code
                     confirmed = code if code in CONFIRMED_SPEND_LIMIT_CODES else None
-                    self._record_attempt(
+                    record = self._record_attempt(
                         request,
                         started_at,
                         began,
@@ -247,13 +312,23 @@ class PublicWorkerServer:
                         code=code,
                         confirmed=confirmed,
                     )
+                    self._send_result(
+                        connection,
+                        deadline,
+                        request.operation_id,
+                        "spend_limit_confirmed" if confirmed else "provider_error",
+                        record=record,
+                    )
                     return
-                self._record_attempt(request, started_at, began, "completed")
-                result = json.dumps(
-                    {"operation_id": request.operation_id, "proposal": proposal},
-                    ensure_ascii=False,
-                ).encode()
-                send_frame(connection, result, deadline=deadline, io_timeout=10)
+                record = self._record_attempt(request, started_at, began, "completed")
+                self._send_result(
+                    connection,
+                    deadline,
+                    request.operation_id,
+                    "completed",
+                    proposal=proposal,
+                    record=record,
+                )
             except Exception:
                 return
 
@@ -294,6 +369,39 @@ class PublicWorkerServer:
             require_reservation=True,
         ):
             raise ProviderPersistenceError("public inference accounting failed")
+        return record
+
+    def _send_result(
+        self, connection, deadline, operation, outcome, *, record, proposal=None
+    ):
+        telemetry = asdict(record)
+        fields = (
+            "attempt_id",
+            "correlation_id",
+            "model_identifier",
+            "provider_response_id",
+            "started_at",
+            "duration_ms",
+            "input_tokens",
+            "output_tokens",
+            "total_tokens",
+            "outcome",
+            "provider_error_code",
+        )
+        telemetry = {name: telemetry[name] for name in fields}
+        telemetry["started_at"] = record.started_at.isoformat()
+        result = {
+            "operation_id": operation,
+            "outcome": outcome,
+            "proposal": proposal,
+            "telemetry": telemetry,
+        }
+        send_frame(
+            connection,
+            json.dumps(result, ensure_ascii=False).encode(),
+            deadline=deadline,
+            io_timeout=10,
+        )
 
     def close(self):
         if self.listener is not None:

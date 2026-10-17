@@ -214,6 +214,8 @@ class ThreadsRuntime(ThreadsStage0):
             ledger,
         )
         self.clock, self.operator, self.checkpoint = clock, operator, checkpoint
+        self.model.reservation_evidence = self.reservation_evidence
+        self.model.provider_store = provider
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
         self.mission = mission
@@ -310,6 +312,23 @@ class ThreadsRuntime(ThreadsStage0):
             and tuple(payload["mission_text"]) == request.mission
             and 0 < request.deadline_seconds <= payload["timeout"]
         )
+
+    def reservation_evidence(self, request):
+        """Assert only the started operation fields to the UID authenticated worker."""
+        if not self.attest_worker_request(request):
+            raise ValueError("public operation is not reserved")
+        payload = self.journal.read(request.operation_id)
+        return {
+            "account": self.account,
+            "kind": payload["kind"],
+            "event": payload["event"],
+            "resumed": bool(payload.get("resumed")),
+            "runtime_version": payload["runtime_version"],
+            "phase": payload["phase"],
+            "context_digest": payload["context_digest"],
+            "mission": payload["mission_text"],
+            "timeout": payload["timeout"],
+        }
 
     def _decide(self, operation, origin, context, timeout=5):
         self.guard()

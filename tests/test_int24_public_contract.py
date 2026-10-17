@@ -73,6 +73,10 @@ def test_public_request_rejects_malformed_frames_and_collections(monkeypatch):
         decode_public_request(
             request.encode().replace(b'"context":[]', b'"context":{}')
         )
+    from dataclasses import replace
+
+    with pytest.raises(ValueError, match="reservation evidence"):
+        replace(request, reservation={"phase": "started"}).encode()
 
 
 def test_public_mission_file_is_closed_and_binding_is_fresh(tmp_path, monkeypatch):
