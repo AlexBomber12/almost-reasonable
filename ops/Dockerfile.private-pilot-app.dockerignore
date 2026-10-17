@@ -1,0 +1,12 @@
+**
+!app/
+!app/**
+**/__pycache__/
+*.py[cod]
+*.db
+*.sqlite*
+*.log
+secrets/
+data/
+.env*
+.git/

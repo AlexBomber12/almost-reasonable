@@ -60,6 +60,8 @@ def acceptance_offline(request, monkeypatch):
                     "tests/test_research_worker.py::",
                     "tests/test_private_research_bridge.py::",
                     "tests/test_int19_worker_runtime.py::",
+                    "tests/test_int20_public_research.py::",
+                    "tests/test_int22_rehearsal.py::",
                     "tests/test_cross_channel_adversarial.py::test_cross_channel_research_memory_mission_and_public_journey[",
                     "tests/test_cross_channel_adversarial.py::test_scn12_parentless_provenance_requires_contextual_binding",
                 )

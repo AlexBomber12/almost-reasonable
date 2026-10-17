@@ -1,0 +1,14 @@
+**
+!app/
+!app/**
+!ops/
+!ops/requirements.openai-worker-stage1.lock
+**/__pycache__/
+*.py[cod]
+*.db
+*.sqlite*
+*.log
+secrets/
+data/
+.env*
+.git/

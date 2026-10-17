@@ -1,0 +1,9 @@
+FROM python:3.12.12-slim-bookworm@sha256:593bd06efe90efa80dc4eee3948be7c0fde4134606dd40d8dd8dbcade98e669c
+
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+WORKDIR /opt/almost-reasonable
+COPY app /opt/almost-reasonable/app
+RUN find /opt/almost-reasonable/app -type f -exec chmod 0644 {} + \
+    && find /opt/almost-reasonable/app -type d -exec chmod 0755 {} +
+USER 11022:11022
+CMD ["python", "-B", "-m", "app.private_web.cli", "--help"]
