@@ -5,8 +5,10 @@ from datetime import UTC, datetime, timedelta
 import json
 import os
 from pathlib import Path
+import re
 import sqlite3
 import stat
+import subprocess
 import time
 from urllib import parse
 
@@ -330,6 +332,32 @@ def run(
     return receipt
 
 
+def _reviewed_revision() -> str:
+    """Bind the CLI to its own clean repository before opening authorization."""
+    root = Path(__file__).resolve().parents[2]
+    command = ["git", "-C", str(root)]
+    try:
+        top = subprocess.check_output(
+            [*command, "rev-parse", "--show-toplevel"], text=True
+        ).strip()
+        if Path(top).resolve() != root:
+            raise ProbeRejected("repository_untrusted")
+        status = subprocess.check_output(
+            [*command, "status", "--porcelain=v1", "--untracked-files=all"],
+            text=True,
+        )
+        if status:
+            raise ProbeRejected("repository_dirty")
+        revision = subprocess.check_output(
+            [*command, "rev-parse", "HEAD"], text=True
+        ).strip()
+        if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise ProbeRejected("repository_untrusted")
+        return revision
+    except (OSError, subprocess.CalledProcessError):
+        raise ProbeRejected("repository_untrusted") from None
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         description="Disabled by default Threads read contract probe"
@@ -344,9 +372,13 @@ def main(argv=None) -> int:
         return 0
     if args.config is None:
         parser.error("run requires --config")
-    import subprocess
-
-    revision = subprocess.check_output(["git", "rev-parse", "HEAD"], text=True).strip()
+    try:
+        revision = _reviewed_revision()
+    except ProbeRejected as error:
+        print(
+            json.dumps({"state": "blocked", "outcome": error.category, "requests": 0})
+        )
+        return 1
     receipt = run(args.config, revision=revision)
     print(json.dumps(receipt, sort_keys=True))
     return 0 if receipt["outcome"] == "observed" else 1

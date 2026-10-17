@@ -10,7 +10,7 @@ Meta's [mentioned posts request](https://www.postman.com/meta/threads/request/34
 
 ## Later operator procedure; requires separate authorization
 
-1. Confirm the repository revision, reviewed Threads account reference and provider user ID, reply thread ID, configured streams, existing owner Stop directory, and the needed read permissions. Resolve the mentioned-posts route discrepancy before selecting `mention`. Confirm the owner Stop is inactive. Do not clear Stop for the probe.
+1. Confirm that the probe is executed from its reviewed repository checkout with a clean index and working tree, including no untracked files. Confirm the repository revision, reviewed Threads account reference and provider user ID, reply thread ID, configured streams, existing owner Stop directory, and the needed read permissions. Resolve the mentioned-posts route discrepancy before selecting `mention`. Confirm the owner Stop is inactive. Do not clear Stop for the probe.
 2. Outside the repository, prepare a private directory owned by the invoking user, mode `0700`, under a trusted directory chain. Put the existing Threads token in a single-link regular file owned by that user, mode `0400`. Do not put a token in a shell argument, environment variable, repository, or receipt. The tool does not create an authorization file.
 3. Create a separate, manually reviewed single-link regular JSON configuration file in a private directory, mode `0400`, with exactly these fields. `expires_at` must be an aware ISO 8601 time in the future and no more than one hour away. Set `revision` to the exact local `git rev-parse HEAD` value. Select one or both streams in request order, with no duplicates. The example values are placeholders, not a usable authorization:
 
@@ -30,7 +30,7 @@ Meta's [mentioned posts request](https://www.postman.com/meta/threads/request/34
    }
    ```
 
-4. Only after separate live authorization, invoke `python -m app.ops.int27_threads_readonly_probe run --config /absolute/protected/config.json`. Save the sanitized JSON receipt in an operator-approved location. A nonzero exit means the observation failed and requires investigation. Never rerun automatically.
+4. Only after separate live authorization, invoke `python -m app.ops.int27_threads_readonly_probe run --config /absolute/protected/config.json`. The command resolves Git relative to its own module and rejects a dirty or unrelated checkout before reading the configuration or token. Save the sanitized JSON receipt in an operator-approved location. A nonzero exit means the observation failed and requires investigation. Never rerun automatically.
 
 The tool uses the existing `ThreadsHTTPTransport` and `HTTPSClient` with TLS verification and redirects disabled. A second boundary allows only the transport's exact `GET` URLs. It checks the existing owner Stop and configuration expiry before each request, stops after account verification on mismatch, and makes at most three requests: one account, at most one replies page, and at most one mentions page. Each page requests at most ten records. Each HTTP read is bounded by the existing 2,097,152-byte response cap. The invocation has a 30-second monotonic deadline, no retry, and no pagination loop. Response links and cursors are never followed. The probe does not construct the public coordinator, model client, scheduler, publication service, outbox, or polling stores.
 

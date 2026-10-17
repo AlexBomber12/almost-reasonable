@@ -378,7 +378,16 @@ def test_boundaries_reject_fourth_request_and_response_link(setup):
 
 
 def test_main_run_and_module_entrypoint_are_explicit(setup, monkeypatch, capsys):
-    monkeypatch.setattr("subprocess.check_output", lambda *a, **k: REV)
+    root = str(Path(probe.__file__).resolve().parents[2])
+
+    def clean_git(command, **_kwargs):
+        if "--show-toplevel" in command:
+            return root
+        if "status" in command:
+            return ""
+        return REV
+
+    monkeypatch.setattr(probe.subprocess, "check_output", clean_git)
     monkeypatch.setattr(probe, "run", lambda *a, **k: {"outcome": "observed"})
     assert probe.main(["run", "--config", str(setup[2])]) == 0
     assert json.loads(capsys.readouterr().out) == {"outcome": "observed"}
@@ -393,3 +402,36 @@ def test_main_run_and_module_entrypoint_are_explicit(setup, monkeypatch, capsys)
                 "app.ops.int27_threads_readonly_probe", run_name="__main__"
             )
     assert result.value.code == 0
+
+
+@pytest.mark.parametrize(
+    "failure", ["dirty", "wrong_root", "bad_revision", "git_error"]
+)
+def test_run_cli_checks_its_own_clean_revision_before_authorization(
+    setup, monkeypatch, capsys, failure
+):
+    root = str(Path(probe.__file__).resolve().parents[2])
+
+    def git(command, **_kwargs):
+        if failure == "git_error":
+            raise probe.subprocess.CalledProcessError(1, command)
+        if "--show-toplevel" in command:
+            return "/tmp/another-repository" if failure == "wrong_root" else root
+        if "status" in command:
+            return (
+                " M app/ops/int27_threads_readonly_probe.py\n"
+                if failure == "dirty"
+                else ""
+            )
+        return "not-a-revision" if failure == "bad_revision" else REV
+
+    monkeypatch.setattr(probe.subprocess, "check_output", git)
+    monkeypatch.setattr(
+        probe, "run", lambda *a, **k: pytest.fail("opened authorization")
+    )
+    assert probe.main(["run", "--config", str(setup[2])]) == 1
+    result = json.loads(capsys.readouterr().out)
+    assert result["requests"] == 0
+    assert result["outcome"] == (
+        "repository_dirty" if failure == "dirty" else "repository_untrusted"
+    )
