@@ -155,6 +155,39 @@
             "tests/test_int19_worker_runtime.py::test_controls_change_while_separate_worker_is_in_flight[revoke-uncertain]",
             "tests/test_int19_worker_runtime.py::test_client_rejects_wrong_worker_uid_before_private_transmission"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication WSGI -> INT-19 runtime -> INT-22 bounded worker -> fake SDK adapter",
+          "components": [
+            "AuthStore",
+            "WorkerConversationRuntime",
+            "OpenAIWorkerClient",
+            "OpenAIWorkerServer",
+            "PilotRequestGate",
+            "PilotAllowance",
+            "TrustedOpenAIGateway",
+            "OpenAIResponsesTransport",
+            "EventStore"
+          ],
+          "sink": "authenticated Russian HTTP reply/history; separate-process SDK request and durable worker allowance",
+          "risks": [
+            "restart",
+            "concurrency",
+            "adversarial"
+          ],
+          "scope": "Synthetic A/B only. Fake SDK in a separate worker process; no provider key, paid call, host UID separation, live model or human calibration.",
+          "node_ids": [
+            "tests/test_int22_rehearsal.py::test_authenticated_http_to_fake_sdk_reply_history_restart_and_quota",
+            "tests/test_int22_rehearsal.py::test_sdk_process_exit_loses_response_but_consumes_allowance",
+            "tests/test_int22_rehearsal.py::test_inflight_controls_block_release_after_fake_sdk_contact[session]",
+            "tests/test_int22_rehearsal.py::test_inflight_controls_block_release_after_fake_sdk_contact[source]",
+            "tests/test_int22_rehearsal.py::test_inflight_controls_block_release_after_fake_sdk_contact[stop]",
+            "tests/test_int22_rehearsal.py::test_inflight_controls_block_release_after_fake_sdk_contact[spend]",
+            "tests/test_int22_rehearsal.py::test_worker_rejects_wrong_peer_and_malformed_sdk_response[wrong_peer]",
+            "tests/test_int22_rehearsal.py::test_worker_rejects_wrong_peer_and_malformed_sdk_response[malformed_sdk]",
+            "tests/test_int22_pilot.py::test_parallel_reservations_and_file_loss_cannot_rearm"
+          ]
         }
       ],
       "missing_connections": [],
@@ -757,6 +790,26 @@
             "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[before_release-completed]",
             "tests/test_private_research_bridge.py::test_real_process_exits_preserve_intent_consumption_result_and_release[worker_consumption-research_uncertain]"
           ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-20 public-research-v1 worker with synthetic local grant",
+          "components": [
+            "PublicResearchBoundary",
+            "PublicResearchServer",
+            "ProviderStateStore",
+            "PublicResearchTransport"
+          ],
+          "sink": "bounded unverified public result and durable one-use provider observation",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Standalone public research contract; no private-to-public production issuer or private-topic abstraction. Fake SDK and synthetic grant only.",
+          "node_ids": [
+            "tests/test_int20_public_research.py::test_spawned_real_worker_ipc_and_lost_response",
+            "tests/test_int20_public_research.py::test_distinct_topic_usage_and_consumption_survive_restart"
+          ]
         }
       ],
       "missing_connections": [],
@@ -860,6 +913,26 @@
             "tests/test_stage0_process_acceptance.py::test_real_publication_process_exit_uses_durable_evidence_without_resend[container_dispatch_started-unknown]",
             "tests/test_stage0_process_acceptance.py::test_real_publication_process_exit_uses_durable_evidence_without_resend[container_created_publish_not_started-ready]",
             "tests/test_stage0_process_acceptance.py::test_real_publication_process_exit_uses_durable_evidence_without_resend[publish_dispatch_started-unknown]"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-21 explicitly enabled Threads HTTP transport through ThreadsService",
+          "components": [
+            "ThreadsHTTPTransport",
+            "ThreadsService",
+            "ThreadsStore"
+          ],
+          "sink": "two-stage provider request identity, exact parent/readback and durable unknown handling",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Offline fake HTTP responses only; no Meta token, scope, app review or live publication. Stage 3 binding remains separately required.",
+          "node_ids": [
+            "tests/test_int21_threads_transport.py::test_two_stage_post_verifies_real_identity_through_service",
+            "tests/test_int21_threads_transport.py::test_reply_parent_is_sent_and_verified",
+            "tests/test_int21_threads_transport.py::test_known_publication_id_reconciles_from_exact_provider_readback"
           ]
         }
       ],
@@ -1007,6 +1080,26 @@
             "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal2-unsupported]",
             "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal3-invalid]",
             "tests/test_private_conversation_runtime.py::test_terminal_decisions_are_durable_and_have_no_fabricated_reply[proposal4-invalid]"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-21 bounded Threads replies and mentions polling",
+          "components": [
+            "ThreadsHTTPTransport",
+            "ThreadsService",
+            "ThreadsStore"
+          ],
+          "sink": "provider cursor, validated source route and bounded page commit",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Offline fake HTTP only; real Meta ordering, scope and rate behavior remain unverified.",
+          "node_ids": [
+            "tests/test_int21_threads_transport.py::test_mentions_poll_persists_cursor_and_pending_event",
+            "tests/test_int21_threads_transport.py::test_live_pages_stop_at_event_budget_and_resume_without_loss",
+            "tests/test_int21_threads_transport.py::test_reply_poll_rejects_wrong_root_without_advancing"
           ]
         }
       ],
@@ -1858,6 +1951,29 @@
             "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change8]",
             "tests/test_research_worker.py::test_closed_protocol_rejects_forgery_and_arbitrary_parameters[change9]"
           ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-20 public result screen and INT-22 private pilot authority",
+          "components": [
+            "PublicResearchBoundary",
+            "PublicResearchTransport",
+            "PilotRequestGate",
+            "PilotAllowance",
+            "OpenAIResponsesTransport"
+          ],
+          "sink": "private canary rejection, strict pilot authority and consumed allowance",
+          "risks": [
+            "adversarial",
+            "restart",
+            "concurrency"
+          ],
+          "scope": "Synthetic fixtures and fake SDK only; H/M semantic and live cross-channel validation remain blocked.",
+          "node_ids": [
+            "tests/test_int20_public_research.py::test_result_gate_rejects_private_canary_and_unsupported_url",
+            "tests/test_int22_pilot.py::test_activation_change_cannot_restore_allowance",
+            "tests/test_int22_controls.py::test_gate_rechecks_stop_activation_typed_context_and_allowance"
+          ]
         }
       ],
       "missing_connections": [],
@@ -1868,20 +1984,22 @@
   ],
   "release_blockers": [
     "Calibrate recorded H/M anchors with fluent human reviewers and approve thresholds; fixture scores alone do not satisfy Stage 0 calibration.",
-    "Review threat model/residual risks and stage promotion criteria with operator. No complete MVP or production enablement follows from this run."
+    "Review threat model/residual risks and stage promotion criteria with operator. No complete MVP or production enablement follows from this run.",
+    "INT-22 synthetic paid pilot remains unexecuted pending separate approval, current official API/model/billing checks, host isolation verification and live semantic evaluation. INT-23/24 remain pending independent verification."
   ],
   "owner_concurrency": "Reproduced rollback-journal disappearance between exists() and lstat(); regression failed before fix. One lstat now handles only FileNotFoundError as optional absence. Unsafe entries and actual lock/storage errors remain fail-closed. Controlled writer-lock/revocation test verifies current auth after waiting. 20 unchanged pre-fix stress runs passed; historical CI causality cannot be proven from a generic sanitized error alone. Twenty independent post-fix executions of existing concurrency and both timing regressions also passed without retries.",
   "stage_capabilities": {
     "Stage 0": {
-      "private": "synthetic AuthStore/WSGI plus fake Stage 0 runtime and explicit INT-19 AF_UNIX fake-worker composition",
+      "private": "synthetic AuthStore/WSGI plus fake Stage 0 runtime, explicit INT-19 AF_UNIX worker and INT-22 fake-SDK pilot rehearsal",
       "shared": "four reviewed literal abstractions only",
-      "research": "explicit authenticated private handoff to two public worker fixtures; exact independent application/worker grants; arbitrary topics and production disabled",
-      "Threads": "two catalog drafts and simulator only",
+      "research": "explicit authenticated private handoff to two public worker fixtures; separate INT-20 bounded public-worker component with synthetic grant; arbitrary topics and production disabled",
+      "Threads": "two catalog drafts and simulator; separate INT-21 fake-HTTP Threads transport contract, no live Meta evidence",
       "privacy": "synthetic authenticated notice, consent, revocation, deletion and quarantine ingress; production activation BLOCKED",
       "calibration": "BLOCKED; recorded anchors only"
     },
     "Stage 1": {
       "inference_smoke": "separately authorized fixed read-only synthetic smoke possible after its independent readiness checklist",
+      "private_pilot": "INT-22 bounded worker bootstrap and offline fake-SDK path prepared; paid synthetic execution BLOCKED pending separate operator authorization and host/current provider checks",
       "research_smoke": "BLOCKED pending separate production issuer/adapter and exact approval",
       "publishing": "disabled"
     },
