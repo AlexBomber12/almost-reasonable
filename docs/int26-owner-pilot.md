@@ -31,7 +31,10 @@ Schema validation is read-only, so an empty existing file is not initialized
 by console startup. Run the
 following as the application UID with an approved checkout and with those
 paths available. This example assumes a local HTTPS reverse proxy serving a
-**separate** owner origin. Replace the reserved example hosts and source IP
+**separate** owner origin. The launcher compares normalized browser origins,
+including default HTTPS port 443, and requires a canonical participant URL so
+case, escaped hosts and port spelling cannot make one origin appear separate.
+Replace the reserved example hosts and source IP
 with exact approved values; `--allowed-client` is repeatable, with at most 16
 canonical numeric addresses.
 

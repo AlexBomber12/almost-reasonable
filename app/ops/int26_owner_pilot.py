@@ -14,7 +14,7 @@ from app.core.store import EventStore
 from app.owner_control.store import OwnerStore
 from app.owner_control.wsgi import OwnerApplication
 from app.private_web.cli import IPv6WSGIServer
-from app.private_web.wsgi import PrivateWebConfig
+from app.private_web.wsgi import PrivateWebConfig, _valid_origin
 from app.privacy.ledger import PrivacyLedger
 
 
@@ -61,7 +61,9 @@ def build_application(args):
             or participant.path
             or participant.query
             or participant.fragment
-            or args.allowed_origin == args.participant_origin
+            or not _valid_origin(args.participant_origin)
+            or (origin.scheme, origin.hostname, origin.port or 443)
+            == (participant.scheme, participant.hostname, participant.port or 443)
         ):
             raise ValueError("owner requires a separate HTTPS origin")
         owner_db = Path(args.owner_directory) / "owner.sqlite"

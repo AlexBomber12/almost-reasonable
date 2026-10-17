@@ -210,10 +210,17 @@ def test_invalid_configuration_does_not_create_stores(tmp_path):
         "https://chat.test/path",
         "https://chat.test?x=1",
         "https://chat.test#fragment",
+        "https://OWNER.test",
+        "https://owner.test:443",
+        "https://owner.test:0443",
+        "https://%6Fwner.test",
     ):
         args.participant_origin = participant
         with pytest.raises(ValueError, match="separate"):
             build_application(args)
+    args.participant_origin = "https://chat.test"
+    args.participant_origin = "https://owner.test:444"
+    assert build_application(args)
     args.participant_origin = "https://chat.test"
     Path(args.ipc_state_db).unlink()
     with pytest.raises(ValueError, match="missing"):
