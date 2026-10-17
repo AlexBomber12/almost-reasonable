@@ -405,3 +405,75 @@ def test_runtime_marker_and_intent_version_are_verified_on_restart(tmp_path):
             setup(tmp_path, {"decision": "no_action", "reason_category": "other"})
     finally:
         worker.close()
+
+
+def test_privacy_generation_change_during_authorization_snapshot_denies_effect(
+    tmp_path,
+):
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Проверяю отзыв согласия."},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        item = app.draft(operation)
+        generation = app.ledger.control_generation()
+        values = iter((generation, generation + 1))
+        app.ledger.control_generation = lambda: next(values)
+        snapshot = app.authorization.current_publication_authorization(
+            item=item, approval_reference=item.approval_reference, now=NOW
+        )
+        assert snapshot.privacy_authorized is False
+        assert http.calls == []
+    finally:
+        worker.close()
+
+
+def test_expired_ready_approval_can_be_renewed_for_exact_same_draft(tmp_path):
+    app, worker, _, http, clock = setup(
+        tmp_path,
+        {
+            "decision": "propose_publication",
+            "draft": "Обновляю срок точного одобрения.",
+        },
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=1))
+        old_reference = app.draft(operation).approval_reference
+        clock.advance(timedelta(minutes=2))
+        assert (
+            app.approve(operation, expires_at=clock.now() + timedelta(minutes=5)).state
+            is OutboxState.READY
+        )
+        assert app.dispatch(operation).state is OutboxState.CONFIRMED
+        assert app.draft(operation).approval_reference != old_reference
+        assert len([call for call in http.calls if call[0] == "POST"]) == 2
+    finally:
+        worker.close()
+
+
+def test_approval_rejects_completed_draft_and_missing_current_record(
+    tmp_path, monkeypatch
+):
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Проверяю запись одобрения."},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        monkeypatch.setattr(app.authorization, "current_approval", lambda **_: None)
+        with pytest.raises(PolicyDeniedError, match="approval unavailable"):
+            app.dispatch(operation)
+        monkeypatch.undo()
+        assert app.dispatch(operation).state is OutboxState.CONFIRMED
+        with pytest.raises(PolicyDeniedError, match="cannot be approved"):
+            app.approve(operation, expires_at=NOW + timedelta(minutes=10))
+        assert len([call for call in http.calls if call[0] == "POST"]) == 2
+    finally:
+        worker.close()

@@ -49,6 +49,7 @@ from app.threads.domain import (
     Stage,
     issue_approval,
     require_reference,
+    validate_approval,
     validate_content,
 )
 from app.threads.service import PolicyDeniedError, ThreadsService
@@ -140,6 +141,7 @@ class PublicAuthorization:
                     )
                 except ValueError:
                     valid = False
+            valid = valid and self.app.ledger.control_generation() == generation
             current = (
                 None
                 if approval is None
@@ -515,6 +517,8 @@ class ThreadsRuntime(ThreadsStage0):
         payload = self.journal.read(operation)
         if item.account_ref != self.account or payload["phase"] != "linked":
             raise PolicyDeniedError("public draft is not linked")
+        if item.state not in {OutboxState.AWAITING_APPROVAL, OutboxState.READY}:
+            raise PolicyDeniedError("public draft cannot be approved in this state")
         self.require_mission(payload)
         reference = _identity(operation, _binding(item), expires_at.isoformat(), actor)
         approval = issue_approval(
@@ -546,6 +550,9 @@ class ThreadsRuntime(ThreadsStage0):
                 "VALUES(?,?,?,?,?)",
                 (operation, "approve", actor, self.clock.now().isoformat(), reference),
             )
+        if item.state is OutboxState.READY:
+            self.service._check_ready_policy(item, approval, now=self.clock.now())
+            return self.service.store.get(operation)
         return self.service.authorize(operation, approval, now=self.clock.now())
 
     def revoke(self, reference):
@@ -569,12 +576,33 @@ class ThreadsRuntime(ThreadsStage0):
         item = self.service.store.get(operation)
         if item.approval_reference is None:
             raise PolicyDeniedError("public draft lacks approval")
-        approval = self.authorization.current_approval(
-            account_ref=self.account,
-            operation_id=operation,
-            approval_reference=item.approval_reference,
-            now=self.clock.now(),
-        )
+        with self.journal.transaction() as db:
+            rows = db.execute(
+                "SELECT reference FROM approvals WHERE operation=? AND binding=? "
+                "AND purpose=? ORDER BY rowid DESC",
+                (operation, _binding(item), ApprovalPurpose.PUBLICATION.value),
+            ).fetchall()
+        approval = None
+        for row in rows:
+            candidate = self.authorization.current_approval(
+                account_ref=self.account,
+                operation_id=operation,
+                approval_reference=row["reference"],
+                now=self.clock.now(),
+            )
+            if candidate is None:
+                continue
+            try:
+                validate_approval(
+                    candidate,
+                    account_ref=self.account,
+                    operation_id=operation,
+                    now=self.clock.now(),
+                )
+            except ValueError:
+                continue
+            approval = candidate
+            break
         if approval is None:
             raise PolicyDeniedError("public approval unavailable")
         return self.service.dispatch(operation, approval, now=self.clock.now())
