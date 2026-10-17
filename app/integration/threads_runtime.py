@@ -139,6 +139,8 @@ class PublicAuthorization:
                         self.app.mission is None
                         or self.app.mission.publication_allowed()
                     )
+                    if valid:
+                        self.app.require_mission(payload)
                 except ValueError:
                     valid = False
             valid = valid and self.app.ledger.control_generation() == generation
@@ -441,6 +443,10 @@ class ThreadsRuntime(ThreadsStage0):
         if decision in (AgentDecision.REPLY, AgentDecision.PROPOSE_PUBLICATION):
             if self.mission is not None and not self.mission.publication_allowed():
                 raise PolicyDeniedError("public mission excludes publication")
+            try:
+                self.require_mission(payload)
+            except ValueError as error:
+                raise PolicyDeniedError("public mission changed") from error
             kind = (
                 PublicationType.POST
                 if payload["kind"] == "wake"

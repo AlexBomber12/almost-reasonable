@@ -307,6 +307,50 @@ def test_changed_mission_blocks_current_authorization_and_handoff(tmp_path):
         worker.close()
 
 
+def test_mission_swap_during_policy_read_denies_publication(tmp_path, monkeypatch):
+    from app.behavior.mission import MissionPurpose
+
+    mission = mission_file(tmp_path)
+    app, worker, _, http, _ = setup(
+        tmp_path,
+        {
+            "decision": "propose_publication",
+            "draft": "Проверяю смену миссии при проверке.",
+        },
+        mission=mission,
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+        item = app.draft(operation)
+        original_allowed = mission.publication_allowed
+
+        def swap_mission():
+            mission_file(
+                tmp_path, version="mission-v2", purpose=MissionPurpose.REFLECTION
+            )
+            return original_allowed()
+
+        monkeypatch.setattr(mission, "publication_allowed", swap_mission)
+        snapshot = app.authorization.current_publication_authorization(
+            item=item, approval_reference=item.approval_reference, now=NOW
+        )
+        assert snapshot.privacy_authorized is False
+        mission_file(tmp_path)
+        with pytest.raises(PolicyDeniedError, match="mission"):
+            app._handoff(operation, app.journal.read(operation))
+        mission_file(tmp_path)
+        monkeypatch.setattr(mission, "publication_allowed", lambda: False)
+        snapshot = app.authorization.current_publication_authorization(
+            item=item, approval_reference=item.approval_reference, now=NOW
+        )
+        assert snapshot.privacy_authorized is False
+        assert http.calls == []
+    finally:
+        worker.close()
+
+
 def test_revoked_source_and_existing_outbox_are_rechecked_at_handoff(tmp_path):
     app, worker, _, http, _ = setup(
         tmp_path,

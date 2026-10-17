@@ -9,6 +9,7 @@ import pytest
 from app.core.public_behavior import PublicBehaviorRequest, public_context_digest
 from app.integration.threads_runtime import PUBLIC_RUNTIME_VERSION
 from app.integration.threads_stage0 import Stage0Journal, _identity
+from app.trusted.openai_transport import OPENAI_API_BASE_URL
 from ops.int24_public_worker import _attestor
 from ops.int24_threads_runtime import main
 
@@ -142,6 +143,7 @@ def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch):
         module.main(["--config", "/unused/config"])
     assert seen["project"] == "proj_reviewed"
     assert seen["organization"] == "org-reviewed"
+    assert seen["base_url"] == OPENAI_API_BASE_URL
     assert seen["max_retries"] == 0
     assert seen["started"] is True
     assert seen["closed"] is True
