@@ -139,19 +139,26 @@ class PublicBehaviorClient:
                 else CostEstimateStatus.USAGE_UNAVAILABLE,
                 telemetry["provider_error_code"],
             )
-            if (
-                self.provider_store is not None
-                and not self.provider_store.attempt_exists(record.attempt_id)
-            ):
-                if not self.provider_store.record_attempt(
-                    record,
-                    confirmed_spend_limit_code=(
-                        record.provider_error_code
-                        if record.provider_error_code in CONFIRMED_SPEND_LIMIT_CODES
-                        else None
-                    ),
-                ):
+            if self.provider_store is not None:
+                if not self.provider_store.attempt_exists(record.attempt_id):
+                    self.provider_store.record_attempt(
+                        record,
+                        confirmed_spend_limit_code=(
+                            record.provider_error_code
+                            if record.provider_error_code in CONFIRMED_SPEND_LIMIT_CODES
+                            else None
+                        ),
+                    )
+                # Another authenticated client may have committed the same
+                # attempt after our existence check. Verify the durable row,
+                # including the confirmed suspension, before accepting it.
+                if self.provider_store.usage_attempt(record.attempt_id) != record:
                     raise ValueError("public worker telemetry persistence failed")
+                if (
+                    record.provider_error_code in CONFIRMED_SPEND_LIMIT_CODES
+                    and not self.provider_store.is_spend_suspended()
+                ):
+                    raise ValueError("public worker suspension persistence failed")
         except (TypeError, ValueError) as error:
             raise ValueError("invalid public worker telemetry") from error
         if outcome != "completed":

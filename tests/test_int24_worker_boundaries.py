@@ -383,10 +383,104 @@ def test_client_rejects_unbound_outcomes_and_telemetry_persistence_failure(monke
         client_module, "receive_frame", lambda *_a, **_k: json.dumps(base).encode()
     )
     client.provider_store = SimpleNamespace(
-        attempt_exists=lambda _: False, record_attempt=lambda *_a, **_k: False
+        attempt_exists=lambda _: False,
+        record_attempt=lambda *_a, **_k: False,
+        usage_attempt=lambda _: (_ for _ in ()).throw(ValueError("missing row")),
     )
     with pytest.raises(ValueError, match="telemetry"):
         client.complete(REQUEST, 5)
+
+
+def test_concurrent_duplicate_telemetry_is_verified_idempotently(tmp_path, monkeypatch):
+    store = ProviderStateStore(EventStore(tmp_path / "app-events.sqlite"))
+    client = PublicBehaviorClient(
+        Path("/tmp/nonexistent.sock"), expected_uid=os.getuid()
+    )
+    client.provider_store = store
+    monkeypatch.setattr(
+        client_module.socket, "socket", lambda *_args: Socket(os.getuid())
+    )
+    monkeypatch.setattr(client_module, "send_frame", lambda *_args, **_kwargs: None)
+    telemetry = {
+        "attempt_id": "operation-1",
+        "correlation_id": "operation-1",
+        "model_identifier": "reviewed-model",
+        "provider_response_id": None,
+        "started_at": "2026-10-17T12:00:00+00:00",
+        "duration_ms": 1,
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "outcome": "completed",
+        "provider_error_code": None,
+    }
+    result = {
+        "operation_id": "operation-1",
+        "outcome": "completed",
+        "proposal": GOOD,
+        "telemetry": telemetry,
+    }
+    monkeypatch.setattr(
+        client_module, "receive_frame", lambda *_a, **_k: json.dumps(result).encode()
+    )
+    assert client.complete(REQUEST, 5) == GOOD
+    assert store.usage_attempt_count() == 1
+    # Both clients can observe absence before either insert. The second insert
+    # loses the race but must accept the exact durable record.
+    monkeypatch.setattr(store, "attempt_exists", lambda _: False)
+    assert client.complete(REQUEST, 5) == GOOD
+    assert store.usage_attempt_count() == 1
+    result["telemetry"] = telemetry | {"duration_ms": 2}
+    with pytest.raises(ValueError, match="telemetry"):
+        client.complete(REQUEST, 5)
+
+
+def test_concurrent_spend_suspension_replay_accepts_identical_durable_attempt(
+    tmp_path, monkeypatch
+):
+    store = ProviderStateStore(EventStore(tmp_path / "app-events.sqlite"))
+    client = PublicBehaviorClient(
+        Path("/tmp/nonexistent.sock"), expected_uid=os.getuid()
+    )
+    client.provider_store = store
+    monkeypatch.setattr(
+        client_module.socket, "socket", lambda *_args: Socket(os.getuid())
+    )
+    monkeypatch.setattr(client_module, "send_frame", lambda *_args, **_kwargs: None)
+    telemetry = {
+        "attempt_id": "operation-1",
+        "correlation_id": "operation-1",
+        "model_identifier": "reviewed-model",
+        "provider_response_id": None,
+        "started_at": "2026-10-17T12:00:00+00:00",
+        "duration_ms": 1,
+        "input_tokens": None,
+        "output_tokens": None,
+        "total_tokens": None,
+        "outcome": "spend_limit_confirmed",
+        "provider_error_code": "project_spend_limit_exceeded",
+    }
+    result = {
+        "operation_id": "operation-1",
+        "outcome": "spend_limit_confirmed",
+        "proposal": None,
+        "telemetry": telemetry,
+    }
+    monkeypatch.setattr(
+        client_module, "receive_frame", lambda *_a, **_k: json.dumps(result).encode()
+    )
+    with pytest.raises(ValueError, match="inference unavailable"):
+        client.complete(REQUEST, 5)
+    assert store.is_spend_suspended()
+    result.update(operation_id="operation-2", outcome="spend_suspended")
+    monkeypatch.setattr(store, "attempt_exists", lambda _: False)
+    with pytest.raises(ValueError, match="inference unavailable"):
+        client.complete({**REQUEST, "correlation_id": "operation-2"}, 5)
+    assert store.usage_attempt_count() == 1
+    assert store.is_spend_suspended()
+    monkeypatch.setattr(store, "is_spend_suspended", lambda: False)
+    with pytest.raises(ValueError, match="telemetry"):
+        client.complete({**REQUEST, "correlation_id": "operation-2"}, 5)
 
 
 def start_server(
