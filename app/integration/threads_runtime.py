@@ -399,12 +399,17 @@ class ThreadsRuntime(ThreadsStage0):
             ):
                 rejected = True
             else:
-                validate_content(content)
-                payload.update(
-                    decision=proposal.decision.value,
-                    content=content,
-                    draft="public-" + hashlib.sha256(content.encode()).hexdigest()[:32],
-                )
+                try:
+                    validate_content(content)
+                except ValueError:
+                    rejected = True
+                else:
+                    payload.update(
+                        decision=proposal.decision.value,
+                        content=content,
+                        draft="public-"
+                        + hashlib.sha256(content.encode()).hexdigest()[:32],
+                    )
         else:
             rejected = True
         self.guard()

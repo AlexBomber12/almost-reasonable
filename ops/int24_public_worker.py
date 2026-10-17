@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import sqlite3
 
+from app.core.provider_contract import require_identifier
 from app.integration.threads_stage0 import _identity
 from app.integration.threads_runtime import PUBLIC_RUNTIME_VERSION
 from app.core.public_behavior import public_context_digest
@@ -16,6 +17,19 @@ from app.trusted.public_behavior_worker import PublicSDKAdapter, PublicWorkerSer
 def _private_config(path):
     file = Path(path).absolute()
     return json.loads(read_protected_worker_file(file, maximum_bytes=8192))
+
+
+def _billing_scope(config):
+    project = config.get("project_id")
+    organization = config.get("organization_id")
+    try:
+        require_identifier("project id", project)
+        require_identifier("organization id", organization)
+    except ValueError:
+        raise ValueError("OpenAI billing scope is invalid") from None
+    if not project.startswith("proj_") or not organization.startswith("org-"):
+        raise ValueError("OpenAI billing scope is invalid")
+    return project, organization
 
 
 def _attestor(path, account):
@@ -69,6 +83,7 @@ def main(argv=None):
     config = _private_config(args.config)
     if config.get("worker_enabled") is not True:
         raise ValueError("public worker is disabled")
+    project, organization = _billing_scope(config)
     from openai import OpenAI
 
     key = (
@@ -76,7 +91,13 @@ def main(argv=None):
         .decode()
         .strip()
     )
-    sdk = OpenAI(api_key=key, max_retries=0, timeout=10)
+    sdk = OpenAI(
+        api_key=key,
+        max_retries=0,
+        timeout=10,
+        project=project,
+        organization=organization,
+    )
     os.umask(0o077)
     server = PublicWorkerServer(
         Path(config["socket_path"]),

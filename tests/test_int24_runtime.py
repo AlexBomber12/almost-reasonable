@@ -597,3 +597,20 @@ def test_spend_suspension_blocks_approved_dispatch_before_http(tmp_path):
         assert http.calls == []
     finally:
         worker.close()
+
+
+def test_overlong_model_draft_is_durably_rejected(tmp_path):
+    app, worker, sdk, http, _ = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Я" * 501},
+    )
+    try:
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        assert app.journal.read(operation)["phase"] == "rejected"
+        with pytest.raises(Exception, match="unknown operation"):
+            app.draft(operation)
+        assert len(sdk.calls) == 1
+        assert http.calls == []
+    finally:
+        worker.close()
