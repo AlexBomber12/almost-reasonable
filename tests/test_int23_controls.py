@@ -573,6 +573,21 @@ def test_worker_bootstrap_uses_local_stop_and_reviewed_file(tmp_path):
     stop_path.write_text('{"version":"public-research-stop-v1","stop":false}')
     stop_path.chmod(0o400)
     assert not stop.active()
+    for malformed in (
+        '{"version":"public-research-stop-v1","stop":0}',
+        '{"version":"public-research-stop-v1","stop":false,"stop":false}',
+        '{"version":"public-research-stop-v1","stop":true}',
+        '{"version":"wrong","stop":false}',
+        '{"version":"public-research-stop-v1","stop":false,"extra":1}',
+        "[]",
+    ):
+        stop_path.chmod(0o600)
+        stop_path.write_text(malformed)
+        stop_path.chmod(0o400)
+        assert stop.active()
+    stop_path.chmod(0o600)
+    stop_path.write_text('{"version":"public-research-stop-v1","stop":false}')
+    stop_path.chmod(0o400)
     with pytest.raises(ValueError, match="existing research provider database"):
         build_worker(
             socket_path=tmp_path / "research.sock",

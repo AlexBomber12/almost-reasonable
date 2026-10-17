@@ -23,8 +23,26 @@ class PublicResearchStop:
 
     def active(self):
         try:
-            value = json.loads(read_protected_worker_file(self.path, maximum_bytes=256))
-            return value != {"version": "public-research-stop-v1", "stop": False}
+
+            def unique(pairs):
+                value = {}
+                for key, item in pairs:
+                    if key in value:
+                        raise ValueError("duplicate stop field")
+                    value[key] = item
+                return value
+
+            value = json.loads(
+                read_protected_worker_file(self.path, maximum_bytes=256),
+                object_pairs_hook=unique,
+            )
+            return (
+                type(value) is not dict
+                or set(value) != {"version", "stop"}
+                or value["version"] != "public-research-stop-v1"
+                or type(value["stop"]) is not bool
+                or value["stop"]
+            )
         except (TrustedTransportConfigurationError, UnicodeDecodeError, ValueError):
             return True
 
