@@ -3,6 +3,7 @@
 from dataclasses import asdict
 from http import HTTPStatus
 import json
+from importlib.resources import files
 import secrets
 
 from app.core.provider_spend import ProviderStateStore
@@ -26,6 +27,7 @@ class OwnerApplication:
         *,
         privacy_ledger=None,
         allowed_clients=frozenset({"127.0.0.1", "::1"}),
+        pilot_provider_events=None,
     ):
         if (
             type(allowed_clients) is not frozenset
@@ -45,10 +47,17 @@ class OwnerApplication:
         self.events = events
         self.config = config
         self.privacy = privacy_ledger
+        self.pilot_provider_events = pilot_provider_events
         self._http = PrivateWebApplication(None, None, config)
 
     def __call__(self, environ, start_response):
         try:
+            if self.pilot_provider_events is not None and environ.get("PATH_INFO") in {
+                "/",
+                "/owner.js",
+                "/owner.css",
+            }:
+                return self._asset(environ, start_response)
             status, payload, cookies = self._dispatch(environ)
         except _RequestError as error:
             status, payload, cookies = error.status.value, {"error": error.message}, []
@@ -65,19 +74,41 @@ class OwnerApplication:
         start_response(f"{status} {HTTPStatus(status).phrase}", headers)
         return [body]
 
-    def _dispatch(self, env):
+    def _asset(self, env, start_response):
+        # Static resources carry no authority and cannot read owner state.
+        self._admit(env)
+        if env.get("REQUEST_METHOD") != "GET":
+            raise _RequestError(HTTPStatus.METHOD_NOT_ALLOWED, "Method not allowed.")
+        path = env["PATH_INFO"]
+        name, content_type = {
+            "/": ("index.html", "text/html; charset=utf-8"),
+            "/owner.js": ("owner.js", "text/javascript; charset=utf-8"),
+            "/owner.css": ("owner.css", "text/css; charset=utf-8"),
+        }[path]
+        body = files("app.owner_control.static").joinpath(name).read_bytes()
+        start_response(
+            "200 OK",
+            self._http._security_headers()
+            + [("Content-Type", content_type), ("Content-Length", str(len(body)))],
+        )
+        return [body]
+
+    def _admit(self, env):
         if env.get("HTTP_HOST") not in self.config.allowed_hosts or env.get(
             "QUERY_STRING", ""
         ):
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Invalid request target.")
-        client = self._http._client_key(env)
-        if client not in self._allowed_clients:
+        if self._http._client_key(env) not in self._allowed_clients:
             raise _RequestError(HTTPStatus.FORBIDDEN, "Client admission denied.")
+
+    def _dispatch(self, env):
+        self._admit(env)
+        client = self._http._client_key(env)
         path, method = env.get("PATH_INFO"), env.get("REQUEST_METHOD")
         routes = {
             "/login": {"GET", "POST"},
             "/logout": {"POST"},
-            "/status": {"GET"},
+            "/status": {"GET", "POST"},
             "/operation": {"POST"},
             "/stop": {"POST"},
         }
@@ -128,7 +159,7 @@ class OwnerApplication:
             )
         if path == "/status":
             self._http._require_origin(env)
-            provider = ProviderStateStore(self.events)
+            provider = ProviderStateStore(self.pilot_provider_events or self.events)
             suspension = provider.suspension()
             usage = None
             if suspension is not None:
@@ -145,6 +176,39 @@ class OwnerApplication:
                         "currency",
                     )
                 }
+            status = (
+                {
+                    "scope": "private_pilot_application",
+                    "application_stop": {
+                        "active": self.store.active(),
+                        "scope": "application_only",
+                    },
+                    "application_provider": {
+                        "spend_suspended": suspension is not None,
+                        "suspension_usage": usage,
+                        "attempt_count": provider.usage_attempt_count(),
+                        "usage_evidence": "unavailable_bounded_listing",
+                        "billing_authority": False,
+                        "scope": "application_ipc_state",
+                    },
+                    "worker": {"stop": "unavailable", "accounting": "unavailable"},
+                    "event_store": {
+                        "scope": "conversation_event_store",
+                        "health": "read_interface_ok",
+                        **asdict(self.events.diagnostics()),
+                    },
+                    "privacy": {
+                        "ledger_ready": self.privacy is not None
+                        and type(self.privacy.control_generation()) is int,
+                        "reconciliation": "unavailable_bounded_public_interface",
+                    },
+                    "audit": self.store.audit(),
+                }
+                if self.pilot_provider_events is not None
+                else None
+            )
+            if status is not None:
+                return 200, status, []
             return (
                 200,
                 {
