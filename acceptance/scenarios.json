@@ -1,22 +1,14 @@
 {
   "version": "stage0-scenario-manifest-v1",
-  "base_sha": "e9a77d4887f7002c8f3f80b5def2e9627e99856f",
+  "base_sha": "b2932e3eff4177674332a232ae1b33715ae15bdc",
   "baseline": {
     "command": "scripts/ci.sh",
-    "tests_passed": 2792,
-    "statements": 12501,
-    "branches": 3804,
+    "base_sha": "b2932e3eff4177674332a232ae1b33715ae15bdc",
+    "tests_passed": 4205,
+    "coverage_percent": 100,
     "missing_lines": 0,
     "missing_branches": 0,
-    "coverage_percent": 100,
-    "python": "3.12.3",
-    "pytest": "8.4.2",
-    "pytest_cov": "7.0.0",
-    "coverage": "7.11.0",
-    "ruff": "0.12.11",
-    "duration_seconds": 271.63,
-    "environment": "Linux local workspace; synthetic fixtures only",
-    "base_sha": "26190e6f8b9011cc872d89aea073e902206d1a11"
+    "environment": "Linux local workspace; synthetic fixtures only"
   },
   "configuration": {
     "event_store": 8,
@@ -187,6 +179,28 @@
             "tests/test_int22_rehearsal.py::test_worker_rejects_wrong_peer_and_malformed_sdk_response[wrong_peer]",
             "tests/test_int22_rehearsal.py::test_worker_rejects_wrong_peer_and_malformed_sdk_response[malformed_sdk]",
             "tests/test_int22_pilot.py::test_parallel_reservations_and_file_loss_cannot_rearm"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-22 protected worker paths",
+          "components": [
+            "PilotAllowance",
+            "TrustedOpenAIGateway"
+          ],
+          "sink": "closed worker admission and preserved allowance",
+          "risks": [
+            "adversarial",
+            "restart"
+          ],
+          "scope": "Synthetic filesystem attack cases; no host privilege or production credential proof.",
+          "node_ids": [
+            "tests/test_int22_paths.py::test_writable_ancestor_rejects_all_worker_controls_and_state[504]",
+            "tests/test_int22_paths.py::test_writable_ancestor_rejects_all_worker_controls_and_state[511]",
+            "tests/test_int22_paths.py::test_symlink_ancestor_rejects_allowance_and_provider",
+            "tests/test_int22_paths.py::test_ancestor_change_and_old_snapshot_cannot_restore_allowance",
+            "tests/test_int22_paths.py::test_control_ancestry_becoming_unsafe_closes_authority",
+            "tests/test_int22_paths.py::test_provider_state_change_after_admission_is_detected"
           ]
         }
       ],
@@ -810,6 +824,66 @@
             "tests/test_int20_public_research.py::test_spawned_real_worker_ipc_and_lost_response",
             "tests/test_int20_public_research.py::test_distinct_topic_usage_and_consumption_survive_restart"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Authenticated private WSGI -> INT-23 separate inference and public-research workers",
+          "components": [
+            "AuthStore",
+            "WorkerConversationRuntime",
+            "PublicResearchBridge",
+            "PublicResearchServer"
+          ],
+          "sink": "durable bounded reply, public-only worker input and duplicate replay",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Fixed synthetic question and fake SDK; no semantic source verification or production grant issuer.",
+          "node_ids": [
+            "tests/test_int23_connected.py::test_authenticated_wsgi_two_workers_and_durable_reply"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-23 exact authorization and one-use public research",
+          "components": [
+            "PublicResearchBridge",
+            "PublicResearchBoundary",
+            "ProviderStateStore"
+          ],
+          "sink": "denied unapproved input and no replay of lost worker response",
+          "risks": [
+            "adversarial",
+            "crash"
+          ],
+          "scope": "Fake SDK and local approval artifacts only.",
+          "node_ids": [
+            "tests/test_int23_controls.py::test_unapproved_question_never_crosses_boundary",
+            "tests/test_int23_controls.py::test_stop_and_spend_block_contact",
+            "tests/test_int23_controls.py::test_lost_or_crashed_attempt_is_not_retried[crash_after_started]",
+            "tests/test_int23_controls.py::test_lost_or_crashed_attempt_is_not_retried[lost_response]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "INT-25 private WSGI -> approved research -> separate public worker -> fake Threads",
+          "components": [
+            "WorkerConversationRuntime",
+            "PublicResearchBridge",
+            "ThreadsRuntime",
+            "PublicWorkerServer",
+            "OwnerStore"
+          ],
+          "sink": "private replay, public draft, approved HTTP effect, canary exclusion and shared Stop",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Explicit offline composition with synthetic approval, fake SDK and fake HTTP; no live provider or Threads authority.",
+          "node_ids": [
+            "tests/test_int25_connected.py::test_private_research_public_draft_stop_and_restart_replay"
+          ]
         }
       ],
       "missing_connections": [],
@@ -933,6 +1007,45 @@
             "tests/test_int21_threads_transport.py::test_two_stage_post_verifies_real_identity_through_service",
             "tests/test_int21_threads_transport.py::test_reply_parent_is_sent_and_verified",
             "tests/test_int21_threads_transport.py::test_known_publication_id_reconciles_from_exact_provider_readback"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "INT-24 wakeup -> AF_UNIX public worker -> approval -> fake Threads HTTP",
+          "components": [
+            "ThreadsRuntime",
+            "PublicWorkerServer",
+            "PublicSDKAdapter",
+            "ThreadsHTTPTransport"
+          ],
+          "sink": "awaiting-approval outbox and confirmed fake publication",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Fake SDK and HTTP; no Meta account validation.",
+          "node_ids": [
+            "tests/test_int24_runtime.py::test_public_wakeup_worker_outbox_exact_approval_and_http",
+            "tests/test_int24_runtime.py::test_public_worker_runs_in_separate_process_with_fake_sdk"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "INT-24 journal/outbox restart and unknown dispatch",
+          "components": [
+            "ThreadsRuntime",
+            "PublicWorkerServer",
+            "ThreadsHTTPTransport"
+          ],
+          "sink": "same accepted intent without reinference; unknown publication without resend",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Synthetic checkpoint and fake HTTP; no live Graph recovery.",
+          "node_ids": [
+            "tests/test_int24_runtime.py::test_scheduler_crash_after_acceptance_recovers_outbox_without_reinference",
+            "tests/test_int24_runtime.py::test_unknown_publication_pauses_account_and_reconcile_does_not_resend",
+            "tests/test_int24_runtime_guards.py::test_interrupted_sending_is_recoverable_without_retransmission"
           ]
         }
       ],
@@ -1101,6 +1214,23 @@
             "tests/test_int21_threads_transport.py::test_live_pages_stop_at_event_budget_and_resume_without_loss",
             "tests/test_int21_threads_transport.py::test_reply_poll_rejects_wrong_root_without_advancing"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "INT-24 verified inbound reply -> public worker -> exact approval",
+          "components": [
+            "ThreadsRuntime",
+            "PublicWorkerServer",
+            "ThreadsHTTPTransport"
+          ],
+          "sink": "parent-bound reply draft and fake publication",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic verified reply and fake HTTP; no live inbound feed.",
+          "node_ids": [
+            "tests/test_int24_runtime.py::test_verified_reply_routes_to_provider_parent_without_public_authority"
+          ]
         }
       ],
       "missing_connections": [],
@@ -1225,9 +1355,22 @@
         {
           "layer": "connected integration",
           "entry_point": "Authenticated PrivateWebApplication WSGI and opt-in CognitionEngine",
-          "components": ["AuthStore", "PrivateWebApplication", "SyntheticMemoryExtractor", "CognitionEngine", "GenericMemoryStore", "MemoryContextSelector", "AgentOutputStore", "EventStore"],
+          "components": [
+            "AuthStore",
+            "PrivateWebApplication",
+            "SyntheticMemoryExtractor",
+            "CognitionEngine",
+            "GenericMemoryStore",
+            "MemoryContextSelector",
+            "AgentOutputStore",
+            "EventStore"
+          ],
           "sink": "versioned private graph, protected reply dependencies and later fake-model input",
-          "risks": ["restart", "adversarial", "concurrency"],
+          "risks": [
+            "restart",
+            "adversarial",
+            "concurrency"
+          ],
           "scope": "Synthetic private inputs and fake extraction; ordinary participant deletion UI is separate work.",
           "node_ids": [
             "tests/test_generic_memory.py::test_multilevel_private_consolidation_replay_restart_and_erasure",
@@ -1288,9 +1431,18 @@
         {
           "layer": "recovery",
           "entry_point": "EventStore migration, protected graph validation and quarantined restore",
-          "components": ["EventStore", "GenericMemoryStore", "EventStoreErasureAdapter", "QuarantinedRestore"],
+          "components": [
+            "EventStore",
+            "GenericMemoryStore",
+            "EventStoreErasureAdapter",
+            "QuarantinedRestore"
+          ],
           "sink": "atomic v7 schema, fail-closed graph, absent deleted payloads",
-          "risks": ["restart", "crash", "adversarial"],
+          "risks": [
+            "restart",
+            "crash",
+            "adversarial"
+          ],
           "scope": "Local SQLite/WAL and separate guarded Python process only.",
           "node_ids": [
             "tests/test_generic_memory.py::test_genuine_v6_migration_rolls_back_atomically_then_preserves_rows",
@@ -1495,7 +1647,10 @@
             "ThreadsSimulator"
           ],
           "sink": "current mission in bounded model request; pinned journal binding; held stale result and publication; simulator effect trace",
-          "risks": ["restart", "adversarial"],
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
           "scope": "Explicit offline application composition with recorded model and simulator; pending proposal retains current mission until independent confirmation, while changed or deleted mission state holds affected work and requires reassessment.",
           "node_ids": [
             "tests/test_threads_stage0_integration.py::test_configured_mission_changes_only_after_confirmation",
@@ -1525,7 +1680,10 @@
             "ThreadsSimulator"
           ],
           "sink": "verified inbound context and current mission in model request; pinned journal intent and bounded outbox",
-          "risks": ["restart", "concurrency"],
+          "risks": [
+            "restart",
+            "concurrency"
+          ],
           "scope": "Explicit offline application composition; verified simulator ingress only, no private source in the public model request; stale inbound work does not block independent conversation work.",
           "node_ids": [
             "tests/test_threads_stage0_integration.py::test_configured_inbound_uses_mission_without_private_source",
@@ -1545,11 +1703,31 @@
             "EventStore"
           ],
           "sink": "exact persisted mission version and digest at started/intent boundary; no repeated inference",
-          "risks": ["crash", "restart"],
+          "risks": [
+            "crash",
+            "restart"
+          ],
           "scope": "Real child-process exits at mission-bound journal start and intent; synthetic recorded model and stores after restart.",
           "node_ids": [
             "tests/test_stage0_process_acceptance.py::test_mission_process_exit_retains_exact_binding_without_reinference[after_started-started]",
             "tests/test_stage0_process_acceptance.py::test_mission_process_exit_retains_exact_binding_without_reinference[after_intent-intent]"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-24 mission-bound public runtime",
+          "components": [
+            "ThreadsRuntime",
+            "PublicMissionContext"
+          ],
+          "sink": "stale or changed mission blocks public handoff",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Closed synthetic mission only.",
+          "node_ids": [
+            "tests/test_int24_runtime_guards.py::test_mission_changes_after_model_hold_intent",
+            "tests/test_int24_runtime_guards.py::test_changed_mission_blocks_current_authorization_and_handoff"
           ]
         }
       ],
@@ -1620,6 +1798,22 @@
             "tests/test_durable_scheduler.py::test_completed_no_action_survives_real_process_exit",
             "tests/test_durable_scheduler.py::test_two_processes_race_for_one_durable_wakeup",
             "tests/test_durable_scheduler.py::test_expired_uncertain_batch_releases_capacity_for_new_events"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "INT-24 scheduler no-action and default-disabled runtime",
+          "components": [
+            "ThreadsRuntime",
+            "PublicWorkerServer"
+          ],
+          "sink": "no-action outcome without outbox or fake HTTP",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Single synthetic wakeup; no behavioral judgment.",
+          "node_ids": [
+            "tests/test_int24_runtime.py::test_public_no_action_and_default_disabled"
           ]
         }
       ],
@@ -1797,6 +1991,24 @@
             "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_intent]",
             "tests/test_stage0_process_acceptance.py::test_real_deletion_process_exit_replays_pending_ledger_before_reads[after_application]"
           ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-24 source and owner control at public handoff",
+          "components": [
+            "ThreadsRuntime",
+            "OwnerStore",
+            "PrivacyLedger"
+          ],
+          "sink": "revoked source or owner Stop prevents public effect",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Synthetic source and application-owned control.",
+          "node_ids": [
+            "tests/test_int24_runtime_guards.py::test_revoked_source_and_existing_outbox_are_rechecked_at_handoff",
+            "tests/test_int24_runtime.py::test_expired_approval_and_owner_stop_prevent_http"
+          ]
         }
       ],
       "missing_connections": [],
@@ -1844,7 +2056,10 @@
             "QuarantinedRestore"
           ],
           "sink": "captured private/public model and worker inputs, dependency graph, current mission, journal/outbox, simulator trace, HTTP response, quarantine",
-          "risks": ["restart", "adversarial"],
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
           "scope": "cross-channel-adversarial-v1 case IDs; actual local adapters and deterministic fake proposals; explicit test-only mission read composition, not ordinary Threads mission consumption",
           "node_ids": [
             "tests/test_cross_channel_adversarial.py::test_cross_channel_research_memory_mission_and_public_journey[CC-RU-OWNER]",
@@ -1973,6 +2188,44 @@
             "tests/test_int20_public_research.py::test_result_gate_rejects_private_canary_and_unsupported_url",
             "tests/test_int22_pilot.py::test_activation_change_cannot_restore_allowance",
             "tests/test_int22_controls.py::test_gate_rechecks_stop_activation_typed_context_and_allowance"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "INT-24 closed public worker request and output",
+          "components": [
+            "PublicSDKAdapter",
+            "PublicWorkerServer"
+          ],
+          "sink": "private-field rejection, bounded output and sanitized accounting",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Structural checks and fake SDK only; no semantic privacy guarantee.",
+          "node_ids": [
+            "tests/test_int24_public_contract.py::test_closed_public_request_rejects_private_context_and_capability_injection",
+            "tests/test_int24_worker_boundaries.py::test_public_sdk_receives_strict_schema_and_fixed_bounded_kwargs",
+            "tests/test_int24_worker_boundaries.py::test_worker_records_public_sdk_usage_in_shared_provider_store"
+          ]
+        },
+        {
+          "layer": "recovery",
+          "entry_point": "INT-24 one-use worker authority and accounting uncertainty",
+          "components": [
+            "PublicWorkerServer",
+            "ProviderStateStore",
+            "ThreadsRuntime"
+          ],
+          "sink": "no SDK replay across restart or lost limit response",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Offline fake SDK and application-level recovery only.",
+          "node_ids": [
+            "tests/test_int24_worker_boundaries.py::test_worker_restart_keeps_one_use_authority_consumed",
+            "tests/test_int24_worker_boundaries.py::test_lost_limit_response_recovers_suspension_without_reinference",
+            "tests/test_int24_runtime_guards.py::test_interrupted_reconciliation_claim_has_purpose_bound_operator_recovery"
           ]
         }
       ],

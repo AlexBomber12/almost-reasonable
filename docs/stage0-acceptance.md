@@ -67,10 +67,24 @@ INT-12 adds explicitly enabled synthetic generic consolidation; arbitrary live
 model consolidation and production restore activation remain absent.
 
 Scoped guards reject Internet sockets, DNS, HTTP and production credential factories
-for mapped acceptance tests. Only mapped research-worker and INT-11 private-bridge AF_UNIX fixtures are permitted.
-The new journeys reject sockets/HTTP explicitly and assert simulator network_calls
-is zero. The new spawned exit fixtures install their own guards. Existing spawned scheduler
-fixtures remain separately scoped. These are application-test guards, not OS egress containment.
+for mapped acceptance tests. AF_UNIX is allowed only for mapped local worker IPC,
+including INT-19 through INT-25 connected paths. The INT-25 spawned inference and
+research workers explicitly install the same guards. Other process fixtures have
+their own stated scope. These application-test guards do not establish OS network
+isolation; no live provider or Threads requests are part of this gate.
+
+## INT-25 consolidated offline composition
+
+The [consolidated acceptance record](int25-consolidated-acceptance.md) maps INT-22
+path-security checks, INT-23 connected and control checks, and INT-24 public runtime,
+approval, accounting, uncertainty and recovery checks to exact collected pytest IDs.
+The new connected regression reopens a private WSGI runtime after approved public
+research and checks durable reply replay without another inference or research call.
+It then obtains a separate public-worker draft, applies exact local approval, and
+dispatches through fake Threads HTTP. A private canary is absent from the public
+research request, public SDK input and fake Threads request. The same application
+OwnerStore Stop blocks subsequent private and public work. This is synthetic
+composition evidence, not a normative scenario or complete MVP acceptance claim.
 
 Adversarial mappings include Russian, English, mixed-script, encoded and multi-turn
 private/public input, delayed private memory, shared/mission poisoning and hostile
