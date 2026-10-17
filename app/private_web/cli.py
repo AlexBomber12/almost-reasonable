@@ -171,8 +171,12 @@ def main(
             args.public_research_worker_uid,
             args.public_research_approval,
         )
-        if args.enable_public_research != all(
-            item is not None for item in research_options
+        if (
+            args.enable_public_research
+            and not all(item is not None for item in research_options)
+        ) or (
+            not args.enable_public_research
+            and any(item is not None for item in research_options)
         ):
             raise SystemExit(
                 "public research requires explicit enablement, socket, UID and approval"

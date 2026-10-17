@@ -675,6 +675,9 @@ def test_application_cli_requires_explicit_public_composition(tmp_path):
     ]
     with pytest.raises(SystemExit, match="explicit enablement"):
         private_web_main(base + research[:-2])
+    for partial in (research[1:3], research[1:5], research[3:], research[1:]):
+        with pytest.raises(SystemExit, match="explicit enablement"):
+            private_web_main(base + partial)
     with pytest.raises(SystemExit, match="require worker mode"):
         private_web_main(
             [
