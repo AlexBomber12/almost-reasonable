@@ -497,6 +497,33 @@ class AuthStore:
         finally:
             connection.close()
 
+    def rotate_password(self, username: str, password: str) -> None:
+        """Local operator rotation atomically invalidates previous sessions."""
+        self._require_token("username", username)
+        password_bytes = self._password_bytes(password)
+        salt = secrets.token_bytes(16)
+        digest = self._password_digest(password_bytes, salt)
+        connection = self._connect()
+        try:
+            with connection:
+                connection.execute("BEGIN IMMEDIATE")
+                cursor = connection.execute(
+                    "UPDATE accounts SET password_salt=?, password_digest=? WHERE username=?",
+                    (salt, digest, username),
+                )
+                if cursor.rowcount != 1:
+                    raise ProvisioningError("account does not exist")
+                connection.execute(
+                    "UPDATE sessions SET revoked_at=MAX(created_at, ?) "
+                    "WHERE account_id=(SELECT account_id FROM accounts WHERE username=?) "
+                    "AND revoked_at IS NULL",
+                    (self._now(), username),
+                )
+        except sqlite3.Error:
+            raise RuntimeError("authentication store operation failed") from None
+        finally:
+            connection.close()
+
     def disable_account(self, username: str) -> bool:
         connection = self._connect()
         try:

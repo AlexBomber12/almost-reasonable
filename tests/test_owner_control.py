@@ -440,6 +440,114 @@ def test_provisioning_cli(tmp_path):
         store.provision("empty", "")
 
 
+@pytest.mark.parametrize("initial_stop", [True, False])
+def test_owner_password_rotation_cli_preserves_stop_audit_and_rejects_old_authority(
+    boundary, capsys, initial_stop
+):
+    from app.owner_control.cli import main
+
+    store, app, _, _ = boundary
+    previous = login(store)
+    if not initial_stop:
+        assert (
+            store.change(
+                previous.session_token, store.issue(previous.session_token), False
+            )
+            == "applied"
+        )
+    operation = store.issue(previous.session_token)
+    audit = store.audit()
+    args = [
+        "--directory",
+        str(store.directory),
+        "--username",
+        "operator",
+        "--rotate-password",
+    ]
+    assert (
+        main(args, password_reader=lambda _: "replacement synthetic owner password")
+        == 0
+    )
+    assert store.active() is initial_stop
+    assert store.audit() == audit
+    assert store.authenticate(previous.session_token) is None
+    assert request(app, token=previous.session_token)[0] == 401
+    with pytest.raises(PermissionError):
+        store.change(previous.session_token, operation, False)
+    assert (
+        store.login("operator", "synthetic-owner-password", "old").status
+        is LoginStatus.INVALID
+    )
+    assert (
+        store.login("operator", "replacement synthetic owner password", "new").status
+        is LoginStatus.SUCCESS
+    )
+    output = capsys.readouterr()
+    assert "replacement synthetic owner password" not in output.out + output.err
+
+
+def test_rotation_cli_does_not_create_a_missing_owner_store(tmp_path):
+    from app.owner_control.cli import main
+
+    directory = tmp_path / "missing"
+    with pytest.raises(SystemExit, match="existing owner store"):
+        main(
+            [
+                "--directory",
+                str(directory),
+                "--username",
+                "operator",
+                "--rotate-password",
+            ],
+            password_reader=lambda _: pytest.fail("must reject before password input"),
+        )
+    assert not directory.exists()
+
+
+def test_rotation_cli_rejects_confirmation_and_unavailable_hidden_input(boundary):
+    import getpass
+    import warnings
+    from app.owner_control.cli import main
+
+    store, _, _, _ = boundary
+    args = [
+        "--directory",
+        str(store.directory),
+        "--username",
+        "operator",
+        "--rotate-password",
+    ]
+    values = iter(["synthetic replacement", "synthetic mismatch"])
+    with pytest.raises(SystemExit, match="confirmation"):
+        main(args, password_reader=lambda _: next(values))
+
+    def insecure_reader(_):
+        warnings.warn("synthetic hidden input unavailable", getpass.GetPassWarning)
+        pytest.fail("plaintext fallback must not run")
+
+    with pytest.raises(SystemExit, match="hidden password input"):
+        main(args, password_reader=insecure_reader)
+    assert login(store).status is LoginStatus.SUCCESS
+
+
+def test_rotation_cli_sanitizes_invalid_password_failure(boundary):
+    from app.owner_control.cli import main
+
+    store, _, _, _ = boundary
+    with pytest.raises(SystemExit, match="credential update failed"):
+        main(
+            [
+                "--directory",
+                str(store.directory),
+                "--username",
+                "operator",
+                "--rotate-password",
+            ],
+            password_reader=lambda _: "short",
+        )
+    assert login(store).status is LoginStatus.SUCCESS
+
+
 def test_protected_store_files_and_schema(boundary, tmp_path):
     import os
     import sqlite3

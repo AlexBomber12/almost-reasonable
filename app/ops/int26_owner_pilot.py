@@ -9,6 +9,7 @@ import sqlite3
 import stat
 from urllib.parse import urlsplit
 from wsgiref.simple_server import make_server
+from app.private_web.server import PrivateWSGIRequestHandler
 
 from app.core.store import EventStore
 from app.owner_control.store import OwnerStore
@@ -134,6 +135,7 @@ def main(argv=None, *, server_factory=make_server):
         if ip_address(args.listen_host).version == 6
         else {}
     )
+    server_options["handler_class"] = PrivateWSGIRequestHandler
     server = server_factory(args.listen_host, args.port, application, **server_options)
     print(f"Owner console listening on {args.listen_host}:{args.port}")
     server.serve_forever()

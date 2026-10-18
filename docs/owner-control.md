@@ -23,6 +23,22 @@ operation; there is no registration endpoint or remote provisioning authority.
 Serialize initial provisioning. An interrupted initialization fails closed and
 requires local operator inspection rather than automatic schema repair.
 
+To replace an exposed or obsolete owner password, use the local operator CLI
+against the existing protected owner store:
+
+```sh
+python -m app.owner_control --directory /protected/local/owner-control --username operator --rotate-password
+```
+
+Enter and confirm a new unique password at the hidden prompts. The command
+rejects a terminal that cannot provide hidden input. It requires an existing
+owner store and account: it never recreates a database or enables a disabled
+account. Password replacement and revocation of all previous account sessions
+commit in one transaction. The owner identity, current Stop value, pending
+operation history and audit remain intact. Old sessions and their pending Stop
+operations lose authority; other owner accounts are unchanged. A database error
+rolls back both the new password and the session revocations.
+
 An authorized local composition can construct `OwnerStore(directory)` and
 `OwnerApplication(store, event_store, PrivateWebConfig(...),
 privacy_ledger=ledger)` with existing local stores. Use an exact HTTPS owner

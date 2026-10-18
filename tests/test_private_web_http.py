@@ -1,4 +1,5 @@
 from datetime import UTC, datetime
+from html.parser import HTMLParser
 from http.cookies import SimpleCookie
 from io import BytesIO
 import json
@@ -136,6 +137,37 @@ def web(tmp_path):
 
 def header_values(headers, name):
     return [value for key, value in headers if key.lower() == name.lower()]
+
+
+class FormTargets(HTMLParser):
+    def __init__(self, body):
+        super().__init__()
+        self.forms = []
+        self.feed(body.decode())
+
+    def handle_starttag(self, tag, attrs):
+        if tag == "form":
+            self.forms.append(dict(attrs))
+
+
+def test_chat_native_fallback_keeps_private_message_out_of_url(web):
+    *_, app = web
+    browser = Browser(app)
+    browser.login("alice", "correct horse battery")
+    forms = FormTargets(browser.request("GET", "/chat")[2]).forms
+    message = next(form for form in forms if form.get("id") == "message-form")
+    assert message["method"].lower() == "post"
+    assert message["action"] == "/api/messages"
+    assert (
+        browser.request(
+            "POST",
+            message["action"],
+            body=b"content=synthetic-private-draft",
+            content_type="application/x-www-form-urlencoded",
+        )[0]
+        == "403 Forbidden"
+    )
+    assert json.loads(browser.request("GET", "/api/history")[2])["messages"] == []
 
 
 def test_login_page_and_private_responses_have_security_headers(web):

@@ -67,7 +67,30 @@ any separately approved live run. This document does not authorize one.
 ## Use and scope
 
 Open the owner HTTPS origin, enter the separately provisioned owner credentials,
-and use the status and Stop controls. Login obtains a signed, single-use CSRF
+and wait for the login script to enable the login button. The form declares
+POST explicitly and remains disabled when JavaScript is disabled, blocked or
+fails to initialize. It must never put credentials into a URL. Native POST
+fallback remains subject to the existing Origin, JSON and CSRF checks.
+The participant message and privacy forms also declare POST and their exact
+endpoints. If their scripts are unavailable, native submissions keep private
+text and form inputs out of URLs and remain unauthorized without the existing
+CSRF/Origin and JSON protections.
+
+The owner and participant HTTP launchers use `PrivateWSGIRequestHandler`.
+Raw request/access/error lines and WSGI exception details are discarded so
+query strings, headers, cookies and bodies cannot enter container logs through
+the reference server. Use the sanitized status/audit for operational evidence.
+Configure reverse proxies, tunnels and external log collectors separately;
+this application change cannot sanitize logs already held by those systems.
+
+If credentials were exposed in a URL, stop the owner console and rotate the
+password using `app.owner_control --rotate-password` from a trusted local shell
+with the owner store mounted. That revokes old owner sessions atomically while
+preserving Stop and the audit. Replace the affected browser-history entry and
+handle existing logs/screenshots as sensitive evidence. Do not restart the
+console until the fixed image is deployed and credential rotation succeeds.
+
+After normal authentication, use the status and Stop controls. Login obtains a signed, single-use CSRF
 challenge. The browser keeps the session CSRF token in memory; after a page
 reload, sign in again to mutate state. Owner sessions are independent of
 participant sessions. All protected reads require the exact Origin and

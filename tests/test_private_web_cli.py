@@ -67,7 +67,10 @@ def test_serve_builds_disabled_local_application(tmp_path):
         def serve_forever(self):
             observed["served"] = True
 
-    def server_factory(host, port, application):
+    def server_factory(host, port, application, **options):
+        from app.private_web.server import PrivateWSGIRequestHandler
+
+        assert options["handler_class"] is PrivateWSGIRequestHandler
         observed.update(host=host, port=port, application=application)
         return Server()
 
@@ -147,7 +150,10 @@ def test_secure_mode_may_bind_non_loopback(tmp_path):
         def serve_forever(self):
             observed["served"] = True
 
-    def server_factory(host, _port, application):
+    def server_factory(host, _port, application, **options):
+        from app.private_web.server import PrivateWSGIRequestHandler
+
+        assert options["handler_class"] is PrivateWSGIRequestHandler
         observed["host"] = host
         observed["application"] = application
         return Server()

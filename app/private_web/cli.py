@@ -31,6 +31,7 @@ from .conversation import ConversationService, _utc_now
 from .privacy import ParticipantPrivacyControls
 from .runtime import WorkerConversationRuntime
 from .public_research import PublicResearchBridge
+from .server import PrivateWSGIRequestHandler
 from .wsgi import PrivateWebApplication, PrivateWebConfig
 
 
@@ -252,6 +253,7 @@ def main(
     server_options = (
         {"server_class": IPv6WSGIServer} if listener_address.version == 6 else {}
     )
+    server_options["handler_class"] = PrivateWSGIRequestHandler
     server = server_factory(args.listen_host, args.port, application, **server_options)
     print(f"Serving private chat on {args.listen_host}:{args.port}")
     server.serve_forever()
