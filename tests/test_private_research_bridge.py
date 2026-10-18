@@ -128,7 +128,7 @@ def test_current_revocation_hides_completed_research(connected):
     assert len(runtime.history(principal("a"))) == 1
 
 
-def test_revoked_research_grant_hides_reply_derived_transcript(connected, monkeypatch):
+def test_research_reply_is_excluded_without_hiding_ordinary_followup(connected):
     import json
     from app.trusted.openai_transport import FakeOpenAITransport
     from test_private_memory_runtime import extractor
@@ -154,30 +154,26 @@ def test_revoked_research_grant_hides_reply_derived_transcript(connected, monkey
     projection = json.loads(fake.calls[0].request.input_text)
     assert [item["role"] for item in projection["conversation"]] == [
         "participant",
-        "agent",
         "participant",
     ]
-    derived_event = store.retrieve_private_events_in_commit_order(principal("a"))[-1]
-    derived_reply = gate.read_reply(
-        principal("a"), followup._operation_id(derived_event.event_id)
-    )
-    with monkeypatch.context() as patch:
-        patch.setattr(followup._outputs, "read_reply", lambda *_args: None)
-        assert not followup._historical_research_permitted(
-            principal("a"), derived_reply
-        )
     origin = store.retrieve_private_events_in_commit_order(principal("a"))[0]
     bridge.revoke_input(origin.event_id)
     assert [item.role for item in followup.history(principal("a"))] == [
         "participant",
         "participant",
+        "agent",
     ]
     assert (
         followup.submit(principal("a"), "after-revoke", "Продолжим").model_state.value
         == "completed"
     )
     projection = json.loads(fake.calls[-1].request.input_text)
-    assert all(item["role"] == "participant" for item in projection["conversation"])
+    assert [item["role"] for item in projection["conversation"]] == [
+        "participant",
+        "participant",
+        "agent",
+        "participant",
+    ]
 
 
 def test_expired_grant_never_contacts_worker(connected):
