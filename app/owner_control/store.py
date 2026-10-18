@@ -170,6 +170,10 @@ class OwnerStore:
             username, password, "owner:" + secrets.token_hex(16)
         )
 
+    def rotate_password(self, username, password):
+        """OS-authenticated recovery preserves owner identity, Stop and audit."""
+        self._auth.rotate_password(username, password)
+
     def login(self, username, password, client):
         return self._auth.login(username, password, client)
 

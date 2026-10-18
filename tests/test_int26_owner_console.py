@@ -19,6 +19,7 @@ from app.ops.int26_owner_pilot import build_application, main
 from app.owner_control.store import OwnerStore
 from app.owner_control.wsgi import OwnerApplication
 from app.private_web.cli import IPv6WSGIServer
+from app.private_web.server import PrivateWSGIRequestHandler
 from app.private_web.wsgi import PrivateWebConfig
 from app.privacy.ledger import PrivacyLedger
 from app.trusted.private_pilot import PilotAllowance, load_activation
@@ -51,6 +52,34 @@ def settings(tmp_path):
         allowed_client=["127.0.0.1"],
         trusted_proxy=[],
     )
+
+
+def test_owner_login_form_is_safe_before_javascript_initializes(tmp_path):
+    from html.parser import HTMLParser
+
+    class Forms(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.form = None
+            self.submit = None
+
+        def handle_starttag(self, tag, attrs):
+            values = dict(attrs)
+            if tag == "form" and values.get("id") == "login-form":
+                self.form = values
+            if tag == "button" and values.get("id") == "login-submit":
+                self.submit = values
+
+    app = build_application(settings(tmp_path))
+    code, html, headers = call(app, "/")
+    assert code == 200
+    form = Forms()
+    form.feed(html)
+    assert form.form["method"].lower() == "post"
+    assert form.form["action"] == "/login"
+    assert "disabled" in form.submit
+    assert "<noscript>" in html
+    assert dict(headers)["Referrer-Policy"] == "no-referrer"
 
 
 def call(
@@ -358,10 +387,24 @@ def test_launcher_uses_validated_composition(tmp_path, monkeypatch, capsys):
         return Server()
 
     assert main(values, server_factory=factory) == 0
-    assert seen == [("127.0.0.1", 18026, True, {}), "served"]
+    assert seen == [
+        ("127.0.0.1", 18026, True, {"handler_class": PrivateWSGIRequestHandler}),
+        "served",
+    ]
     seen.clear()
     assert main([*values, "--listen-host", "::1"], server_factory=factory) == 0
-    assert seen == [("::1", 18026, True, {"server_class": IPv6WSGIServer}), "served"]
+    assert seen == [
+        (
+            "::1",
+            18026,
+            True,
+            {
+                "server_class": IPv6WSGIServer,
+                "handler_class": PrivateWSGIRequestHandler,
+            },
+        ),
+        "served",
+    ]
     assert "Owner console" in capsys.readouterr().out
     with pytest.raises(SystemExit):
         main([*values, "--listen-host", "0.0.0.0"], server_factory=factory)

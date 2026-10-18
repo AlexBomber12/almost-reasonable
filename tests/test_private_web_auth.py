@@ -44,6 +44,85 @@ def provision(store, username="alice", password="correct horse battery"):
     store.provision_account(username, password, f"participant-{username}")
 
 
+def test_password_rotation_revokes_existing_sessions_and_preserves_identity(
+    store, clock
+):
+    provision(store)
+    provision(store, "bob", "another synthetic password")
+    alice = store.login("alice", "correct horse battery", "client-a")
+    bob = store.login("bob", "another synthetic password", "client-b")
+    clock.timestamp += 1
+    store.rotate_password("alice", "replacement synthetic password")
+    assert store.authenticate(alice.session_token) is None
+    assert store.authenticate(bob.session_token) is not None
+    assert (
+        store.login("alice", "correct horse battery", "old").status
+        is LoginStatus.INVALID
+    )
+    fresh = store.login("alice", "replacement synthetic password", "new")
+    assert fresh.status is LoginStatus.SUCCESS
+    assert (
+        store.authenticate(fresh.session_token).principal_id.value
+        == "participant-alice"
+    )
+    with sqlite3.connect(store.database_path) as connection:
+        rows = connection.execute(
+            "SELECT password_salt, password_digest FROM accounts"
+        ).fetchall()
+        assert all(
+            b"replacement synthetic password" not in salt + digest
+            for salt, digest in rows
+        )
+
+
+def test_password_rotation_preserves_disabled_accounts_and_rejects_unknown(store):
+    provision(store)
+    store.disable_account("alice")
+    store.rotate_password("alice", "replacement synthetic password")
+    assert (
+        store.login("alice", "replacement synthetic password", "local").status
+        is LoginStatus.INVALID
+    )
+    with pytest.raises(ProvisioningError, match="does not exist"):
+        store.rotate_password("unknown", "replacement synthetic password")
+
+
+@pytest.mark.parametrize(
+    "username,password",
+    [(None, "valid synthetic password"), ("alice", "short"), ("alice", "x" * 1025)],
+)
+def test_password_rotation_invalid_input_preserves_credentials(
+    store, username, password
+):
+    provision(store)
+    session = store.login("alice", "correct horse battery", "local")
+    with pytest.raises(ProvisioningError):
+        store.rotate_password(username, password)
+    assert store.authenticate(session.session_token) is not None
+
+
+def test_password_rotation_rolls_back_if_session_revocation_fails(store):
+    provision(store)
+    session = store.login("alice", "correct horse battery", "local")
+    with sqlite3.connect(store.database_path) as connection:
+        original = connection.execute(
+            "SELECT password_salt, password_digest FROM accounts"
+        ).fetchone()
+        connection.execute(
+            "CREATE TRIGGER reject_revocation BEFORE UPDATE ON sessions BEGIN SELECT RAISE(ABORT, 'synthetic failure'); END"
+        )
+    with pytest.raises(RuntimeError, match="authentication store operation failed"):
+        store.rotate_password("alice", "replacement synthetic password")
+    with sqlite3.connect(store.database_path) as connection:
+        assert (
+            connection.execute(
+                "SELECT password_salt, password_digest FROM accounts"
+            ).fetchone()
+            == original
+        )
+    assert store.authenticate(session.session_token) is not None
+
+
 def test_provision_and_authenticate_two_independent_accounts(store):
     provision(store, "alice", "correct horse battery")
     provision(store, "bob", "another synthetic password")

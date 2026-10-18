@@ -45,6 +45,7 @@ async function refresh() {
 }
 byId('login-form').addEventListener('submit', async event => {
   event.preventDefault();
+  byId('login-submit').disabled = true;
   try {
     const challenge = await api('/login');
     const form = new FormData(event.target);
@@ -53,6 +54,7 @@ byId('login-form').addEventListener('submit', async event => {
     event.target.reset(); byId('login-panel').hidden = true; byId('control-panel').hidden = false;
     await refresh(); message('Вход выполнен.');
   } catch (error) {message(error.message);}
+  finally {byId('login-submit').disabled = false;}
 });
 byId('refresh').addEventListener('click', () => refresh().catch(error => message(error.message)));
 async function change(active) {
@@ -69,3 +71,5 @@ byId('logout').addEventListener('click', async () => {
   try {await api('/logout', 'POST', null, csrf); csrf = null; byId('control-panel').hidden = true; byId('login-panel').hidden = false; message('Вы вышли.');}
   catch (error) {message(error.message);}
 });
+byId('login-help').textContent = '';
+byId('login-submit').disabled = false;
