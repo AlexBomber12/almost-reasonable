@@ -221,6 +221,11 @@ def test_held_answer_never_enters_transcript(setup):
         "participant",
         "participant",
     ]
+    with store._open() as db:
+        assert {
+            row[0]
+            for row in db.execute("SELECT prompt_version FROM agent_reply_operations")
+        } == {"private-memory-stage0-v2-transcript-v4"}
 
 
 def test_optional_agent_answer_is_omitted_whole_under_serialized_budget(setup):

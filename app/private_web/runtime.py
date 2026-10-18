@@ -418,11 +418,11 @@ class _DurableConversationRuntime(ConversationService):
                     + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
                     correlation,
                     "worker-owned" if self._worker is not None else self._config.model,
-                    "worker-context-v2"
+                    "worker-context-v2-transcript-v4"
                     if self._worker is not None
-                    else "private-memory-stage0-v2"
+                    else "private-memory-stage0-v2-transcript-v4"
                     if self._shared is None
-                    else "shared-stage0-v3",
+                    else "shared-stage0-v3-transcript-v4",
                     request.conversation.core_self_version,
                     sources,
                     shared_operations,

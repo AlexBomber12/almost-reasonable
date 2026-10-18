@@ -625,6 +625,11 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
         for part in restarted_inputs[0]["conversation"]
         if part["role"] == "agent"
     ] == [token, token]
+    with reopened_events._open() as db:
+        assert {
+            row[0]
+            for row in db.execute("SELECT prompt_version FROM agent_reply_operations")
+        } == {"worker-context-v2-transcript-v4"}
 
 
 def test_shared_context_crosses_worker_without_private_provenance_and_erases(tmp_path):

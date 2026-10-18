@@ -282,13 +282,25 @@ def test_transcript_history_uses_complete_deduplicated_source_budget(
     )
     assert len(fake.calls) == 2
 
+    first_event = next(
+        item.event_id
+        for item in reopened.history(principal("b"))
+        if item.role == "participant" and item.content == "First synthetic question"
+    )
+    second_event = next(
+        item.event_id
+        for item in reopened.history(principal("b"))
+        if item.role == "participant" and item.content == "Second synthetic question"
+    )
     with reopened_events._open() as db:
         first_op = db.execute(
-            "SELECT operation_id FROM protected_reply_shared ORDER BY operation_id"
+            "SELECT operation_id FROM agent_reply_operations WHERE initiating_event_id=?",
+            (first_event,),
         ).fetchone()[0]
         first_reply = AgentOutputStore(reopened_events)._read(
             db, principal("b"), first_op
         )
+        assert first_reply.operation.prompt_version == "shared-stage0-v3-transcript-v4"
         assert first_reply.operation.shared_operation_ids == ("shared-a",)
         actual_shared = {
             row[0]
@@ -298,12 +310,13 @@ def test_transcript_history_uses_complete_deduplicated_source_budget(
         }
         assert actual_shared == set(shared_sources)
         second_op = db.execute(
-            "SELECT operation_id FROM agent_reply_operations WHERE operation_id!=?",
-            (first_op,),
+            "SELECT operation_id FROM agent_reply_operations WHERE initiating_event_id=?",
+            (second_event,),
         ).fetchone()[0]
         second_reply = AgentOutputStore(reopened_events)._read(
             db, principal("b"), second_op
         )
+        assert second_reply.operation.prompt_version == "shared-stage0-v3-transcript-v4"
         private = set(second_reply.operation.source_event_ids)
         assert len(private | actual_shared) == (100 if shared_owner == "a" else 57)
         assert first_reply.operation.source_event_ids[0] in private
