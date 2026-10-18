@@ -22,6 +22,7 @@ from app.cognition.shared import SharedRecord
 from app.cognition.shared_context import SharedModelRequest
 from app.core.model_contract import (
     MAX_MODEL_REQUEST_UTF8_BYTES,
+    MODEL_CONTRACT_VERSION,
     ModelRequest,
     ModelTask,
     serialize_model_request,
@@ -116,6 +117,8 @@ def encode_request(request: InferenceRequest) -> bytes:
     model = request.model_request
     if type(model) is ModelRequest:
         model_json = serialize_model_request(model)
+        if model.contract_version != MODEL_CONTRACT_VERSION:
+            raise ValueError("transcript requires context wrapper")
         version = PROTOCOL_VERSION
     elif type(model) in {MemoryModelRequest, SharedModelRequest}:
         model_json = model.serialize()
