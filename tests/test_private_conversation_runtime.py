@@ -280,7 +280,9 @@ def test_stop_before_during_and_after_processing(setup, point):
         runtime.submit(principal("a"), "stop", "Синтетический запрос").response_content
         is None
     )
-    assert all(item.role == "participant" for item in runtime.history(principal("a")))
+    assert [item.role for item in runtime.history(principal("a"))] == (
+        ["participant", "agent"] if point == "released" else ["participant"]
+    )
     assert len(fake.calls) == (0 if point in ("initial", "after_reservation") else 1)
 
 
@@ -309,6 +311,76 @@ def test_spend_limit_suspension_survives_restart(setup):
         == "skipped"
     )
     assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("control", ["stop", "spend"])
+def test_released_history_survives_controls_new_input_and_restart(setup, control):
+    from app.trusted.openai_transport import OpenAITransportError
+
+    store, ledger, gate, _, _ = setup
+    fake = FakeOpenAITransport(
+        [
+            response(value="Первый синтетический ответ"),
+            OpenAITransportError(error_code="project_spend_limit_exceeded"),
+        ]
+    )
+    stopped = [False]
+    runtime = Stage0ConversationRuntime(
+        store, gate, fake, emergency_stop=lambda: stopped[0]
+    )
+    a, b = principal("a"), principal("b")
+    first = runtime.submit(a, "first", "Первый синтетический запрос")
+    assert first.model_state.value == "completed"
+    if control == "spend":
+        assert (
+            runtime.submit(
+                b, "limit", "Лимит синтетического провайдера"
+            ).model_state.value
+            == "skipped"
+        )
+    else:
+        stopped[0] = True
+    assert (
+        runtime.submit(a, "second", "Второй синтетический запрос").model_state.value
+        == "skipped"
+    )
+    assert (
+        runtime.submit(a, "first", "Первый синтетический запрос").message_status
+        is MessageStatus.DUPLICATE
+    )
+    with store._open() as db:
+        before = tuple(
+            db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "provider_attempt_reservations",
+                "provider_usage_attempts",
+                "agent_reply_resolutions",
+            )
+        )
+    expected = [
+        ("participant", "Первый синтетический запрос"),
+        ("agent", first.response_content),
+        ("participant", "Второй синтетический запрос"),
+    ]
+    for current in (runtime, reopened(setup, emergency_stop=lambda: stopped[0])):
+        for _ in range(2):
+            assert [
+                (item.role, item.content) for item in current.history(a)
+            ] == expected
+        assert all(
+            item.content != first.response_content for item in current.history(b)
+        )
+    with store._open() as db:
+        after = tuple(
+            db.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+            for table in (
+                "provider_attempt_reservations",
+                "provider_usage_attempts",
+                "agent_reply_resolutions",
+            )
+        )
+    assert after == before
+    assert len(fake.calls) == (1 if control == "stop" else 2)
 
 
 def test_two_concurrent_duplicate_requests_share_one_operation(setup, monkeypatch):

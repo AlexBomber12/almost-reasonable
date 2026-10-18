@@ -152,8 +152,14 @@ no rendering. `release_reply` revalidates the exact policy grant, current contro
 Russian content and complete live source set in its storage transaction. Release
 records and source edges remain internal. Response reads obtain the reply and terminal resolution in one SQLite snapshot,
 so concurrent completion cannot produce a completed status without content.
-History renders only released replies and rechecks current controls and source availability. Current stop/spend/delivery
-suspension hides a previously released reply without claiming it was recalled.
+History reads the live scoped payload and completed release resolution together under
+the privacy fence. It rechecks current session, research authority when applicable,
+and complete source dependencies. Stop and spend suspension still prevent inference
+and first release; they do not hide a previously released reply from authorized
+history. The history path does not reserve inference, contact a worker or provider,
+create a release, or change an operation outcome. A persisted but unreleased draft
+remains held. Delivery capability is checked for first release, not for reading a
+release already recorded by the server.
 
 `POST /api/messages` retains the existing JSON contract:
 
@@ -268,7 +274,8 @@ History JSON and chat HTML install the same current-session callback as POST,
 check it before private retrieval and recheck it before rendering the captured
 history. Revocation/expiry during either read path yields a payload-free denial.
 A completed reply reuses its original payload and release identity after current
-application grant, session, stop/spend/delivery, privacy and source checks. Trusted
+application grant, session, privacy and source checks. Stop, spend and delivery
+controls continue to govern first release. Trusted
 bootstrap must explicitly restore/reissue application retrieval authority after
 restart; absent/disabled/expired/revoked authority cannot release a research reply.
 
