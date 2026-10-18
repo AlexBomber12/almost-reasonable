@@ -71,6 +71,10 @@ and wait for the login script to enable the login button. The form declares
 POST explicitly and remains disabled when JavaScript is disabled, blocked or
 fails to initialize. It must never put credentials into a URL. Native POST
 fallback remains subject to the existing Origin, JSON and CSRF checks.
+The participant message and privacy forms also declare POST and their exact
+endpoints. If their scripts are unavailable, native submissions keep private
+text and form inputs out of URLs and remain unauthorized without the existing
+CSRF/Origin and JSON protections.
 
 The owner and participant HTTP launchers use `PrivateWSGIRequestHandler`.
 Raw request/access/error lines and WSGI exception details are discarded so

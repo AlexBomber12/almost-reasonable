@@ -127,6 +127,29 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                     page.wait_for_url(f"{origin}/chat")
                     assert page.get_by_text("Authenticated as synthetic").is_visible()
                     assert observed_asset_referers == [None]
+                    native = browser.new_page(
+                        ignore_https_errors=True, java_script_enabled=False
+                    )
+                    try:
+                        native.context.add_cookies(page.context.cookies())
+                        native.goto(f"{origin}/chat")
+                        native.get_by_label("Message").fill("synthetic private draft")
+                        with native.expect_response(
+                            lambda reply: reply.url.startswith(origin)
+                            and reply.request.method == "POST"
+                        ) as reply:
+                            native.get_by_role(
+                                "button", name="Send", exact=True
+                            ).click()
+                        assert reply.value.url == f"{origin}/api/messages"
+                        assert reply.value.status == 403
+                        native.wait_for_url(f"{origin}/api/messages")
+                        assert native.url == f"{origin}/api/messages"
+                        assert (
+                            page.goto(f"{origin}/api/history").json()["messages"] == []
+                        )
+                    finally:
+                        native.close()
                     assert page.goto(f"{origin}/session").json() == {
                         "authenticated": True,
                         "username": "synthetic",

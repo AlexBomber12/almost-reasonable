@@ -1,5 +1,6 @@
 """The real HTTP server must not persist synthetic credentials or request data."""
 
+from contextlib import closing
 from http.client import HTTPConnection
 from threading import Thread
 from wsgiref.simple_server import make_server
@@ -41,7 +42,9 @@ def test_real_server_omits_query_headers_body_and_exception_from_logs(capsys, fa
         thread = Thread(target=server.serve_forever, daemon=True)
         thread.start()
         try:
-            with HTTPConnection("127.0.0.1", server.server_port, timeout=5) as client:
+            with closing(
+                HTTPConnection("127.0.0.1", server.server_port, timeout=5)
+            ) as client:
                 client.request(
                     "POST",
                     "/login?password=" + marker,

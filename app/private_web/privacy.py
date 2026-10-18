@@ -179,7 +179,7 @@ class ParticipantPrivacyControls:
                 else " · Действует до срока"
             )
             + (
-                '<form data-endpoint="/api/privacy/revocations">'
+                '<form method="post" action="/api/privacy/revocations" data-endpoint="/api/privacy/revocations">'
                 f'<input type="hidden" name="consent_id" value="{escape(row[0])}">'
                 "<button>Отозвать</button></form>"
                 if row[5] is None
@@ -235,7 +235,7 @@ class ParticipantPrivacyControls:
             f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
             f"<p>{escape(NARRATIVE_DISCLOSURE_RU)}</p></section>"
             f'<main data-csrf="{escape(csrf)}">'
-            '<form data-endpoint="/api/privacy/notice"><h2>Подтверждение уведомления</h2>'
+            '<form method="post" action="/api/privacy/notice" data-endpoint="/api/privacy/notice"><h2>Подтверждение уведомления</h2>'
             f'<input type="hidden" name="version" value="{escape(NOTICE_VERSION)}">'
             "<button>Подтвердить уведомление</button></form>"
             "<p>Отдельное согласие необязательно для приватного разговора.</p>"
@@ -251,7 +251,7 @@ class ParticipantPrivacyControls:
             + deletion_rows
             + "</ol>"
             + deletion_next_link
-            + '<form data-endpoint="/api/privacy/reconcile"><h2>Повторить локальное удаление</h2>'
+            + '<form method="post" action="/api/privacy/reconcile" data-endpoint="/api/privacy/reconcile"><h2>Повторить локальное удаление</h2>'
             "<button>Проверить незавершённые операции</button></form>"
             '<button id="privacy-logout">Выйти</button>'
             '</main><script src="/assets/privacy.js"></script></html>'
@@ -298,7 +298,7 @@ class ParticipantPrivacyControls:
             "<title>Источник</title><h1>Управление источником</h1>"
             f'<pre>{escape(content)}</pre><main data-csrf="{escape(csrf)}">'
             "<p>Согласие относится только к этому точному сообщению, аудитории, цели и сроку.</p>"
-            '<form data-endpoint="/api/privacy/grants"><h2>Дать согласие</h2>'
+            '<form method="post" action="/api/privacy/grants" data-endpoint="/api/privacy/grants"><h2>Дать согласие</h2>'
             f'<input type="hidden" name="source" value="{ref}">'
             '<label>Аудитория <select name="audience">'
             '<option value="" selected disabled>Выберите аудиторию</option>'
@@ -314,7 +314,7 @@ class ParticipantPrivacyControls:
             "<button>Дать отдельное согласие</button></form>"
             "<p>Удаление этого источника инвалидирует зависимые локальные памяти и ответы. "
             "Оно не удаляет данные у внешних обработчиков и уже опубликованный материал.</p>"
-            '<form data-endpoint="/api/privacy/deletions"><h2>Удалить источник</h2>'
+            '<form method="post" action="/api/privacy/deletions" data-endpoint="/api/privacy/deletions"><h2>Удалить источник</h2>'
             f'<input type="hidden" name="source" value="{ref}">'
             '<label><input type="checkbox" name="confirm" value="delete" required>'
             "Подтверждаю локальное удаление</label><button>Удалить</button></form>"

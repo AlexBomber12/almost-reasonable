@@ -48,7 +48,7 @@ from test_private_memory_runtime import extractor
 from test_shared_intelligence import approval
 from test_behavior_mission import invariants
 from test_generic_memory import proposal as generic_proposal
-from test_private_web_http import Browser, Clock
+from test_private_web_http import Browser, Clock, FormTargets
 from test_event_store import private_input
 
 
@@ -88,6 +88,53 @@ def post(browser, path, payload, **kwargs):
 
 def acknowledge(browser):
     return post(browser, "/api/privacy/notice", {"version": "privacy-notice-ru-v1"})
+
+
+def test_privacy_native_forms_never_encode_inputs_into_urls(journey):
+    *_, a, _ = journey
+    assert acknowledge(a)[0] == "200 OK"
+    assert a.submit("form-source", "Synthetic private source")[0] == "201 Created"
+    source = json.loads(a.request("GET", "/api/history")[2])["messages"][0]["event_id"]
+    assert (
+        post(
+            a,
+            "/api/privacy/grants",
+            {
+                "operation_id": "form-grant",
+                "source": source,
+                "audience": "public",
+                "purpose": "identifiable_quotation",
+                "validity_hours": 1,
+            },
+        )[0]
+        == "201 Created"
+    )
+    pages = [
+        a.request("GET", "/privacy")[2],
+        a.request(
+            "GET", "/privacy/source", extra_environ={"QUERY_STRING": f"ref={source}"}
+        )[2],
+    ]
+    forms = [form for page in pages for form in FormTargets(page).forms]
+    assert {form["data-endpoint"] for form in forms} == {
+        "/api/privacy/notice",
+        "/api/privacy/reconcile",
+        "/api/privacy/revocations",
+        "/api/privacy/grants",
+        "/api/privacy/deletions",
+    }
+    for form in forms:
+        assert form["method"].lower() == "post"
+        assert form["action"] == form["data-endpoint"]
+        assert (
+            a.request(
+                "POST",
+                form["action"],
+                body=b"source=synthetic-source",
+                content_type="application/x-www-form-urlencoded",
+            )[0]
+            == "403 Forbidden"
+        )
 
 
 def test_notice_gate_acknowledgement_and_authenticated_restart(journey):

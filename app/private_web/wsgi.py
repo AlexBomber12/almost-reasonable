@@ -411,7 +411,7 @@ class PrivateWebApplication:
             + '<p role="status" id="model-status">'
             "Model responses are currently unavailable or pending.</p>"
             f"<ol id=history>{history}</ol>"
-            f'<form id=message-form data-csrf="{escape(csrf)}">'
+            f'<form id=message-form method="post" action="/api/messages" data-csrf="{escape(csrf)}">'
             '<label>Message <textarea name="content" required maxlength="8192"></textarea></label>'
             "<button type=submit>Send</button></form>"
             '<form method="post" action="/logout" id=logout-form>'

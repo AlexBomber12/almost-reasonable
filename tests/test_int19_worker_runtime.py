@@ -564,7 +564,10 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
         def serve_forever(self):
             observed["served"] = True
 
-    def factory(_host, _port, application):
+    def factory(_host, _port, application, **options):
+        from app.private_web.server import PrivateWSGIRequestHandler
+
+        assert options == {"handler_class": PrivateWSGIRequestHandler}
         observed["application"] = application
         return Server()
 
