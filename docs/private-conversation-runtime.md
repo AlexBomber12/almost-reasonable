@@ -75,10 +75,23 @@ but cannot omit an exposed input. A durable event commit sequence bounds retriev
 the 100-event limit is applied. Later inputs cannot displace a delayed original
 event or enter its context, even with equal timestamps or a backward clock.
 Missing sequence/source metadata fails closed. Existing
-context is participant-input-only: persisted replies appear in participant history,
-but agent replies and private memory/revision text are not model-context roles in
-this contract. Shared influence remains a blocker; INT-05A supplies an explicit offline v2
-memory context while this v1 path remains unchanged.
+The legacy v1 context remains participant-input-only. The B02 transcript path
+uses the same commit-sequence prefix and adds only replies with a completed
+durable release resolution and currently valid private, generic-memory, shared,
+research and session authorization. It positions each released answer immediately
+after its initiating participant input; concurrent completion order does not
+create a new conversation order. The current input appears once at the end.
+Both roles are untrusted conversational data. Earlier answers cannot supply
+Core Self, instructions, verified evidence, consent or operational authority.
+The reply reservation inherits the complete dependencies of every selected
+answer, so later replies are invalidated when a material earlier source is
+erased. Research-origin replies remain display/history content and are not
+selected into model transcripts, because their expiring grant is not part of
+the durable reply dependency graph. This keeps ordinary follow-ups independent
+of a grant when only its participant input was read. Optional answers are
+omitted whole when their text or dependencies do not fit. This is transcript
+continuity, not structured long-term memory,
+consolidation or a live extractor.
 
 After the fake gateway parses its closed proposal schema, current policy and
 controls distinguish a reply, successful `no_action`, invalid proposal, unsupported

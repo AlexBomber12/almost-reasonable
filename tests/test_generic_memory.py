@@ -2151,6 +2151,58 @@ def test_reply_requires_complete_exact_generic_dependencies(tmp_path):
     )
 
 
+def test_reply_transcript_inherits_generic_edge_when_memory_record_is_omitted(tmp_path):
+    store, _ledger, gate, fake, _ = runtime_setup.__wrapped__(tmp_path)
+    a = principal("a")
+    source = append_event(store, a, "source", "Синтетический исходный факт")
+    assert commit_direct(store, proposal(source, "m1", "op-one")) == ("m1", 1)
+    no_change = SyntheticMemoryExtractor(
+        lambda r: NoChangeProposal(
+            r.experience.event_id, "No update", (r.experience.event_id,)
+        ),
+        ExtractorIdentity("synthetic", "v1"),
+    )
+    first = Stage0ConversationRuntime(store, gate, fake, memory_extractor=no_change)
+    assert first.submit(a, "first", "Обсудим память").model_state.value == "completed"
+    first_id = gate.retrieve_private_events(a)[-1].event_id
+    assert gate.read_reply(
+        a, first._operation_id(first_id)
+    ).operation.generic_operation_ids == ("op-one",)
+    current = append_event(store, a, "second", "Продолжим разговор")
+    with store._open() as db:
+        db.execute("BEGIN IMMEDIATE")
+        full, _ = MemoryConversationAssembler(store, ContextLimits(32000, 99)).build(
+            a, current, db
+        )
+    assert full.memories
+    without_memory = replace(full, memories=(), memories_omitted=True)
+    budget = len(without_memory.serialize().encode())
+    later = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        memory_extractor=no_change,
+        context_limits=ContextLimits(budget, 99),
+    )
+    assert (
+        later.submit(a, "message-second", "Продолжим разговор").model_state.value
+        == "completed"
+    )
+    projection = json.loads(fake.calls[-1].request.input_text)
+    assert projection["memories"] == []
+    assert any(part["role"] == "agent" for part in projection["conversation"])
+    second = gate.read_reply(a, later._operation_id(current))
+    assert second.operation.generic_operation_ids == ("op-one",)
+    assert source in second.operation.source_event_ids
+    assert (
+        EventStoreErasureAdapter(store)
+        .erase(request(content_reference=source))
+        .blockers
+        == ()
+    )
+    assert gate.read_reply(a, later._operation_id(current)) is None
+
+
 def test_generic_combined_budget_omits_whole_memory_and_its_edges(tmp_path):
     store = EventStore(tmp_path / "events.db")
     a = principal("a")

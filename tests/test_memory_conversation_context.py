@@ -140,7 +140,7 @@ def test_serialized_request_hard_limit_and_provider_v1_compatibility(
                 request.conversation, default_openai_provider_config()
             ).input_text
         )["contract_version"]
-        == "model-contract-v1"
+        == "model-contract-conversation-transcript-v4"
     )
     with pytest.raises(TypeError):
         build_openai_request(request, default_openai_provider_config())
@@ -195,6 +195,109 @@ def test_combined_budget_omits_whole_memory_and_history(setup):
     limited, _ = build(store, current, ContextLimits(budget, 99))
     assert limited.conversation.history_omitted
     assert "z" * 2000 not in limited.serialize()
+
+
+def test_held_answer_never_enters_transcript(setup):
+    store, _, gate, fake, _ = setup
+
+    def crash(point):
+        if point == "after_reply_commit":
+            raise RuntimeError("synthetic crash")
+
+    held = Stage0ConversationRuntime(
+        store, gate, fake, memory_extractor=extractor(), checkpoint=crash
+    )
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        held.submit(principal("a"), "held", "Первый вопрос")
+    followup = Stage0ConversationRuntime(
+        store, gate, fake, memory_extractor=extractor()
+    )
+    assert (
+        followup.submit(principal("a"), "next", "Второй вопрос").model_state.value
+        == "completed"
+    )
+    projection = json.loads(fake.calls[-1].request.input_text)
+    assert [part["role"] for part in projection["conversation"]] == [
+        "participant",
+        "participant",
+    ]
+    assert projection["history_omitted"] is False
+    with store._open() as db:
+        assert {
+            row[0]
+            for row in db.execute("SELECT prompt_version FROM agent_reply_operations")
+        } == {"private-memory-stage0-v2-transcript-v4"}
+
+
+def test_optional_agent_answer_is_omitted_whole_under_serialized_budget(setup):
+    store, _, gate, fake, _ = setup
+    runtime = Stage0ConversationRuntime(store, gate, fake, memory_extractor=extractor())
+    runtime.submit(principal("a"), "seed", "Первый вопрос")
+    current = append_event(store, principal("a"), "next", "Второй вопрос")
+    full, _ = build(store, current)
+    assert [part.role.value for part in full.conversation.conversation] == [
+        "participant",
+        "agent",
+        "participant",
+    ]
+    without_agent = replace(
+        full,
+        conversation=replace(
+            full.conversation,
+            conversation=(
+                full.conversation.conversation[0],
+                full.conversation.conversation[-1],
+            ),
+            history_omitted=True,
+        ),
+    )
+    budget = len(full.serialize().encode()) - 1
+    assert len(without_agent.serialize().encode()) < budget
+    limited, sources = build(store, current, ContextLimits(budget, 99))
+    assert [part.role.value for part in limited.conversation.conversation] == [
+        "participant",
+        "participant",
+    ]
+    assert limited.conversation.history_omitted
+    assert len(limited.serialize().encode()) <= budget
+    assert current in sources
+
+
+def test_concurrent_release_order_uses_input_commit_sequence(setup):
+    store, _, gate, fake, _ = setup
+    entered, release = Event(), Event()
+
+    def pause(point):
+        if point == "before_release":
+            entered.set()
+            assert release.wait(5)
+
+    first_runtime = Stage0ConversationRuntime(
+        store, gate, fake, memory_extractor=extractor(), checkpoint=pause
+    )
+    next_runtime = Stage0ConversationRuntime(
+        store, gate, fake, memory_extractor=extractor()
+    )
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        first = pool.submit(first_runtime.submit, principal("a"), "first", "Первый")
+        assert entered.wait(5)
+        second = next_runtime.submit(principal("a"), "second", "Второй")
+        assert second.model_state.value == "completed"
+        release.set()
+        assert first.result(5).model_state.value == "completed"
+    third = next_runtime.submit(principal("a"), "third", "Третий")
+    assert third.model_state.value == "completed"
+    conversation = json.loads(fake.calls[-1].request.input_text)["conversation"]
+    assert [part["role"] for part in conversation] == [
+        "participant",
+        "agent",
+        "participant",
+        "agent",
+        "participant",
+    ]
+    assert [
+        part["content"] for part in conversation if part["role"] == "participant"
+    ] == ["Первый", "Второй", "Третий"]
 
 
 def test_missing_source_and_missing_memory_provenance_fail_closed(setup):

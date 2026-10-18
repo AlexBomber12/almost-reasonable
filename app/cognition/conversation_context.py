@@ -1,19 +1,28 @@
-"""Stage 0 versioned memory context and complete protected reply dependencies.
+"""Bounded private memory and transcript context with protected dependencies.
 
-The ordinary v1 provider/worker request is unchanged. This extension is serialized
-only by the exact offline fake bridge; no real provider accepts it.
+Legacy v1 and v2 contracts remain strict. The v4 transcript projection crosses
+the authenticated worker boundary while protected dependency IDs stay private.
 """
 
 from dataclasses import dataclass, replace
+import hashlib
 import json
 import math
 
-from app.core.context import ContextLimits, PrivateContextAssembler
+from app.core.context import (
+    ContextLimits,
+    ContextRole,
+    ContextTrust,
+    ConversationSegment,
+    PrivateContextAssembler,
+)
 from app.core.model_contract import (
     MAX_MODEL_REQUEST_UTF8_BYTES,
     ModelRequest,
     build_model_request,
+    TRANSCRIPT_MODEL_CONTRACT_VERSION,
 )
+from app.core.agent_output_store import AgentOutputStore, ResultState
 from app.core.self_state_store import SelfStateStore
 from app.privacy.application import PrivacyReadBlocked
 
@@ -24,6 +33,7 @@ from .retrieval import MemoryContextSelector
 
 
 MEMORY_MODEL_CONTRACT_VERSION = "model-contract-private-memory-v2"
+TRANSCRIPT_CONTEXT_CONTRACT_VERSION = "model-contract-conversation-transcript-v4"
 MAX_MEMORY_RECORDS = 16
 
 
@@ -169,6 +179,7 @@ class MemoryModelRequest:
     memories: tuple[ModelMemory, ...]
     memories_omitted: bool
     generic_operation_ids: tuple[str, ...] = ()
+    inherited_shared_operation_ids: tuple[str, ...] = ()
 
     def serialize(self) -> str:
         serialized = self._serialized()
@@ -186,7 +197,11 @@ class MemoryModelRequest:
         ):
             raise ValueError("invalid memory request")
         data = self.conversation.to_structured_data()
-        data["contract_version"] = MEMORY_MODEL_CONTRACT_VERSION
+        data["contract_version"] = (
+            TRANSCRIPT_CONTEXT_CONTRACT_VERSION
+            if self.conversation.contract_version == TRANSCRIPT_MODEL_CONTRACT_VERSION
+            else MEMORY_MODEL_CONTRACT_VERSION
+        )
         data["memories"] = [memory.structured() for memory in self.memories]
         data["memories_omitted"] = self.memories_omitted
         return json.dumps(
@@ -206,7 +221,7 @@ class MemoryConversationAssembler:
     """Authorize before ranking, using the caller's consistent SQLite snapshot.
 
     Dependencies are the complete revision-chain union, retained separately from
-    the model values. Earlier agent replies are not enabled as inference roles.
+    the model values. A released reply is untrusted transcript data.
     """
 
     def __init__(self, store, limits: ContextLimits):
@@ -217,7 +232,7 @@ class MemoryConversationAssembler:
         self._selector = MemoryContextSelector(store, self._state)
         self._generic = GenericMemoryStore(store)
 
-    def build(self, principal, event_id, db):
+    def build(self, principal, event_id, db, *, reply_permitted=lambda _reply: True):
         events = self._store.retrieve_private_events_in_commit_order(
             principal,
             event_id,
@@ -282,6 +297,7 @@ class MemoryConversationAssembler:
                 self._limits,
             ).build(principal)
         )
+        base = replace(base, contract_version=TRANSCRIPT_MODEL_CONTRACT_VERSION)
         request = MemoryModelRequest(base, (), selection.records_omitted)
         sources = {event_id}
         if (
@@ -321,6 +337,15 @@ class MemoryConversationAssembler:
                 )
             )
         history_omitted = False
+        outputs = AgentOutputStore(self._store)
+        selected_history = ()
+        inherited_shared = set()
+        inherited_generic = set(request.generic_operation_ids)
+        shared_sources = set()
+
+        def source_budget_exceeded(extra_private, extra_shared):
+            return len(sources | shared_sources | extra_private | extra_shared) > 100
+
         for event in reversed(events[:-1]):
             history = build_model_request(
                 PrivateContextAssembler(
@@ -331,23 +356,99 @@ class MemoryConversationAssembler:
             if not history:
                 history_omitted = True
                 continue
+            operation_id = (
+                "reply:" + hashlib.sha256(event.event_id.encode()).hexdigest()
+            )
+            reply = outputs._read(db, principal, operation_id)
+            resolution = db.execute(
+                "SELECT outcome, release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            completed_release = resolution == (
+                "completed",
+                f"release:{operation_id}",
+            )
+            released = (
+                completed_release
+                and reply is not None
+                and reply.result_state is ResultState.PERSISTED
+                and reply_permitted(reply)
+            )
+            if completed_release and not released:
+                history_omitted = True
+            agent = (
+                ()
+                if not released
+                else (
+                    ConversationSegment(
+                        ContextRole.AGENT,
+                        ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,
+                        reply.content,
+                    ),
+                )
+            )
+            addition = (*history, *agent)
+            extra_sources = set(reply.operation.source_event_ids) if released else set()
+            extra_shared = (
+                set(reply.operation.shared_operation_ids) if released else set()
+            )
+            extra_generic = (
+                set(reply.operation.generic_operation_ids) if released else set()
+            )
+            extra_shared_sources = {
+                row[0]
+                for shared_id in extra_shared
+                for row in db.execute(
+                    "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                    (shared_id,),
+                )
+            }
+            # Prefer the complete released exchange. If its dependency union cannot
+            # fit, keep the participant input only when that also fits.
             proposed = replace(
                 request,
                 conversation=replace(
                     request.conversation,
-                    conversation=(*history, *request.conversation.conversation),
+                    conversation=(*addition, *selected_history, *base.conversation),
                 ),
             )
             if (
                 len(proposed.conversation.conversation)
                 > self._limits.max_history_events
-                or len(sources | {event.event_id}) > 100
+                or source_budget_exceeded(
+                    {event.event_id} | extra_sources, extra_shared_sources
+                )
+                or len(inherited_shared | extra_shared) > 16
+                or len(inherited_generic | extra_generic) > 16
                 or len(proposed._serialized().encode("utf-8"))
                 > self._limits.max_utf8_bytes
             ):
                 history_omitted = True
-                continue
-            sources.add(event.event_id)
+                agent = ()
+                extra_sources = set()
+                extra_shared = set()
+                extra_generic = set()
+                extra_shared_sources = set()
+                proposed = replace(
+                    request,
+                    conversation=replace(
+                        request.conversation,
+                        conversation=(*history, *selected_history, *base.conversation),
+                    ),
+                )
+                if (
+                    len(proposed.conversation.conversation)
+                    > self._limits.max_history_events
+                    or source_budget_exceeded({event.event_id}, set())
+                    or len(proposed._serialized().encode("utf-8"))
+                    > self._limits.max_utf8_bytes
+                ):
+                    continue
+            selected_history = (*history, *agent, *selected_history)
+            sources.update({event.event_id} | extra_sources)
+            inherited_shared.update(extra_shared)
+            inherited_generic.update(extra_generic)
+            shared_sources.update(extra_shared_sources)
             request = proposed
         request = replace(
             request,
@@ -357,5 +458,7 @@ class MemoryConversationAssembler:
             ),
         )
         return replace(
-            request, generic_operation_ids=tuple(sorted(request.generic_operation_ids))
+            request,
+            generic_operation_ids=tuple(sorted(inherited_generic)),
+            inherited_shared_operation_ids=tuple(sorted(inherited_shared)),
         ), tuple(sorted(sources))

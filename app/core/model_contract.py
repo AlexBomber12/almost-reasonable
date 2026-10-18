@@ -18,6 +18,7 @@ from .core_self import CoreSelf, initial_core_self
 
 
 MODEL_CONTRACT_VERSION = "model-contract-v1"
+TRANSCRIPT_MODEL_CONTRACT_VERSION = "model-contract-conversation-transcript-v4"
 MAX_MODEL_REQUEST_UTF8_BYTES = MAX_CONTEXT_UTF8_BYTES + 32 * 1024
 
 
@@ -140,14 +141,18 @@ def _validate_request(request: ModelRequest) -> None:
         request.allowed_decisions,
     )
     approved_fields = (
-        MODEL_CONTRACT_VERSION,
+        request.contract_version,
         ModelTask.PRIVATE_CONVERSATION,
         core_self.version,
         core_self.identity,
         core_self.principles,
         MODEL_ALLOWED_DECISIONS,
     )
-    if fixed_fields != approved_fields:
+    if (
+        request.contract_version
+        not in {MODEL_CONTRACT_VERSION, TRANSCRIPT_MODEL_CONTRACT_VERSION}
+        or fixed_fields != approved_fields
+    ):
         raise ValueError("model request contains non-approved fixed fields")
     if (
         type(request.conversation) is not tuple
@@ -158,7 +163,13 @@ def _validate_request(request: ModelRequest) -> None:
         if type(segment) is not ConversationSegment:
             raise ValueError("model request conversation is malformed")
         if (
-            segment.role is not ContextRole.PARTICIPANT
+            (
+                segment.role is not ContextRole.PARTICIPANT
+                and (
+                    request.contract_version != TRANSCRIPT_MODEL_CONTRACT_VERSION
+                    or segment.role is not ContextRole.AGENT
+                )
+            )
             or segment.trust is not ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA
             or not isinstance(segment.content, str)
             or not segment.content
@@ -168,6 +179,11 @@ def _validate_request(request: ModelRequest) -> None:
             segment.content.encode("utf-8")
         except UnicodeEncodeError as error:
             raise ValueError("model request segment is not valid UTF-8") from error
+    if request.contract_version == TRANSCRIPT_MODEL_CONTRACT_VERSION and (
+        not request.conversation
+        or request.conversation[-1].role is not ContextRole.PARTICIPANT
+    ):
+        raise ValueError("transcript must end with current participant input")
     if type(request.history_omitted) is not bool:
         raise ValueError("model request omission flag is malformed")
     if context_utf8_size(core_self, request.conversation) > MAX_CONTEXT_UTF8_BYTES:

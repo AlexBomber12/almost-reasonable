@@ -1,6 +1,7 @@
 import json
 import socket
 import struct
+from dataclasses import replace
 from threading import Thread
 import time
 
@@ -12,6 +13,7 @@ from app.core.core_self import initial_core_self
 from app.core.model_contract import (
     MODEL_ALLOWED_DECISIONS,
     MODEL_CONTRACT_VERSION,
+    TRANSCRIPT_MODEL_CONTRACT_VERSION,
     ModelRequest,
     ModelTask,
 )
@@ -80,6 +82,31 @@ def test_request_round_trip_is_exact_and_revalidates_model_request():
         "protocol_version",
     )
     assert "api_key" not in payload.decode()
+
+
+def test_v1_wire_rejects_transcript_contract_even_with_participant_only():
+    data = request_data()
+    data["model_request"]["contract_version"] = (
+        "model-contract-conversation-transcript-v4"
+    )
+    with pytest.raises(WorkerProtocolError):
+        decode_request(json.dumps(data).encode())
+
+
+def test_bare_transcript_request_is_rejected_before_worker_connection(tmp_path):
+    from app.core.openai_worker_client import OpenAIWorkerClient
+
+    transcript = replace(
+        model_request(), contract_version=TRANSCRIPT_MODEL_CONTRACT_VERSION
+    )
+    request = InferenceRequest("operation-a", "correlation-a", transcript)
+    with pytest.raises(ValueError, match="transcript requires context wrapper"):
+        encode_request(request)
+    client = OpenAIWorkerClient(tmp_path / "absent.sock")
+    with pytest.raises(ValueError, match="transcript requires context wrapper"):
+        client.infer(
+            transcript, operation_id="operation-a", correlation_id="correlation-a"
+        )
 
 
 @pytest.mark.parametrize(

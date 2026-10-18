@@ -1,6 +1,7 @@
 """Operator controls, worker admission and explicit entry points."""
 
 import json
+from dataclasses import replace
 import runpy
 import signal
 import sys
@@ -9,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.cognition.conversation_context import MemoryModelRequest
+from app.core.model_contract import TRANSCRIPT_MODEL_CONTRACT_VERSION
 from app.core.store import EventStore
 from app.ops import private_pilot_ops
 from app.trusted import private_pilot_worker
@@ -60,6 +62,15 @@ def test_gate_rechecks_stop_activation_typed_context_and_allowance(tmp_path):
     assert gate.authorize(request) is None
     assert allowance.remaining() == 4
     assert gate.authorize(request).outcome == "authorization_rejected"
+    transcript = MemoryModelRequest(
+        replace(model_request(), contract_version=TRANSCRIPT_MODEL_CONTRACT_VERSION),
+        (),
+        False,
+    )
+    assert (
+        gate.authorize(InferenceRequest("reply:" + "c" * 64, "c", transcript)) is None
+    )
+    assert allowance.remaining() == 3
     assert not gate.paid_transport_blocked()
     value["pilot_id"] = "changed"
     _rewrite(path, value)

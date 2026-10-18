@@ -30,7 +30,7 @@ checks the application peer UID and owns its own model, transport, credentials,
 retry, timeout, tool, storage and spend configuration. The one-shot Stage 1 smoke
 activation remains a separate fixed authorization and does not authorize chat.
 
-The new `openai-worker-context-v2` request envelope carries exactly one typed
+The legacy `openai-worker-context-v2` request envelope carries exactly one typed
 `MemoryModelRequest` (`model-contract-private-memory-v2`) or `SharedModelRequest`
 (`model-contract-shared-intelligence-v3`). The original `openai-worker-v1` and
 `model-contract-v1` paths remain intact. The v2 codec rebuilds the immutable Core
@@ -43,6 +43,19 @@ reply operation retains complete private, generic-memory, and shared dependencie
 for every selected record. Model output cannot add research or publication
 authority; the worker runtime does not install a research bridge or memory
 extractor.
+
+B02 adds `openai-worker-transcript-v3` with
+`model-contract-conversation-transcript-v4`. Its `conversation` allows
+participant and agent roles, each explicitly marked
+`untrusted_conversational_data`. The v1 and v2 wire parsers retain their
+original participant-only rules. The application selects released replies from
+the durable input sequence and release resolution, authorizes all dependencies
+before selection, and keeps the current input mandatory. The worker codec,
+provider builder and pilot request gate accept the bounded v4 projection;
+protected event, operation, principal, consent and authentication identifiers
+remain outside it. This provides continuity with earlier released answers; it
+does not create structured long-term memory, complete B03 or M5, or reactivate
+the closed pilot.
 
 The authenticated HTTP path uses the same privacy fence, original-input identity,
 reply reservation, application spend state, `ActionPolicy`, zero-regeneration Russian

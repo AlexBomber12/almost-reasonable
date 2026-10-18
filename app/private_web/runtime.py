@@ -392,9 +392,16 @@ class _DurableConversationRuntime(ConversationService):
                     )
                 request, sources = MemoryConversationAssembler(
                     self._event_store, private_limits
-                ).build(principal, event_id, db)
+                ).build(
+                    principal,
+                    event_id,
+                    db,
+                    reply_permitted=lambda reply: self._current_request.get()()
+                    and self._research_evidence(reply.operation.operation_id) is None
+                    and self._historical_research_permitted(principal, reply),
+                )
                 generic_operations = request.generic_operation_ids
-                shared_operations = ()
+                shared_operations = request.inherited_shared_operation_ids
                 if self._shared is not None:
                     request, shared_operations = assemble_shared(
                         request,
@@ -411,11 +418,11 @@ class _DurableConversationRuntime(ConversationService):
                     + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
                     correlation,
                     "worker-owned" if self._worker is not None else self._config.model,
-                    "worker-context-v2"
+                    "worker-context-v2-transcript-v4"
                     if self._worker is not None
-                    else "private-memory-stage0-v2"
+                    else "private-memory-stage0-v2-transcript-v4"
                     if self._shared is None
-                    else "shared-stage0-v3",
+                    else "shared-stage0-v3-transcript-v4",
                     request.conversation.core_self_version,
                     sources,
                     shared_operations,

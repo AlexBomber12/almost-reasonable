@@ -128,6 +128,55 @@ def test_current_revocation_hides_completed_research(connected):
     assert len(runtime.history(principal("a"))) == 1
 
 
+def test_research_reply_is_excluded_without_hiding_ordinary_followup(connected):
+    import json
+    from app.trusted.openai_transport import FakeOpenAITransport
+    from test_private_memory_runtime import extractor
+
+    runtime, bridge, server, _, _, _, setup = connected
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    research = runtime.submit(principal("a"), "research-origin", "Исследуй эту тему")
+    thread.join(5)
+    assert research.model_state.value == "completed"
+    store, _, gate, _, _ = setup
+    fake = FakeOpenAITransport([response(), response()])
+    followup = Stage0ConversationRuntime(
+        store,
+        gate,
+        fake,
+        research_bridge=bridge,
+        memory_extractor=extractor(),
+        clock=lambda: NOW,
+    )
+    later = followup.submit(principal("a"), "derived", "Что ты узнал?")
+    assert later.model_state.value == "completed"
+    projection = json.loads(fake.calls[0].request.input_text)
+    assert [item["role"] for item in projection["conversation"]] == [
+        "participant",
+        "participant",
+    ]
+    assert projection["history_omitted"] is True
+    origin = store.retrieve_private_events_in_commit_order(principal("a"))[0]
+    bridge.revoke_input(origin.event_id)
+    assert [item.role for item in followup.history(principal("a"))] == [
+        "participant",
+        "participant",
+        "agent",
+    ]
+    assert (
+        followup.submit(principal("a"), "after-revoke", "Продолжим").model_state.value
+        == "completed"
+    )
+    projection = json.loads(fake.calls[-1].request.input_text)
+    assert [item["role"] for item in projection["conversation"]] == [
+        "participant",
+        "participant",
+        "agent",
+        "participant",
+    ]
+
+
 def test_expired_grant_never_contacts_worker(connected):
     runtime, bridge, _, _, transport, _, _ = connected
 

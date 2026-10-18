@@ -35,7 +35,12 @@ class SharedModelRequest:
         ):
             raise ValueError("invalid shared model request")
         data = json.loads(self.private.serialize())
-        data["contract_version"] = "model-contract-shared-intelligence-v3"
+        data["contract_version"] = (
+            "model-contract-conversation-transcript-v4"
+            if self.private.conversation.contract_version
+            == "model-contract-conversation-transcript-v4"
+            else "model-contract-shared-intelligence-v3"
+        )
         data["shared_intellectual_state"] = [r.structured() for r in self.shared]
         data["shared_omitted"] = self.shared_omitted
         result = json.dumps(
@@ -49,11 +54,21 @@ def assemble_shared(private, sources, shared, principal, db, budget):
     if len(request.serialize().encode("utf-8")) > budget:
         raise ValueError("current input exceeds shared budget")
     dependencies = set(sources)
-    selected = []
+    selected = list(private.inherited_shared_operation_ids)
+    for operation_id in selected:
+        dependencies.update(
+            row[0]
+            for row in db.execute(
+                "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                (operation_id,),
+            )
+        )
     omitted = False
     # The private component has already authorized and ranked its own data. The
     # shared component applies audience/purpose before deterministic ordering.
     for record in shared.select(db, principal):
+        if record.operation_id in selected:
+            continue
         evidence = {
             row[0]
             for row in db.execute(
@@ -64,7 +79,7 @@ def assemble_shared(private, sources, shared, principal, db, budget):
         trial = SharedModelRequest(private, (*request.shared, record), omitted)
         if (
             len(dependencies | evidence) > 100
-            or len(trial.shared) > 16
+            or len(trial.shared) + len(private.inherited_shared_operation_ids) > 16
             or len(trial._serialized().encode("utf-8"))
             > min(budget, MAX_MODEL_REQUEST_UTF8_BYTES)
         ):
