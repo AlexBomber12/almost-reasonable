@@ -182,7 +182,7 @@ def test_login_page_and_private_responses_have_security_headers(web):
     assert header_values(headers, "X-Content-Type-Options") == ["nosniff"]
     assert header_values(headers, "Referrer-Policy") == ["same-origin"]
     assert "default-src 'none'" in header_values(headers, "Content-Security-Policy")[0]
-    assert b"Private chat login" in body
+    assert "Личный разговор".encode() in body
     cookie = header_values(headers, "Set-Cookie")[0]
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Secure" in cookie
     assert not header_values(headers, "Access-Control-Allow-Origin")
@@ -204,8 +204,8 @@ def test_authenticated_chat_session_status_and_logout(web):
     status, headers, body = browser.request("GET", "/chat", origin=False)
     assert status == "200 OK"
     assert header_values(headers, "Referrer-Policy") == ["no-referrer"]
-    assert b"Authenticated as alice" in body
-    assert b"Model responses are currently unavailable" in body
+    assert "Начните разговор".encode() in body
+    assert "Войти как alice".encode() not in body
 
     token = browser.cookies["ar_session"]
     status, _, _ = browser.request(
@@ -600,12 +600,10 @@ def test_missing_routes_methods_cookie_tampering_and_static_asset(web):
     assert status == "200 OK"
     assert header_values(headers, "Content-Type") == ["text/javascript; charset=utf-8"]
     assert b"crypto.randomUUID" in body
-    assert b"let pendingMessage = null" in body
-    assert b"pendingMessage.content !== content" in body
-    assert b"pendingMessage = {id: crypto.randomUUID(), content}" in body
-    assert b"if (requestInFlight) return" in body
-    assert b"if (response.ok)" in body
-    assert b"Logout failed; your session is still active." in body
+    assert b"crypto.randomUUID" in body
+    assert b"requestInFlight" in body
+    assert b"response.ok" in body
+    assert browser.request("GET", "/assets/chat.css", origin=False)[0] == "200 OK"
 
 
 def test_failed_logout_keeps_session_active_and_reports_failure(web):

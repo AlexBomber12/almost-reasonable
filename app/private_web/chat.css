@@ -1,0 +1,59 @@
+:root { color-scheme: light; font-family: system-ui, -apple-system, "Segoe UI", sans-serif; color: #26352f; background: #f7f8f5; }
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+html, body { margin: 0; min-width: 0; width: 100%; }
+button, textarea { font: inherit; }
+a { color: #205a46; text-underline-offset: .18em; }
+button { cursor: pointer; }
+:focus-visible { outline: 3px solid #167052; outline-offset: 3px; }
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
+.chat-shell { display: flex; flex-direction: column; height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; }
+.chat-header { position: relative; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: .8rem max(1rem, env(safe-area-inset-right)) .8rem max(1rem, env(safe-area-inset-left)); background: #fff; border-bottom: 1px solid #e1e8e2; }
+.brand { display: flex; align-items: center; gap: .7rem; min-width: 0; }
+.brand__mark { display: grid; place-items: center; width: 2.3rem; height: 2.3rem; flex: none; border-radius: .7rem; background: #e3eee5; color: #235a47; font-size: 1.35rem; }
+.brand strong, .brand span:not(.brand__mark) { display: block; }
+.brand strong { font-size: .95rem; letter-spacing: -.02em; }
+.brand div > span { margin-top: .08rem; color: #617068; font-size: .78rem; }
+.chat-header nav { display: flex; align-items: center; gap: 1rem; flex: none; font-size: .88rem; }
+.chat-header nav form { margin: 0; }
+.chat-header nav button { border: 0; padding: .55rem .2rem; background: none; color: #355a49; }
+.conversation { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; }
+.conversation__inner { max-width: 48rem; margin: 0 auto; padding: clamp(1.4rem, 4vw, 3rem) 1.25rem 3rem; }
+h1 { margin: 0; font-size: clamp(1.5rem, 4vw, 2rem); line-height: 1.2; letter-spacing: -.035em; }
+.disclosure { max-width: 44rem; margin: .8rem 0 2.5rem; color: #53645a; font-size: .88rem; line-height: 1.55; overflow-wrap: anywhere; }
+.empty-state { margin: clamp(2rem, 12vh, 7rem) auto; padding: 1.8rem; max-width: 25rem; text-align: center; border: 1px solid #e3e9e3; border-radius: 1.25rem; background: #fff; }
+.empty-state h2 { margin: 0 0 .5rem; font-size: 1.25rem; }
+.empty-state p { margin: 0; color: #56675d; line-height: 1.5; }
+.history { display: flex; flex-direction: column; gap: 1.5rem; list-style: none; margin: 0; padding: 0; }
+.message { display: flex; min-width: 0; }
+.message--participant { justify-content: flex-end; }
+.message__body { min-width: 0; max-width: min(100%, 41rem); }
+.message--participant .message__body { padding: .85rem 1rem; background: #e6eee7; border-radius: 1rem 1rem .35rem 1rem; }
+.message--agent .message__body { width: 100%; padding: .2rem 0 .2rem 1rem; border-left: 3px solid #86a997; }
+.message__speaker { display: block; color: #37604c; font-size: .79rem; font-weight: 700; margin-bottom: .35rem; }
+.message__text { margin: 0; line-height: 1.65; white-space: pre-wrap; overflow-wrap: anywhere; word-break: normal; }
+.message__source { display: inline-block; margin-top: .7rem; font-size: .78rem; }
+.composer-area { flex: none; z-index: 2; border-top: 1px solid #dce5dc; background: #f7f8f5; padding: .65rem max(1rem, env(safe-area-inset-right)) calc(.6rem + env(safe-area-inset-bottom)) max(1rem, env(safe-area-inset-left)); }
+.composer-inner { max-width: 48rem; margin: auto; }
+.status { margin: 0; color: #3b5849; font-size: .86rem; line-height: 1.35; }
+.status:not(:empty) { margin-bottom: .45rem; }
+.status[data-kind="error"] { color: #9d302a; }
+#message-form { display: flex; gap: .55rem; align-items: flex-end; padding: .45rem; border: 1px solid #bbcfc0; border-radius: 1rem; background: #fff; box-shadow: 0 4px 18px #183c2414; }
+#message-form:focus-within { border-color: #438362; box-shadow: 0 0 0 2px #43836240; }
+#message-content { display: block; flex: 1; min-width: 0; min-height: 3rem; max-height: min(35vh, 14rem); resize: vertical; border: 0; padding: .65rem; background: transparent; color: inherit; line-height: 1.45; }
+#message-content:focus { outline: 0; }
+#message-content::placeholder { color: #66776c; }
+#send-button { min-height: 2.9rem; flex: none; padding: .5rem 1rem; border: 0; border-radius: .7rem; background: #286347; color: #fff; font-weight: 650; }
+#send-button:hover { background: #194b35; }
+#send-button:disabled { opacity: .6; cursor: wait; }
+.composer-hint { margin: .4rem .25rem 0; color: #617067; font-size: .72rem; }
+@media (max-width: 600px) { .chat-header { gap: .4rem; padding-top: .55rem; padding-bottom: .55rem; } .chat-header nav { gap: .65rem; font-size: .8rem; } .brand strong { font-size: .83rem; } .brand__mark { width: 2rem; height: 2rem; } .conversation__inner { padding: 1.35rem 1rem 2rem; } .disclosure { margin-bottom: 2rem; } .history { gap: 1.25rem; } .composer-hint { display: none; } }
+@media (max-height: 500px) { .conversation__inner { padding-top: 1rem; padding-bottom: 1rem; } .disclosure { margin-bottom: 1rem; } #message-content { max-height: 22vh; } }
+.login-page { min-height: 100vh; min-height: 100dvh; display: grid; place-items: center; padding: 1.2rem; }
+.login-card { width: min(100%, 24rem); padding: clamp(1.5rem, 5vw, 2.5rem); border: 1px solid #e0e9e0; border-radius: 1.25rem; background: #fff; box-shadow: 0 12px 40px #1b3c2212; }
+.login-mark { display: grid; place-items: center; width: 2.7rem; height: 2.7rem; margin-bottom: 1.5rem; border-radius: .8rem; background: #e3eee5; color: #235a47; font-size: 1.5rem; }
+.login-card h1 { font-size: 1.65rem; }
+.login-card p { margin: .65rem 0 1.8rem; color: #53645a; line-height: 1.5; }
+.login-card label { display: block; margin: 0 0 1rem; font-size: .9rem; font-weight: 600; }
+.login-card input { display: block; width: 100%; margin-top: .45rem; border: 1px solid #afc1b2; border-radius: .7rem; padding: .75rem; color: inherit; background: #fff; }
+.login-card button { width: 100%; min-height: 2.9rem; margin-top: .5rem; border: 0; border-radius: .7rem; background: #286347; color: #fff; font-weight: 650; }
