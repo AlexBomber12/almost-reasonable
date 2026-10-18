@@ -166,7 +166,7 @@ def test_cross_participant_runtime_influence_and_erasure(shared):
     one = approval(a)
     app = SharedIntelligence(events, gate, approvals=(one,), clock=lambda: NOW)
     app.commit(one)
-    fake = FakeOpenAITransport([response()])
+    fake = FakeOpenAITransport([response(), response()])
     runtime = Stage0ConversationRuntime(
         events, gate, fake, shared_intelligence=app, clock=lambda: NOW
     )
@@ -199,6 +199,16 @@ def test_cross_participant_runtime_influence_and_erasure(shared):
         "participant",
         "participant",
     ]
+    continued = runtime.submit(principal("b"), "after-erasure", "Продолжим")
+    assert continued.model_state.value == "completed"
+    followup = json.loads(fake.calls[-1].request.input_text)
+    assert [part["role"] for part in followup["conversation"]] == [
+        "participant",
+        "participant",
+        "participant",
+    ]
+    assert followup["history_omitted"] is True
+    assert len(fake.calls) == 2
 
 
 @pytest.mark.parametrize("shared_owner", ("a", "b"))

@@ -360,21 +360,21 @@ class MemoryConversationAssembler:
                 "reply:" + hashlib.sha256(event.event_id.encode()).hexdigest()
             )
             reply = outputs._read(db, principal, operation_id)
-            resolution = (
-                db.execute(
-                    "SELECT outcome, release_id FROM agent_reply_resolutions WHERE operation_id=?",
-                    (operation_id,),
-                ).fetchone()
-                if reply is not None
-                else None
+            resolution = db.execute(
+                "SELECT outcome, release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            completed_release = resolution == (
+                "completed",
+                f"release:{operation_id}",
             )
-            durably_released = (
-                reply is not None
+            released = (
+                completed_release
+                and reply is not None
                 and reply.result_state is ResultState.PERSISTED
-                and resolution == ("completed", f"release:{operation_id}")
+                and reply_permitted(reply)
             )
-            released = durably_released and reply_permitted(reply)
-            if durably_released and not released:
+            if completed_release and not released:
                 history_omitted = True
             agent = (
                 ()
