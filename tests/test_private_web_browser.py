@@ -359,6 +359,16 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 page.get_by_text("Черновик при ошибке", exact=True).wait_for()
                 assert observed_ids[-2] == observed_ids[-1]
 
+                editor.fill("я" * 5000)
+                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_text("Сообщение не принято.", exact=False).wait_for()
+                assert editor.input_value() == "я" * 5000
+                rejected_id = observed_ids[-1]
+                editor.fill("Исправленный вопрос")
+                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_text("Исправленный вопрос", exact=True).wait_for()
+                assert observed_ids[-1] != rejected_id
+
                 long_url = "https://example.test/" + "a" * 900
                 page.evaluate(
                     """async (longUrl) => {
@@ -375,7 +385,7 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     long_url,
                 )
                 page.reload()
-                assert page.locator("#history li").count() == 14
+                assert page.locator("#history li").count() == 15
                 assert page.evaluate(
                     "document.querySelector('#conversation').scrollHeight > document.querySelector('#conversation').clientHeight"
                 )

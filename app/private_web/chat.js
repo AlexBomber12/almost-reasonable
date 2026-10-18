@@ -96,6 +96,9 @@ if (form) form.addEventListener('submit', async (event) => {
       if (response.status === 401 || response.status === 403) {
         announce('Сеанс завершён. Войдите снова. Черновик остаётся на этой странице.', 'error');
         sendButton.disabled = true;
+      } else if (response.status === 400 || response.status === 413 || response.status === 422) {
+        pendingMessage = null;
+        announce('Сообщение не принято. Измените текст и попробуйте ещё раз. Черновик сохранён здесь.', 'error');
       } else {
         announce('Не удалось отправить. Черновик сохранён здесь. Попробуйте ещё раз.', 'error');
       }
