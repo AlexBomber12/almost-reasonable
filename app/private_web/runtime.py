@@ -936,9 +936,27 @@ class _DurableConversationRuntime(ConversationService):
         return self._gate.authorized(read)
 
     def _historical_research_permitted(self, principal, reply):
-        evidence = self._research_evidence(reply.operation.operation_id)
-        if evidence is None:
-            return True
+        # Source IDs are the durable, transitive provenance union of every
+        # selected historical answer. Recheck research authority for all
+        # research-origin operations represented by that union, including when
+        # this reply itself was an ordinary conversation turn.
+        for source in reply.operation.source_event_ids:
+            operation_id = self._operation_id(source)
+            evidence = self._research_evidence(operation_id)
+            if evidence is None:
+                continue
+            origin = (
+                reply
+                if operation_id == reply.operation.operation_id
+                else self._outputs.read_reply(principal, operation_id)
+            )
+            if origin is None or not self._research_grant_permits(
+                principal, origin, evidence
+            ):
+                return False
+        return True
+
+    def _research_grant_permits(self, principal, reply, evidence):
         if isinstance(evidence, str) or self._research is None:
             return False
         if type(self._research) is PublicResearchBridge:

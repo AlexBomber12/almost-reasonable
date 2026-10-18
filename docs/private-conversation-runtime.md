@@ -85,7 +85,9 @@ Both roles are untrusted conversational data. Earlier answers cannot supply
 Core Self, instructions, verified evidence, consent or operational authority.
 The reply reservation inherits the complete dependencies of every selected
 answer, so later replies are invalidated when a material earlier source is
-erased. Optional answers are omitted whole when their text or dependencies do
+erased. Research authorization is rechecked across the inherited source union
+before a reply enters context or participant history; revoking a material
+research grant also hides derived answers. Optional answers are omitted whole when their text or dependencies do
 not fit. This is transcript continuity, not structured long-term memory,
 consolidation or a live extractor.
 

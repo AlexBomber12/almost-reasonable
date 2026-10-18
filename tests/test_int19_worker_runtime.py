@@ -8,6 +8,7 @@ from pathlib import Path
 import socket
 import struct
 from threading import Thread
+from types import SimpleNamespace
 
 import pytest
 from acceptance.guards import install
@@ -43,7 +44,7 @@ from app.privacy.ledger import PrivacyLedger
 from app.privacy.application import EventStoreErasureAdapter
 from app.privacy.deletion import DeletionCoordinator
 from app.trusted.openai_gateway import TrustedOpenAIGateway
-from app.trusted.openai_transport import FakeOpenAITransport
+from app.trusted.openai_transport import FakeOpenAITransport, OpenAIResponsesTransport
 from app.trusted.openai_worker_protocol import (
     CONTEXT_PROTOCOL_VERSION,
     TRANSCRIPT_PROTOCOL_VERSION,
@@ -94,10 +95,53 @@ def _memory():
 
 
 def _worker(
-    socket_path, event_path, ready, count, answer="Да, я готов обсудить этот вопрос."
+    socket_path,
+    event_path,
+    ready,
+    count,
+    answer="Да, я готов обсудить этот вопрос.",
+    sdk=False,
 ):
     events = EventStore(Path(event_path))
     fake = FakeOpenAITransport([response(value=answer) for _ in range(count)])
+
+    class FakeResponsesSDK:
+        def __init__(self):
+            self.calls = []
+
+        def create(self, **kwargs):
+            self.calls.append(kwargs)
+            return {
+                "id": "resp_synthetic",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {
+                                        "decision": "reply",
+                                        "reason_category": None,
+                                        "content": answer,
+                                        "brief": None,
+                                        "draft": None,
+                                    }
+                                ),
+                            }
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            }
+
+    fake_sdk = FakeResponsesSDK()
+    transport = (
+        OpenAIResponsesTransport(SimpleNamespace(responses=fake_sdk)) if sdk else fake
+    )
     config = replace(
         default_openai_provider_config(),
         deployment_stage=DeploymentStage.STAGE_1,
@@ -106,7 +150,7 @@ def _worker(
     )
     gateway = TrustedOpenAIGateway(
         store=ProviderStateStore(events),
-        transport=fake,
+        transport=transport,
         config=config,
     )
     server = OpenAIWorkerServer(
@@ -116,7 +160,11 @@ def _worker(
         server.start()
         ready.send(True)
         server.serve(max_connections=count)
-        ready.send(tuple(call.request.input_text for call in fake.calls))
+        ready.send(
+            tuple(call["input"] for call in fake_sdk.calls)
+            if sdk
+            else tuple(call.request.input_text for call in fake.calls)
+        )
     finally:
         server.close()
         ready.close()
@@ -500,6 +548,7 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
                 child,
                 count,
                 token,
+                True,
             ),
         )
         process.start()
