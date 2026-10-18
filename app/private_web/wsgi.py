@@ -6,6 +6,7 @@ from html import escape
 from http import HTTPStatus
 from ipaddress import ip_address
 import json
+from pathlib import Path
 import re
 import secrets
 from typing import Any
@@ -202,6 +203,7 @@ class PrivateWebApplication:
             "/api/history",
             "/api/messages",
             "/assets/chat.js",
+            "/assets/chat.css",
         }
         if self._privacy is not None:
             known_paths.update(
@@ -227,6 +229,7 @@ class PrivateWebApplication:
             "/api/history": {"GET"},
             "/api/messages": {"POST"},
             "/assets/chat.js": {"GET"},
+            "/assets/chat.css": {"GET"},
         }
         if self._privacy is not None:
             allowed_methods.update(
@@ -251,6 +254,8 @@ class PrivateWebApplication:
             return self._login(environ)
         if method == "GET" and path == "/assets/chat.js":
             return self._javascript()
+        if method == "GET" and path == "/assets/chat.css":
+            return self._stylesheet()
         if method == "GET" and path == "/assets/privacy.js":
             return self._privacy_javascript()
 
@@ -298,14 +303,19 @@ class PrivateWebApplication:
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         csrf = secrets.token_urlsafe(32)
         body = (
-            "<!doctype html><html lang=en><meta charset=utf-8>"
-            "<title>Private chat login</title><h1>Private chat login</h1>"
+            '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1">'
+            "<title>Вход · Almost Reasonable</title>"
+            '<link rel="stylesheet" href="/assets/chat.css"></head><body class="login-page">'
+            '<main class="login-card"><span class="login-mark" aria-hidden="true">✳</span>'
+            "<h1>Личный разговор</h1>"
+            "<p>Войдите, чтобы продолжить разговор.</p>"
             '<form method="post" action="/login">'
-            '<label>Username <input name="username" autocomplete="username"></label>'
-            '<label>Password <input type="password" name="password" '
-            'autocomplete="current-password"></label>'
+            '<label>Имя пользователя <input name="username" autocomplete="username" required></label>'
+            '<label>Пароль <input type="password" name="password" '
+            'autocomplete="current-password" required></label>'
             f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
-            "<button type=submit>Sign in</button></form></html>"
+            '<button type="submit">Войти</button></form></main></body></html>'
         ).encode()
         return (
             HTTPStatus.OK,
@@ -385,38 +395,59 @@ class PrivateWebApplication:
             )
         items = self._checked_history(session, environ)
         history = "".join(
-            f"<li><time>{escape(item.occurred_at.isoformat())}</time> "
-            f"<span>{escape(item.content)}</span>"
+            f'<li class="message message--{item.role}">'
+            f'<div class="message__body"><span class="message__speaker">'
+            f"{'Вы' if item.role == 'participant' else 'Собеседник'}</span>"
+            f'<p class="message__text">{escape(item.content)}</p>'
             + (
-                f' <a href="/privacy/source?ref={quote(item.event_id, safe="")}">'
+                f'<a class="message__source" href="/privacy/source?ref={quote(item.event_id, safe="")}">'
                 "Управление источником</a>"
                 if self._privacy is not None and item.role == "participant"
                 else ""
             )
-            + "</li>"
+            + "</div></li>"
             for item in items
         )
+        empty = (
+            '<div id="empty-state" class="empty-state"><h2>Начните разговор</h2>'
+            "<p>Напишите сообщение, и оно появится здесь.</p></div>"
+            if not items
+            else ""
+        )
         body = (
-            "<!doctype html><html lang=en><meta charset=utf-8>"
-            "<title>Private chat</title><h1>Private chat</h1>"
-            f"<p>Authenticated as {escape(session.username)}</p>"
-            '<p id="narrative-disclosure" '
-            f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
-            f"{escape(NARRATIVE_DISCLOSURE_RU)}</p>"
+            '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
+            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
+            "<title>Разговор · Almost Reasonable</title>"
+            '<link rel="stylesheet" href="/assets/chat.css"></head><body>'
+            '<div class="chat-shell"><header class="chat-header">'
+            '<div class="brand"><span class="brand__mark" aria-hidden="true">✳</span>'
+            "<div><strong>Almost Reasonable</strong><span>Личный разговор</span></div></div>"
+            '<nav aria-label="Настройки и выход">'
             + (
-                '<nav><a href="/privacy">Приватность</a></nav>'
+                '<a href="/privacy">Приватность</a>'
                 if self._privacy is not None
                 else ""
             )
-            + '<p role="status" id="model-status">'
-            "Model responses are currently unavailable or pending.</p>"
-            f"<ol id=history>{history}</ol>"
-            f'<form id=message-form method="post" action="/api/messages" data-csrf="{escape(csrf)}">'
-            '<label>Message <textarea name="content" required maxlength="8192"></textarea></label>'
-            "<button type=submit>Send</button></form>"
-            '<form method="post" action="/logout" id=logout-form>'
-            "<button type=submit>Log out</button></form>"
-            '<script src="/assets/chat.js"></script></html>'
+            + '<form method="post" action="/logout" id="logout-form">'
+            '<button type="submit">Выйти</button></form></nav></header>'
+            '<main id="conversation" class="conversation" aria-label="Разговор">'
+            '<div class="conversation__inner">'
+            "<h1>Разговор</h1>"
+            '<p id="narrative-disclosure" class="disclosure" '
+            f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
+            f"{escape(NARRATIVE_DISCLOSURE_RU)}</p>"
+            f'{empty}<ol id="history" class="history" aria-label="Сообщения">{history}</ol>'
+            "</div></main>"
+            '<div class="composer-area"><div class="composer-inner">'
+            '<p role="status" aria-live="polite" id="model-status" class="status"></p>'
+            f'<form id="message-form" method="post" action="/api/messages" data-csrf="{escape(csrf)}">'
+            '<label for="message-content" class="visually-hidden">Сообщение</label>'
+            '<textarea id="message-content" name="content" required maxlength="8192" '
+            'rows="2" placeholder="Напишите сообщение…" aria-label="Сообщение"></textarea>'
+            '<button type="submit" id="send-button" aria-label="Отправить сообщение">'
+            "Отправить</button></form>"
+            '<p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>'
+            '</div></div></div><script src="/assets/chat.js"></script></body></html>'
         ).encode()
         return HTTPStatus.OK, [("Content-Type", "text/html; charset=utf-8")], body
 
@@ -803,54 +834,13 @@ if (logout) logout.addEventListener('click', async () => {
     def _javascript(
         self,
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
-        body = b"""'use strict';
-const form = document.getElementById('message-form');
-const modelStatus = document.getElementById('model-status');
-let pendingMessage = null;
-let requestInFlight = false;
-if (form) form.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  if (requestInFlight) return;
-  const content = new FormData(form).get('content');
-  if (!pendingMessage || pendingMessage.content !== content) {
-    pendingMessage = {id: crypto.randomUUID(), content};
-  }
-  requestInFlight = true;
-  try {
-    const response = await fetch('/api/messages', {
-      method: 'POST', credentials: 'same-origin',
-      headers: {'Content-Type': 'application/json', 'X-CSRF-Token': form.dataset.csrf},
-      body: JSON.stringify({message_id: pendingMessage.id, content: pendingMessage.content})
-    });
-    if (response.ok) {
-      pendingMessage = null;
-      window.location.reload();
-      return;
-    }
-    modelStatus.textContent = 'Message was not accepted. Retry or sign in again.';
-  } catch (error) {
-    modelStatus.textContent = 'Delivery is uncertain. Retrying will reuse this message.';
-  } finally {
-    requestInFlight = false;
-  }
-});
-const logout = document.getElementById('logout-form');
-if (logout) logout.addEventListener('submit', async (event) => {
-  event.preventDefault();
-  try {
-    const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
-      headers: {'X-CSRF-Token': form.dataset.csrf}});
-    if (response.ok) {
-      window.location.assign('/login');
-      return;
-    }
-    modelStatus.textContent = 'Logout failed; your session is still active.';
-  } catch (error) {
-    modelStatus.textContent = 'Logout is uncertain; verify before leaving this device.';
-  }
-});
-"""
+        body = (Path(__file__).parent / "chat.js").read_bytes()
         return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body
+
+    @staticmethod
+    def _stylesheet() -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+        body = (Path(__file__).parent / "chat.css").read_bytes()
+        return HTTPStatus.OK, [("Content-Type", "text/css; charset=utf-8")], body
 
     @staticmethod
     def _json(
