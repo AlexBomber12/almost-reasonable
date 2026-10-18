@@ -783,7 +783,7 @@ if (logout) logout.addEventListener('click', async () => {
             ("Cache-Control", "no-store"),
             ("Pragma", "no-cache"),
             ("X-Content-Type-Options", "nosniff"),
-            ("Referrer-Policy", "no-referrer"),
+            ("Referrer-Policy", "same-origin"),
             (
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; "

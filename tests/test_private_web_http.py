@@ -148,6 +148,7 @@ def test_login_page_and_private_responses_have_security_headers(web):
     assert header_values(headers, "Cache-Control") == ["no-store"]
     assert header_values(headers, "Pragma") == ["no-cache"]
     assert header_values(headers, "X-Content-Type-Options") == ["nosniff"]
+    assert header_values(headers, "Referrer-Policy") == ["same-origin"]
     assert "default-src 'none'" in header_values(headers, "Content-Security-Policy")[0]
     assert b"Private chat login" in body
     cookie = header_values(headers, "Set-Cookie")[0]
@@ -645,6 +646,17 @@ def test_login_request_validation_and_chat_csrf_cookie(web):
         == "403 Forbidden"
     )
 
+    missing_csrf_cookie = Browser(app)
+    assert (
+        missing_csrf_cookie.request(
+            "POST",
+            "/login",
+            body=f"username=alice&password=correct+horse+battery&csrf={csrf}".encode(),
+            content_type="application/x-www-form-urlencoded",
+        )[0]
+        == "403 Forbidden"
+    )
+
     body = f"username=alice&password=correct+horse+battery&csrf={csrf}".encode()
     assert (
         browser.request(
@@ -657,6 +669,28 @@ def test_login_request_validation_and_chat_csrf_cookie(web):
     )
     browser.cookies.pop("ar_csrf")
     assert browser.request("GET", "/chat", origin=False)[0] == "401 Unauthorized"
+
+
+@pytest.mark.parametrize(
+    "origin",
+    [None, "null", "http://chat.test", "https://evil.test", "https://owner.test"],
+)
+def test_participant_login_rejects_nonmatching_origins(web, origin):
+    *_, app = web
+    browser = Browser(app)
+    browser.request("GET", "/login", origin=False)
+    csrf = browser.cookies["ar_login_csrf"]
+    status, _, body = browser.request(
+        "POST",
+        "/login",
+        body=f"username=alice&password=correct+horse+battery&csrf={csrf}".encode(),
+        content_type="application/x-www-form-urlencoded",
+        origin=False,
+        extra_environ={} if origin is None else {"HTTP_ORIGIN": origin},
+    )
+    assert status == "403 Forbidden"
+    assert b"Origin validation failed." in body
+    assert "ar_session" not in browser.cookies
 
 
 def test_invalid_message_content_negative_length_and_short_body(web):

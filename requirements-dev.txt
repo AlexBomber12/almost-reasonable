@@ -2,3 +2,4 @@ openai==3.28.0
 pytest==8.4.2
 pytest-cov==7.0.0
 ruff==0.13.2
+playwright==1.64.0
