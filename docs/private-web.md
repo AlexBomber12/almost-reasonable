@@ -75,7 +75,8 @@ forwarding headers from other peers. `X-Forwarded-Host` and
 `X-Forwarded-Proto` are never trusted. This PR does not deploy or configure the
 HTTPS proxy itself.
 
-Run the focused tests with:
+After installing `requirements-dev.txt`, install the pinned browser with
+`python -m playwright install --with-deps chromium`. Run the focused tests with:
 
 ```bash
 python -m pytest tests/test_private_web_*.py
