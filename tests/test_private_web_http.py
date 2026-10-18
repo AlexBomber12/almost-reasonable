@@ -169,8 +169,9 @@ def test_authenticated_chat_session_status_and_logout(web):
     assert status == "200 OK"
     assert json.loads(body) == {"authenticated": True, "username": "alice"}
 
-    status, _, body = browser.request("GET", "/chat", origin=False)
+    status, headers, body = browser.request("GET", "/chat", origin=False)
     assert status == "200 OK"
+    assert header_values(headers, "Referrer-Policy") == ["no-referrer"]
     assert b"Authenticated as alice" in body
     assert b"Model responses are currently unavailable" in body
 

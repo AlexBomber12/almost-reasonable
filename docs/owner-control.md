@@ -54,7 +54,7 @@ privileges.
 
 All bodies and responses are JSON. No query strings are accepted. Cookies use
 an independent `ar_owner_*` namespace with Secure, HttpOnly and SameSite=Strict;
-responses use no-store, same-origin referrers and restrictive CSP headers. Authentication
+responses use no-store, no-referrer and restrictive CSP headers. Authentication
 precedes protected body parsing and diagnostic reads. Protected requests require
 an exact allowed Origin. The existing configured body limit bounds parsing;
 malformed JSON, duplicate keys, unknown fields and invalid types fail safely.

@@ -83,10 +83,13 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
         SyntheticInferenceAdapter(),
     )
     observed_origins = []
+    observed_asset_referers = []
 
     def application(environ, start_response):
         if environ["REQUEST_METHOD"] == "POST" and environ["PATH_INFO"] == "/login":
             observed_origins.append(environ.get("HTTP_ORIGIN"))
+        if environ["PATH_INFO"] == "/assets/chat.js":
+            observed_asset_referers.append(environ.get("HTTP_REFERER"))
         return private_app(environ, start_response)
 
     with make_server(
@@ -123,6 +126,7 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                     assert observed_origins == [origin]
                     page.wait_for_url(f"{origin}/chat")
                     assert page.get_by_text("Authenticated as synthetic").is_visible()
+                    assert observed_asset_referers == [None]
                     assert page.goto(f"{origin}/session").json() == {
                         "authenticated": True,
                         "username": "synthetic",

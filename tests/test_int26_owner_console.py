@@ -152,7 +152,7 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
     status, page, headers = call(app, "/")
     assert status == 200
     assert "Частный пилот" in page
-    assert ("Referrer-Policy", "same-origin") in headers
+    assert ("Referrer-Policy", "no-referrer") in headers
     assert "fetch(" in call(app, "/owner.js")[1]
     assert "font-family" in call(app, "/owner.css")[1]
     assert call(app, "/", "POST")[0] == 405
@@ -160,7 +160,7 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
     assert call(app, "/login", REMOTE_ADDR="127.0.0.2")[0] == 403
     status, _, headers = call(app)
     assert status == 401
-    assert ("Referrer-Policy", "same-origin") in headers
+    assert ("Referrer-Policy", "no-referrer") in headers
     cookie, csrf = login(app)
     status = call(app, cookie=cookie)[1]
     assert call(app, "/status", "POST", cookie=cookie)[0] == 200
