@@ -24,6 +24,7 @@ class ContextRole(StrEnum):
     """Future adapter role for a context segment."""
 
     PARTICIPANT = "participant"
+    AGENT = "agent"
 
 
 class ContextTrust(StrEnum):

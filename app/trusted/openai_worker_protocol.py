@@ -35,6 +35,7 @@ from app.core.provider_contract import (
 
 PROTOCOL_VERSION = "openai-worker-v1"
 CONTEXT_PROTOCOL_VERSION = "openai-worker-context-v2"
+TRANSCRIPT_PROTOCOL_VERSION = "openai-worker-transcript-v3"
 OPERATION_INFER = "infer"
 FRAME_PREFIX_BYTES = 4
 MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
@@ -118,7 +119,12 @@ def encode_request(request: InferenceRequest) -> bytes:
         version = PROTOCOL_VERSION
     elif type(model) in {MemoryModelRequest, SharedModelRequest}:
         model_json = model.serialize()
-        version = CONTEXT_PROTOCOL_VERSION
+        version = (
+            TRANSCRIPT_PROTOCOL_VERSION
+            if json.loads(model_json)["contract_version"]
+            == "model-contract-conversation-transcript-v4"
+            else CONTEXT_PROTOCOL_VERSION
+        )
     else:
         raise TypeError("unsupported model request")
     payload = {
@@ -145,7 +151,11 @@ def decode_request(payload: bytes) -> InferenceRequest:
             "model_request",
         },
     )
-    if value["protocol_version"] not in {PROTOCOL_VERSION, CONTEXT_PROTOCOL_VERSION}:
+    if value["protocol_version"] not in {
+        PROTOCOL_VERSION,
+        CONTEXT_PROTOCOL_VERSION,
+        TRANSCRIPT_PROTOCOL_VERSION,
+    }:
         raise WorkerProtocolError("unsupported protocol version")
     if value["operation_type"] != OPERATION_INFER:
         raise WorkerProtocolError("unsupported operation")
@@ -155,19 +165,33 @@ def decode_request(payload: bytes) -> InferenceRequest:
             raise ValueError("invalid operation id")
         correlation_id = require_identifier("correlation id", value["correlation_id"])
         if value["protocol_version"] == PROTOCOL_VERSION:
+            if (
+                type(value["model_request"]) is not dict
+                or value["model_request"].get("contract_version") != "model-contract-v1"
+            ):
+                raise WorkerProtocolError("invalid inference request")
             model_request = _parse_model_request(value["model_request"])
             serialize_model_request(model_request)
         else:
-            model_request = _parse_context_request(value["model_request"])
+            model_request = _parse_context_request(
+                value["model_request"], value["protocol_version"]
+            )
     except (TypeError, ValueError):
         raise WorkerProtocolError("invalid inference request") from None
     return InferenceRequest(operation_id, correlation_id, model_request)
 
 
-def _parse_context_request(value: object) -> MemoryModelRequest | SharedModelRequest:
+def _parse_context_request(
+    value: object, protocol_version: str
+) -> MemoryModelRequest | SharedModelRequest:
     if type(value) is not dict:
         raise WorkerProtocolError("invalid context request")
-    shared = value.get("contract_version") == "model-contract-shared-intelligence-v3"
+    transcript = protocol_version == TRANSCRIPT_PROTOCOL_VERSION
+    shared = "shared_intellectual_state" in value or "shared_omitted" in value
+    if not transcript:
+        shared = (
+            value.get("contract_version") == "model-contract-shared-intelligence-v3"
+        )
     base_fields = {
         "contract_version",
         "task",
@@ -184,13 +208,21 @@ def _parse_context_request(value: object) -> MemoryModelRequest | SharedModelReq
         if shared
         else base_fields,
     )
-    if value["contract_version"] not in {
-        "model-contract-private-memory-v2",
-        "model-contract-shared-intelligence-v3",
-    }:
+    expected = (
+        "model-contract-conversation-transcript-v4"
+        if transcript
+        else "model-contract-shared-intelligence-v3"
+        if shared
+        else "model-contract-private-memory-v2"
+    )
+    if value["contract_version"] != expected:
         raise WorkerProtocolError("invalid context contract")
     base = {key: value[key] for key in base_fields - {"memories", "memories_omitted"}}
-    base["contract_version"] = "model-contract-v1"
+    base["contract_version"] = (
+        "model-contract-conversation-transcript-v4"
+        if transcript
+        else "model-contract-v1"
+    )
     conversation = _parse_model_request(base)
     memories = value["memories"]
     if type(memories) is not list:

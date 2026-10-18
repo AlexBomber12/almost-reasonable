@@ -173,7 +173,7 @@ def test_cross_participant_runtime_influence_and_erasure(shared):
     reply = runtime.submit(principal("b"), "receive", "Обсудим проверяемые идеи")
     assert reply.model_state.value == "completed"
     data = json.loads(fake.calls[0].request.input_text)
-    assert data["contract_version"] == "model-contract-shared-intelligence-v3"
+    assert data["contract_version"] == "model-contract-conversation-transcript-v4"
     assert data["shared_intellectual_state"][0]["text"] == one.proposal.candidate.value
     assert a not in fake.calls[0].request.input_text
     assert "Synthetic A" not in fake.calls[0].request.input_text

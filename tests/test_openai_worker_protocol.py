@@ -82,6 +82,15 @@ def test_request_round_trip_is_exact_and_revalidates_model_request():
     assert "api_key" not in payload.decode()
 
 
+def test_v1_wire_rejects_transcript_contract_even_with_participant_only():
+    data = request_data()
+    data["model_request"]["contract_version"] = (
+        "model-contract-conversation-transcript-v4"
+    )
+    with pytest.raises(WorkerProtocolError):
+        decode_request(json.dumps(data).encode())
+
+
 @pytest.mark.parametrize(
     "change",
     [

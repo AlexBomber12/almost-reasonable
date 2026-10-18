@@ -392,9 +392,15 @@ class _DurableConversationRuntime(ConversationService):
                     )
                 request, sources = MemoryConversationAssembler(
                     self._event_store, private_limits
-                ).build(principal, event_id, db)
+                ).build(
+                    principal,
+                    event_id,
+                    db,
+                    reply_permitted=lambda reply: self._current_request.get()()
+                    and self._historical_research_permitted(principal, reply),
+                )
                 generic_operations = request.generic_operation_ids
-                shared_operations = ()
+                shared_operations = request.inherited_shared_operation_ids
                 if self._shared is not None:
                     request, shared_operations = assemble_shared(
                         request,
