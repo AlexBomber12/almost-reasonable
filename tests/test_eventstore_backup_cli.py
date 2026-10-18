@@ -168,6 +168,33 @@ def test_restore_requires_existing_authoritative_ledger(tmp_path, capsys):
     assert code == 1 and not quarantine.exists()
 
 
+def test_empty_existing_ledger_is_not_initialized(tmp_path, capsys):
+    source = tmp_path / "events.db"
+    EventStore(source)
+    backup = tmp_path / "snapshot.db"
+    assert invoke(capsys, "backup", "--source", source, "--destination", backup)[0] == 0
+    ledger_path = tmp_path / "empty-ledger.db"
+    ledger_path.touch(mode=0o600)
+    quarantine = tmp_path / "candidate.db"
+    code, output = invoke(
+        capsys,
+        "restore",
+        "--backup",
+        backup,
+        "--ledger",
+        ledger_path,
+        "--quarantine",
+        quarantine,
+    )
+    assert (code, output) == (
+        1,
+        {"status": "restore_failed", "reason_code": "restore_failed"},
+    )
+    assert ledger_path.read_bytes() == b""
+    assert not quarantine.exists()
+    assert not (tmp_path / "candidate.db.ready.json").exists()
+
+
 def test_ledger_permissions_and_blocked_reconciliation(tmp_path, capsys):
     source = tmp_path / "events.db"
     store = EventStore(source)

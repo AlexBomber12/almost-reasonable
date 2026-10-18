@@ -1,9 +1,11 @@
 """Owner-operated EventStore backup and quarantined restore rehearsal."""
 
 import argparse
+from contextlib import closing
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import sqlite3
 import stat
 
 from app.core.store import SCHEMA_VERSION
@@ -38,6 +40,9 @@ def _require_current_ledger(path: Path) -> PrivacyLedger:
             _validate_existing_file(sidecar, "current ledger sidecar")
             if stat.S_IMODE(sidecar.stat(follow_symlinks=False).st_mode) & 0o077:
                 raise BackupError("current ledger sidecar permissions are unsafe")
+    with closing(sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)) as inspection:
+        if not PrivacyLedger._has_valid_schema(inspection):
+            raise BackupError("current ledger is uninitialized")
     return PrivacyLedger(path)
 
 
