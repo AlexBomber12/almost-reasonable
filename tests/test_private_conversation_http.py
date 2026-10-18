@@ -69,6 +69,38 @@ def test_authenticated_roundtrip_loss_retry_new_session_html_and_json(web):
     assert "model_identifier" not in repr(payload)
 
 
+def test_authenticated_history_keeps_released_reply_after_stop_and_restart(web, setup):
+    _, auth, fake, runtime, app = web
+    browser = Browser(app)
+    assert browser.login("alice", "synthetic-password-a")[0] == "303 See Other"
+    first = json.loads(browser.submit("first", "Первый запрос")[2])
+    assert first["model_state"] == "completed"
+    runtime._stop = lambda: True
+    assert (
+        json.loads(browser.submit("second", "Второй запрос")[2])["model_state"]
+        == "skipped"
+    )
+    store, _, gate, _, _ = setup
+    restarted = Stage0ConversationRuntime(
+        store, gate, fake, emergency_stop=lambda: True
+    )
+    app._conversations = restarted
+    before = len(fake.calls)
+    for _ in range(2):
+        status, _, body = browser.request("GET", "/api/history")
+        assert status == "200 OK"
+        assert [
+            (item["role"], item["content"]) for item in json.loads(body)["messages"]
+        ] == [
+            ("participant", "Первый запрос"),
+            ("agent", first["response"]),
+            ("participant", "Второй запрос"),
+        ]
+    assert len(fake.calls) == before
+    assert auth.revoke(browser.cookies["ar_session"])
+    assert browser.request("GET", "/api/history")[0] == "401 Unauthorized"
+
+
 @pytest.mark.parametrize(
     "failure",
     ["expired", "revoked", "csrf", "host", "origin", "forged_identity", "anonymous"],

@@ -866,10 +866,14 @@ def test_persisted_worker_reply_rechecks_session_and_controls_before_release(
         assert db.execute(
             "SELECT count(*) FROM agent_reply_resolutions"
         ).fetchone() == (0,)
-    runtime._stop = lambda: False
-    runtime._delivery = lambda: True
     if change == "revoke":
         assert a.login("alice", "synthetic-password-a")[0] == "303 See Other"
+    assert [
+        item["role"]
+        for item in json.loads(a.request("GET", "/api/history")[2])["messages"]
+    ] == ["participant"]
+    runtime._stop = lambda: False
+    runtime._delivery = lambda: True
     duplicate = json.loads(a.submit("held", "Отложенный ответ")[2])
     assert duplicate["model_state"] == "completed"
     assert duplicate["response"] == "Синтетический русский ответ."

@@ -908,23 +908,42 @@ class _DurableConversationRuntime(ConversationService):
                     HistoryItem(event.event_id, event.occurred_at, event.content)
                 )
                 operation_id = self._operation_id(event.event_id)
-                resolution = self._outputs.resolution(principal, operation_id)
-                if resolution == ("completed", f"release:{operation_id}"):
-                    route = TrustedActionContext(event.correlation_id, principal)
-                    response = self._response(None, route, operation_id)
-                    # The same ledger fence and source checks cover the whole rendering read.
-                    if response.model_state is ModelState.COMPLETED:
-                        items.append(
-                            HistoryItem(
-                                operation_id,
-                                event.occurred_at,
-                                response.response_content,
-                                "agent",
-                            )
+                reply, resolution = self._outputs.read_reply_and_resolution(
+                    principal, operation_id
+                )
+                # A held payload is never evidence of release. The scoped storage
+                # read also validates every live private/shared/generic dependency.
+                if (
+                    reply is not None
+                    and reply.result_state is ResultState.PERSISTED
+                    and resolution == ("completed", f"release:{operation_id}")
+                    and self._current_request.get()()
+                    and self._historical_research_permitted(principal, reply)
+                ):
+                    items.append(
+                        HistoryItem(
+                            operation_id, event.occurred_at, reply.content, "agent"
                         )
+                    )
             return tuple(items)
 
         return self._gate.authorized(read)
+
+    def _historical_research_permitted(self, principal, reply):
+        evidence = self._research_evidence(reply.operation.operation_id)
+        if evidence is None:
+            return True
+        if isinstance(evidence, str) or self._research is None:
+            return False
+        if type(self._research) is PublicResearchBridge:
+            grant = self._research._grants.get(reply.operation.operation_id)
+            subject = grant.request.question if grant is not None else None
+        else:
+            try:
+                subject = SyntheticPublicResearchFixture(evidence.model_identifier)
+            except ValueError:
+                return False
+        return self._research.permits(principal, reply.operation, subject)
 
 
 class _MemoryFakeBridge:

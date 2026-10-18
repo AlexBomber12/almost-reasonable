@@ -84,6 +84,28 @@ def test_connected_result_replay_and_principal_isolation(connected):
     assert "CANARY-A-11" not in str(transport.calls)
 
 
+def test_invalid_research_evidence_cannot_authorize_released_history(
+    connected, monkeypatch
+):
+    from dataclasses import replace
+
+    runtime, _, server, _, _, _, _ = connected
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    first = runtime.submit(principal("a"), "invalid-evidence", "Исследуй эту тему")
+    thread.join(5)
+    assert first.model_state.value == "completed"
+    event = runtime._gate.retrieve_private_events(principal("a"))[0]
+    operation_id = runtime._operation_id(event.event_id)
+    evidence = runtime._research_evidence(operation_id)
+    monkeypatch.setattr(
+        runtime,
+        "_research_evidence",
+        lambda _operation_id: replace(evidence, model_identifier="invalid-fixture"),
+    )
+    assert [item.role for item in runtime.history(principal("a"))] == ["participant"]
+
+
 def test_missing_grant_never_contacts_worker(connected):
     runtime, bridge, _, _, transport, fake, _ = connected
     runtime._checkpoint = lambda point: None
