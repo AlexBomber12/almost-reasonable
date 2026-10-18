@@ -175,7 +175,14 @@ class PrivateWebApplication:
                 HTTPStatus.INTERNAL_SERVER_ERROR, "The request could not be completed."
             )
         status, headers, body = response
-        headers = [*self._security_headers(), *headers]
+        referrer_policy = (
+            "same-origin"
+            if environ.get("REQUEST_METHOD") == "GET"
+            and environ.get("PATH_INFO") == "/login"
+            and status == HTTPStatus.OK
+            else "no-referrer"
+        )
+        headers = [*self._security_headers(referrer_policy=referrer_policy), *headers]
         start_response(f"{status.value} {status.phrase}", headers)
         return [body]
 
@@ -778,12 +785,14 @@ if (logout) logout.addEventListener('click', async () => {
         return "Set-Cookie", cookie
 
     @staticmethod
-    def _security_headers() -> list[tuple[str, str]]:
+    def _security_headers(
+        *, referrer_policy: str = "no-referrer"
+    ) -> list[tuple[str, str]]:
         return [
             ("Cache-Control", "no-store"),
             ("Pragma", "no-cache"),
             ("X-Content-Type-Options", "nosniff"),
-            ("Referrer-Policy", "no-referrer"),
+            ("Referrer-Policy", referrer_policy),
             (
                 "Content-Security-Policy",
                 "default-src 'none'; script-src 'self'; style-src 'self'; "

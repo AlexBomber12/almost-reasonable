@@ -9,9 +9,14 @@ rollout authority.
 
 ## Reproduce
 
-From the repository root with `requirements-dev.txt` installed:
+From the repository root with Python 3.12, install the development packages and
+the Chromium binary used by the required HTTPS browser regression:
 
 ```sh
+python3.12 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m playwright install --with-deps chromium
 python -m acceptance.run
 ```
 
