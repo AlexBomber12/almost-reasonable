@@ -368,12 +368,14 @@ class MemoryConversationAssembler:
                 if reply is not None
                 else None
             )
-            released = (
+            durably_released = (
                 reply is not None
                 and reply.result_state is ResultState.PERSISTED
                 and resolution == ("completed", f"release:{operation_id}")
-                and reply_permitted(reply)
             )
+            released = durably_released and reply_permitted(reply)
+            if durably_released and not released:
+                history_omitted = True
             agent = (
                 ()
                 if not released

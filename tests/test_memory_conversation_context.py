@@ -221,6 +221,7 @@ def test_held_answer_never_enters_transcript(setup):
         "participant",
         "participant",
     ]
+    assert projection["history_omitted"] is False
     with store._open() as db:
         assert {
             row[0]

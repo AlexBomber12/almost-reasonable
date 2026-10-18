@@ -156,6 +156,7 @@ def test_research_reply_is_excluded_without_hiding_ordinary_followup(connected):
         "participant",
         "participant",
     ]
+    assert projection["history_omitted"] is True
     origin = store.retrieve_private_events_in_commit_order(principal("a"))[0]
     bridge.revoke_input(origin.event_id)
     assert [item.role for item in followup.history(principal("a"))] == [
