@@ -201,6 +201,119 @@ def test_cross_participant_runtime_influence_and_erasure(shared):
     ]
 
 
+@pytest.mark.parametrize("shared_owner", ("a", "b"))
+def test_transcript_history_uses_complete_deduplicated_source_budget(
+    tmp_path, shared_owner
+):
+    import json
+    from app.core.context import ContextLimits
+    from app.core.agent_output_store import AgentOutputStore
+    from app.private_web.runtime import Stage0ConversationRuntime
+    from app.trusted.openai_transport import FakeOpenAITransport
+    from test_private_conversation_runtime import response
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    a_sources = tuple(
+        append_event(events, principal("a"), f"a-{i:02}")
+        for i in range(50 if shared_owner == "a" else 0)
+    )
+    b_history = tuple(
+        append_event(events, principal("b"), f"b-{i:02}") for i in range(55)
+    )
+    assert gate.reconcile()
+    shared_sources = a_sources if shared_owner == "a" else b_history[:50]
+    approved = approval(shared_sources[0], author=shared_owner)
+    approved = replace(
+        approved,
+        proposal=replace(approved.proposal, protected_source_event_ids=shared_sources),
+    )
+    shared = SharedIntelligence(events, gate, approvals=(approved,), clock=lambda: NOW)
+    assert shared.commit(approved) == "shared-a"
+    fake = FakeOpenAITransport(
+        [response(value="Синтетический ответ LANTERN-73"), response()]
+    )
+    first_runtime = Stage0ConversationRuntime(
+        events,
+        gate,
+        fake,
+        shared_intelligence=shared,
+        context_limits=ContextLimits(32_000, 1),
+        clock=lambda: NOW,
+    )
+    first = first_runtime.submit(principal("b"), "first", "First synthetic question")
+    assert first.model_state.value == "completed"
+    assert len(fake.calls) == 1
+
+    reopened_events = EventStore(events.database_path)
+    reopened_gate = PrivacyReadGate(ledger, reopened_events)
+    assert reopened_gate.reconcile()
+    reopened_shared = SharedIntelligence(
+        reopened_events, reopened_gate, clock=lambda: NOW
+    )
+    reopened = Stage0ConversationRuntime(
+        reopened_events,
+        reopened_gate,
+        fake,
+        shared_intelligence=reopened_shared,
+        context_limits=ContextLimits(32_000, 99),
+        clock=lambda: NOW,
+    )
+    second = reopened.submit(principal("b"), "second", "Second synthetic question")
+    assert second.model_state.value == "completed"
+    assert len(fake.calls) == 2
+    projection = json.loads(fake.calls[1].request.input_text)
+    assert any(
+        part["role"] == "agent"
+        and part["content"] == "Синтетический ответ LANTERN-73"
+        and part["trust"] == "untrusted_conversational_data"
+        for part in projection["conversation"]
+    )
+    assert [part["content"] for part in projection["conversation"]].count(
+        "Second synthetic question"
+    ) == 1
+    assert projection["history_omitted"] is (shared_owner == "a")
+    assert (
+        reopened.submit(
+            principal("b"), "second", "Second synthetic question"
+        ).message_status.value
+        == "duplicate"
+    )
+    assert len(fake.calls) == 2
+
+    with reopened_events._open() as db:
+        first_op = db.execute(
+            "SELECT operation_id FROM protected_reply_shared ORDER BY operation_id"
+        ).fetchone()[0]
+        first_reply = AgentOutputStore(reopened_events)._read(
+            db, principal("b"), first_op
+        )
+        assert first_reply.operation.shared_operation_ids == ("shared-a",)
+        actual_shared = {
+            row[0]
+            for row in db.execute(
+                "SELECT event_id FROM protected_shared_sources WHERE operation_id='shared-a'"
+            )
+        }
+        assert actual_shared == set(shared_sources)
+        second_op = db.execute(
+            "SELECT operation_id FROM agent_reply_operations WHERE operation_id!=?",
+            (first_op,),
+        ).fetchone()[0]
+        second_reply = AgentOutputStore(reopened_events)._read(
+            db, principal("b"), second_op
+        )
+        private = set(second_reply.operation.source_event_ids)
+        assert len(private | actual_shared) == (100 if shared_owner == "a" else 57)
+        assert first_reply.operation.source_event_ids[0] in private
+        if shared_owner == "a":
+            assert len(private) == 50
+            assert len(private | actual_shared | {b_history[0]}) == 101
+        else:
+            assert len(private & actual_shared) == 50
+
+
 def test_mission_two_phase_restart_and_deletion_reassessment(shared):
     from app.behavior.shared_mission import (
         SharedMissionAdapter,

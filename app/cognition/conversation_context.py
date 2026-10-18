@@ -342,6 +342,10 @@ class MemoryConversationAssembler:
         inherited_shared = set()
         inherited_generic = set(request.generic_operation_ids)
         shared_sources = set()
+
+        def source_budget_exceeded(extra_private, extra_shared):
+            return len(sources | shared_sources | extra_private | extra_shared) > 100
+
         for event in reversed(events[:-1]):
             history = build_model_request(
                 PrivateContextAssembler(
@@ -409,14 +413,9 @@ class MemoryConversationAssembler:
             if (
                 len(proposed.conversation.conversation)
                 > self._limits.max_history_events
-                or len(
-                    sources
-                    | {event.event_id}
-                    | extra_sources
-                    | shared_sources
-                    | extra_shared_sources
+                or source_budget_exceeded(
+                    {event.event_id} | extra_sources, extra_shared_sources
                 )
-                > 100
                 or len(inherited_shared | extra_shared) > 16
                 or len(inherited_generic | extra_generic) > 16
                 or len(proposed._serialized().encode("utf-8"))
@@ -438,7 +437,7 @@ class MemoryConversationAssembler:
                 if (
                     len(proposed.conversation.conversation)
                     > self._limits.max_history_events
-                    or len(sources | {event.event_id}) > 100
+                    or source_budget_exceeded({event.event_id}, set())
                     or len(proposed._serialized().encode("utf-8"))
                     > self._limits.max_utf8_bytes
                 ):
