@@ -30,6 +30,7 @@ class OwnerApplication:
         allowed_clients=frozenset({"127.0.0.1", "::1"}),
         pilot_provider_events=None,
         worker_telemetry=None,
+        worker_stop=None,
     ):
         if (
             type(allowed_clients) is not frozenset
@@ -51,6 +52,7 @@ class OwnerApplication:
         self.privacy = privacy_ledger
         self.pilot_provider_events = pilot_provider_events
         self.worker_telemetry = worker_telemetry
+        self.worker_stop = worker_stop
         self._http = PrivateWebApplication(None, None, config)
 
     def __call__(self, environ, start_response):
@@ -114,6 +116,8 @@ class OwnerApplication:
             "/status": {"GET", "POST"},
             "/operation": {"POST"},
             "/stop": {"POST"},
+            "/worker-stop-operation": {"POST"},
+            "/emergency-stop": {"POST"},
         }
         if path not in routes:
             raise _RequestError(HTTPStatus.NOT_FOUND, "Not found.")
@@ -199,6 +203,7 @@ class OwnerApplication:
                         if self.worker_telemetry is not None
                         else unavailable()
                     ),
+                    "emergency_operation": self.store.latest_worker_stop(token),
                     "event_store": {
                         "scope": "conversation_event_store",
                         "health": "read_interface_ok",
@@ -271,6 +276,12 @@ class OwnerApplication:
             raise _RequestError(HTTPStatus.FORBIDDEN, "Invalid CSRF.")
         if path == "/operation":
             return 200, {"operation_id": self.store.issue(token)}, []
+        if path == "/worker-stop-operation":
+            if self.worker_stop is None or self.pilot_provider_events is None:
+                raise _RequestError(
+                    HTTPStatus.SERVICE_UNAVAILABLE, "Worker control unavailable."
+                )
+            return 200, {"operation_id": self.store.issue_worker_stop(token)}, []
         if path == "/logout":
             self.store.revoke(token)
             return (
@@ -278,6 +289,41 @@ class OwnerApplication:
                 {"authenticated": False},
                 [self._http._clear_cookie("ar_owner_session")],
             )
+        if path == "/emergency-stop":
+            payload = self._body(env, {"operation_id"})
+            operation = payload["operation_id"]
+            outcome = self.store.worker_operation(token, operation)
+            if outcome["application"] != "confirmed":
+                try:
+                    self.store.assert_application_stop(token, operation)
+                    application = "confirmed"
+                except (RuntimeError, OSError, PermissionError):
+                    application = "unavailable"
+                try:
+                    self.store.record_worker_outcome(
+                        token, operation, "application_result", application
+                    )
+                except (RuntimeError, OSError, PermissionError):
+                    application = (
+                        "uncertain" if application == "confirmed" else "unavailable"
+                    )
+            else:
+                application = "confirmed"
+            if outcome["worker"] != "confirmed":
+                worker = (
+                    self.worker_stop.assert_stop()
+                    if self.worker_stop is not None
+                    else "unavailable"
+                )
+                try:
+                    self.store.record_worker_outcome(
+                        token, operation, "worker_result", worker
+                    )
+                except (RuntimeError, OSError, PermissionError):
+                    worker = "uncertain"
+            else:
+                worker = "confirmed"
+            return 200, {"application": application, "worker": worker}, []
         payload = self._body(env, {"operation_id", "active"})
         result = self.store.change(token, payload["operation_id"], payload["active"])
         return (200 if result == "applied" else 409), {"result": result}, []

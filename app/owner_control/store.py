@@ -70,6 +70,10 @@ class OwnerStore:
                 connection.execute(
                     "CREATE TABLE owner_audit(sequence INTEGER PRIMARY KEY, operation_id TEXT NOT NULL, actor_reference TEXT NOT NULL, action_type TEXT NOT NULL, occurred_at TEXT NOT NULL, result TEXT NOT NULL, rejection_category TEXT NOT NULL)"
                 )
+        with self._connection() as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS owner_worker_operations(operation_id TEXT PRIMARY KEY, session_digest TEXT NOT NULL, actor_reference TEXT NOT NULL, expires_at INTEGER NOT NULL, application_result TEXT NOT NULL, worker_result TEXT NOT NULL)"
+            )
 
     @contextmanager
     def _connection(self):
@@ -216,6 +220,105 @@ class OwnerStore:
                 (operation, self._digest(token), min(now + 300, session.expires_at)),
             )
             return operation
+
+    def issue_worker_stop(self, token):
+        """Create a session bound, single purpose operation before any control IPC."""
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            session = self.authenticate(token)
+            if session is None:
+                raise PermissionError("owner authentication required")
+            now = int(self._clock().timestamp())
+            if (
+                connection.execute(
+                    "SELECT count(*) FROM owner_worker_operations WHERE session_digest=? AND expires_at>?",
+                    (self._digest(token), now),
+                ).fetchone()[0]
+                >= 32
+            ):
+                raise ValueError("too many worker operations")
+            operation = secrets.token_hex(16)
+            connection.execute(
+                "INSERT INTO owner_worker_operations VALUES (?,?,?,?,?,?)",
+                (
+                    operation,
+                    self._digest(token),
+                    str(session.principal_id),
+                    min(now + 300, session.expires_at),
+                    "pending",
+                    "pending",
+                ),
+            )
+            return operation
+
+    def worker_operation(self, token, operation):
+        if type(operation) is not str or len(operation) != 32:
+            raise ValueError("invalid worker operation")
+        with self._connection() as connection:
+            session = self.authenticate(token)
+            if session is None:
+                raise PermissionError("owner authentication required")
+            row = connection.execute(
+                "SELECT session_digest, expires_at, application_result, worker_result FROM owner_worker_operations WHERE operation_id=?",
+                (operation,),
+            ).fetchone()
+            if (
+                row is None
+                or row[0] != self._digest(token)
+                or row[1] <= int(self._clock().timestamp())
+            ):
+                raise ValueError("invalid or expired worker operation")
+            return {"application": row[2], "worker": row[3]}
+
+    def latest_worker_stop(self, token):
+        session = self.authenticate(token)
+        if session is None:
+            raise PermissionError("owner authentication required")
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT application_result,worker_result FROM owner_worker_operations WHERE actor_reference=? ORDER BY rowid DESC LIMIT 1",
+                (str(session.principal_id),),
+            ).fetchone()
+        return None if row is None else {"application": row[0], "worker": row[1]}
+
+    def record_worker_outcome(self, token, operation, field, result):
+        if field not in {"application_result", "worker_result"} or result not in {
+            "confirmed",
+            "uncertain",
+            "unavailable",
+        }:
+            raise ValueError("invalid worker outcome")
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            self.worker_operation(token, operation)
+            cursor = connection.execute(
+                f"UPDATE owner_worker_operations SET {field}=? WHERE operation_id=? AND {field}!='confirmed' AND {field}!=?",
+                (result, operation, result),
+            )
+            if cursor.rowcount == 0:
+                return
+            session = self.authenticate(token)
+            connection.execute(
+                "INSERT INTO owner_audit(operation_id,actor_reference,action_type,occurred_at,result,rejection_category) VALUES (?,?,?,?,?,?)",
+                (
+                    operation,
+                    str(session.principal_id),
+                    "worker_stop" if field == "worker_result" else "application_stop",
+                    self._clock().isoformat(),
+                    result,
+                    "none",
+                ),
+            )
+
+    def assert_application_stop(self, token, operation):
+        self.worker_operation(token, operation)
+        with self._connection() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            cursor = connection.execute(
+                "UPDATE owner_stop SET active=1 WHERE singleton=1"
+            )
+            if cursor.rowcount != 1:
+                raise RuntimeError("owner stop state unavailable")
 
     @staticmethod
     def _digest(token):

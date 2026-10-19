@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from io import BytesIO
 import json
 import multiprocessing
+import os
 import runpy
 from pathlib import Path
 from threading import Thread
@@ -17,12 +18,15 @@ from app.core.provider_spend import ProviderAttemptRecord, ProviderStateStore
 from app.core.store import EventStore
 from app.ops.int26_owner_pilot import build_application, main
 from app.owner_control.store import OwnerStore
+from app.owner_control.worker_stop import WorkerStopClient
 from app.owner_control.wsgi import OwnerApplication
 from app.private_web.cli import IPv6WSGIServer
 from app.private_web.server import PrivateWSGIRequestHandler
 from app.private_web.wsgi import PrivateWebConfig
 from app.privacy.ledger import PrivacyLedger
 from app.trusted.private_pilot import PilotAllowance, load_activation
+from app.trusted.private_pilot_worker import PilotStop
+from app.trusted.worker_stop import WorkerStopServer
 from test_int19_worker_runtime import _app
 from test_int22_pilot import activation_file
 from test_int22_rehearsal import _finish, _start
@@ -448,12 +452,16 @@ def test_console_stop_controls_int22_wsgi_before_sdk_and_on_release(tmp_path):
     owner = OwnerStore(tmp_path / "owner")
     owner.provision("operator", "synthetic-owner-password")
     private_app._conversations._stop = owner.active
+    stop_socket = worker_dir / "stop.sock"
+    stop_server = WorkerStopServer(stop_socket, stop, os.geteuid())
+    stop_server.start()
     owner_app = OwnerApplication(
         owner,
         events,
         PrivateWebConfig(frozenset({"owner.test"}), frozenset({"https://owner.test"})),
         privacy_ledger=ledger,
         pilot_provider_events=EventStore(tmp_path / "ipc-state.db"),
+        worker_stop=WorkerStopClient(stop_socket, os.geteuid()),
     )
     cookie, csrf = login(owner_app)
     entered, release = multiprocessing.Event(), multiprocessing.Event()
@@ -481,16 +489,37 @@ def test_console_stop_controls_int22_wsgi_before_sdk_and_on_release(tmp_path):
     thread.start()
     try:
         assert entered.wait(5)
-        assert change(owner_app, cookie, csrf, True)[0] == 200
+        _, issued, _ = call(
+            owner_app, "/worker-stop-operation", "POST", cookie=cookie, csrf=csrf
+        )
+        control = Thread(target=stop_server.serve_once)
+        control.start()
+        code, result, _ = call(
+            owner_app,
+            "/emergency-stop",
+            "POST",
+            cookie=cookie,
+            csrf=csrf,
+            payload={"operation_id": issued["operation_id"]},
+        )
+        control.join(2)
+        assert code == 200
+        assert result == {"application": "confirmed", "worker": "confirmed"}
+        assert PilotStop(stop).active()
     finally:
         release.set()
         thread.join(10)
+        stop_server.close()
     assert not thread.is_alive()
     assert (
         results[0][0] != "201 Created"
         or json.loads(results[0][2])["model_state"] != "completed"
     )
     assert len(_finish(process, pipe)) == 1
+    assert (
+        json.loads(alice.submit("after-stop", "Третий вопрос")[2])["model_state"]
+        != "completed"
+    )
     assert gate.reconcile()
     history = json.loads(alice.request("GET", "/api/history")[2])
     assert not any(item["role"] == "agent" for item in history["messages"])
