@@ -184,6 +184,24 @@ class PublicResearchBridge:
             return self._client.execute(self._profile.request(operation_id, choice))
         return self._client.execute(self._grants[operation_id].request)
 
+    def evidence_choice(self, model_identifier):
+        """Accept old reply evidence only under its original reviewed profile."""
+        if self._profile is None:
+            return None
+        prefix = "research-profile:" + self._profile.digest + ":"
+        if type(model_identifier) is not str or not model_identifier.startswith(prefix):
+            return None
+        fingerprint = model_identifier.removeprefix(prefix)
+        return next(
+            (
+                topic.topic_id
+                for topic in self._profile.topics
+                if hashlib.sha256(topic.topic_id.encode()).hexdigest()[:24]
+                == fingerprint
+            ),
+            None,
+        )
+
     def record(
         self, provider, operation, question, outcome, now, *, require_reservation=True
     ):
@@ -191,7 +209,10 @@ class PublicResearchBridge:
         if self._profile is not None:
             topic = self._profile.topic(question)
             if topic is not None:
-                model_identifier = "research-topic:" + topic.topic_id
+                fingerprint = hashlib.sha256(topic.topic_id.encode()).hexdigest()[:24]
+                model_identifier = (
+                    "research-profile:" + self._profile.digest + ":" + fingerprint
+                )
         return provider.record_attempt(
             ProviderAttemptRecord(
                 intent_id(operation.operation_id),

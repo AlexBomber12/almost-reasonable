@@ -26,6 +26,7 @@ from app.private_web.auth import AuthStore
 from app.private_web.conversation import ConversationService
 from app.private_web.public_research import PublicResearchBridge
 from app.private_web.runtime import WorkerConversationRuntime
+from app.private_web.runtime import _without_reviewed_question
 from app.private_web.wsgi import PrivateWebApplication, PrivateWebConfig
 from app.privacy.application import PrivacyReadGate
 from app.privacy.ledger import PrivacyLedger
@@ -272,6 +273,48 @@ def test_two_reviewed_questions_survive_worker_restart(tmp_path):
         )
         history = json.loads(browser.request("GET", "/api/history")[2])
         assert len(history["messages"]) == 4
+        replacement = json.loads(app_path.read_text())
+        replacement["profile_id"] = secrets.token_hex(32)
+        replacement["authorization"] = secrets.token_hex(32)
+        replacement["topics"][0]["question"] = "Why do tides change?"
+        app_path.write_text(json.dumps(replacement))
+        replacement_bridge = PublicResearchBridge(
+            events,
+            gate,
+            PublicResearchClient(
+                directory / "research.sock", expected_worker_uid=os.geteuid()
+            ),
+            enabled=True,
+            clock=lambda: NOW,
+            approval_path=app_path,
+            application_scope="test-private-chat",
+        )
+        replacement_bridge.install_profile(
+            load_research_profile(app_path, role="application"), principal
+        )
+        browser.app = PrivateWebApplication(
+            auth,
+            WorkerConversationRuntime(
+                events,
+                gate,
+                OpenAIWorkerClient(
+                    directory / "infer.sock", expected_worker_uid=os.geteuid()
+                ),
+                provider_state=ProviderStateStore(
+                    EventStore(tmp_path / "ipc-state.db")
+                ),
+                research_bridge=replacement_bridge,
+                clock=lambda: NOW,
+            ),
+            config,
+        )
+        assert (
+            json.loads(browser.submit("profile-0", inputs[0])[2])["model_state"]
+            == "research_denied"
+        )
+        assert (
+            len(json.loads(browser.request("GET", "/api/history")[2])["messages"]) == 2
+        )
     finally:
         infer.join(5)
         if infer.is_alive():
@@ -686,6 +729,16 @@ def test_application_profile_binds_current_source_and_scope(tmp_path):
         require_reservation=False,
     )
     assert recorded[0].model_identifier == "public-research-v1"
+    bridge.record(
+        fake_provider,
+        SimpleNamespace(operation_id=operation.operation_id, core_self_version="v1"),
+        "ocean",
+        "completed",
+        NOW,
+        require_reservation=False,
+    )
+    assert bridge.evidence_choice(recorded[1].model_identifier) == "ocean"
+    assert bridge.evidence_choice("research-profile:unknown") is None
     wrong_scope = PublicResearchBridge(
         events,
         gate,
@@ -705,6 +758,7 @@ def test_application_profile_binds_current_source_and_scope(tmp_path):
         bridge.execute(operation.operation_id, "ocean")
     bridge.revoke(operation.operation_id)
     assert bridge._profile is None
+    assert bridge.evidence_choice(recorded[1].model_identifier) is None
 
 
 def test_worker_bootstrap_requires_profile_and_durable_journal(tmp_path):
@@ -858,3 +912,36 @@ def test_application_cli_installs_reviewed_profile(tmp_path):
     assert private_web_main(arguments, server_factory=factory) == 0
     assert observed["served"]
     assert observed["application"]._conversations._research._profile is not None
+
+
+@pytest.mark.parametrize(
+    "private_text",
+    [
+        "what causes auroras? for Alice",
+        "What causes aurorаs? for Alice",
+        "WHAT   CAUSES AURORAS? for Alice",
+    ],
+)
+def test_reviewed_question_normalization_preserves_private_variation(private_text):
+    from app.research.brief import ResearchScreeningContext, _screen
+
+    residual = _without_reviewed_question(private_text, QUESTIONS[1])
+    assert "Alice" in residual
+    screening = ResearchScreeningContext(
+        private_quotations=(residual,), private_texts=(residual,)
+    )
+    assert _screen([QUESTIONS[1]], screening) is None
+    assert _screen(["for Alice"], screening) is not None
+
+
+def test_reviewed_question_removal_keeps_unrelated_private_words():
+    assert (
+        _without_reviewed_question("oceanographer Alice", "ocean")
+        == "oceanographer Alice"
+    )
+    assert _without_reviewed_question("Café? Alice", "Cafe\u0301?").strip() == "Alice"
+    assert _without_reviewed_question("x", "") == "x"
+    assert (
+        _without_reviewed_question("   What causes auroras?   ", QUESTIONS[1]).strip()
+        == ""
+    )

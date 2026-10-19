@@ -84,6 +84,54 @@ _WORKER_SPEND_RU = "Запросы к модели приостановлены 
 _WORKER_REJECTED_RU = "Ответ модели отклонён проверкой безопасности."
 
 
+def _without_reviewed_question(text: str, question: str) -> str:
+    """Remove only normalized-equivalent canonical spans, retaining private text."""
+    needle = _normalized(question)
+    if not needle:
+        return text
+    units: list[str] = []
+    spans: list[tuple[int, int]] = []
+    for index, character in enumerate(text):
+        folded = " " if character.isspace() else _normalized(character)
+        for unit in folded:
+            if unit == " " and units and units[-1] == " ":
+                spans[-1] = (spans[-1][0], index + 1)
+            elif unit != " " or units:
+                units.append(unit)
+                spans.append((index, index + 1))
+    if units and units[-1] == " ":
+        units.pop()
+        spans.pop()
+    normalized = "".join(units)
+    matches = []
+    search_from = 0
+    while (hit := normalized.find(needle, search_from)) != -1:
+        end = hit + len(needle)
+        if (
+            (hit == 0 or not normalized[hit - 1].isalnum() or not needle[0].isalnum())
+            and (
+                end == len(normalized)
+                or not normalized[end].isalnum()
+                or not needle[-1].isalnum()
+            )
+            and (hit == 0 or spans[hit - 1][0] != spans[hit][0])
+            and (end == len(normalized) or spans[end - 1][1] != spans[end][1])
+        ):
+            matches.append((spans[hit][0], spans[end - 1][1]))
+            search_from = end
+        else:
+            search_from = hit + 1
+    if not matches:
+        return text
+    pieces = []
+    cursor = 0
+    for start, end in matches:
+        pieces.append(text[cursor:start])
+        cursor = end
+    pieces.append(text[cursor:])
+    return " ".join(pieces)
+
+
 class _Snapshot:
     def __init__(self, events):
         self.events = events
@@ -1057,7 +1105,7 @@ class _DurableConversationRuntime(ConversationService):
                     for text in [*(row[1] for row in rows), *shared_texts]
                     if _normalized(
                         remaining := (
-                            text.replace(canonical_question, " ")
+                            _without_reviewed_question(text, canonical_question)
                             if canonical_question is not None
                             else text
                         )
@@ -1359,11 +1407,8 @@ class _DurableConversationRuntime(ConversationService):
             if public:
                 grant = self._research._grants.get(operation_id)
                 subject = grant.request.question if grant is not None else None
-                if (
-                    self._research._profile is not None
-                    and evidence.model_identifier.startswith("research-topic:")
-                ):
-                    subject = evidence.model_identifier.removeprefix("research-topic:")
+                if self._research._profile is not None:
+                    subject = self._research.evidence_choice(evidence.model_identifier)
             else:
                 try:
                     subject = SyntheticPublicResearchFixture(evidence.model_identifier)
@@ -1468,11 +1513,8 @@ class _DurableConversationRuntime(ConversationService):
         if type(self._research) is PublicResearchBridge:
             grant = self._research._grants.get(reply.operation.operation_id)
             subject = grant.request.question if grant is not None else None
-            if (
-                self._research._profile is not None
-                and evidence.model_identifier.startswith("research-topic:")
-            ):
-                subject = evidence.model_identifier.removeprefix("research-topic:")
+            if self._research._profile is not None:
+                subject = self._research.evidence_choice(evidence.model_identifier)
         else:
             try:
                 subject = SyntheticPublicResearchFixture(evidence.model_identifier)

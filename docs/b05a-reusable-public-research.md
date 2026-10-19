@@ -87,6 +87,11 @@ protected catalog. It rejects unknown choices, edited questions, or appended
 private details. Before IPC it checks the current authenticated source, reply
 source graph, controls, spend state, and profile. The worker checks its own
 profile, UID, stop and spend controls, and durable aggregate and topic slots.
+Stored reply evidence includes an opaque fingerprint of the authorizing profile
+and topic. A replacement profile cannot release an older profile's reply, even
+when it reuses a topic ID. Equivalent casing or Unicode spelling of a canonical
+question is removed only from the local private comparison text; any remaining
+private variation remains screened.
 Only an operation ID, the canonical question, and an opaque authorization
 handle cross the AF_UNIX boundary. The provider receives a sealed brief derived
 from that exact question. Neither the worker request nor public audit contains
