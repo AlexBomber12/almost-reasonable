@@ -427,6 +427,32 @@ def test_group_socket_and_server_failure_paths(tmp_path, monkeypatch):
     server.start()
     assert stat_mode(address) == 0o660
     server.close()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            worker_stop.os,
+            "chown",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("synthetic group failure")
+            ),
+        )
+        with pytest.raises(OSError):
+            WorkerStopServer(
+                address, path, os.geteuid(), socket_group_gid=group
+            ).start()
+    assert not address.exists()
+    with monkeypatch.context() as patch:
+        patch.setattr(
+            worker_stop.os,
+            "chmod",
+            lambda *_args, **_kwargs: (_ for _ in ()).throw(
+                OSError("synthetic mode failure")
+            ),
+        )
+        with pytest.raises(OSError):
+            WorkerStopServer(
+                address, path, os.geteuid(), socket_group_gid=group
+            ).start()
+    assert not address.exists()
     address.parent.chmod(0o700)
 
     original_socket = worker_stop.socket.socket
@@ -659,6 +685,19 @@ def test_lost_ack_is_uncertain_and_same_operation_can_reconcile(tmp_path):
         assert result == {"application": "confirmed", "worker": "uncertain"}
         assert PilotStop(path).active()
     address.unlink()
+    code, result, _ = call(
+        app,
+        "/emergency-stop",
+        "POST",
+        cookie=cookie,
+        csrf=csrf,
+        payload={"operation_id": issued["operation_id"]},
+    )
+    assert code == 200
+    assert result == {"application": "confirmed", "worker": "uncertain"}
+    assert (
+        app.store.latest_worker_stop(cookie.split("=", 1)[1])["worker"] == "uncertain"
+    )
     server = WorkerStopServer(address, path, os.geteuid())
     server.start()
     try:

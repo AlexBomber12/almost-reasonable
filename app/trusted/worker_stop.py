@@ -133,13 +133,13 @@ class WorkerStopServer:
         finally:
             os.umask(old)
         try:
+            entry = self.socket_path.lstat()
+            self.identity = (entry.st_dev, entry.st_ino)
             if self.socket_group_gid is not None:
                 os.chown(
                     self.socket_path, -1, self.socket_group_gid, follow_symlinks=False
                 )
                 os.chmod(self.socket_path, 0o660, follow_symlinks=False)
-            entry = self.socket_path.lstat()
-            self.identity = (entry.st_dev, entry.st_ino)
             listener.listen(8)
             listener.settimeout(0.25)
             self.listener = listener

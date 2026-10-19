@@ -300,7 +300,7 @@ class OwnerApplication:
                 except (RuntimeError, OSError, PermissionError):
                     application = "unavailable"
                 try:
-                    self.store.record_worker_outcome(
+                    application = self.store.record_worker_outcome(
                         token, operation, "application_result", application
                     )
                 except (RuntimeError, OSError, PermissionError):
@@ -316,7 +316,7 @@ class OwnerApplication:
                     else "unavailable"
                 )
                 try:
-                    self.store.record_worker_outcome(
+                    worker = self.store.record_worker_outcome(
                         token, operation, "worker_result", worker
                     )
                 except (RuntimeError, OSError, PermissionError):

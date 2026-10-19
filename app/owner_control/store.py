@@ -292,11 +292,14 @@ class OwnerStore:
             connection.execute("BEGIN IMMEDIATE")
             actor = self._worker_actor(connection, token, operation)
             cursor = connection.execute(
-                f"UPDATE owner_worker_operations SET {field}=? WHERE operation_id=? AND {field}!='confirmed' AND {field}!=?",
-                (result, operation, result),
+                f"UPDATE owner_worker_operations SET {field}=? WHERE operation_id=? AND {field}!='confirmed' AND {field}!=? AND NOT ({field}='uncertain' AND ?='unavailable')",
+                (result, operation, result, result),
             )
             if cursor.rowcount == 0:
-                return
+                return connection.execute(
+                    f"SELECT {field} FROM owner_worker_operations WHERE operation_id=?",
+                    (operation,),
+                ).fetchone()[0]
             connection.execute(
                 "INSERT INTO owner_audit(operation_id,actor_reference,action_type,occurred_at,result,rejection_category) VALUES (?,?,?,?,?,?)",
                 (
@@ -308,6 +311,7 @@ class OwnerStore:
                     "none",
                 ),
             )
+            return result
 
     def assert_application_stop(self, token, operation):
         with self._connection() as connection:
