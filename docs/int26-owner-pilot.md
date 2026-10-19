@@ -110,9 +110,18 @@ worker spend suspension or open the worker's independent Stop.
 
 Application-observed spend suspension and attempt count come from
 `ipc-state.db`, the store used by the private runtime's `ProviderStateStore`.
-They are not a worker usage total or billing authority. The owner process has
-no authenticated source for worker Stop or worker accounting, so both appear
-**unavailable**, never zero. Conversation EventStore diagnostics only show a
+They are not a worker usage total or billing authority. The optional,
+independent read-only worker telemetry socket in `docs/worker-telemetry.md`
+supplies worker Stop and provider aggregates.
+The display separates finalized usage, finalized attempts with incomplete
+token data, and reservations without a final result. A reservation does not
+confirm a provider call; actual total usage may be unknown even when recorded
+token totals are zero. Use
+`--worker-telemetry-socket /run/pilot-worker-status/status.sock` and
+`--worker-telemetry-uid WORKER_UID` together to enable it. Without those flags,
+or when a source cannot be validated, worker observations appear
+**unavailable**, never zero. The owner process has no worker database or
+control-file access. Conversation EventStore diagnostics only show a
 bounded read-interface check. The privacy ledger indicator only shows that
 its generation can be read. General usage listing and privacy reconciliation
 remain unavailable through the bounded public APIs. Errors are returned as

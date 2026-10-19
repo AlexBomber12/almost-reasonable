@@ -196,7 +196,19 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
     assert status["scope"] == "private_pilot_application"
     assert status["application_stop"] == {"active": True, "scope": "application_only"}
     assert status["application_provider"]["scope"] == "application_ipc_state"
-    assert status["worker"] == {"stop": "unavailable", "accounting": "unavailable"}
+    assert status["worker"] == {
+        "available": False,
+        "collected_at": None,
+        "stop": {"valid": False, "active": None},
+        "provider": {
+            "available": False,
+            "attempt_count": None,
+            "recorded_tokens": None,
+            "unknown_usage_attempts": None,
+            "unresolved_reservations": None,
+            "spend_suspended": None,
+        },
+    }
     assert status["application_provider"]["attempt_count"] == 1
     assert status["application_provider"]["spend_suspended"] is True
     assert status["application_provider"]["suspension_usage"]["total_tokens"] is None

@@ -7,6 +7,7 @@ from importlib.resources import files
 import secrets
 
 from app.core.provider_spend import ProviderStateStore
+from app.worker_telemetry.protocol import unavailable
 from app.private_web.auth import LoginStatus
 from app.private_web.wsgi import PrivateWebApplication, _RequestError, _canonical_ip
 
@@ -28,6 +29,7 @@ class OwnerApplication:
         privacy_ledger=None,
         allowed_clients=frozenset({"127.0.0.1", "::1"}),
         pilot_provider_events=None,
+        worker_telemetry=None,
     ):
         if (
             type(allowed_clients) is not frozenset
@@ -48,6 +50,7 @@ class OwnerApplication:
         self.config = config
         self.privacy = privacy_ledger
         self.pilot_provider_events = pilot_provider_events
+        self.worker_telemetry = worker_telemetry
         self._http = PrivateWebApplication(None, None, config)
 
     def __call__(self, environ, start_response):
@@ -191,7 +194,11 @@ class OwnerApplication:
                         "billing_authority": False,
                         "scope": "application_ipc_state",
                     },
-                    "worker": {"stop": "unavailable", "accounting": "unavailable"},
+                    "worker": (
+                        self.worker_telemetry.read()
+                        if self.worker_telemetry is not None
+                        else unavailable()
+                    ),
                     "event_store": {
                         "scope": "conversation_event_store",
                         "health": "read_interface_ok",
@@ -208,6 +215,12 @@ class OwnerApplication:
                 else None
             )
             if status is not None:
+                worker_provider = status["worker"]["provider"]
+                if worker_provider["available"]:
+                    worker_provider["recorded_tokens"] = {
+                        key: str(value)
+                        for key, value in worker_provider["recorded_tokens"].items()
+                    }
                 return 200, status, []
             return (
                 200,

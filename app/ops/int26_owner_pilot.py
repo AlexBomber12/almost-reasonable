@@ -13,6 +13,7 @@ from app.private_web.server import PrivateWSGIRequestHandler
 
 from app.core.store import EventStore
 from app.owner_control.store import OwnerStore
+from app.owner_control.worker_telemetry import WorkerTelemetryClient
 from app.owner_control.wsgi import OwnerApplication
 from app.private_web.cli import IPv6WSGIServer
 from app.private_web.wsgi import PrivateWebConfig, _valid_origin
@@ -100,6 +101,17 @@ def build_application(args):
         events.diagnostics()
         ipc.diagnostics()
         ledger.control_generation()
+        telemetry_socket = getattr(args, "worker_telemetry_socket", None)
+        telemetry_uid = getattr(args, "worker_telemetry_uid", None)
+        if (telemetry_socket is None) != (telemetry_uid is None):
+            raise ValueError(
+                "worker telemetry socket and UID must be configured together"
+            )
+        telemetry = (
+            WorkerTelemetryClient(Path(telemetry_socket), telemetry_uid)
+            if telemetry_socket is not None
+            else None
+        )
         return OwnerApplication(
             owner,
             events,
@@ -107,6 +119,7 @@ def build_application(args):
             privacy_ledger=ledger,
             allowed_clients=frozenset(args.allowed_client),
             pilot_provider_events=ipc,
+            worker_telemetry=telemetry,
         )
     except (OSError, RuntimeError, PermissionError, sqlite3.Error) as error:
         raise ValueError("application stores are unavailable or unsafe") from error
@@ -123,6 +136,8 @@ def main(argv=None, *, server_factory=make_server):
     parser.add_argument("--participant-origin", required=True)
     parser.add_argument("--allowed-client", action="append", required=True)
     parser.add_argument("--trusted-proxy", action="append", default=[])
+    parser.add_argument("--worker-telemetry-socket")
+    parser.add_argument("--worker-telemetry-uid", type=int)
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18026)
     args = parser.parse_args(argv)
