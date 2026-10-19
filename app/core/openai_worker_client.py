@@ -9,6 +9,7 @@ import time
 from app.core.agent_proposals import ProposalValidation
 from app.core.model_contract import ModelRequest
 from app.cognition.conversation_context import MemoryModelRequest
+from app.cognition.worker_extraction import ExtractionModelRequest, ExtractionProposal
 from app.cognition.shared_context import SharedModelRequest
 from app.core.provider_contract import require_identifier
 from app.trusted.openai_worker_protocol import (
@@ -35,6 +36,7 @@ class ClientResult:
     attempts: int
     safe_russian_message: str | None
     validation: ProposalValidation | None = field(default=None, repr=False)
+    extraction: ExtractionProposal | None = field(default=None, repr=False)
 
 
 class OpenAIWorkerClient:
@@ -62,7 +64,10 @@ class OpenAIWorkerClient:
 
     def infer(
         self,
-        request: ModelRequest | MemoryModelRequest | SharedModelRequest,
+        request: ModelRequest
+        | MemoryModelRequest
+        | SharedModelRequest
+        | ExtractionModelRequest,
         *,
         operation_id: str,
         correlation_id: str,
@@ -110,6 +115,10 @@ class OpenAIWorkerClient:
                     wait_for_first_byte=True,
                 )
             )
+            if response.extraction_operation != (
+                type(request) is ExtractionModelRequest
+            ):
+                raise WorkerProtocolError("worker operation mismatch")
         except (OSError, WorkerProtocolError):
             outcome = (
                 CLIENT_OUTCOME_UNCERTAIN
@@ -126,6 +135,7 @@ class OpenAIWorkerClient:
             response.attempts,
             response.safe_russian_message,
             response.validation,
+            response.extraction,
         )
 
 

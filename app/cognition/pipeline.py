@@ -51,6 +51,7 @@ from .contracts import (
     NoChangeProposal,
     ProposalContext,
 )
+from .worker_extraction import ExtractionProposal
 from .read_store import CognitionReadStore
 from .generic_store import (
     GenericMemoryConflict,
@@ -126,6 +127,77 @@ class CognitionEngine:
                 identity,
                 proposal,
             )
+        )
+
+    def commit_worker_extraction(
+        self,
+        context: TrustedPrincipalContext,
+        source_event_id: str,
+        operation_id: str,
+        proposal: ExtractionProposal,
+    ) -> CognitionOutcome:
+        """Bind a worker suggestion to one current source using application authority."""
+        if (
+            not self._capabilities.memory_extraction
+            or not self._capabilities.generic_memory_write
+        ):
+            return self._rejected(CognitionReason.CAPABILITY_DISABLED)
+        if (
+            type(proposal) is not ExtractionProposal
+            or proposal.decision != "new_memory"
+        ):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if not self._valid_token(source_event_id) or not self._valid_token(
+            operation_id
+        ):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        try:
+            kind = MemoryKind(proposal.kind)
+        except (TypeError, ValueError):
+            return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
+        source = self._read.retrieve_exact_private_event(context, source_event_id)
+        if source is None:
+            return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
+        # The source timestamp is application-owned and stable across replay after
+        # a crash between GenericMemoryStore.commit and audit finalization.
+        now = source.occurred_at
+        from datetime import timedelta
+        from app.core.events import VerificationStatus
+        from .contracts import ProposalContext, GenericMemoryProposal
+        import hashlib
+
+        candidate = GenericMemoryProposal(
+            ProposalContext(
+                operation_id,
+                source_event_id,
+                (source_event_id,),
+                (),
+                None,
+                "worker_private_extraction_v1",
+                now,
+                now + timedelta(days=30),
+            ),
+            kind,
+            proposal.statement,
+            proposal.confidence,
+            VerificationStatus.UNVERIFIED,
+            item_id="memory:" + hashlib.sha256(operation_id.encode()).hexdigest(),
+        )
+        current = self._state.retrieve_private_candidates(context)
+        generic = self._generic.current(context)
+        if self._read.retrieve_exact_private_event(context, source_event_id) != source:
+            return self._rejected(CognitionReason.STALE_REVISION)
+        return self._authorize(
+            context,
+            source_event_id,
+            candidate,
+            ExtractorIdentity("worker-owned", "private-extraction-v1"),
+            now,
+            frozenset((source_event_id,)),
+            frozenset(candidate.item_id for candidate in current),
+            tuple((candidate.item_id, candidate.revision) for candidate in current),
+            tuple((read.view.item_id, read.view.revision) for read in generic),
+            (),
         )
 
     def _prepare(self, context, source_event_id, evidence_event_ids):

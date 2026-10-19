@@ -238,7 +238,9 @@ class PilotAllowance:
         if protected_state_identity(self.path) != self._identity:
             raise PilotAuthorityError("allowance location changed")
 
-    def _transact(self, operation_id: str | None) -> int | bool:
+    def _transact(
+        self, operation_id: str | None, extraction_limit: int | None = None
+    ) -> int | bool:
         self._inspect_file()
         try:
             with sqlite3.connect(
@@ -258,15 +260,23 @@ class PilotAllowance:
                 if operation_id is not None:
                     result = False
                     if used < self.activation.max_operations:
-                        existing = connection.execute(
-                            "SELECT 1 FROM consumed WHERE operation_id=?",
-                            (operation_id,),
-                        ).fetchone()
-                        if existing is None:
-                            connection.execute(
-                                "INSERT INTO consumed VALUES (?)", (operation_id,)
-                            )
-                            result = True
+                        extracted = (
+                            0
+                            if extraction_limit is None
+                            else connection.execute(
+                                "SELECT count(*) FROM consumed WHERE operation_id LIKE 'memory:%'"
+                            ).fetchone()[0]
+                        )
+                        if extraction_limit is None or extracted < extraction_limit:
+                            existing = connection.execute(
+                                "SELECT 1 FROM consumed WHERE operation_id=?",
+                                (operation_id,),
+                            ).fetchone()
+                            if existing is None:
+                                connection.execute(
+                                    "INSERT INTO consumed VALUES (?)", (operation_id,)
+                                )
+                                result = True
             self._inspect_file()
             return result
         except sqlite3.Error:
@@ -275,10 +285,25 @@ class PilotAllowance:
     def remaining(self) -> int:
         return self._transact(None)
 
-    def reserve(self, operation_id: str) -> bool:
+    def reserve(
+        self, operation_id: str, *, extraction_limit: int | None = None
+    ) -> bool:
         if (
             type(operation_id) is not str
-            or re.fullmatch(r"reply:[0-9a-f]{64}", operation_id) is None
+            or re.fullmatch(
+                r"memory:[0-9a-f]{64}"
+                if extraction_limit is not None
+                else r"reply:[0-9a-f]{64}",
+                operation_id,
+            )
+            is None
+            or (
+                extraction_limit is not None
+                and (
+                    type(extraction_limit) is not int
+                    or not 1 <= extraction_limit <= self.activation.max_operations
+                )
+            )
         ):
             raise PilotAuthorityError("invalid pilot operation")
-        return self._transact(operation_id)
+        return self._transact(operation_id, extraction_limit)

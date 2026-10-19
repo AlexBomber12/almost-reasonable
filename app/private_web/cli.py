@@ -56,6 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--worker-socket")
     serve.add_argument("--worker-uid", type=int)
     serve.add_argument("--ipc-state-db")
+    serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-public-research", action="store_true")
     serve.add_argument("--public-research-socket")
     serve.add_argument("--public-research-worker-uid", type=int)
@@ -191,6 +192,7 @@ def main(
         or args.public_research_socket is not None
         or args.public_research_worker_uid is not None
         or args.public_research_approval is not None
+        or args.enable_memory_extraction
     ):
         raise SystemExit("privacy and owner stores require worker mode")
     auth = AuthStore(args.auth_db)
@@ -240,6 +242,7 @@ def main(
             emergency_stop=owner.active,
             shared_intelligence=shared,
             research_bridge=research,
+            memory_extraction_enabled=args.enable_memory_extraction,
         )
         privacy = ParticipantPrivacyControls(
             auth, event_store, ledger, gate, clock=conversations._clock
