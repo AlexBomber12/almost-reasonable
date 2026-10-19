@@ -7,7 +7,7 @@ import runpy
 import socket
 import sqlite3
 from threading import Thread
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import time
 
 import pytest
@@ -92,6 +92,62 @@ def test_owner_http_reaches_real_worker_stop_and_replays_without_clearing(tmp_pa
             payload={"operation_id": issued["operation_id"]},
         )
         assert code == 200 and repeat == result
+    finally:
+        server.close()
+
+
+def test_admitted_operation_finishes_after_expiry_without_losing_worker_stop(
+    tmp_path, monkeypatch
+):
+    path = stop_file(tmp_path)
+    address = socket_path(tmp_path)
+    server = WorkerStopServer(address, path, os.geteuid())
+    server.start()
+    try:
+        args = settings(tmp_path)
+        args.worker_stop_socket = str(address)
+        args.worker_stop_uid = os.geteuid()
+        app = build_application(args)
+        cookie, csrf = login(app)
+        now = [datetime.now(UTC)]
+        monkeypatch.setattr(app.store, "_clock", lambda: now[0])
+        _, issued, _ = call(
+            app, "/worker-stop-operation", "POST", cookie=cookie, csrf=csrf
+        )
+        now[0] += timedelta(seconds=299)
+        original = app.store.assert_application_stop
+
+        def cross_expiry(token, operation):
+            original(token, operation)
+            now[0] += timedelta(seconds=2)
+
+        monkeypatch.setattr(app.store, "assert_application_stop", cross_expiry)
+        worker = Thread(target=server.serve_once)
+        worker.start()
+        code, result, _ = call(
+            app,
+            "/emergency-stop",
+            "POST",
+            cookie=cookie,
+            csrf=csrf,
+            payload={"operation_id": issued["operation_id"]},
+        )
+        worker.join(timeout=2)
+        assert code == 200
+        assert result == {"application": "confirmed", "worker": "confirmed"}
+        assert PilotStop(path).active()
+        assert app.store.latest_worker_stop(cookie.split("=", 1)[1]) == result
+        assert (
+            call(
+                app,
+                "/emergency-stop",
+                "POST",
+                cookie=cookie,
+                csrf=csrf,
+                payload={"operation_id": issued["operation_id"]},
+            )[0]
+            == 400
+        )
     finally:
         server.close()
 
@@ -647,6 +703,10 @@ def test_worker_operation_scope_and_durable_replay_guards(tmp_path, monkeypatch)
         app.store.worker_operation(token, "forged")
     with pytest.raises(ValueError):
         app.store.worker_operation(token, "f" * 32)
+    with pytest.raises(ValueError):
+        app.store.assert_application_stop(token, "f" * 32)
+    with pytest.raises(ValueError):
+        app.store.record_worker_outcome(token, "f" * 32, "worker_result", "confirmed")
     with pytest.raises(PermissionError):
         app.store.worker_operation("forged", operation)
     with pytest.raises(PermissionError):

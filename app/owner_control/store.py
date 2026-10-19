@@ -290,19 +290,18 @@ class OwnerStore:
             raise ValueError("invalid worker outcome")
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
-            self.worker_operation(token, operation)
+            actor = self._worker_actor(connection, token, operation)
             cursor = connection.execute(
                 f"UPDATE owner_worker_operations SET {field}=? WHERE operation_id=? AND {field}!='confirmed' AND {field}!=?",
                 (result, operation, result),
             )
             if cursor.rowcount == 0:
                 return
-            session = self.authenticate(token)
             connection.execute(
                 "INSERT INTO owner_audit(operation_id,actor_reference,action_type,occurred_at,result,rejection_category) VALUES (?,?,?,?,?,?)",
                 (
                     operation,
-                    str(session.principal_id),
+                    actor,
                     "worker_stop" if field == "worker_result" else "application_stop",
                     self._clock().isoformat(),
                     result,
@@ -311,14 +310,25 @@ class OwnerStore:
             )
 
     def assert_application_stop(self, token, operation):
-        self.worker_operation(token, operation)
         with self._connection() as connection:
             connection.execute("BEGIN IMMEDIATE")
+            self._worker_actor(connection, token, operation)
             cursor = connection.execute(
                 "UPDATE owner_stop SET active=1 WHERE singleton=1"
             )
             if cursor.rowcount != 1:
                 raise RuntimeError("owner stop state unavailable")
+
+    def _worker_actor(self, connection, token, operation):
+        # The HTTP request already passed the expiry and session check. Keep its
+        # established authority while committing effects that can finish later.
+        row = connection.execute(
+            "SELECT actor_reference FROM owner_worker_operations WHERE operation_id=? AND session_digest=?",
+            (operation, self._digest(token)),
+        ).fetchone()
+        if row is None:
+            raise ValueError("invalid worker operation")
+        return row[0]
 
     @staticmethod
     def _digest(token):
