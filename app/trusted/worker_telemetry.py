@@ -107,6 +107,16 @@ def _sidecar_identities(path):
     return tuple(identities)
 
 
+def _valid_reservation_time(value):
+    try:
+        timestamp = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return 0
+    return int(
+        timestamp.tzinfo is not None and EventStore._serialize_time(timestamp) == value
+    )
+
+
 def _provider(path):
     empty = unavailable()["provider"]
     connection = None
@@ -121,6 +131,9 @@ def _provider(path):
         connection.execute("PRAGMA busy_timeout=200")
         connection.set_progress_handler(
             lambda: 1 if monotonic() > deadline else 0, 1000
+        )
+        connection.create_function(
+            "valid_reservation_time", 1, _valid_reservation_time, deterministic=True
         )
         connection.execute("BEGIN")
         EventStore._verify_current_schema(connection)
@@ -143,7 +156,7 @@ def _provider(path):
                    COUNT(CASE WHEN r.provider != 'openai'
                         OR typeof(r.attempt_id) != 'text' OR r.attempt_id = ''
                         OR typeof(r.correlation_id) != 'text' OR r.correlation_id = ''
-                        OR typeof(r.reserved_at) != 'text' OR r.reserved_at = ''
+                        OR valid_reservation_time(r.reserved_at) != 1
                         OR (u.attempt_id IS NOT NULL AND
                             (u.correlation_id != r.correlation_id OR u.provider != r.provider))
                         THEN 1 END)

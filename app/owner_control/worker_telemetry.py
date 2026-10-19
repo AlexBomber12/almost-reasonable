@@ -5,6 +5,7 @@ from pathlib import Path
 import socket
 import stat
 import struct
+from time import monotonic
 
 from app.worker_telemetry.protocol import MAX_RESPONSE, REQUEST, decode, unavailable
 
@@ -42,10 +43,11 @@ class WorkerTelemetryClient:
                     return unavailable()
                 connection.sendall(REQUEST)
                 connection.shutdown(socket.SHUT_WR)
-                size = struct.unpack("!I", _read_exact(connection, 4))[0]
+                deadline = monotonic() + 1.0
+                size = struct.unpack("!I", _read_exact(connection, 4, deadline))[0]
                 if size > MAX_RESPONSE:
                     return unavailable()
-                result = decode(_read_exact(connection, size))
+                result = decode(_read_exact(connection, size, deadline))
                 collected = datetime.fromisoformat(result["collected_at"])
                 now = datetime.now(UTC)
                 if collected.tzinfo is None or not now - timedelta(
@@ -64,9 +66,13 @@ class WorkerTelemetryClient:
             return unavailable()
 
 
-def _read_exact(connection, size):
+def _read_exact(connection, size, deadline):
     data = bytearray()
     while len(data) < size:
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise TimeoutError("telemetry read deadline exceeded")
+        connection.settimeout(remaining)
         chunk = connection.recv(size - len(data))
         if not chunk:
             raise ValueError("telemetry connection closed")

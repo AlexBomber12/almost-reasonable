@@ -50,7 +50,8 @@ contact, so it is not a confirmed call or known charge. When one exists,
 actual total usage remains uncertain even if recorded tokens are zero. A
 matching reservation and usage row count only as finalized usage; inconsistent
 rows make provider evidence unavailable. Both aggregates come from one SQLite
-read transaction. Neither
+read transaction. Reservation timestamps must match the canonical stored form.
+The owner applies one deadline to the complete bounded socket frame. Neither
 these totals nor a reachable status socket prove provider billing, inference
 worker liveness, model readiness, or authority to call a provider.
 

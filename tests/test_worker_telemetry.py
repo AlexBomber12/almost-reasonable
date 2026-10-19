@@ -12,6 +12,7 @@ import struct
 import sys
 from types import SimpleNamespace
 from threading import Event, Thread
+from time import monotonic
 
 import pytest
 
@@ -171,6 +172,21 @@ def test_incomplete_usage_and_unresolved_reservation_are_separate(tmp_path):
     assert observed["recorded_tokens"]["total_tokens"] == 0
 
 
+@pytest.mark.parametrize(
+    "timestamp", ["not-a-time", "2026-10-19", "2026-10-19T00:00:00+00:00"]
+)
+def test_malformed_reservation_timestamp_fails_closed(tmp_path, timestamp):
+    db, _stop, _socket = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).reserve_attempt(
+        "pending:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
+    )
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE provider_attempt_reservations SET reserved_at=?", (timestamp,)
+        )
+    assert _provider(db)["available"] is False
+
+
 def test_overlapping_reservation_is_not_counted_twice_and_mismatch_fails_closed(
     tmp_path,
 ):
@@ -183,7 +199,7 @@ def test_overlapping_reservation_is_not_counted_twice_and_mismatch_fails_closed(
                 "synthetic:1",
                 "synthetic-correlation",
                 "openai",
-                "2026-10-19T00:00:00+00:00",
+                "2026-10-19T00:00:00.000000Z",
             ),
         )
     observed = _provider(db)
@@ -486,9 +502,13 @@ def test_fragmented_fixed_request_and_trailing_bytes(tmp_path):
             connection.sendall(REQUEST[:5])
             connection.sendall(REQUEST[5:])
             connection.shutdown(socket.SHUT_WR)
-            size = struct.unpack("!I", _read_exact(connection, 4))[0]
+            deadline = monotonic() + 1.0
+            size = struct.unpack("!I", _read_exact(connection, 4, deadline))[0]
             assert (
-                decode(_read_exact(connection, size))["provider"]["attempt_count"] == 0
+                decode(_read_exact(connection, size, deadline))["provider"][
+                    "attempt_count"
+                ]
+                == 0
             )
         thread.join()
         thread = Thread(target=server.serve_once)
@@ -562,6 +582,26 @@ def test_client_rejects_oversized_disconnected_and_stale_responses(tmp_path):
     finally:
         server.serve_once = original
         server.close()
+
+
+def test_frame_read_has_one_deadline_across_trickled_bytes(monkeypatch):
+    import app.owner_control.worker_telemetry as module
+
+    elapsed = [0.0]
+    timeouts = []
+
+    class Trickle:
+        def settimeout(self, timeout):
+            timeouts.append(timeout)
+
+        def recv(self, _size):
+            elapsed[0] += 0.4
+            return b"x"
+
+    monkeypatch.setattr(module, "monotonic", lambda: elapsed[0], raising=False)
+    with pytest.raises(TimeoutError):
+        _read_exact(Trickle(), 4, 1.0)
+    assert timeouts == pytest.approx([1.0, 0.6, 0.2])
 
 
 def test_database_contention_and_unsafe_sidecars(tmp_path):
