@@ -1,7 +1,13 @@
 # Continuous secret scanning
 
-The separate **Secret scan** workflow runs on pull requests and pushes to
-`main`. It uses the standalone [Gitleaks v8.30.1
+The separate **Secret scan** workflow runs after the existing `CI` workflow
+completes for each pull request, and on pushes to `main`. GitHub runs the
+[`workflow_run` definition from the default branch](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
+so a PR cannot replace the scanner job. The initial installation PR runs
+directly on its verified base
+because the workflow does not yet exist on `main`. Future direct PR jobs are
+skipped; the default-branch `workflow_run` is the authoritative PR scan. It uses
+the standalone [Gitleaks v8.30.1
 release](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1), with the
 built-in rules and no license or production credentials. The installer downloads
 `gitleaks_8.30.1_linux_x64.tar.gz` from that release and checks SHA-256
@@ -27,11 +33,17 @@ data), grep (for the tests), and network access to the pinned release. The
 scanner accepts an optional repository path. A shallow checkout fails rather
 than silently scanning only recent commits.
 
-The workflow checks out the trusted base revision and the pull request's head
-commit (or the pushed `main` commit) separately, with `fetch-depth: 0`. It runs
-the base revision's scanner against the evaluated checkout. The initial
+The workflow checks out the trusted default-branch revision and the triggering
+CI run's PR head commit (or the pushed `main` commit) separately, with
+`fetch-depth: 0`. It runs the trusted revision's scanner against the evaluated
+checkout (including public fork checkouts), regardless of whether the triggering
+CI run passed. The initial
 installation on base `c2054cb` uses the PR's scanner scripts because that base
 does not yet contain them; subsequent bases must contain the trusted scripts.
+The trusted `workflow_run` path can first execute after this workflow is merged
+to `main`; this installation PR validates the same scan through its bootstrap
+PR job. That trusted run appears on the default branch's Actions history, so
+operators must inspect it alongside PR checks before merging a later PR.
 The scanner makes a temporary bare mirror of all
 refs available in that checkout, adds the checked-out HEAD as a temporary ref,
 and scans `git log -p --all refs/scan/head`. This includes fetched branch and tag
