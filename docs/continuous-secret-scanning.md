@@ -23,12 +23,16 @@ bash scripts/security/scan-secrets.sh
 ```
 
 The scripts need Git, Bash, curl, `sha256sum`, tar, OpenSSL (for synthetic test
-data), ripgrep (for the tests), and network access to the pinned release. The
+data), grep (for the tests), and network access to the pinned release. The
 scanner accepts an optional repository path. A shallow checkout fails rather
 than silently scanning only recent commits.
 
-The workflow checks out the pull request's head commit (or the pushed `main`
-commit) with `fetch-depth: 0`. The scanner makes a temporary bare mirror of all
+The workflow checks out the trusted base revision and the pull request's head
+commit (or the pushed `main` commit) separately, with `fetch-depth: 0`. It runs
+the base revision's scanner against the evaluated checkout. The initial
+installation on base `c2054cb` uses the PR's scanner scripts because that base
+does not yet contain them; subsequent bases must contain the trusted scripts.
+The scanner makes a temporary bare mirror of all
 refs available in that checkout, adds the checked-out HEAD as a temporary ref,
 and scans `git log -p --all refs/scan/head`. This includes fetched branch and tag
 history and the evaluated PR commit, even when the PR commit is detached. A

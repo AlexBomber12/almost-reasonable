@@ -23,7 +23,7 @@ scan() {
 
 assert_hidden() {
   local name=$1
-  if rg -Fq "$candidate" "$scratch/$name.log"; then
+  if grep -Fq -- "$candidate" "$scratch/$name.log"; then
     printf 'FAIL: candidate disclosed in %s log\n' "$name" >&2
     sed "s/$candidate/[REDACTED]/g" "$scratch/$name.log" >&2
     exit 1
@@ -45,7 +45,7 @@ git -C "$scratch/present" switch --detach -q
 git -C "$scratch/present" branch -D "$branch" > /dev/null
 if scan present; then printf 'FAIL: candidate accepted\n' >&2; exit 1; fi
 assert_hidden present
-rg -q 'rule="github-pat" file="credential.txt" line=1' "$scratch/present.log" || {
+grep -Eq 'rule="github-pat" file="credential.txt" line=1' "$scratch/present.log" || {
   printf 'FAIL: missing rule and location in finding\n' >&2; exit 1;
 }
 
@@ -55,7 +55,7 @@ git -C "$scratch/pathleak" add .
 git -C "$scratch/pathleak" commit -qm add-candidate
 if scan pathleak; then printf 'FAIL: path candidate accepted\n' >&2; exit 1; fi
 assert_hidden pathleak
-rg -q '\[REDACTED\]\.txt' "$scratch/pathleak.log" || {
+grep -Eq '\[REDACTED\]\.txt' "$scratch/pathleak.log" || {
   printf 'FAIL: path candidate not redacted\n' >&2; exit 1;
 }
 
