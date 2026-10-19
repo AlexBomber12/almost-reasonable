@@ -24,6 +24,14 @@ from app.cognition.worker_extraction import (
     ExtractionProposal,
     parse_extraction_proposal,
 )
+from app.cognition.worker_evolution import (
+    CONTRACT_VERSION as EVOLUTION_CONTRACT_VERSION,
+    MAX_PROJECTION_BYTES as MAX_EVOLUTION_PROJECTION_BYTES,
+    EvolutionMemory,
+    EvolutionModelRequest,
+    EvolutionProposal,
+    parse_evolution_proposal,
+)
 from app.cognition.shared import SharedRecord
 from app.cognition.shared_context import SharedModelRequest
 from app.core.model_contract import (
@@ -44,8 +52,11 @@ PROTOCOL_VERSION = "openai-worker-v1"
 CONTEXT_PROTOCOL_VERSION = "openai-worker-context-v2"
 TRANSCRIPT_PROTOCOL_VERSION = "openai-worker-transcript-v3"
 EXTRACTION_PROTOCOL_VERSION = "openai-worker-memory-extraction-v1"
+EVOLUTION_PROTOCOL_VERSION = "openai-worker-memory-evolution-v1"
+MAX_EVOLUTION_IPC_BYTES = MAX_EVOLUTION_PROJECTION_BYTES + 1024
 OPERATION_INFER = "infer"
 OPERATION_EXTRACT = "extract_memory"
+OPERATION_EVOLVE = "evolve_memory"
 FRAME_PREFIX_BYTES = 4
 MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
 MAX_SAFE_MESSAGE_UTF8_BYTES = 512
@@ -101,7 +112,11 @@ class InferenceRequest:
     operation_id: str
     correlation_id: str
     model_request: (
-        ModelRequest | MemoryModelRequest | SharedModelRequest | ExtractionModelRequest
+        ModelRequest
+        | MemoryModelRequest
+        | SharedModelRequest
+        | ExtractionModelRequest
+        | EvolutionModelRequest
     ) = field(repr=False)
 
 
@@ -113,6 +128,8 @@ class WorkerResponse:
     validation: ProposalValidation | None = field(default=None, repr=False)
     extraction: ExtractionProposal | None = field(default=None, repr=False)
     extraction_operation: bool = False
+    evolution: EvolutionProposal | None = field(default=None, repr=False)
+    evolution_operation: bool = False
 
 
 def encode_request(request: InferenceRequest) -> bytes:
@@ -141,12 +158,17 @@ def encode_request(request: InferenceRequest) -> bytes:
     elif type(model) is ExtractionModelRequest:
         model_json = model.serialize()
         version = EXTRACTION_PROTOCOL_VERSION
+    elif type(model) is EvolutionModelRequest:
+        model_json = model.serialize()
+        version = EVOLUTION_PROTOCOL_VERSION
     else:
         raise TypeError("unsupported model request")
     payload = {
         "protocol_version": version,
         "operation_type": OPERATION_EXTRACT
         if version == EXTRACTION_PROTOCOL_VERSION
+        else OPERATION_EVOLVE
+        if version == EVOLUTION_PROTOCOL_VERSION
         else OPERATION_INFER,
         "operation_id": request.operation_id,
         "correlation_id": request.correlation_id,
@@ -174,11 +196,19 @@ def decode_request(payload: bytes) -> InferenceRequest:
         CONTEXT_PROTOCOL_VERSION,
         TRANSCRIPT_PROTOCOL_VERSION,
         EXTRACTION_PROTOCOL_VERSION,
+        EVOLUTION_PROTOCOL_VERSION,
     }:
         raise WorkerProtocolError("unsupported protocol version")
+    if (
+        value["protocol_version"] == EVOLUTION_PROTOCOL_VERSION
+        and len(payload) > MAX_EVOLUTION_IPC_BYTES
+    ):
+        raise WorkerProtocolError("evolution frame is too large")
     if value["operation_type"] != (
         OPERATION_EXTRACT
         if value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION
+        else OPERATION_EVOLVE
+        if value["protocol_version"] == EVOLUTION_PROTOCOL_VERSION
         else OPERATION_INFER
     ):
         raise WorkerProtocolError("unsupported operation")
@@ -187,7 +217,49 @@ def decode_request(payload: bytes) -> InferenceRequest:
         if len(operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
             raise ValueError("invalid operation id")
         correlation_id = require_identifier("correlation id", value["correlation_id"])
-        if value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION:
+        if value["protocol_version"] == EVOLUTION_PROTOCOL_VERSION:
+            model_value = value["model_request"]
+            _require_exact_dict(
+                model_value,
+                {"contract_version", "task", "participant_input", "memories"},
+            )
+            if (
+                model_value["contract_version"] != EVOLUTION_CONTRACT_VERSION
+                or model_value["task"] != "evolve_private_memory"
+                or type(model_value["memories"]) is not list
+            ):
+                raise WorkerProtocolError("invalid evolution request")
+            memories = []
+            for record in model_value["memories"]:
+                _require_exact_dict(
+                    record,
+                    {
+                        "handle",
+                        "kind",
+                        "statement",
+                        "confidence",
+                        "trust",
+                        "can_instruct",
+                    },
+                )
+                if (
+                    record["trust"] != "untrusted_memory_data"
+                    or record["can_instruct"] is not False
+                ):
+                    raise WorkerProtocolError("invalid evolution memory")
+                memories.append(
+                    EvolutionMemory(
+                        record["handle"],
+                        record["kind"],
+                        record["statement"],
+                        record["confidence"],
+                    )
+                )
+            model_request = EvolutionModelRequest(
+                model_value["participant_input"], tuple(memories)
+            )
+            model_request.serialize()
+        elif value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION:
             model_value = value["model_request"]
             _require_exact_dict(
                 model_value, {"contract_version", "task", "participant_input"}
@@ -354,19 +426,25 @@ def encode_response(response: WorkerResponse) -> bytes:
         raise TypeError("response must be a WorkerResponse")
     _validate_response_fields(response)
     payload = {
-        "protocol_version": EXTRACTION_PROTOCOL_VERSION
+        "protocol_version": EVOLUTION_PROTOCOL_VERSION
+        if response.evolution_operation
+        else EXTRACTION_PROTOCOL_VERSION
         if response.extraction_operation
         else PROTOCOL_VERSION,
         "outcome": response.outcome,
         "attempts": response.attempts,
         "safe_russian_message": response.safe_russian_message,
-        "memory_proposal" if response.extraction_operation else "agent_proposal": (
-            None
-            if response.extraction is None
+        "memory_proposal"
+        if response.extraction_operation or response.evolution_operation
+        else "agent_proposal": (
+            vars_evolution(response.evolution)
+            if response.evolution is not None
             else vars_extraction(response.extraction)
-        )
-        if response.extraction is not None
-        else _proposal_data(response.validation),
+            if response.extraction is not None
+            else None
+            if response.extraction_operation or response.evolution_operation
+            else _proposal_data(response.validation)
+        ),
     }
     return _encode_json(payload)
 
@@ -377,6 +455,10 @@ def decode_response(payload: bytes) -> WorkerResponse:
         type(value) is dict
         and value.get("protocol_version") == EXTRACTION_PROTOCOL_VERSION
     )
+    evolution_version = (
+        type(value) is dict
+        and value.get("protocol_version") == EVOLUTION_PROTOCOL_VERSION
+    )
     _require_exact_dict(
         value,
         {
@@ -384,11 +466,37 @@ def decode_response(payload: bytes) -> WorkerResponse:
             "outcome",
             "attempts",
             "safe_russian_message",
-            "memory_proposal" if extraction_version else "agent_proposal",
+            "memory_proposal"
+            if extraction_version or evolution_version
+            else "agent_proposal",
         },
     )
-    if value["protocol_version"] not in {PROTOCOL_VERSION, EXTRACTION_PROTOCOL_VERSION}:
+    if value["protocol_version"] not in {
+        PROTOCOL_VERSION,
+        EXTRACTION_PROTOCOL_VERSION,
+        EVOLUTION_PROTOCOL_VERSION,
+    }:
         raise WorkerProtocolError("unsupported protocol version")
+    if evolution_version:
+        raw = value["memory_proposal"]
+        try:
+            evolution = (
+                None if raw is None else parse_evolution_proposal(json.dumps(raw))
+            )
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid worker proposal") from None
+        response = WorkerResponse(
+            value["outcome"],
+            value["attempts"],
+            value["safe_russian_message"],
+            evolution=evolution,
+            evolution_operation=True,
+        )
+        try:
+            _validate_response_fields(response)
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid worker response") from None
+        return response
     if extraction_version:
         raw = value["memory_proposal"]
         try:
@@ -579,19 +687,44 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         _proposal_data(response.validation)
     if response.extraction is not None:
         parse_extraction_proposal(json.dumps(vars_extraction(response.extraction)))
+    if response.evolution is not None:
+        parse_evolution_proposal(json.dumps(vars_evolution(response.evolution)))
+    if response.evolution_operation and (
+        response.validation is not None
+        or response.extraction is not None
+        or response.extraction_operation
+    ):
+        raise ValueError("invalid evolution response")
+    if not response.evolution_operation and response.evolution is not None:
+        raise ValueError("invalid evolution response")
     if (response.extraction_operation and response.validation is not None) or (
         not response.extraction_operation and response.extraction is not None
     ):
         raise ValueError("invalid extraction response")
     if (response.outcome == "completed") != (
-        (response.validation is not None) or (response.extraction is not None)
-    ) or (response.validation is not None and response.extraction is not None):
+        (response.validation is not None)
+        or (response.extraction is not None)
+        or (response.evolution is not None)
+    ) or sum(
+        item is not None
+        for item in (response.validation, response.extraction, response.evolution)
+    ) > 1:
         raise ValueError("completed response and proposal are inconsistent")
 
 
 def vars_extraction(proposal: ExtractionProposal) -> dict[str, object]:
     return {
         "decision": proposal.decision,
+        "kind": proposal.kind,
+        "statement": proposal.statement,
+        "confidence": proposal.confidence,
+    }
+
+
+def vars_evolution(proposal: EvolutionProposal) -> dict[str, object]:
+    return {
+        "decision": proposal.decision,
+        "handles": list(proposal.handles),
         "kind": proposal.kind,
         "statement": proposal.statement,
         "confidence": proposal.confidence,

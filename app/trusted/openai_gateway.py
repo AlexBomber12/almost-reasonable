@@ -14,6 +14,11 @@ from app.cognition.worker_extraction import (
     ExtractionProposal,
     parse_extraction_proposal,
 )
+from app.cognition.worker_evolution import (
+    EvolutionModelRequest,
+    EvolutionProposal,
+    parse_evolution_proposal,
+)
 from app.core.model_contract import ModelRequest
 from app.core.provider_contract import (
     PROVIDER_NAME,
@@ -24,6 +29,7 @@ from app.core.provider_contract import (
     build_openai_request,
     build_worker_context_request,
     build_worker_extraction_request,
+    build_worker_evolution_request,
     estimate_cost,
     require_identifier,
     validate_pricing_config,
@@ -85,6 +91,7 @@ class GatewayResult:
     safe_russian_message: str | None
     validation: ProposalValidation | None = field(repr=False)
     extraction: ExtractionProposal | None = field(default=None, repr=False)
+    evolution: EvolutionProposal | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +99,7 @@ class _ParsedResponse:
     outcome: GatewayOutcome
     validation: ProposalValidation | None
     extraction: ExtractionProposal | None = None
+    evolution: EvolutionProposal | None = None
 
 
 class TrustedOpenAIGateway:
@@ -159,6 +167,15 @@ class TrustedOpenAIGateway:
             request, correlation_id=correlation_id, operation_id=operation_id
         )
 
+    def submit_evolution(
+        self, request: EvolutionModelRequest, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
+        if type(request) is not EvolutionModelRequest:
+            raise TypeError("request must be an evolution request")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
     def _submit(
         self, request, *, correlation_id: str, operation_id: str
     ) -> GatewayResult:
@@ -171,6 +188,8 @@ class TrustedOpenAIGateway:
             if type(request) is ModelRequest
             else build_worker_extraction_request(request, self._config)
             if type(request) is ExtractionModelRequest
+            else build_worker_evolution_request(request, self._config)
+            if type(request) is EvolutionModelRequest
             else build_worker_context_request(request, self._config)
         )
         if (
@@ -277,7 +296,9 @@ class TrustedOpenAIGateway:
                 _ParsedResponse(GatewayOutcome.TIMEOUT, None)
                 if ended >= deadline
                 else _parse_response(
-                    response, extraction=type(request) is ExtractionModelRequest
+                    response,
+                    extraction=type(request) is ExtractionModelRequest,
+                    evolution=type(request) is EvolutionModelRequest,
                 )
             )
             persisted = self._record(
@@ -305,6 +326,7 @@ class TrustedOpenAIGateway:
                 response_id=response.response_id,
                 validation=parsed.validation,
                 extraction=parsed.extraction,
+                evolution=parsed.evolution,
             )
 
     def _preflight(
@@ -353,13 +375,17 @@ class TrustedOpenAIGateway:
             model_identifier=self._config.model,
             provider_config_version=self._config.version,
             prompt_version=(
-                "private-extraction-v1"
+                "private-evolution-v1"
+                if type(request) is EvolutionModelRequest
+                else "private-extraction-v1"
                 if type(request) is ExtractionModelRequest
                 else self._config.prompt_version
             ),
             core_self_version=(
                 request.core_self_version
                 if type(request) is ModelRequest
+                else "private-evolution-v1"
+                if type(request) is EvolutionModelRequest
                 else "private-extraction-v1"
                 if type(request) is ExtractionModelRequest
                 else request.conversation.core_self_version
@@ -465,6 +491,7 @@ class TrustedOpenAIGateway:
         response_id: str | None = None,
         validation: ProposalValidation | None = None,
         extraction: ExtractionProposal | None = None,
+        evolution: EvolutionProposal | None = None,
     ) -> GatewayResult:
         if outcome is GatewayOutcome.COMPLETED:
             message = None
@@ -478,7 +505,7 @@ class TrustedOpenAIGateway:
         else:
             message = _GENERAL_FAILURE_RU
         return GatewayResult(
-            outcome, response_id, attempts, message, validation, extraction
+            outcome, response_id, attempts, message, validation, extraction, evolution
         )
 
 
@@ -526,7 +553,7 @@ def _classify_error(error: OpenAITransportError) -> GatewayOutcome:
 
 
 def _parse_response(
-    response: ProviderResponse, *, extraction: bool = False
+    response: ProviderResponse, *, extraction: bool = False, evolution: bool = False
 ) -> _ParsedResponse:
     if type(response) is not ProviderResponse:
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
@@ -562,7 +589,7 @@ def _parse_response(
         return _ParsedResponse(GatewayOutcome.OVERSIZED_OUTPUT, None)
     try:
         payload = json.loads(text)
-    except (json.JSONDecodeError, UnicodeDecodeError):
+    except (ValueError, UnicodeDecodeError):
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
     if extraction:
         try:
@@ -570,6 +597,14 @@ def _parse_response(
         except ValueError:
             return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, parsed)
+    if evolution:
+        try:
+            parsed_evolution = parse_evolution_proposal(text)
+        except ValueError:
+            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+        return _ParsedResponse(
+            GatewayOutcome.COMPLETED, None, evolution=parsed_evolution
+        )
     if type(payload) is not dict or set(payload) != {
         "decision",
         "reason_category",
