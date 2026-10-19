@@ -594,6 +594,21 @@ class SharedIntelligence:
 
         return self._gate.authorized(read)
 
+    def operations_consent_live(self, operation_ids, principal) -> bool:
+        """Recheck exact reviewed grants before a dependent reply is persisted or read."""
+        EventStore._validate_context(principal)
+        with closing(self._events._open()) as db, db:
+            db.execute("BEGIN")
+            self._events._verify_current_schema(db)
+            validate_shared_graph(db)
+            now = self._clock()
+            return all(
+                self._reviewed_consent_live(
+                    db, operation_id, principal.principal_id.value, now
+                )
+                for operation_id in operation_ids
+            )
+
     def select(self, db, principal):
         EventStore._validate_context(principal)
         validate_shared_graph(db)
@@ -641,7 +656,9 @@ class SharedIntelligence:
             if self._reviewed_consent_live(db, op, principal.principal_id.value)
         )
 
-    def _reviewed_consent_live(self, db, operation_id: str, audience: str) -> bool:
+    def _reviewed_consent_live(
+        self, db, operation_id: str, audience: str, at=None
+    ) -> bool:
         if (
             db.execute(
                 "SELECT 1 FROM reviewed_shared_decisions WHERE operation_id=?",
@@ -660,7 +677,10 @@ class SharedIntelligence:
         ):
             if (
                 self._gate._ledger.active_shared_consent(
-                    source_principal, event_id, audience, self._clock()
+                    source_principal,
+                    event_id,
+                    audience,
+                    self._clock() if at is None else at,
                 )
                 != consent_id
             ):

@@ -355,6 +355,7 @@ def test_consent_revocation_and_source_deletion_invalidate_reviewed_sharing(
     assert (
         ledger.active_shared_consent("participant-a", a, "participant-b", NOW) is None
     )
+
     service, control, grant = consent(ledger, a)
     assert (
         ledger.active_shared_consent("participant-a", a, "participant-b", NOW)
@@ -430,6 +431,60 @@ def test_consent_revocation_and_source_deletion_invalidate_reviewed_sharing(
     assert (
         ledger.active_shared_consent("participant-a", a, "participant-b", NOW) is None
     )
+
+
+@pytest.mark.parametrize("expiry_point", ["after_model", "after_reply_commit"])
+def test_consent_expiry_before_reply_persistence_or_release(shared, expiry_point):
+    events, ledger, gate, a, _ = shared
+    item = candidate(a)
+    _, _, grant = consent(ledger, a)
+    assert gate.reconcile()
+    current = [NOW]
+    app = SharedIntelligence(events, gate, clock=lambda: current[0])
+    app.review(
+        item,
+        decision_id="decision-expiry",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    fake = FakeOpenAITransport([response()])
+
+    def advance(point):
+        if point == expiry_point:
+            current[0] = grant.expires_at
+
+    runtime = Stage0ConversationRuntime(
+        events,
+        gate,
+        fake,
+        shared_intelligence=app,
+        clock=lambda: current[0],
+        checkpoint=advance,
+    )
+    outcome = runtime.submit(principal("b"), "expiry-turn", "Обсудим это")
+    assert outcome.model_state.value == "unavailable"
+    assert len(fake.calls) == 1
+    with events._open() as db:
+        reply_id = db.execute(
+            "SELECT operation_id FROM protected_reply_shared WHERE shared_operation=?",
+            (item.proposal.operation_id,),
+        ).fetchone()[0]
+        persisted = db.execute(
+            "SELECT 1 FROM agent_reply_payloads WHERE operation_id=?", (reply_id,)
+        ).fetchone()
+        assert (persisted is not None) is (expiry_point == "after_reply_commit")
+        assert (
+            db.execute(
+                "SELECT 1 FROM agent_reply_resolutions WHERE operation_id=? AND outcome='completed'",
+                (reply_id,),
+            ).fetchone()
+            is None
+        )
+    assert all(entry.role != "agent" for entry in runtime.history(principal("b")))
+    restarted = Stage0ConversationRuntime(
+        events, gate, FakeOpenAITransport([]), clock=lambda: current[0]
+    )
+    assert all(entry.role != "agent" for entry in restarted.history(principal("b")))
 
 
 def test_review_rejects_wrong_audience_changed_source_and_stale_revision(shared):
