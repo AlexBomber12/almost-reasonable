@@ -68,6 +68,7 @@ class SharedRecord:
     memory: ModelMemory
     revision: int
     kind: str
+    historical_reviewed_operation_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         EventStore._require_token("shared selection identity", self.operation_id)
@@ -83,8 +84,16 @@ class SharedRecord:
             }
             or type(self.revision) is not int
             or not 1 <= self.revision <= 32
+            or type(self.historical_reviewed_operation_ids) is not tuple
+            or any(
+                type(item) is not str for item in self.historical_reviewed_operation_ids
+            )
+            or tuple(sorted(set(self.historical_reviewed_operation_ids)))
+            != self.historical_reviewed_operation_ids
         ):
             raise ValueError("invalid closed shared record")
+        for item in self.historical_reviewed_operation_ids:
+            EventStore._require_token("reviewed historical identity", item)
 
     @property
     def verification(self):
@@ -630,18 +639,24 @@ class SharedIntelligence:
             if not self._reviewed_consent_live(db, op, audience, now):
                 continue
             history = db.execute(
-                """SELECT h.operation_id,past.value FROM shared_operations h
+                """SELECT h.operation_id,past.value,
+                    (r.operation_id IS NOT NULL) FROM shared_operations h
                 JOIN shared_payloads past ON past.operation_id=h.operation_id
                 JOIN protected_shared_audiences ha ON ha.operation_id=h.operation_id
+                LEFT JOIN reviewed_shared_decisions r ON r.operation_id=h.operation_id
                 WHERE h.item_id=? AND h.status='active' AND h.revision<?
                     AND past.value<>? AND ha.principal_id=?
                 ORDER BY h.revision""",
                 (item_id, revision, value, audience),
             ).fetchall()
-            alternatives = tuple(
-                past_value
-                for past_op, past_value in history
+            eligible_history = tuple(
+                (past_op, past_value, reviewed)
+                for past_op, past_value, reviewed in history
                 if self._reviewed_consent_live(db, past_op, audience, now)
+            )
+            alternatives = tuple(value for _, value, _ in eligible_history)
+            historical_reviewed = tuple(
+                sorted(op for op, _, reviewed in eligible_history if reviewed)
             )
             records.append(
                 SharedRecord(
@@ -668,6 +683,7 @@ class SharedIntelligence:
                     ),
                     revision,
                     kind,
+                    historical_reviewed,
                 )
             )
         return tuple(records)

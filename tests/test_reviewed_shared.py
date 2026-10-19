@@ -1115,3 +1115,89 @@ def test_research_does_not_persist_after_shared_consent_expires(shared, tmp_path
             is None
         )
     assert not ProviderStateStore(events).attempt_exists(started_id(reply_id))
+
+
+def test_reviewed_alternative_is_bound_behind_synthetic_head(shared):
+    events, ledger, gate, a, b = shared
+    reviewed = candidate(a)
+    _, _, grant = consent(ledger, a)
+    assert gate.reconcile()
+    synthetic = replace(
+        approval(
+            b,
+            op="synthetic-after-review",
+            revision=1,
+            author="b",
+            counter=(b,),
+            value="Consider competing explanations of uncertainty.",
+        ),
+        audience=("participant-b",),
+    )
+    current = [NOW]
+    app = SharedIntelligence(
+        events, gate, approvals=(synthetic,), clock=lambda: current[0]
+    )
+    app.review(
+        reviewed,
+        decision_id="historical-review-decision",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    assert app.commit(synthetic) == synthetic.proposal.operation_id
+    assert app.context(principal("b"))[0].memory.alternatives == (
+        reviewed.proposal.candidate.value,
+    )
+
+    def expire(point):
+        if point == "after_model":
+            current[0] = grant.expires_at
+
+    fake = FakeOpenAITransport([response()])
+    result = Stage0ConversationRuntime(
+        events,
+        gate,
+        fake,
+        shared_intelligence=app,
+        clock=lambda: current[0],
+        checkpoint=expire,
+    ).submit(principal("b"), "historical-dependent", "Обсудим идеи")
+    assert reviewed.proposal.candidate.value in fake.calls[0].request.input_text
+    assert result.model_state.value == "unavailable"
+    with events._open() as db:
+        reply_id = db.execute(
+            "SELECT operation_id FROM protected_reply_shared WHERE shared_operation=?",
+            (synthetic.proposal.operation_id,),
+        ).fetchone()[0]
+        assert db.execute(
+            "SELECT shared_operation FROM protected_reply_shared "
+            "WHERE operation_id=? ORDER BY shared_operation",
+            (reply_id,),
+        ).fetchall() == sorted(
+            [
+                (reviewed.proposal.operation_id,),
+                (synthetic.proposal.operation_id,),
+            ]
+        )
+        assert (
+            db.execute(
+                "SELECT 1 FROM agent_reply_payloads WHERE operation_id=?", (reply_id,)
+            ).fetchone()
+            is None
+        )
+
+
+def test_reviewed_historical_dependencies_are_closed(shared):
+    events, ledger, gate, a, _ = shared
+    consent(ledger, a)
+    assert gate.reconcile()
+    app = SharedIntelligence(events, gate, clock=lambda: NOW)
+    app.review(
+        candidate(a),
+        decision_id="dependency-shape-decision",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    record = app.context(principal("b"))[0]
+    for invalid in ([], (object(),), ("two", "one"), ("same", "same"), ("",)):
+        with pytest.raises(ValueError):
+            replace(record, historical_reviewed_operation_ids=invalid)
