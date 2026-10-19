@@ -343,15 +343,16 @@ def test_denied_peer_does_not_read_sources(tmp_path, monkeypatch):
 def test_owner_authentication_precedes_worker_contact(tmp_path, monkeypatch):
     db, stop, path = sources(tmp_path)
     provider = ProviderStateStore(EventStore(db))
-    provider.record_attempt(
-        attempt(
-            "large:1",
-            input_tokens=9007199254740993,
-            cached_input_tokens=0,
-            output_tokens=0,
-            total_tokens=9007199254740993,
+    for index in range(2):
+        provider.record_attempt(
+            attempt(
+                f"large:{index}",
+                input_tokens=2**62,
+                cached_input_tokens=0,
+                output_tokens=0,
+                total_tokens=2**62,
+            )
         )
-    )
     provider.reserve_attempt(
         "pending:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
     )
@@ -379,11 +380,11 @@ def test_owner_authentication_precedes_worker_contact(tmp_path, monkeypatch):
         code, body, _ = call(app, cookie=cookie)
         thread.join()
         assert code == 200 and reads == [True]
-        assert body["worker"]["provider"]["attempt_count"] == 1
+        assert body["worker"]["provider"]["attempt_count"] == 2
         assert body["worker"]["provider"]["unresolved_reservations"] == 1
         assert (
             body["worker"]["provider"]["recorded_tokens"]["total_tokens"]
-            == "9007199254740993"
+            == "9223372036854775808"
         )
         assert "provider.sqlite" not in json.dumps(body)
     finally:
@@ -686,6 +687,35 @@ def test_unknown_cost_status_rejects_provider_evidence(tmp_path):
 def test_contradictory_token_counters_reject_provider_evidence(tmp_path, changes):
     db, _stop_path, _path = sources(tmp_path)
     ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1", **changes))
+    assert _provider(db)["available"] is False
+
+
+@pytest.mark.parametrize("values", [(2**62, 2**62, 0, 2**62), (0, 0, 2**62, 2**62)])
+def test_valid_cumulative_tokens_can_exceed_sqlite_integer_range(tmp_path, values):
+    db, _stop_path, _path = sources(tmp_path)
+    provider = ProviderStateStore(EventStore(db))
+    keys = ("input_tokens", "cached_input_tokens", "output_tokens", "total_tokens")
+    for index in range(2):
+        provider.record_attempt(
+            attempt(f"large:{index}", **dict(zip(keys, values, strict=True)))
+        )
+    observed = _provider(db)
+    assert observed["available"] is True
+    assert observed["attempt_count"] == 2
+    assert observed["recorded_tokens"] == {
+        key: value * 2 for key, value in zip(keys, values, strict=True)
+    }
+
+
+@pytest.mark.parametrize("invalid", [1.5, "bad"])
+def test_exact_token_sum_rejects_noninteger_evidence(tmp_path, invalid):
+    db, _stop_path, _path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1"))
+    with sqlite3.connect(db) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE provider_usage_attempts SET input_tokens=?", (invalid,)
+        )
     assert _provider(db)["available"] is False
 
 

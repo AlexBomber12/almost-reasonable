@@ -148,6 +148,20 @@ def _valid_cost_metadata(status, amount, pricing_version, currency):
     )
 
 
+class _ExactTokenSum:
+    def __init__(self):
+        self.total = 0
+
+    def step(self, value):
+        if value is not None:
+            if type(value) is not int:
+                raise ValueError("invalid token counter")
+            self.total += value
+
+    def finalize(self):
+        return str(self.total)
+
+
 def _provider(path):
     empty = unavailable()["provider"]
     connection = None
@@ -172,15 +186,16 @@ def _provider(path):
         connection.create_function(
             "valid_cost_metadata", 4, _valid_cost_metadata, deterministic=True
         )
+        connection.create_aggregate("exact_token_sum", 1, _ExactTokenSum)
         connection.execute("BEGIN")
         EventStore._verify_current_schema(connection)
         row = connection.execute(
             """
             SELECT COUNT(*),
-                   COALESCE(SUM(input_tokens),0),
-                   COALESCE(SUM(cached_input_tokens),0),
-                   COALESCE(SUM(output_tokens),0),
-                   COALESCE(SUM(total_tokens),0),
+                   COALESCE(exact_token_sum(input_tokens),'0'),
+                   COALESCE(exact_token_sum(cached_input_tokens),'0'),
+                   COALESCE(exact_token_sum(output_tokens),'0'),
+                   COALESCE(exact_token_sum(total_tokens),'0'),
                    COALESCE(SUM(CASE WHEN input_tokens IS NULL OR cached_input_tokens IS NULL OR output_tokens IS NULL OR total_tokens IS NULL OR cost_estimate_status IN ('usage_unavailable', 'usage_incomplete') THEN 1 ELSE 0 END),0),
                    COALESCE(SUM(CASE WHEN provider != 'openai'
                         OR valid_identifier(attempt_id) != 1
@@ -209,6 +224,7 @@ def _provider(path):
         """,
             (MAX_PROVIDER_TOKEN_COUNT,) * 4,
         ).fetchone()
+        row = (row[0], *(int(total) for total in row[1:5]), *row[5:])
         reservations = connection.execute(
             """
             SELECT COUNT(CASE WHEN u.attempt_id IS NULL THEN 1 END),

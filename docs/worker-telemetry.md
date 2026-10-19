@@ -46,7 +46,9 @@ A known zero is shown only after a valid database query. The sums include every
 recorded provider attempt regardless of operation name. They total recorded
 token fields only; unknown or incomplete finalized usage is counted separately.
 Token counters must also satisfy the provider contract's relationships when
-the relevant fields are present. The AF_UNIX contract keeps exact integers;
+the relevant fields are present. Token sums use arbitrary precision integer
+accumulators, so valid cumulative usage can exceed a per-attempt 64-bit counter.
+The AF_UNIX contract keeps exact integers;
 the owner HTTP response carries recorded token totals as decimal strings so
 browser number parsing cannot round them.
 An unresolved reservation has no final usage record. It may precede provider
