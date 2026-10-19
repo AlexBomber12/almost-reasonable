@@ -19,7 +19,11 @@ from app.core.shared_graph import erase_shared_source, validate_shared_graph
 from app.core.openai_worker_client import OpenAIWorkerClient
 from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore, FaultPoint, schema_objects
-from app.privacy.application import EventStoreRestoreAdapter, PrivacyReadGate
+from app.privacy.application import (
+    EventStoreRestoreAdapter,
+    PrivacyReadBlocked,
+    PrivacyReadGate,
+)
 from app.privacy.application import EventStoreErasureAdapter
 from app.privacy.consent import ConsentService
 from app.privacy.deletion import DeletionCoordinator
@@ -344,7 +348,9 @@ def test_local_cli_inspection_confirmation_and_revocation(shared, monkeypatch, c
 def test_consent_revocation_and_source_deletion_invalidate_reviewed_sharing(
     shared, monkeypatch
 ):
-    events, ledger, gate, a, _ = shared
+    events, ledger, _, a, _ = shared
+    current = [NOW]
+    gate = PrivacyReadGate(ledger, events, clock=lambda: current[0])
     item = candidate(a)
     assert (
         ledger.active_shared_consent("participant-a", a, "participant-b", NOW) is None
@@ -390,6 +396,19 @@ def test_consent_revocation_and_source_deletion_invalidate_reviewed_sharing(
         )
         is None
     )
+    with monkeypatch.context() as patcher:
+        patcher.setattr(
+            EventStoreErasureAdapter,
+            "apply_revocation",
+            lambda _self, _consent_id, _revoked_at: False,
+        )
+        assert gate.reconcile()
+    assert app.context(principal("b"))[0].text == item.proposal.candidate.value
+    assert AgentOutputStore(events).read_reply(principal("b"), reply_id) is not None
+    with pytest.raises(PrivacyReadBlocked, match="privacy_reconciliation_required"):
+        gate.authorized(lambda: current.__setitem__(0, NOW + timedelta(minutes=2)))
+    with pytest.raises(PrivacyReadBlocked, match="privacy_reconciliation_required"):
+        app.context(principal("b"))
     with monkeypatch.context() as patcher:
         patcher.setattr(
             EventStoreErasureAdapter,

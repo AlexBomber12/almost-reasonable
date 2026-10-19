@@ -7,7 +7,7 @@ participant rendering. No database activation or route wiring is provided.
 
 from collections.abc import Callable
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 import json
 import sqlite3
@@ -514,12 +514,20 @@ class PrivacyReadGate:
     Callers must never expose raw stores or an eligible quarantine to participants.
     """
 
-    def __init__(self, ledger: PrivacyLedger, store: EventStore):
+    def __init__(
+        self,
+        ledger: PrivacyLedger,
+        store: EventStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self._ledger = ledger
         self._store = store
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
         self._generation: int | None = None
         self._identity: tuple[int, int] | None = None
+        self._next_revocation_at: datetime | None = None
 
     def _database_identity(self) -> tuple[int, int]:
         status = self._store.database_path.stat()
@@ -529,12 +537,20 @@ class PrivacyReadGate:
         with self._lock:
             self._generation = None
             self._identity = None
+            self._next_revocation_at = None
             adapter = EventStoreErasureAdapter(self._store)
             try:
                 identity = self._database_identity()
                 DeletionCoordinator(self._ledger, adapter).reconcile_pending()
                 snapshot = self._ledger.reconciliation_snapshot()
+                now = self._clock()
+                require_utc(now, "reconciliation timestamp")
+                self._next_revocation_at = min(
+                    (at for _, at in snapshot.revocations if at > now), default=None
+                )
                 for consent_id, revoked_at in snapshot.revocations:
+                    if revoked_at > now:
+                        continue
                     if not adapter.apply_revocation(consent_id, revoked_at):
                         return False
                 for record in snapshot.deletions:
@@ -575,11 +591,20 @@ class PrivacyReadGate:
                     or row != (self._generation,)
                     or pending is not None
                     or self._database_identity() != self._identity
+                    or (
+                        self._next_revocation_at is not None
+                        and self._clock() >= self._next_revocation_at
+                    )
                 ):
                     raise PrivacyReadBlocked("privacy_reconciliation_required")
                 result = callback()
                 if self._database_identity() != self._identity:
                     raise PrivacyReadBlocked("application_database_changed")
+                if (
+                    self._next_revocation_at is not None
+                    and self._clock() >= self._next_revocation_at
+                ):
+                    raise PrivacyReadBlocked("privacy_reconciliation_required")
                 return result
 
     def authorized(self, callback: Callable[[], _T]) -> _T:
