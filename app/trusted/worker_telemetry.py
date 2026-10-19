@@ -137,12 +137,27 @@ def _provider(path):
         """,
             (MAX_PROVIDER_TOKEN_COUNT,) * 4,
         ).fetchone()
+        reservations = connection.execute(
+            """
+            SELECT COUNT(CASE WHEN u.attempt_id IS NULL THEN 1 END),
+                   COUNT(CASE WHEN r.provider != 'openai'
+                        OR typeof(r.attempt_id) != 'text' OR r.attempt_id = ''
+                        OR typeof(r.correlation_id) != 'text' OR r.correlation_id = ''
+                        OR typeof(r.reserved_at) != 'text' OR r.reserved_at = ''
+                        OR (u.attempt_id IS NOT NULL AND
+                            (u.correlation_id != r.correlation_id OR u.provider != r.provider))
+                        THEN 1 END)
+            FROM provider_attempt_reservations AS r
+            LEFT JOIN provider_usage_attempts AS u ON u.attempt_id = r.attempt_id
+            """
+        ).fetchone()
         suspensions = connection.execute(
             "SELECT provider, confirmed_at, provider_error_code, provider_config_version, attempt_id FROM provider_spend_suspensions LIMIT 2"
         ).fetchall()
         connection.execute("ROLLBACK")
         if (
             row[6]
+            or reservations[1]
             or any(type(value) is not int or value < 0 for value in row)
             or len(suspensions) > 1
         ):
@@ -171,6 +186,7 @@ def _provider(path):
             "attempt_count": row[0],
             "recorded_tokens": dict(zip(TOKEN_KEYS, row[1:5], strict=True)),
             "unknown_usage_attempts": row[5],
+            "unresolved_reservations": reservations[0],
             "spend_suspended": bool(suspensions),
         }
     except (

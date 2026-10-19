@@ -205,6 +205,7 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
             "attempt_count": None,
             "recorded_tokens": None,
             "unknown_usage_attempts": None,
+            "unresolved_reservations": None,
             "spend_suspended": None,
         },
     }

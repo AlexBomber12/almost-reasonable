@@ -31,14 +31,15 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
                     "stop": {"valid": True, "active": False},
                     "provider": {
                         "available": True,
-                        "attempt_count": 2,
+                        "attempt_count": 0,
                         "recorded_tokens": {
-                            "input_tokens": 10,
-                            "cached_input_tokens": 2,
-                            "output_tokens": 5,
-                            "total_tokens": 15,
+                            "input_tokens": 0,
+                            "cached_input_tokens": 0,
+                            "output_tokens": 0,
+                            "total_tokens": 0,
                         },
-                        "unknown_usage_attempts": 1,
+                        "unknown_usage_attempts": 0,
+                        "unresolved_reservations": 1,
                         "spend_suspended": True,
                     },
                 }
@@ -48,10 +49,16 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
             page.get_by_role("button", name="Обновить").click()
             expect(page.locator("#status")).to_contain_text("Stop воркераВыключен")
             expect(page.locator("#status")).to_contain_text(
-                "Попытки провайдера, записанные воркером2"
+                "Попытки провайдера, записанные воркером0"
             )
             expect(page.locator("#status")).to_contain_text(
-                "Попытки воркера с неизвестным или неполным учётом токенов1"
+                "Попытки воркера с неизвестным или неполным учётом токенов0"
+            )
+            expect(page.locator("#status")).to_contain_text(
+                "Резервирования воркера без окончательного результата1"
+            )
+            expect(page.locator("#status")).to_contain_text(
+                "Фактическое использование провайдераНеизвестно: итоговые данные неполны"
             )
             expect(page.locator("#status")).to_contain_text(
                 "Приостановка расходов воркераПриостановлены"

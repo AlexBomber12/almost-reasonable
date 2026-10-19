@@ -112,7 +112,11 @@ Application-observed spend suspension and attempt count come from
 `ipc-state.db`, the store used by the private runtime's `ProviderStateStore`.
 They are not a worker usage total or billing authority. The optional,
 independent read-only worker telemetry socket in `docs/worker-telemetry.md`
-supplies worker Stop and provider aggregates. Add
+supplies worker Stop and provider aggregates.
+The display separates finalized usage, finalized attempts with incomplete
+token data, and reservations without a final result. A reservation does not
+confirm a provider call; actual total usage may be unknown even when recorded
+token totals are zero. Use
 `--worker-telemetry-socket /run/pilot-worker-status/status.sock` and
 `--worker-telemetry-uid WORKER_UID` together to enable it. Without those flags,
 or when a source cannot be validated, worker observations appear

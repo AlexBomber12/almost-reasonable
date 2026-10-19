@@ -119,7 +119,10 @@ restart. An in-flight external call cannot be retroactively revoked.
 The INT-26 composition can optionally show independent worker observations
 through the separate read-only status process in `docs/worker-telemetry.md`.
 Its Stop observation is distinct from this application Stop. Its recorded
-provider totals are not billing or model-readiness evidence. Missing or stale
+provider totals are not billing or model-readiness evidence. Unresolved worker
+reservations appear separately from finalized attempts and incomplete usage.
+They do not prove provider contact; actual usage may remain uncertain when
+recorded totals are zero. Missing or stale
 status remains unavailable, and the console never receives worker state files.
 
 Provider inspection uses `ProviderStateStore.suspension`, `usage_attempt_count`

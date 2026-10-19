@@ -31,8 +31,9 @@ mechanism before it reads either protected source. Keep this UID allowlist
 narrow; it is distinct from the inference worker's socket and protocol.
 The owner reads only a fixed versioned status request. Requests contain no
 paths, SQL, provider operation, or control instruction. The bounded response
-contains only collection time, Stop validity/state, recorded attempt count,
-recorded token totals, count of attempts with incomplete usage, and spend
+contains only collection time, Stop validity/state, finalized attempt count,
+recorded token totals, count of finalized attempts with incomplete usage,
+count of unresolved attempt reservations, and spend
 suspension. The service does not clear Stop, spend suspension, or allowance.
 
 The service reads the current Stop pathname on every request, so atomic
@@ -43,7 +44,13 @@ Existing WAL state is included. Missing, unsafe, replaced, incompatible,
 malformed, contended, or slow provider storage is **unavailable**, never zero.
 A known zero is shown only after a valid database query. The sums include every
 recorded provider attempt regardless of operation name. They total recorded
-token fields only; unknown or incomplete usage is counted separately. Neither
+token fields only; unknown or incomplete finalized usage is counted separately.
+An unresolved reservation has no final usage record. It may precede provider
+contact, so it is not a confirmed call or known charge. When one exists,
+actual total usage remains uncertain even if recorded tokens are zero. A
+matching reservation and usage row count only as finalized usage; inconsistent
+rows make provider evidence unavailable. Both aggregates come from one SQLite
+read transaction. Neither
 these totals nor a reachable status socket prove provider billing, inference
 worker liveness, model readiness, or authority to call a provider.
 

@@ -28,6 +28,7 @@ from app.trusted.worker_telemetry import (
 )
 from app.worker_telemetry.protocol import REQUEST, VERSION, decode, encode
 from test_int26_owner_console import call, login, settings
+from test_openai_gateway import gateway, request, response
 
 
 def sources(tmp_path):
@@ -88,6 +89,156 @@ def attempt(
     )
 
 
+def test_gateway_interruption_after_fake_response_preserves_uncertain_reservation(
+    tmp_path, monkeypatch
+):
+    instance, transport, store = gateway(tmp_path, [response()])
+    db = tmp_path / "events.sqlite3"
+
+    def interrupted(*_args, **_kwargs):
+        raise RuntimeError("synthetic process interruption")
+
+    monkeypatch.setattr(store, "record_attempt", interrupted)
+    with pytest.raises(RuntimeError, match="synthetic process interruption"):
+        instance.submit(
+            request(),
+            correlation_id="synthetic-correlation",
+            operation_id="synthetic-operation",
+        )
+    assert len(transport.calls) == 1
+    with sqlite3.connect(db) as connection:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM provider_usage_attempts"
+        ).fetchone() == (0,)
+        assert connection.execute(
+            "SELECT COUNT(*) FROM provider_attempt_reservations"
+        ).fetchone() == (1,)
+    projection = _provider(db)
+    assert projection["available"] is True
+    assert projection["attempt_count"] == 0
+    assert projection["recorded_tokens"]["total_tokens"] == 0
+    assert projection["unknown_usage_attempts"] == 0
+    assert projection["unresolved_reservations"] == 1
+    assert _provider(db)["unresolved_reservations"] == 1
+    assert ProviderStateStore(EventStore(db)).usage_attempt_count() == 0
+    _unused_db, stop, path = sources(tmp_path)
+    for _restart in range(2):
+        server = WorkerTelemetryServer(path, db, stop, frozenset({os.geteuid()}))
+        server.start()
+        try:
+            thread = Thread(target=server.serve_once)
+            thread.start()
+            observed = WorkerTelemetryClient(path, os.geteuid()).read()
+            thread.join()
+            assert observed["provider"]["unresolved_reservations"] == 1
+            assert observed["provider"]["attempt_count"] == 0
+        finally:
+            server.close()
+
+
+def test_reservation_before_contact_and_finalization(tmp_path):
+    db, _stop, _socket = sources(tmp_path)
+    provider = ProviderStateStore(EventStore(db))
+    assert _provider(db)["unresolved_reservations"] == 0
+    provider.reserve_attempt(
+        "synthetic:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
+    )
+    observed = _provider(db)
+    assert observed["attempt_count"] == 0
+    assert observed["unknown_usage_attempts"] == 0
+    assert observed["unresolved_reservations"] == 1
+    assert observed["recorded_tokens"]["total_tokens"] == 0
+    assert ProviderStateStore(EventStore(db)).record_attempt(
+        attempt("synthetic:1"), require_reservation=True
+    )
+    finalized = _provider(db)
+    assert finalized["attempt_count"] == 1
+    assert finalized["unresolved_reservations"] == 0
+    assert finalized["recorded_tokens"]["total_tokens"] == 15
+
+
+def test_incomplete_usage_and_unresolved_reservation_are_separate(tmp_path):
+    db, _stop, _socket = sources(tmp_path)
+    provider = ProviderStateStore(EventStore(db))
+    provider.record_attempt(attempt("finalized:1", total_tokens=None))
+    provider.reserve_attempt(
+        "pending:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
+    )
+    observed = _provider(db)
+    assert observed["attempt_count"] == 1
+    assert observed["unknown_usage_attempts"] == 1
+    assert observed["unresolved_reservations"] == 1
+    assert observed["recorded_tokens"]["total_tokens"] == 0
+
+
+def test_overlapping_reservation_is_not_counted_twice_and_mismatch_fails_closed(
+    tmp_path,
+):
+    db, _stop, _socket = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1"))
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "INSERT INTO provider_attempt_reservations VALUES (?,?,?,?)",
+            (
+                "synthetic:1",
+                "synthetic-correlation",
+                "openai",
+                "2026-10-19T00:00:00+00:00",
+            ),
+        )
+    observed = _provider(db)
+    assert observed["available"] is True
+    assert observed["attempt_count"] == 1
+    assert observed["unresolved_reservations"] == 0
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE provider_attempt_reservations SET correlation_id='wrong'"
+        )
+    assert _provider(db)["available"] is False
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE provider_attempt_reservations SET correlation_id='synthetic-correlation'"
+        )
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute("UPDATE provider_attempt_reservations SET provider='other'")
+    assert _provider(db)["available"] is False
+
+
+def test_usage_and_reservations_share_one_sqlite_snapshot(tmp_path, monkeypatch):
+    db, _stop, _socket = sources(tmp_path)
+    provider = ProviderStateStore(EventStore(db))
+    provider.reserve_attempt(
+        "synthetic:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
+    )
+    import app.trusted.worker_telemetry as module
+
+    original_connect = sqlite3.connect
+    finalized = []
+
+    class FinalizeBetweenReads(sqlite3.Connection):
+        def execute(self, sql, parameters=()):
+            if "FROM provider_attempt_reservations AS r" in sql:
+                finalized.append(
+                    provider.record_attempt(
+                        attempt("synthetic:1"), require_reservation=True
+                    )
+                )
+            return super().execute(sql, parameters)
+
+    def connect(*args, **kwargs):
+        if kwargs.get("uri"):
+            kwargs["factory"] = FinalizeBetweenReads
+        return original_connect(*args, **kwargs)
+
+    monkeypatch.setattr(module.sqlite3, "connect", connect)
+    observed = _provider(db)
+    assert finalized == [True]
+    assert observed["available"] is True
+    assert observed["attempt_count"] == 0
+    assert observed["unresolved_reservations"] == 1
+    assert _provider(db)["attempt_count"] == 1
+
+
 def test_real_socket_aggregates_live_wal_and_replaced_stop(tmp_path):
     db, stop, path = sources(tmp_path)
     server = WorkerTelemetryServer(path, db, stop, frozenset({os.geteuid()}))
@@ -108,6 +259,7 @@ def test_real_socket_aggregates_live_wal_and_replaced_stop(tmp_path):
                 "total_tokens": 0,
             },
             "unknown_usage_attempts": 0,
+            "unresolved_reservations": 0,
             "spend_suspended": False,
         }
         assert first["stop"] == {"valid": True, "active": True}
@@ -162,6 +314,9 @@ def test_denied_peer_does_not_read_sources(tmp_path, monkeypatch):
 
 def test_owner_authentication_precedes_worker_contact(tmp_path, monkeypatch):
     db, stop, path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).reserve_attempt(
+        "pending:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
+    )
     args = settings(tmp_path)
     args.worker_telemetry_socket = str(path)
     args.worker_telemetry_uid = os.geteuid()
@@ -187,6 +342,7 @@ def test_owner_authentication_precedes_worker_contact(tmp_path, monkeypatch):
         thread.join()
         assert code == 200 and reads == [True]
         assert body["worker"]["provider"]["attempt_count"] == 0
+        assert body["worker"]["provider"]["unresolved_reservations"] == 1
         assert "provider.sqlite" not in json.dumps(body)
     finally:
         server.close()
@@ -385,6 +541,7 @@ def test_client_rejects_oversized_disconnected_and_stale_responses(tmp_path):
                         "attempt_count": None,
                         "recorded_tokens": None,
                         "unknown_usage_attempts": None,
+                        "unresolved_reservations": None,
                         "spend_suspended": None,
                     },
                 }
@@ -585,6 +742,7 @@ def test_protocol_rejects_invalid_projection():
                 "total_tokens": 3,
             },
             "unknown_usage_attempts": 0,
+            "unresolved_reservations": 0,
             "spend_suspended": False,
         },
     }
@@ -608,6 +766,13 @@ def test_protocol_rejects_invalid_projection():
         {**good["provider"], "recorded_tokens": None},
         {**good["provider"], "attempt_count": -1},
         {**good["provider"], "unknown_usage_attempts": 2},
+        {**good["provider"], "unresolved_reservations": -1},
+        {**good["provider"], "unresolved_reservations": False},
+        {
+            key: value
+            for key, value in good["provider"].items()
+            if key != "unresolved_reservations"
+        },
         {**good["provider"], "spend_suspended": 0},
         {**good["provider"], "available": False},
     ):

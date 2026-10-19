@@ -19,6 +19,7 @@ def unavailable():
             "attempt_count": None,
             "recorded_tokens": None,
             "unknown_usage_attempts": None,
+            "unresolved_reservations": None,
             "spend_suspended": None,
         },
     }
@@ -63,6 +64,7 @@ def decode(body):
             "attempt_count",
             "recorded_tokens",
             "unknown_usage_attempts",
+            "unresolved_reservations",
             "spend_suspended",
         }
         or type(provider["available"]) is not bool
@@ -78,6 +80,8 @@ def decode(body):
             or provider["attempt_count"] < 0
             or type(provider["unknown_usage_attempts"]) is not int
             or not 0 <= provider["unknown_usage_attempts"] <= provider["attempt_count"]
+            or type(provider["unresolved_reservations"]) is not int
+            or provider["unresolved_reservations"] < 0
             or type(provider["spend_suspended"]) is not bool
         ):
             raise ValueError("invalid provider response")
@@ -87,6 +91,7 @@ def decode(body):
             "attempt_count",
             "recorded_tokens",
             "unknown_usage_attempts",
+            "unresolved_reservations",
             "spend_suspended",
         )
     ):

@@ -33,14 +33,17 @@ async function refresh() {
   const provider = worker.provider;
   show('Приостановка расходов воркера', provider.available ? (provider.spend_suspended ? 'Приостановлены' : 'Не зафиксирована') : 'Недоступно');
   show('Попытки провайдера, записанные воркером', provider.available ? String(provider.attempt_count) : 'Недоступно');
+  show('Резервирования воркера без окончательного результата', provider.available ? String(provider.unresolved_reservations) : 'Недоступно');
   if (provider.available) {
     for (const [key, label] of Object.entries({input_tokens: 'Входные токены', cached_input_tokens: 'Кэшированные входные токены', output_tokens: 'Выходные токены', total_tokens: 'Всего записанных токенов'})) {
       show(`${label} воркера`, String(provider.recorded_tokens[key]));
     }
     show('Попытки воркера с неизвестным или неполным учётом токенов', String(provider.unknown_usage_attempts));
+    show('Фактическое использование провайдера', provider.unresolved_reservations > 0 || provider.unknown_usage_attempts > 0 ? 'Неизвестно: итоговые данные неполны; резервирование не подтверждает вызов провайдера' : 'Не подтверждается этой панелью');
   } else {
     show('Записанные токены воркера', 'Недоступно');
     show('Попытки воркера с неизвестным или неполным учётом токенов', 'Недоступно');
+    show('Фактическое использование провайдера', 'Недоступно');
   }
   show('Биллинг провайдера', 'Не является источником данных этой панели');
   show('Хранилище разговоров', data.event_store.health === 'read_interface_ok' ? 'Диагностика чтения доступна' : 'Недоступно');
