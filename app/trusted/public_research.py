@@ -7,6 +7,7 @@ import hmac
 import math
 import re
 import secrets
+import sqlite3
 import socket
 import threading
 import time
@@ -299,6 +300,10 @@ class PublicResearchBoundary:
         self._execution_lock = threading.Lock()
         self._operator_approval = None
         self._operator_approval_path = None
+        self._profile = None
+        self._profile_path = None
+        self._profile_grants = {}
+        self._authority_journal = None
 
     def install_synthetic_authorization(
         self,
@@ -309,7 +314,7 @@ class PublicResearchBoundary:
         expires_at: datetime,
     ) -> PublicResearchRequest:
         """Install one exact synthetic brief in a trusted test bootstrap only."""
-        if self._operator_approval is not None:
+        if self._operator_approval is not None or self._profile is not None:
             raise ValueError("operator and synthetic approvals cannot be combined")
         issued_at = self._utcnow()
         if (
@@ -349,7 +354,7 @@ class PublicResearchBoundary:
 
         if type(approval) is not WorkerApproval:
             raise TypeError("operator worker approval required")
-        if self._grants:
+        if self._grants or self._profile is not None:
             raise ValueError("one operator approval per worker")
         if load_operator_approval(approval_path, role="worker") != approval:
             raise ValueError("operator approval file changed")
@@ -378,12 +383,79 @@ class PublicResearchBoundary:
         self._operator_approval = approval
         self._operator_approval_path = approval_path
 
+    def install_profile(self, profile, *, profile_path, journal):
+        """Install only reviewed canonical questions in the worker projection."""
+        from app.core.public_research_profile import (
+            ResearchProfile,
+            load_research_profile,
+        )
+        from app.trusted.research_authority_journal import AuthorityJournal
+
+        if (
+            type(profile) is not ResearchProfile
+            or profile.role != "worker"
+            or type(journal) is not AuthorityJournal
+        ):
+            raise TypeError("worker profile and authority journal required")
+        if (
+            self._grants
+            or self._profile is not None
+            or self._operator_approval is not None
+        ):
+            raise ValueError("research authorities cannot be combined")
+        if (
+            load_research_profile(profile_path, role="worker") != profile
+            or not profile.issued_at <= self._utcnow() < profile.expires_at
+        ):
+            raise ValueError("worker profile changed or expired")
+        for topic in profile.topics:
+            request = profile.request("profile-validation", topic.topic_id)
+            built = build_safe_research_brief(
+                ResearchRecordSet((ResearchQuestion(request.question),)),
+                result_budget=3,
+                trusted_config_version="public-research-brief-v1",
+                screening=self._screening,
+            )
+            if built.brief is None or built.brief.question != request.question:
+                raise ValueError("reviewed public question declined")
+            digest = hashlib.sha256(built.brief.to_json().encode("utf-8")).hexdigest()
+            self._profile_grants[topic.question] = (
+                topic.topic_id,
+                _Grant(
+                    request,
+                    profile.peer_uid,
+                    built.brief,
+                    digest,
+                    self._config,
+                    profile.issued_at,
+                    profile.expires_at,
+                ),
+            )
+        journal.activate(profile)
+        self._profile, self._profile_path, self._authority_journal = (
+            profile,
+            profile_path,
+            journal,
+        )
+
     def revoke(self, operation_id: str) -> None:
         grant = self._grants[operation_id]
         grant.revoked = True
         self._store.reserve_attempt(operation_id, operation_id, self._utcnow())
 
     def _guard(self, grant: _Grant) -> str | None:
+        if self._profile_path is not None:
+            from app.core.public_research_profile import load_research_profile
+
+            try:
+                if load_research_profile(
+                    self._profile_path, role="worker"
+                ) != self._profile or not self._authority_journal.active(self._profile):
+                    self._authority_journal.revoke(self._profile)
+                    return "authorization_denied"
+            except (OSError, ValueError, TypeError, UnicodeError):
+                self._authority_journal.revoke(self._profile)
+                return "authorization_denied"
         if self._operator_approval_path is not None:
             from app.core.public_research_authority import load_operator_approval
 
@@ -397,7 +469,10 @@ class PublicResearchBoundary:
                 return "authorization_denied"
         if (
             grant.revoked
-            or self._grants.get(grant.request.operation_id) is not grant
+            or (
+                self._profile is None
+                and self._grants.get(grant.request.operation_id) is not grant
+            )
             or not grant.issued_at <= self._utcnow() < grant.expires_at
             or grant.config != self._config
             or hashlib.sha256(grant.brief.to_json().encode("utf-8")).hexdigest()
@@ -427,7 +502,16 @@ class PublicResearchBoundary:
         self, request: PublicResearchRequest, *, peer_uid: int
     ) -> dict[str, object]:
         encode_public_request(request)
-        grant = self._grants.get(request.operation_id)
+        selected = (
+            self._profile_grants.get(request.question)
+            if self._profile is not None
+            else None
+        )
+        grant = (
+            selected[1]
+            if selected is not None
+            else self._grants.get(request.operation_id)
+        )
         if (
             grant is None
             or peer_uid != grant.peer_uid
@@ -449,6 +533,10 @@ class PublicResearchBoundary:
             blocked = self._guard(grant)
             if blocked is not None:
                 return _response(blocked)
+            if self._profile is not None and not self._authority_journal.reserve(
+                self._profile, request.operation_id, selected[0]
+            ):
+                return _response("duplicate_operation")
             began = self._monotonic()
             started_at = self._utcnow()
             reservation = self._store.reserve_attempt(
@@ -586,7 +674,7 @@ class PublicResearchBoundary:
             response = _response("completed", 1, report, usage)
             decode_public_response(_encode_json(response))
             return finish(response, response_id=safe_response_id)
-        except ProviderPersistenceError:
+        except (ProviderPersistenceError, sqlite3.Error, OSError, RuntimeError):
             self._persistence_failed = True
             return _response("persistence_failure", attempts, usage=usage)
         except (TypeError, ValueError, UnicodeError):

@@ -3,6 +3,7 @@
 from datetime import datetime
 import hashlib
 import os
+import sqlite3
 
 from app.core.provider_contract import CostEstimateStatus
 from app.core.provider_spend import ProviderAttemptRecord
@@ -12,6 +13,8 @@ from app.core.public_research_authority import (
     load_operator_approval,
 )
 from app.core.public_research_client import PublicResearchClient
+from app.core.public_research_profile import ResearchProfile, load_research_profile
+from app.trusted.openai_worker_protocol import WorkerProtocolError
 from app.research.brief import ResearchScreeningContext
 
 from .research_bridge import intent_id
@@ -30,6 +33,7 @@ class PublicResearchBridge:
         clock,
         screening=ResearchScreeningContext(),
         approval_path,
+        application_scope=None,
     ):
         if type(client) is not PublicResearchClient or gate._store is not store:
             raise TypeError("invalid public research dependencies")
@@ -43,6 +47,24 @@ class PublicResearchBridge:
         self.enabled, self._clock, self._screening = enabled, clock, screening
         self._grants = {}
         self._approval_path = approval_path
+        self._profile = None
+        self._application_scope = application_scope
+
+    def install_profile(self, profile: ResearchProfile, principal):
+        """Bind a reviewed catalog to one authenticated application scope."""
+        if (
+            type(profile) is not ResearchProfile
+            or profile.role != "application"
+            or self._grants
+            or not enabled_now(profile, self._clock())
+            or profile.application_scope != self._application_scope
+            or profile.principal_id != principal.principal_id.value
+            or profile.authenticated_source_ref != principal.authenticated_source.value
+            or profile.peer_uid != os.geteuid()
+            or load_research_profile(self._approval_path, role="application") != profile
+        ):
+            raise ValueError("invalid application research profile")
+        self._profile = profile
 
     def install_approval(self, approval: ApplicationApproval, principal):
         """Trusted local provisioning after the exact authenticated input exists."""
@@ -92,9 +114,46 @@ class PublicResearchBridge:
         self._grants[approval.request.operation_id] = approval
 
     def revoke(self, operation_id: str):
+        if self._profile is not None:
+            self._profile = None
         self._grants.pop(operation_id, None)
 
     def permits(self, principal, operation, question):
+        if self._profile is not None:
+            from .runtime import WorkerConversationRuntime
+
+            profile = self._profile
+            try:
+                if (
+                    load_research_profile(self._approval_path, role="application")
+                    != profile
+                ):
+                    return False
+                db = self._store._open()
+                try:
+                    self._store._verify_current_schema(db)
+                    row = db.execute(
+                        "SELECT audience_principal_id, authenticated_source_ref FROM event_envelopes WHERE event_id=?",
+                        (operation.initiating_event_id,),
+                    ).fetchone()
+                finally:
+                    db.close()
+            except (OSError, ValueError, TypeError, UnicodeError, sqlite3.Error):
+                return False
+            return (
+                self.enabled
+                and enabled_now(profile, self._clock())
+                and profile.topic(question) is not None
+                and profile.principal_id == principal.principal_id.value
+                and profile.authenticated_source_ref
+                == principal.authenticated_source.value
+                and row == (profile.principal_id, profile.authenticated_source_ref)
+                and os.geteuid() == profile.peer_uid
+                and operation.operation_id
+                == WorkerConversationRuntime._operation_id(
+                    operation.initiating_event_id
+                )
+            )
         grant = self._grants.get(operation.operation_id)
         try:
             if load_operator_approval(self._approval_path, role="application") != grant:
@@ -112,19 +171,33 @@ class PublicResearchBridge:
             and os.geteuid() == grant.peer_uid
         )
 
-    def execute(self, operation_id):
+    def execute(self, operation_id, choice=None):
+        if self._profile is not None:
+            try:
+                current = load_research_profile(self._approval_path, role="application")
+            except (OSError, ValueError, TypeError, UnicodeError):
+                current = None
+            if current != self._profile or not enabled_now(
+                self._profile, self._clock()
+            ):
+                raise WorkerProtocolError("application profile changed before IPC")
+            return self._client.execute(self._profile.request(operation_id, choice))
         return self._client.execute(self._grants[operation_id].request)
 
-    @staticmethod
     def record(
-        provider, operation, _question, outcome, now, *, require_reservation=True
+        self, provider, operation, question, outcome, now, *, require_reservation=True
     ):
+        model_identifier = CONFIG
+        if self._profile is not None:
+            topic = self._profile.topic(question)
+            if topic is not None:
+                model_identifier = "research-topic:" + topic.topic_id
         return provider.record_attempt(
             ProviderAttemptRecord(
                 intent_id(operation.operation_id),
                 operation.operation_id,
                 "openai",
-                CONFIG,
+                model_identifier,
                 CONFIG,
                 CONFIG,
                 operation.core_self_version,

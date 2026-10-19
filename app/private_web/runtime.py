@@ -1003,7 +1003,7 @@ class _DurableConversationRuntime(ConversationService):
 
         return ClientResult("", "", outcome, 0, None)
 
-    def _research_screening(self, route, operation):
+    def _research_screening(self, route, operation, canonical_question=None):
         """Capture material dependencies solely for local output rejection.
 
         A conversation audience authorizes shared abstractions, never foreign raw
@@ -1053,9 +1053,15 @@ class _DurableConversationRuntime(ConversationService):
                 ).fetchall()
                 base = self._research._screening
                 protected_texts = tuple(
-                    text
+                    remaining
                     for text in [*(row[1] for row in rows), *shared_texts]
-                    if _normalized(text)
+                    if _normalized(
+                        remaining := (
+                            text.replace(canonical_question, " ")
+                            if canonical_question is not None
+                            else text
+                        )
+                    )
                 )
                 return ResearchScreeningContext(
                     private_canaries=base.private_canaries
@@ -1096,7 +1102,11 @@ class _DurableConversationRuntime(ConversationService):
         # A short fence captures current authority and sources and commits intent.
         # No privacy fence or SQLite transaction remains held across IPC.
         def admission():
-            screening = self._research_screening(route, operation)
+            canonical = None
+            if public and self._research._profile is not None:
+                topic = self._research._profile.topic(subject)
+                canonical = topic.question if topic is not None else None
+            screening = self._research_screening(route, operation, canonical)
             return self._provider.reserve_attempt(
                 intent_id(operation.operation_id), worker_id, self._clock()
             ), screening
@@ -1172,7 +1182,7 @@ class _DurableConversationRuntime(ConversationService):
         if outcome is None:
             try:
                 response = (
-                    self._research.execute(operation.operation_id)
+                    self._research.execute(operation.operation_id, subject)
                     if public
                     else self._research._client.execute(subject)
                 )
@@ -1349,6 +1359,11 @@ class _DurableConversationRuntime(ConversationService):
             if public:
                 grant = self._research._grants.get(operation_id)
                 subject = grant.request.question if grant is not None else None
+                if (
+                    self._research._profile is not None
+                    and evidence.model_identifier.startswith("research-topic:")
+                ):
+                    subject = evidence.model_identifier.removeprefix("research-topic:")
             else:
                 try:
                     subject = SyntheticPublicResearchFixture(evidence.model_identifier)
@@ -1453,6 +1468,11 @@ class _DurableConversationRuntime(ConversationService):
         if type(self._research) is PublicResearchBridge:
             grant = self._research._grants.get(reply.operation.operation_id)
             subject = grant.request.question if grant is not None else None
+            if (
+                self._research._profile is not None
+                and evidence.model_identifier.startswith("research-topic:")
+            ):
+                subject = evidence.model_identifier.removeprefix("research-topic:")
         else:
             try:
                 subject = SyntheticPublicResearchFixture(evidence.model_identifier)
