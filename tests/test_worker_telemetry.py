@@ -760,6 +760,7 @@ def test_spend_suspension_requires_valid_record(tmp_path):
         ("attempt_id", "missing:1"),
         ("provider_config_version", "wrong-config"),
         ("confirmed_at", "2026-10-20T00:00:00.000000Z"),
+        ("confirmed_at", "0001-01-01T00:00:00+14:00"),
     ],
 )
 def test_spend_suspension_requires_matching_usage(tmp_path, column, invalid):
@@ -778,6 +779,38 @@ def test_spend_suspension_requires_matching_usage(tmp_path, column, invalid):
             f"UPDATE provider_spend_suspensions SET {column}=?", (invalid,)
         )
     assert _provider(db)["available"] is False
+
+
+def test_suspension_timestamp_overflow_keeps_telemetry_available(tmp_path):
+    db, stop, path = sources(tmp_path)
+    code = "project_spend_limit_exceeded"
+    ProviderStateStore(EventStore(db)).record_attempt(
+        replace(
+            attempt("synthetic:1"),
+            outcome="confirmed_spend_limit",
+            provider_error_code=code,
+        ),
+        confirmed_spend_limit_code=code,
+    )
+    server = WorkerTelemetryServer(path, db, stop, frozenset({os.geteuid()}))
+    server.start()
+    try:
+        for timestamp, valid in (
+            ("0001-01-01T00:00:00+14:00", False),
+            ("2026-10-19T00:00:00.000000Z", True),
+        ):
+            with sqlite3.connect(db) as connection:
+                connection.execute(
+                    "UPDATE provider_spend_suspensions SET confirmed_at=?", (timestamp,)
+                )
+            thread = Thread(target=server.serve_once)
+            thread.start()
+            observed = WorkerTelemetryClient(path, os.geteuid()).read()
+            thread.join()
+            assert observed["available"] is True
+            assert observed["provider"]["available"] is valid
+    finally:
+        server.close()
 
 
 def test_replaced_database_and_sidecar_are_rejected(tmp_path, monkeypatch):

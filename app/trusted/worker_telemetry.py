@@ -111,11 +111,12 @@ def _sidecar_identities(path):
 def _valid_stored_time(value):
     try:
         timestamp = datetime.fromisoformat(value)
-    except (TypeError, ValueError):
+        return int(
+            timestamp.tzinfo is not None
+            and EventStore._serialize_time(timestamp) == value
+        )
+    except (TypeError, ValueError, OverflowError):
         return 0
-    return int(
-        timestamp.tzinfo is not None and EventStore._serialize_time(timestamp) == value
-    )
 
 
 def _valid_identifier(value):
@@ -254,8 +255,7 @@ def _provider(path):
                 or code not in CONFIRMED_SPEND_LIMIT_CODES
                 or not _valid_identifier(config)
                 or not _valid_identifier(attempt_id)
-                or EventStore._serialize_time(datetime.fromisoformat(confirmed_at))
-                != confirmed_at
+                or not _valid_stored_time(confirmed_at)
                 or (usage_provider, started_at, usage_code, usage_config, usage_outcome)
                 != (provider, confirmed_at, code, config, "confirmed_spend_limit")
             ):
