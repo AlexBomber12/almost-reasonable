@@ -688,6 +688,47 @@ def test_malformed_usage_identity_rejects_provider_evidence(tmp_path, column, in
     assert _provider(db)["available"] is False
 
 
+@pytest.mark.parametrize(
+    ("column", "invalid"),
+    [
+        ("duration_ms", -1),
+        ("duration_ms", "bad"),
+        ("retry_count", -1),
+        ("retry_count", "bad"),
+        ("estimated_cost", None),
+        ("estimated_cost", "not-money"),
+        ("estimated_cost", "NaN"),
+        ("estimated_cost", "-1"),
+        ("pricing_version", ""),
+        ("currency", "EUR"),
+    ],
+)
+def test_malformed_usage_accounting_metadata_fails_closed(tmp_path, column, invalid):
+    db, _stop_path, _path = sources(tmp_path)
+    record = replace(
+        attempt("synthetic:1"),
+        cost_estimate_status=CostEstimateStatus.ESTIMATED,
+        estimated_cost="0.001",
+        pricing_version="synthetic-pricing",
+        currency="USD",
+    )
+    ProviderStateStore(EventStore(db)).record_attempt(record)
+    assert _provider(db)["available"] is True
+    with sqlite3.connect(db) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(f"UPDATE provider_usage_attempts SET {column}=?", (invalid,))
+    assert _provider(db)["available"] is False
+
+
+def test_unavailable_cost_cannot_retain_estimate(tmp_path):
+    db, _stop_path, _path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1"))
+    with sqlite3.connect(db) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute("UPDATE provider_usage_attempts SET estimated_cost='0.001'")
+    assert _provider(db)["available"] is False
+
+
 def test_spend_suspension_requires_valid_record(tmp_path):
     db, _stop_path, _path = sources(tmp_path)
     code = "project_spend_limit_exceeded"

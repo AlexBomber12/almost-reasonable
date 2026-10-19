@@ -2,6 +2,7 @@
 
 import argparse
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 import json
 import os
 from pathlib import Path
@@ -125,6 +126,27 @@ def _valid_identifier(value):
     return 1
 
 
+def _valid_cost_metadata(status, amount, pricing_version, currency):
+    if status == "estimated":
+        if (
+            amount is None
+            or not _valid_identifier(pricing_version)
+            or currency != "USD"
+        ):
+            return 0
+        try:
+            cost = Decimal(amount)
+        except (InvalidOperation, TypeError):
+            return 0
+        return int(cost.is_finite() and cost >= 0)
+    return int(
+        status in ("usage_unavailable", "usage_incomplete", "pricing_unavailable")
+        and amount is None
+        and pricing_version is None
+        and currency is None
+    )
+
+
 def _provider(path):
     empty = unavailable()["provider"]
     connection = None
@@ -145,6 +167,9 @@ def _provider(path):
         )
         connection.create_function(
             "valid_identifier", 1, _valid_identifier, deterministic=True
+        )
+        connection.create_function(
+            "valid_cost_metadata", 4, _valid_cost_metadata, deterministic=True
         )
         connection.execute("BEGIN")
         EventStore._verify_current_schema(connection)
@@ -167,11 +192,14 @@ def _provider(path):
                         OR (provider_response_id IS NOT NULL AND valid_identifier(provider_response_id) != 1)
                         OR (provider_error_code IS NOT NULL AND valid_identifier(provider_error_code) != 1)
                         OR valid_stored_time(started_at) != 1
+                        OR typeof(duration_ms) != 'integer' OR duration_ms < 0
+                        OR typeof(retry_count) != 'integer' OR retry_count < 0
                         OR (input_tokens IS NOT NULL AND (typeof(input_tokens) != 'integer' OR input_tokens < 0 OR input_tokens > ?))
                         OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?))
                         OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?))
                         OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?))
                         OR cost_estimate_status NOT IN ('estimated', 'usage_unavailable', 'usage_incomplete', 'pricing_unavailable')
+                        OR valid_cost_metadata(cost_estimate_status, estimated_cost, pricing_version, currency) != 1
                         THEN 1 ELSE 0 END),0)
             FROM provider_usage_attempts
         """,
