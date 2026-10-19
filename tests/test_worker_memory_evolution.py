@@ -51,6 +51,7 @@ from app.cognition.generic_store import GenericMemoryStore
 from app.cognition.pipeline import CognitionEngine
 from app.cognition.worker_extraction import ExtractionProposal
 from app.private_web.evolution_audit import EvolutionAuditStore, EvolutionSnapshot
+import app.private_web.evolution_audit as evolution_audit_module
 from app.private_web.runtime import WorkerConversationRuntime
 from app.private_web.cli import main as web_main
 from app.privacy.application import (
@@ -1689,6 +1690,44 @@ def test_selection_counts_provenance_roles_before_provider_projection(tmp_path):
             (reserved.snapshot.selected[0][1],),
         ).fetchone()[0]
     assert rows == 50
+
+
+def test_full_generic_ledger_blocks_evolution_before_provider(tmp_path, monkeypatch):
+    events, _provider, _gate, client, runtime, who, source = _fault_runtime(tmp_path)
+    other = principal("b")
+    other_source = append_event(events, other, "full-ledger", "Synthetic memory")
+    engine = CognitionEngine(
+        events,
+        SelfStateStore(events),
+        capabilities=CognitionCapabilities(
+            private_state_write=False, generic_memory_write=True
+        ),
+    )
+    assert (
+        engine.commit_worker_extraction(
+            other,
+            other_source,
+            "memory:full-ledger",
+            ExtractionProposal(
+                "new_memory", "candidate_useful_memory", "Synthetic memory", 0.8
+            ),
+        ).status
+        is CognitionOutcomeStatus.PERSISTED
+    )
+    monkeypatch.setattr(evolution_audit_module, "MAX_GENERIC_GRAPH_OPERATIONS", 1)
+    client.infer = lambda *_args, **_kwargs: pytest.fail("provider was called")
+    runtime._evolve_worker_memory(
+        who, source, "Synthetic input", "corr", "reply:" + "a" * 64
+    )
+    assert (
+        runtime._evolution_audit.read(
+            "evolution:" + "a" * 64,
+            who.principal_id.value,
+            source,
+            "Synthetic input",
+        )
+        is None
+    )
 
 
 @pytest.mark.parametrize("change", ["new_head", "erase_context"])

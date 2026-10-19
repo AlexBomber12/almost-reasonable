@@ -7,6 +7,7 @@ import secrets
 
 from app.cognition.generic_store import GenericMemoryStore, MAX_GENERIC_SOURCES
 from app.cognition.retrieval import MemoryContextSelector
+from app.core.generic_graph import MAX_GENERIC_GRAPH_OPERATIONS
 from app.cognition.worker_evolution import (
     EvolutionMemory,
     EvolutionModelRequest,
@@ -153,6 +154,13 @@ class EvolutionAuditStore(ExtractionAuditStore):
         }
         with closing(self._events._open()) as db:
             self._events._verify_current_schema(db)
+            if (
+                db.execute("SELECT COUNT(*) FROM generic_memory_operations").fetchone()[
+                    0
+                ]
+                >= MAX_GENERIC_GRAPH_OPERATIONS
+            ):
+                return None
             for read in ranked:
                 if len(memories) == MAX_MEMORIES:
                     break
