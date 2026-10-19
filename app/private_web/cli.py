@@ -58,6 +58,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--ipc-state-db")
     serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-memory-evolution", action="store_true")
+    serve.add_argument("--enable-typed-memory", action="store_true")
     serve.add_argument("--enable-public-research", action="store_true")
     serve.add_argument("--public-research-socket")
     serve.add_argument("--public-research-worker-uid", type=int)
@@ -195,6 +196,7 @@ def main(
         or args.public_research_approval is not None
         or args.enable_memory_extraction
         or args.enable_memory_evolution
+        or args.enable_typed_memory
     ):
         raise SystemExit("privacy and owner stores require worker mode")
     auth = AuthStore(args.auth_db)
@@ -246,6 +248,7 @@ def main(
             research_bridge=research,
             memory_extraction_enabled=args.enable_memory_extraction,
             memory_evolution_enabled=args.enable_memory_evolution,
+            typed_memory_enabled=args.enable_typed_memory,
         )
         privacy = ParticipantPrivacyControls(
             auth, event_store, ledger, gate, clock=conversations._clock

@@ -19,6 +19,11 @@ from app.cognition.worker_evolution import (
     EvolutionProposal,
     parse_evolution_proposal,
 )
+from app.cognition.worker_typed import (
+    TypedModelRequest,
+    TypedProposal,
+    parse_typed_proposal,
+)
 from app.core.model_contract import ModelRequest
 from app.core.provider_contract import (
     PROVIDER_NAME,
@@ -30,6 +35,7 @@ from app.core.provider_contract import (
     build_worker_context_request,
     build_worker_extraction_request,
     build_worker_evolution_request,
+    build_worker_typed_request,
     estimate_cost,
     require_identifier,
     validate_pricing_config,
@@ -92,6 +98,7 @@ class GatewayResult:
     validation: ProposalValidation | None = field(repr=False)
     extraction: ExtractionProposal | None = field(default=None, repr=False)
     evolution: EvolutionProposal | None = field(default=None, repr=False)
+    typed: TypedProposal | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +107,7 @@ class _ParsedResponse:
     validation: ProposalValidation | None
     extraction: ExtractionProposal | None = None
     evolution: EvolutionProposal | None = None
+    typed: TypedProposal | None = None
 
 
 class TrustedOpenAIGateway:
@@ -176,6 +184,15 @@ class TrustedOpenAIGateway:
             request, correlation_id=correlation_id, operation_id=operation_id
         )
 
+    def submit_typed(
+        self, request: TypedModelRequest, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
+        if type(request) is not TypedModelRequest:
+            raise TypeError("request must be a typed memory request")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
     def _submit(
         self, request, *, correlation_id: str, operation_id: str
     ) -> GatewayResult:
@@ -190,6 +207,8 @@ class TrustedOpenAIGateway:
             if type(request) is ExtractionModelRequest
             else build_worker_evolution_request(request, self._config)
             if type(request) is EvolutionModelRequest
+            else build_worker_typed_request(request, self._config)
+            if type(request) is TypedModelRequest
             else build_worker_context_request(request, self._config)
         )
         if (
@@ -299,6 +318,7 @@ class TrustedOpenAIGateway:
                     response,
                     extraction=type(request) is ExtractionModelRequest,
                     evolution=type(request) is EvolutionModelRequest,
+                    typed=type(request) is TypedModelRequest,
                 )
             )
             persisted = self._record(
@@ -327,6 +347,7 @@ class TrustedOpenAIGateway:
                 validation=parsed.validation,
                 extraction=parsed.extraction,
                 evolution=parsed.evolution,
+                typed=parsed.typed,
             )
 
     def _preflight(
@@ -377,6 +398,8 @@ class TrustedOpenAIGateway:
             prompt_version=(
                 "private-evolution-v1"
                 if type(request) is EvolutionModelRequest
+                else "private-typed-v1"
+                if type(request) is TypedModelRequest
                 else "private-extraction-v1"
                 if type(request) is ExtractionModelRequest
                 else self._config.prompt_version
@@ -386,6 +409,8 @@ class TrustedOpenAIGateway:
                 if type(request) is ModelRequest
                 else "private-evolution-v1"
                 if type(request) is EvolutionModelRequest
+                else "private-typed-v1"
+                if type(request) is TypedModelRequest
                 else "private-extraction-v1"
                 if type(request) is ExtractionModelRequest
                 else request.conversation.core_self_version
@@ -492,6 +517,7 @@ class TrustedOpenAIGateway:
         validation: ProposalValidation | None = None,
         extraction: ExtractionProposal | None = None,
         evolution: EvolutionProposal | None = None,
+        typed: TypedProposal | None = None,
     ) -> GatewayResult:
         if outcome is GatewayOutcome.COMPLETED:
             message = None
@@ -505,7 +531,14 @@ class TrustedOpenAIGateway:
         else:
             message = _GENERAL_FAILURE_RU
         return GatewayResult(
-            outcome, response_id, attempts, message, validation, extraction, evolution
+            outcome,
+            response_id,
+            attempts,
+            message,
+            validation,
+            extraction,
+            evolution,
+            typed,
         )
 
 
@@ -553,7 +586,11 @@ def _classify_error(error: OpenAITransportError) -> GatewayOutcome:
 
 
 def _parse_response(
-    response: ProviderResponse, *, extraction: bool = False, evolution: bool = False
+    response: ProviderResponse,
+    *,
+    extraction: bool = False,
+    evolution: bool = False,
+    typed: bool = False,
 ) -> _ParsedResponse:
     if type(response) is not ProviderResponse:
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
@@ -605,6 +642,12 @@ def _parse_response(
         return _ParsedResponse(
             GatewayOutcome.COMPLETED, None, evolution=parsed_evolution
         )
+    if typed:
+        try:
+            parsed_typed = parse_typed_proposal(text)
+        except ValueError:
+            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+        return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
     if type(payload) is not dict or set(payload) != {
         "decision",
         "reason_category",

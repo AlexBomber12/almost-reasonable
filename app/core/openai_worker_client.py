@@ -11,6 +11,7 @@ from app.core.model_contract import ModelRequest
 from app.cognition.conversation_context import MemoryModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest, ExtractionProposal
 from app.cognition.worker_evolution import EvolutionModelRequest, EvolutionProposal
+from app.cognition.worker_typed import TypedModelRequest, TypedProposal
 from app.cognition.shared_context import SharedModelRequest
 from app.core.provider_contract import require_identifier
 from app.trusted.openai_worker_protocol import (
@@ -39,6 +40,7 @@ class ClientResult:
     validation: ProposalValidation | None = field(default=None, repr=False)
     extraction: ExtractionProposal | None = field(default=None, repr=False)
     evolution: EvolutionProposal | None = field(default=None, repr=False)
+    typed: TypedProposal | None = field(default=None, repr=False)
 
 
 class OpenAIWorkerClient:
@@ -70,7 +72,8 @@ class OpenAIWorkerClient:
         | MemoryModelRequest
         | SharedModelRequest
         | ExtractionModelRequest
-        | EvolutionModelRequest,
+        | EvolutionModelRequest
+        | TypedModelRequest,
         *,
         operation_id: str,
         correlation_id: str,
@@ -118,10 +121,12 @@ class OpenAIWorkerClient:
                     wait_for_first_byte=True,
                 )
             )
-            if response.extraction_operation != (
-                type(request) is ExtractionModelRequest
-            ) or response.evolution_operation != (
-                type(request) is EvolutionModelRequest
+            if (
+                response.extraction_operation
+                != (type(request) is ExtractionModelRequest)
+                or response.evolution_operation
+                != (type(request) is EvolutionModelRequest)
+                or response.typed_operation != (type(request) is TypedModelRequest)
             ):
                 raise WorkerProtocolError("worker operation mismatch")
         except (OSError, WorkerProtocolError):
@@ -142,6 +147,7 @@ class OpenAIWorkerClient:
             response.validation,
             response.extraction,
             response.evolution,
+            response.typed,
         )
 
 

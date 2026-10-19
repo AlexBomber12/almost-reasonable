@@ -680,7 +680,12 @@ class SelfStateStore:
             ORDER BY head_revision.revision_key DESC, item.item_id DESC
             LIMIT ?
             """,
-            (principal_id, MAX_PRIVATE_STATE_ITEMS_PER_RETRIEVAL),
+            (
+                principal_id,
+                MAX_PRIVATE_STATE_ITEMS_PER_RETRIEVAL
+                if len(expected) <= MAX_PRIVATE_STATE_ITEMS_PER_RETRIEVAL
+                else -1,
+            ),
         ).fetchall()
         actual = {
             item_id: current_revision
@@ -772,6 +777,7 @@ class SelfStateStore:
             revision.decision_origin,
             revision.model_identifier,
             revision.prompt_version,
+            tuple(sorted(revision.contextual_event_ids)),
         )
         if isinstance(change, InterestCandidateChange):
             return common + (
@@ -809,6 +815,7 @@ class SelfStateStore:
             tuple(sorted(change.supporting_event_ids)),
             change.review_at,
             change.revision.initiating_event_id,
+            tuple(sorted(change.revision.contextual_event_ids)),
         )
         if isinstance(change, InterestCandidateChange):
             return common + (
@@ -895,6 +902,7 @@ class SelfStateStore:
             raise EventStoreError("event store operation failed")
         supporting = tuple(item[1] for item in evidence if item[0] == "supporting")
         counter = tuple(item[1] for item in evidence if item[0] == "counter")
+        contextual = tuple(item[1] for item in evidence if item[0] == "contextual")
         revision = RevisionContext(
             operation_id=row[24],
             expected_revision=row[2],
@@ -905,6 +913,7 @@ class SelfStateStore:
             decision_origin=DecisionOrigin(row[6]),
             model_identifier=row[7],
             prompt_version=row[8],
+            contextual_event_ids=contextual,
         )
         review_at = self._parse_time(row[9])
         state_type = StateType(row[1])
@@ -1123,6 +1132,10 @@ class SelfStateStore:
             (change.revision.initiating_event_id, EvidenceRole.INITIATING),
             *((event_id, EvidenceRole.SUPPORTING) for event_id in supporting),
             *((event_id, EvidenceRole.COUNTER) for event_id in counter),
+            *(
+                (event_id, EvidenceRole.CONTEXTUAL)
+                for event_id in change.revision.contextual_event_ids
+            ),
         )
         for event_id, _ in requested:
             row = connection.execute(
@@ -1620,6 +1633,9 @@ class SelfStateStore:
             change.supporting_event_ids,
             allow_empty=counterevidence_only_revision,
         )
+        SelfStateStore._validate_event_ids(
+            "contextual dependencies", revision.contextual_event_ids, allow_empty=True
+        )
         counter_count = 0
         if isinstance(change, BeliefCandidateChange):
             SelfStateStore._validate_event_ids(
@@ -1629,10 +1645,23 @@ class SelfStateStore:
             )
             counter_count = len(change.conflicting_event_ids)
         if (
-            len(change.supporting_event_ids) + counter_count + 1
+            len(change.supporting_event_ids)
+            + counter_count
+            + len(revision.contextual_event_ids)
+            + 1
             > MAX_EVIDENCE_PER_REVISION
         ):
             raise SelfStateValidationError("too many evidence references")
+        if set(revision.contextual_event_ids) & {
+            revision.initiating_event_id,
+            *change.supporting_event_ids,
+            *(
+                change.conflicting_event_ids
+                if isinstance(change, BeliefCandidateChange)
+                else ()
+            ),
+        }:
+            raise SelfStateValidationError("contextual dependency roles conflict")
 
         if isinstance(change, InterestCandidateChange):
             SelfStateStore._validate_text("topic", change.topic)

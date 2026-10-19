@@ -1,6 +1,7 @@
 """INT-19 worker outcome migration keeps older private databases readable."""
 
 import sqlite3
+from shared_schema_helpers import remove_v10
 
 import pytest
 
@@ -11,6 +12,7 @@ def test_v7_worker_outcome_migration_is_atomic(tmp_path):
     path = tmp_path / "events.db"
     EventStore(path)
     with sqlite3.connect(path) as db:
+        remove_v10(db)
         db.execute("DROP TABLE private_extraction_receipts")
         db.execute("DROP TABLE private_extraction_audit")
         db.execute("DROP TABLE agent_reply_resolutions")
@@ -30,7 +32,7 @@ def test_v7_worker_outcome_migration_is_atomic(tmp_path):
         assert db.execute("PRAGMA user_version").fetchone() == (7,)
         assert db.execute("SELECT version FROM schema_metadata").fetchone() == (7,)
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 9
+    assert upgraded.diagnostics().schema_version == 10
     with upgraded._open() as db:
         assert (
             "spend_suspended"
@@ -44,6 +46,7 @@ def test_v8_extraction_receipt_migration_is_atomic(tmp_path):
     path = tmp_path / "events.db"
     EventStore(path)
     with sqlite3.connect(path) as db:
+        remove_v10(db)
         db.execute("DROP TABLE private_extraction_receipts")
         db.execute("DROP TABLE private_extraction_audit")
         db.execute("UPDATE schema_metadata SET version=8")
@@ -60,7 +63,7 @@ def test_v8_extraction_receipt_migration_is_atomic(tmp_path):
         assert schema_objects(db) == before
         assert db.execute("PRAGMA user_version").fetchone() == (8,)
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 9
+    assert upgraded.diagnostics().schema_version == 10
     with upgraded._open() as db:
         assert db.execute(
             "SELECT count(*) FROM private_extraction_audit"

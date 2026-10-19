@@ -53,6 +53,7 @@ from .contracts import (
 )
 from .worker_extraction import ExtractionProposal
 from .worker_evolution import EvolutionProposal, parse_evolution_proposal
+from .worker_typed import TypedProposal, parse_typed_proposal
 from .read_store import CognitionReadStore
 from .generic_store import (
     GenericMemoryConflict,
@@ -299,6 +300,127 @@ class CognitionEngine:
             tuple((item, revision) for _handle, item, revision in snapshot.selected),
         )
 
+    def commit_worker_typed(
+        self, context, source_event_id, operation_id, snapshot, proposal: TypedProposal
+    ) -> CognitionOutcome:
+        """Resolve a typed operation only against its original exposed heads."""
+        if (
+            not self._capabilities.private_state_write
+            or self._capabilities.generic_memory_write
+        ):
+            return self._rejected(CognitionReason.CAPABILITY_DISABLED)
+        if type(proposal) is not TypedProposal or not self._valid_token(operation_id):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        try:
+            checked = parse_typed_proposal(
+                json.dumps(
+                    {
+                        "decision": proposal.decision,
+                        "handle": proposal.handle,
+                        "kind": proposal.kind,
+                        "fields": proposal.fields,
+                        "source_role": proposal.source_role,
+                    }
+                )
+            )
+        except (TypeError, ValueError):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if checked != proposal:
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        source = self._read.retrieve_exact_private_event(context, source_event_id)
+        if source is None:
+            return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
+        current = self._read.retrieve_all_private_candidates(context)
+        current_heads = tuple((item.item_id, item.revision) for item in current)
+        selected = {
+            handle: (item, revision, kind)
+            for handle, item, revision, kind in snapshot.selected
+        }
+        if proposal.handle is not None and proposal.handle not in selected:
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if proposal.decision == "no_change":
+            return (
+                CognitionOutcome(
+                    CognitionOutcomeStatus.NO_CHANGE, CognitionReason.AUTHORIZED
+                )
+                if current_heads == snapshot.visible
+                else self._rejected(CognitionReason.STALE_REVISION)
+            )
+        target = selected.get(proposal.handle)
+        if target is not None and target[2] != proposal.kind:
+            return self._rejected(CognitionReason.INVALID_MEMORY_KIND)
+        from datetime import timedelta
+        import hashlib
+
+        fields = proposal.fields
+        kind = MemoryKind(proposal.kind)
+        supporting = (source_event_id,) if proposal.source_role == "supporting" else ()
+        counter = (
+            (source_event_id,) if proposal.source_role == "counterevidence" else ()
+        )
+        item_id = (
+            target[0]
+            if target is not None
+            else "typed:" + hashlib.sha256(operation_id.encode()).hexdigest()
+        )
+        context_ids = tuple(
+            event_id for event_id in snapshot.sources if event_id != source_event_id
+        )
+        proposal_context = ProposalContext(
+            operation_id,
+            source_event_id,
+            supporting,
+            counter,
+            target[1] if target is not None else None,
+            "worker_private_typed_v1",
+            source.occurred_at,
+            source.occurred_at + timedelta(days=30),
+        )
+        if kind is MemoryKind.DURABLE_INTEREST:
+            candidate = InterestMemoryProposal(
+                proposal_context,
+                item_id,
+                fields["topic"],
+                fields["strength"],
+                InterestStatus(fields["status"]),
+                fields["reason_for_interest"],
+            )
+        elif kind is MemoryKind.BELIEF_OR_HYPOTHESIS:
+            candidate = BeliefMemoryProposal(
+                proposal_context,
+                item_id,
+                fields["proposition"],
+                BeliefStance(fields["stance"]),
+                float(fields["confidence"]),
+                BeliefStatus(fields["status"]),
+                tuple(fields["alternatives"]),
+                VerificationStatus.UNVERIFIED,
+            )
+        else:
+            candidate = GoalMemoryProposal(
+                proposal_context,
+                item_id,
+                fields["description"],
+                fields["rationale"],
+                fields["priority"],
+                GoalStatus(fields["status"]),
+                tuple(fields["constraints"]),
+                fields["review_condition"],
+            )
+        return self._authorize(
+            context,
+            source_event_id,
+            candidate,
+            ExtractorIdentity("worker-owned", "private-typed-v1"),
+            source.occurred_at,
+            frozenset((source_event_id,)),
+            frozenset(item.item_id for item in current),
+            snapshot.visible,
+            (),
+            (),
+            contextual_event_ids=context_ids,
+        )
+
     def _prepare(self, context, source_event_id, evidence_event_ids):
         if not self._capabilities.memory_extraction:
             return self._rejected(CognitionReason.CAPABILITY_DISABLED)
@@ -460,6 +582,7 @@ class CognitionEngine:
         expected_candidate_revisions: tuple[tuple[str, int], ...],
         visible_generic_revisions: tuple[tuple[str, int], ...],
         exposed_generic_revisions: tuple[tuple[str, int], ...],
+        contextual_event_ids: tuple[str, ...] = (),
     ) -> CognitionOutcome:
         if type(proposal) is NoChangeProposal:
             return self._authorize_no_change(
@@ -628,7 +751,9 @@ class CognitionEngine:
                 return self._rejected(
                     CognitionReason.INCONSISTENT_CONFIDENCE, proposal.memory_kind
                 )
-        change = self._build_change(proposal, identity, decided_at)
+        change = self._build_change(
+            proposal, identity, decided_at, contextual_event_ids
+        )
         try:
             duplicate = self._read.replay_private_operation(context, change)
         except SelfStateIdentityConflictError:
@@ -673,12 +798,17 @@ class CognitionEngine:
                 )
             return self._rejected(reason, proposal.memory_kind)
         try:
-            transition = self._persist(
+            args = (
                 context,
                 proposal,
                 identity,
                 decided_at,
                 expected_candidate_revisions,
+            )
+            transition = (
+                self._persist(*args, contextual_event_ids)
+                if contextual_event_ids
+                else self._persist(*args)
             )
         except SelfStateConflictError:
             return self._rejected(CognitionReason.STALE_REVISION, proposal.memory_kind)
@@ -849,8 +979,11 @@ class CognitionEngine:
         identity: ExtractorIdentity,
         decided_at: datetime,
         expected_candidate_revisions: tuple[tuple[str, int], ...],
+        contextual_event_ids: tuple[str, ...] = (),
     ):
-        change = self._build_change(proposal, identity, decided_at)
+        change = self._build_change(
+            proposal, identity, decided_at, contextual_event_ids
+        )
         creating = proposal.context.expected_revision is None
         if isinstance(proposal, InterestMemoryProposal):
             method = (
@@ -881,6 +1014,7 @@ class CognitionEngine:
         proposal: InterestMemoryProposal | BeliefMemoryProposal | GoalMemoryProposal,
         identity: ExtractorIdentity,
         decided_at: datetime,
+        contextual_event_ids: tuple[str, ...] = (),
     ) -> InterestCandidateChange | BeliefCandidateChange | GoalCandidateChange:
         revision = RevisionContext(
             operation_id=proposal.context.operation_id,
@@ -896,6 +1030,7 @@ class CognitionEngine:
             decision_origin=DecisionOrigin.MODEL,
             model_identifier=identity.model_identifier,
             prompt_version=identity.prompt_version,
+            contextual_event_ids=contextual_event_ids,
         )
         if isinstance(proposal, InterestMemoryProposal):
             return InterestCandidateChange(

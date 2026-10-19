@@ -673,7 +673,7 @@ def test_authenticated_process_worker_persists_and_retrieves_memory_after_restar
         )
         backup = tmp_path / "before-deletion.db"
         create_sqlite_backup(
-            reopened.database_path, backup, 9, datetime(2030, 1, 1, tzinfo=UTC)
+            reopened.database_path, backup, 10, datetime(2030, 1, 1, tzinfo=UTC)
         )
         deletion = DeletionCoordinator(_ledger, EventStoreErasureAdapter(reopened))
         assert (
@@ -692,7 +692,7 @@ def test_authenticated_process_worker_persists_and_retrieves_memory_after_restar
         )
         quarantine = tmp_path / "quarantine.db"
         assert (
-            QuarantinedRestore(_ledger, 9, EventStoreRestoreAdapter)
+            QuarantinedRestore(_ledger, 10, EventStoreRestoreAdapter)
             .restore(backup, quarantine, datetime(2030, 1, 2, tzinfo=UTC))
             .activation_eligible
         )

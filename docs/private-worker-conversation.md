@@ -209,3 +209,11 @@ do not establish live-model semantic quality. Typed interest/belief/goal
 evolution, shared promotion, research and narrative memory, autonomous
 behavior, deployment and live semantic evaluation remain separate work.
 `complete_mvp=BLOCKED` remains unchanged.
+
+## B03C: participant-private typed memory evolution
+
+The separate default-off interest, belief/hypothesis and goal/intention worker
+path is documented in [private typed worker memory](private-typed-worker-memory.md).
+It uses EventStore v10 contextual typed provenance, the existing SelfStateStore,
+and its own application flag and protected worker permission. The B03A and B03B
+generic modes remain separate. `complete_mvp=BLOCKED` remains unchanged.

@@ -58,6 +58,7 @@ class EvidenceRole(StrEnum):
     INITIATING = "initiating"
     SUPPORTING = "supporting"
     COUNTER = "counter"
+    CONTEXTUAL = "contextual"
 
 
 class TransitionStatus(StrEnum):
@@ -77,6 +78,7 @@ class RevisionContext:
     decision_origin: DecisionOrigin
     model_identifier: str | None = None
     prompt_version: str | None = None
+    contextual_event_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

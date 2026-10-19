@@ -30,7 +30,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -80,6 +80,7 @@ class FaultPoint(StrEnum):
     BEFORE_V7_MIGRATION_COMMIT = "before_v7_migration_commit"
     BEFORE_V8_MIGRATION_COMMIT = "before_v8_migration_commit"
     BEFORE_V9_MIGRATION_COMMIT = "before_v9_migration_commit"
+    BEFORE_V10_MIGRATION_COMMIT = "before_v10_migration_commit"
     AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
     AFTER_REPLY_COMMIT = "after_reply_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
@@ -732,6 +733,27 @@ _SCHEMA_V9 = (
 )
 
 
+_SCHEMA_V10 = (
+    "ALTER TABLE protected_state_provenance RENAME TO protected_state_provenance_v9",
+    """CREATE TABLE protected_state_provenance (
+        revision_key INTEGER NOT NULL REFERENCES state_revisions(revision_key) ON DELETE CASCADE,
+        event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        evidence_role TEXT NOT NULL CHECK (evidence_role IN ('initiating','supporting','counter','contextual')),
+        audience_type TEXT NOT NULL CHECK (audience_type = 'private_participant'),
+        source_principal_id TEXT NOT NULL,
+        source_provenance_type TEXT NOT NULL CHECK (source_provenance_type = 'participant_assertion'),
+        verification_status TEXT NOT NULL CHECK (verification_status = 'unverified'),
+        retention_status TEXT NOT NULL DEFAULT 'active'
+            CHECK (retention_status IN ('active','invalidated','deleted')),
+        PRIMARY KEY (revision_key, event_id, evidence_role)
+    )""",
+    """INSERT INTO protected_state_provenance
+        SELECT * FROM protected_state_provenance_v9""",
+    "DROP TABLE protected_state_provenance_v9",
+    "CREATE INDEX protected_state_provenance_event ON protected_state_provenance(event_id, revision_key)",
+)
+
+
 def schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
     """Exact application objects, including explicit indexes and triggers."""
     return {
@@ -756,6 +778,7 @@ def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
                 _SCHEMA_V7,
                 _SCHEMA_V8,
                 _SCHEMA_V9,
+                _SCHEMA_V10,
             ),
             start=1,
         ):
@@ -886,7 +909,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION}:
+            if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -895,7 +918,7 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, SCHEMA_VERSION}:
+                if version not in {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if (
                     connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -915,6 +938,7 @@ class EventStore:
                         *_SCHEMA_V7,
                         *_SCHEMA_V8,
                         *_SCHEMA_V9,
+                        *_SCHEMA_V10,
                     ):
                         connection.execute(statement)
                     connection.execute(
@@ -932,6 +956,7 @@ class EventStore:
                         (7, _SCHEMA_V7, FaultPoint.BEFORE_V7_MIGRATION_COMMIT),
                         (8, _SCHEMA_V8, FaultPoint.BEFORE_V8_MIGRATION_COMMIT),
                         (9, _SCHEMA_V9, FaultPoint.BEFORE_V9_MIGRATION_COMMIT),
+                        (10, _SCHEMA_V10, FaultPoint.BEFORE_V10_MIGRATION_COMMIT),
                     )
                     for target, statements, fault_point in migrations:
                         if target > version:

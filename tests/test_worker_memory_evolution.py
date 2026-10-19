@@ -868,7 +868,7 @@ def test_exposed_unselected_context_is_erased_and_old_backup_cannot_restore(tmp_
     assert created[2][0] in pending.snapshot.sources
     backup = tmp_path / "before-deletion.db"
     create_sqlite_backup(
-        events.database_path, backup, 9, datetime(2030, 1, 1, tzinfo=UTC)
+        events.database_path, backup, 10, datetime(2030, 1, 1, tzinfo=UTC)
     )
     ledger = PrivacyLedger(tmp_path / "ledger.db")
     assert (
@@ -901,7 +901,7 @@ def test_exposed_unselected_context_is_erased_and_old_backup_cannot_restore(tmp_
     )
     quarantine = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 9, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 10, EventStoreRestoreAdapter)
         .restore(backup, quarantine, datetime(2030, 1, 2, tzinfo=UTC))
         .activation_eligible
     )

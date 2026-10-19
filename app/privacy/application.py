@@ -9,6 +9,7 @@ from collections.abc import Callable
 from contextlib import closing
 from datetime import datetime
 from pathlib import Path
+import json
 import sqlite3
 from threading import RLock
 from typing import TypeVar
@@ -181,18 +182,18 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7, 8, 9}:
+    if schema_version in {6, 7, 8, 9, 10}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version in {7, 8, 9}:
+    if schema_version in {7, 8, 9, 10}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ApplicationPrivacyError("invalid_generic_graph") from error
     if (
-        schema_version == 9
+        schema_version in {9, 10}
         and db.execute(
             """SELECT 1 FROM private_extraction_receipts r
         JOIN event_envelopes e ON e.event_id=r.source_event_id
@@ -211,9 +212,114 @@ def _validate_graph(
         is not None
     ):
         raise ApplicationPrivacyError("invalid_extraction_receipt")
+    if schema_version == 10:
+        _validate_typed_receipts(db)
     for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
+
+
+def _validate_typed_receipts(db: sqlite3.Connection) -> None:
+    """A typed receipt must contain exactly the exposed heads' source union."""
+    from app.cognition.worker_typed import _HANDLE, parse_typed_proposal
+
+    rows = db.execute(
+        "SELECT operation_id,source_event_id,source_principal_id,proposal FROM private_extraction_receipts WHERE operation_id LIKE 'typed:%'"
+    ).fetchall()
+    try:
+        for _operation_id, source_event_id, principal_id, raw in rows:
+            if len(raw.encode("utf-8")) > 131_072:
+                raise ValueError
+            value = json.loads(raw)
+            if (
+                type(value) is not dict
+                or set(value) != {"version", "snapshot", "proposal"}
+                or value["version"] != "private-typed-receipt-v1"
+                or type(value["snapshot"]) is not dict
+                or set(value["snapshot"]) != {"selected", "visible", "sources"}
+            ):
+                raise ValueError
+            if value["proposal"] is not None:
+                parse_typed_proposal(json.dumps(value["proposal"]))
+            selected = value["snapshot"]["selected"]
+            visible = value["snapshot"]["visible"]
+            sources = value["snapshot"]["sources"]
+            if (
+                type(selected) is not list
+                or len(selected) > 8
+                or type(visible) is not list
+                or any(
+                    type(head) is not list
+                    or len(head) != 2
+                    or type(head[0]) is not str
+                    or type(head[1]) is not int
+                    or head[1] < 1
+                    for head in visible
+                )
+                or len({tuple(head) for head in visible}) != len(visible)
+                or type(sources) is not list
+                or len(sources) > 50
+                or any(type(source) is not str for source in sources)
+                or len(set(sources)) != len(sources)
+            ):
+                raise ValueError
+            expected = set()
+            handles = set()
+            selected_heads = set()
+            role_row_count = 2
+            for selected_row in selected:
+                if (
+                    type(selected_row) is not list
+                    or len(selected_row) != 4
+                    or type(selected_row[0]) is not str
+                    or _HANDLE.fullmatch(selected_row[0]) is None
+                    or type(selected_row[1]) is not str
+                    or type(selected_row[2]) is not int
+                    or selected_row[2] < 1
+                    or type(selected_row[3]) is not str
+                    or selected_row[0] in handles
+                    or tuple(selected_row[1:3]) not in {tuple(head) for head in visible}
+                    or tuple(selected_row[1:3]) in selected_heads
+                ):
+                    raise ValueError
+                handles.add(selected_row[0])
+                selected_heads.add(tuple(selected_row[1:3]))
+                _handle, item_id, revision, kind = selected_row
+                item = db.execute(
+                    """SELECT i.state_type,p.retention_status FROM state_items i
+                       JOIN state_revisions r USING(item_key)
+                       JOIN state_revision_payloads p USING(revision_key)
+                       WHERE i.scope='private_candidate' AND i.audience_principal_id=?
+                         AND i.item_id=? AND r.revision_number=?""",
+                    (principal_id, item_id, revision),
+                ).fetchone()
+                if item != (
+                    {
+                        "durable_interest": "interest",
+                        "belief_or_hypothesis": "belief",
+                        "goal_or_intention": "goal",
+                    }[kind],
+                    "active",
+                ):
+                    raise ValueError
+                provenance = db.execute(
+                    """SELECT p.event_id,p.evidence_role,p.retention_status FROM state_items i
+                       JOIN state_revisions r USING(item_key)
+                       JOIN protected_state_provenance p USING(revision_key)
+                       WHERE i.scope='private_candidate' AND i.audience_principal_id=?
+                         AND i.item_id=? AND r.revision_number<=?""",
+                    (principal_id, item_id, revision),
+                ).fetchall()
+                if not provenance or any(
+                    status != "active" for _event, _role, status in provenance
+                ):
+                    raise ValueError
+                expected.update(event_id for event_id, _role, _status in provenance)
+                role_row_count += len(provenance)
+            if expected != set(sources) or role_row_count > 50:
+                raise ValueError
+    except (KeyError, TypeError, UnicodeError, ValueError):
+        raise ApplicationPrivacyError("invalid_typed_receipt") from None
 
 
 def _erase(
@@ -270,11 +376,11 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version in {7, 8, 9}:
+        if schema_version in {7, 8, 9, 10}:
             erase_generic_source(db, request.content_reference)
-        if schema_version in {6, 7, 8, 9}:
+        if schema_version in {6, 7, 8, 9, 10}:
             erase_shared_source(db, request.content_reference)
-        if schema_version == 9:
+        if schema_version in {9, 10}:
             db.execute(
                 """DELETE FROM private_extraction_receipts
                 WHERE source_event_id=? OR EXISTS (

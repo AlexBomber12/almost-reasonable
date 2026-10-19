@@ -1,9 +1,33 @@
 """Remove later schema objects when constructing genuine historical fixtures."""
 
-from app.core.store import _SCHEMA_V5
+from app.core.store import _SCHEMA_V2, _SCHEMA_V5
+
+
+def remove_v10(db):
+    """Restore the original typed provenance constraint for old fixtures."""
+    rows = db.execute("SELECT * FROM protected_state_provenance").fetchall()
+    db.execute("DROP TABLE protected_state_provenance")
+    db.execute(
+        next(
+            sql
+            for sql in _SCHEMA_V2
+            if "CREATE TABLE protected_state_provenance" in sql
+        )
+    )
+    db.executemany(
+        "INSERT INTO protected_state_provenance VALUES (?,?,?,?,?,?,?,?)", rows
+    )
+    db.execute(
+        next(
+            sql
+            for sql in _SCHEMA_V2
+            if "CREATE INDEX protected_state_provenance_event" in sql
+        )
+    )
 
 
 def remove_v8(db):
+    remove_v10(db)
     db.execute("DROP TABLE private_extraction_receipts")
     db.execute("DROP TABLE private_extraction_audit")
     db.execute("DROP TABLE agent_reply_resolutions")
