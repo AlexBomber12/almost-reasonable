@@ -23,6 +23,7 @@ from app.trusted.openai_gateway import GatewayResult, TrustedOpenAIGateway
 from app.core.model_contract import ModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.worker_evolution import EvolutionModelRequest
+from app.cognition.worker_typed import TypedModelRequest
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_protocol import (
     IPC_REJECTED,
@@ -97,6 +98,8 @@ class OpenAIWorkerServer:
         extraction_commit_guard: Callable[[], bool] | None = None,
         evolution_enabled: bool = False,
         evolution_commit_guard: Callable[[], bool] | None = None,
+        typed_enabled: bool = False,
+        typed_commit_guard: Callable[[], bool] | None = None,
     ):
         if type(config) is not WorkerServerConfig:
             raise TypeError("config must be a WorkerServerConfig")
@@ -114,6 +117,10 @@ class OpenAIWorkerServer:
             evolution_commit_guard is not None and not callable(evolution_commit_guard)
         ):
             raise TypeError("invalid evolution guard")
+        if type(typed_enabled) is not bool or (
+            typed_commit_guard is not None and not callable(typed_commit_guard)
+        ):
+            raise TypeError("invalid typed guard")
         if not hasattr(socket, "SO_PEERCRED"):
             raise RuntimeError("Unix peer credentials are unavailable")
         self._config = config
@@ -123,6 +130,8 @@ class OpenAIWorkerServer:
         self._extraction_commit_guard = extraction_commit_guard
         self._evolution_enabled = evolution_enabled
         self._evolution_commit_guard = evolution_commit_guard
+        self._typed_enabled = typed_enabled
+        self._typed_commit_guard = typed_commit_guard
         self._listener: socket.socket | None = None
         self._socket_identity: tuple[int, int] | None = None
 
@@ -219,12 +228,14 @@ class OpenAIWorkerServer:
             else:
                 extraction = type(request.model_request) is ExtractionModelRequest
                 evolution = type(request.model_request) is EvolutionModelRequest
+                typed = type(request.model_request) is TypedModelRequest
                 guarded = (
                     WorkerResponse(
                         "authorization_rejected", 0, _INVALID_REQUEST_RU, None
                     )
                     if (extraction and not self._extraction_enabled)
                     or (evolution and not self._evolution_enabled)
+                    or (typed and not self._typed_enabled)
                     else None
                     if self._request_guard is None
                     else self._request_guard(request)
@@ -236,6 +247,7 @@ class OpenAIWorkerServer:
                         guarded,
                         extraction_operation=extraction,
                         evolution_operation=evolution,
+                        typed_operation=typed,
                     )
                 else:
                     gateway_allowance = (
@@ -249,6 +261,7 @@ class OpenAIWorkerServer:
                             None,
                             extraction_operation=extraction,
                             evolution_operation=evolution,
+                            typed_operation=typed,
                         )
                     else:
                         try:
@@ -259,6 +272,8 @@ class OpenAIWorkerServer:
                                 if extraction
                                 else self._gateway.submit_evolution
                                 if evolution
+                                else self._gateway.submit_typed
+                                if typed
                                 else self._gateway.submit_context
                             )
                             result = submit(
@@ -269,7 +284,10 @@ class OpenAIWorkerServer:
                         except (TypeError, ValueError):
                             return
                         response = _gateway_response(
-                            result, extraction=extraction, evolution=evolution
+                            result,
+                            extraction=extraction,
+                            evolution=evolution,
+                            typed=typed,
                         )
                         if (
                             extraction
@@ -294,6 +312,18 @@ class OpenAIWorkerServer:
                                 _INVALID_REQUEST_RU,
                                 None,
                                 evolution_operation=True,
+                            )
+                        if (
+                            typed
+                            and self._typed_commit_guard is not None
+                            and not self._typed_commit_guard()
+                        ):
+                            response = WorkerResponse(
+                                "authorization_rejected",
+                                result.attempts,
+                                _INVALID_REQUEST_RU,
+                                None,
+                                typed_operation=True,
                             )
             try:
                 send_frame(
@@ -430,7 +460,11 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _gateway_response(
-    result: GatewayResult, *, extraction: bool = False, evolution: bool = False
+    result: GatewayResult,
+    *,
+    extraction: bool = False,
+    evolution: bool = False,
+    typed: bool = False,
 ) -> WorkerResponse:
     validation = (
         result.validation
@@ -446,6 +480,8 @@ def _gateway_response(
         extraction,
         result.evolution,
         evolution,
+        result.typed,
+        typed,
     )
 
 

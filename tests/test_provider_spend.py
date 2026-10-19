@@ -110,10 +110,10 @@ def test_v2_to_v3_migration_is_atomic_and_preserves_existing_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == SCHEMA_VERSION == 9
-    assert reopened.diagnostics().schema_version == 9
+    assert store.diagnostics().schema_version == SCHEMA_VERSION == 10
+    assert reopened.diagnostics().schema_version == 10
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (9,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (10,)
         assert connection.execute(
             "SELECT event_id FROM event_envelopes"
         ).fetchone() == ("event-v2",)
@@ -162,7 +162,7 @@ def test_failed_v3_migration_rolls_back_to_recoverable_v2(tmp_path):
             "WHERE type = 'table' AND name = 'provider_usage_attempts'"
         ).fetchone() == (0,)
 
-    assert EventStore(database).diagnostics().schema_version == 9
+    assert EventStore(database).diagnostics().schema_version == 10
 
 
 def test_concurrent_v2_initialization_is_safe(tmp_path):
@@ -185,7 +185,7 @@ def test_concurrent_v2_initialization_is_safe(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [9, 9]
+    assert outcomes == [10, 10]
 
 
 def test_confirmed_spend_suspension_and_telemetry_are_atomic_and_durable(tmp_path):

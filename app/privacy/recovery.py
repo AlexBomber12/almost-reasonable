@@ -23,6 +23,7 @@ from app.core.store import (
     _SCHEMA_V7,
     _SCHEMA_V8,
     _SCHEMA_V9,
+    _SCHEMA_V10,
 )
 
 from . import files as _files
@@ -73,6 +74,7 @@ def _expected_application_schemas() -> dict[int, dict[tuple[str, str, str], str]
     statements_by_version[7] = (*statements_by_version[6], *_SCHEMA_V7)
     statements_by_version[8] = (*statements_by_version[7], *_SCHEMA_V8)
     statements_by_version[9] = (*statements_by_version[8], *_SCHEMA_V9)
+    statements_by_version[10] = (*statements_by_version[9], *_SCHEMA_V10)
     schemas = {}
     for version, statements in statements_by_version.items():
         with sqlite3.connect(":memory:") as connection:
