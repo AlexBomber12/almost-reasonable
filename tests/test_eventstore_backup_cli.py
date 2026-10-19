@@ -195,6 +195,43 @@ def test_empty_existing_ledger_is_not_initialized(tmp_path, capsys):
     assert not (tmp_path / "candidate.db.ready.json").exists()
 
 
+def test_ledger_replaced_between_validation_and_construction_fails_closed(
+    tmp_path, capsys, monkeypatch
+):
+    source = tmp_path / "events.db"
+    EventStore(source)
+    backup = tmp_path / "snapshot.db"
+    assert invoke(capsys, "backup", "--source", source, "--destination", backup)[0] == 0
+    ledger_path = tmp_path / "current-ledger.db"
+    PrivacyLedger(ledger_path)
+    substitute = tmp_path / "substitute-ledger.db"
+    PrivacyLedger(substitute)
+    saved = tmp_path / "saved-ledger.db"
+
+    class SwappingLedger(PrivacyLedger):
+        def __init__(self, path):
+            ledger_path.rename(saved)
+            substitute.rename(ledger_path)
+            super().__init__(path)
+
+    monkeypatch.setattr(eventstore_backup, "PrivacyLedger", SwappingLedger)
+    quarantine = tmp_path / "candidate.db"
+    code, output = invoke(
+        capsys,
+        "restore",
+        "--backup",
+        backup,
+        "--ledger",
+        ledger_path,
+        "--quarantine",
+        quarantine,
+    )
+    assert code == 1 and output["reason_code"] == "restore_failed"
+    assert saved.exists()
+    assert not quarantine.exists()
+    assert not (tmp_path / "candidate.db.ready.json").exists()
+
+
 def test_ledger_permissions_and_blocked_reconciliation(tmp_path, capsys):
     source = tmp_path / "events.db"
     store = EventStore(source)
