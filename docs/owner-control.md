@@ -116,6 +116,12 @@ must choose one authoritative source, wire fresh reads before every provider
 call/retry and external effect, define failure/recovery policy and test process
 restart. An in-flight external call cannot be retroactively revoked.
 
+The INT-26 composition can optionally show independent worker observations
+through the separate read-only status process in `docs/worker-telemetry.md`.
+Its Stop observation is distinct from this application Stop. Its recorded
+provider totals are not billing or model-readiness evidence. Missing or stale
+status remains unavailable, and the console never receives worker state files.
+
 Provider inspection uses `ProviderStateStore.suspension`, `usage_attempt_count`
 and, when suspended, `usage_attempt` for the recorded suspension attempt. Only
 token counters, cost availability, estimate and currency are projected; request,

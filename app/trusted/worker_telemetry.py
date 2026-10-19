@@ -1,0 +1,364 @@
+"""Explicitly started, read-only worker status process; no inference imports."""
+
+import argparse
+from datetime import UTC, datetime
+import json
+import os
+from pathlib import Path
+import signal
+import socket
+import sqlite3
+import stat
+import struct
+from time import monotonic
+
+from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT
+from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES
+from app.core.store import EventStore, EventStoreError
+from app.trusted.openai_credential_files import TrustedTransportConfigurationError
+from app.trusted.private_pilot import (
+    PilotAuthorityError,
+    _unique,
+    protected_state_identity,
+    read_pilot_control,
+)
+from app.worker_telemetry.protocol import (
+    REQUEST,
+    TOKEN_KEYS,
+    VERSION,
+    encode,
+    unavailable,
+)
+
+STOP_VERSION = "private-pilot-emergency-stop-v1"
+
+
+def _peer_uid(connection):
+    return struct.unpack(
+        "iII",
+        connection.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, struct.calcsize("iII")
+        ),
+    )[1]
+
+
+def _safe_socket_directory(path, group_gid):
+    if not path.is_absolute() or len(os.fsencode(path)) > 107:
+        raise ValueError("invalid telemetry socket path")
+    parent = path.parent
+    try:
+        entry = parent.lstat()
+        resolved = parent.resolve(strict=True)
+    except OSError:
+        raise ValueError("telemetry socket directory unavailable") from None
+    mode = 0o710 if group_gid is not None else 0o700
+    if (
+        resolved != parent
+        or not stat.S_ISDIR(entry.st_mode)
+        or entry.st_uid != os.geteuid()
+        or stat.S_IMODE(entry.st_mode) != mode
+        or (group_gid is not None and entry.st_gid != group_gid)
+    ):
+        raise ValueError("unsafe telemetry socket directory")
+    if path.exists() or path.is_symlink():
+        raise ValueError("telemetry socket already exists")
+
+
+def _stop(path):
+    try:
+        value = json.loads(
+            read_pilot_control(path, maximum_bytes=1024), object_pairs_hook=_unique
+        )
+        if (
+            type(value) is not dict
+            or set(value) != {"version", "stop"}
+            or value["version"] != STOP_VERSION
+            or type(value["stop"]) is not bool
+        ):
+            raise ValueError("invalid stop control")
+        return {"valid": True, "active": value["stop"]}
+    except (
+        PilotAuthorityError,
+        TrustedTransportConfigurationError,
+        UnicodeDecodeError,
+        ValueError,
+        OSError,
+    ):
+        return {"valid": False, "active": None}
+
+
+def _sidecar_identities(path):
+    identities = []
+    for suffix in ("-wal", "-shm"):
+        sidecar = Path(f"{path}{suffix}")
+        try:
+            entry = sidecar.lstat()
+        except FileNotFoundError:
+            identities.append(None)
+            continue
+        if (
+            not stat.S_ISREG(entry.st_mode)
+            or entry.st_uid != os.geteuid()
+            or stat.S_IMODE(entry.st_mode) != 0o600
+            or entry.st_nlink != 1
+        ):
+            raise ValueError("unsafe database sidecar")
+        identities.append((entry.st_dev, entry.st_ino))
+    return tuple(identities)
+
+
+def _provider(path):
+    empty = unavailable()["provider"]
+    connection = None
+    try:
+        identity = protected_state_identity(path)
+        sidecars = _sidecar_identities(path)
+        deadline = monotonic() + 0.5
+        connection = sqlite3.connect(
+            path.as_uri() + "?mode=ro", uri=True, timeout=0.2, isolation_level=None
+        )
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA busy_timeout=200")
+        connection.set_progress_handler(
+            lambda: 1 if monotonic() > deadline else 0, 1000
+        )
+        connection.execute("BEGIN")
+        EventStore._verify_current_schema(connection)
+        row = connection.execute(
+            """
+            SELECT COUNT(*),
+                   COALESCE(SUM(input_tokens),0),
+                   COALESCE(SUM(cached_input_tokens),0),
+                   COALESCE(SUM(output_tokens),0),
+                   COALESCE(SUM(total_tokens),0),
+                   COALESCE(SUM(CASE WHEN input_tokens IS NULL OR cached_input_tokens IS NULL OR output_tokens IS NULL OR total_tokens IS NULL OR cost_estimate_status IN ('usage_unavailable', 'usage_incomplete') THEN 1 ELSE 0 END),0),
+                   COALESCE(SUM(CASE WHEN (input_tokens IS NOT NULL AND (typeof(input_tokens) != 'integer' OR input_tokens < 0 OR input_tokens > ?)) OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?)) OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?)) OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?)) THEN 1 ELSE 0 END),0)
+            FROM provider_usage_attempts
+        """,
+            (MAX_PROVIDER_TOKEN_COUNT,) * 4,
+        ).fetchone()
+        suspensions = connection.execute(
+            "SELECT provider, confirmed_at, provider_error_code, provider_config_version, attempt_id FROM provider_spend_suspensions LIMIT 2"
+        ).fetchall()
+        connection.execute("ROLLBACK")
+        if (
+            row[6]
+            or any(type(value) is not int or value < 0 for value in row)
+            or len(suspensions) > 1
+        ):
+            raise ValueError("invalid provider records")
+        if suspensions:
+            provider, confirmed_at, code, config, attempt_id = suspensions[0]
+            if (
+                provider != "openai"
+                or code not in CONFIRMED_SPEND_LIMIT_CODES
+                or type(config) is not str
+                or not config
+                or type(attempt_id) is not str
+                or not attempt_id
+                or EventStore._serialize_time(datetime.fromisoformat(confirmed_at))
+                != confirmed_at
+            ):
+                raise ValueError("invalid spend suspension")
+        current_sidecars = _sidecar_identities(path)
+        if protected_state_identity(path) != identity or any(
+            before is not None and before != after
+            for before, after in zip(sidecars, current_sidecars, strict=True)
+        ):
+            raise ValueError("provider source changed")
+        return {
+            "available": True,
+            "attempt_count": row[0],
+            "recorded_tokens": dict(zip(TOKEN_KEYS, row[1:5], strict=True)),
+            "unknown_usage_attempts": row[5],
+            "spend_suspended": bool(suspensions),
+        }
+    except (
+        OSError,
+        sqlite3.Error,
+        EventStoreError,
+        PilotAuthorityError,
+        ValueError,
+        TypeError,
+    ):
+        return empty
+    finally:
+        if connection is not None:
+            connection.close()
+
+
+class WorkerTelemetryServer:
+    """One fixed observational operation, with peer authentication first."""
+
+    def __init__(
+        self,
+        socket_path: Path,
+        provider_db: Path,
+        stop_path: Path,
+        allowed_uids: frozenset[int],
+        *,
+        socket_group_gid: int | None = None,
+    ):
+        if (
+            not hasattr(socket, "SO_PEERCRED")
+            or any(
+                not isinstance(path, Path) or not path.is_absolute()
+                for path in (socket_path, provider_db, stop_path)
+            )
+            or type(allowed_uids) is not frozenset
+            or not allowed_uids
+            or any(
+                type(uid) is not int or not 0 <= uid <= 2**32 - 2
+                for uid in allowed_uids
+            )
+            or (
+                socket_group_gid is not None
+                and (
+                    type(socket_group_gid) is not int
+                    or not 0 <= socket_group_gid <= 2**32 - 2
+                )
+            )
+        ):
+            raise ValueError("invalid telemetry configuration")
+        self.socket_path, self.provider_db, self.stop_path = (
+            socket_path,
+            provider_db,
+            stop_path,
+        )
+        self.allowed_uids, self.socket_group_gid = allowed_uids, socket_group_gid
+        self.listener = None
+        self.identity = None
+
+    def start(self):
+        if self.listener is not None:
+            raise RuntimeError("telemetry server already started")
+        _safe_socket_directory(self.socket_path, self.socket_group_gid)
+        listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old_umask = os.umask(0o177)
+        try:
+            listener.bind(str(self.socket_path))
+        except OSError:
+            listener.close()
+            raise RuntimeError("telemetry socket creation failed") from None
+        finally:
+            os.umask(old_umask)
+        try:
+            entry = self.socket_path.lstat()
+            self.identity = (entry.st_dev, entry.st_ino)
+            if self.socket_group_gid is not None:
+                os.chown(
+                    self.socket_path, -1, self.socket_group_gid, follow_symlinks=False
+                )
+            mode = 0o660 if self.socket_group_gid is not None else 0o600
+            os.chmod(self.socket_path, mode, follow_symlinks=False)
+            entry = self.socket_path.lstat()
+            if (
+                not stat.S_ISSOCK(entry.st_mode)
+                or (entry.st_dev, entry.st_ino) != self.identity
+                or entry.st_uid != os.geteuid()
+                or stat.S_IMODE(entry.st_mode) != mode
+                or (
+                    self.socket_group_gid is not None
+                    and entry.st_gid != self.socket_group_gid
+                )
+            ):
+                raise RuntimeError("telemetry socket creation failed")
+            listener.listen(8)
+            listener.settimeout(0.25)
+            self.listener = listener
+        except (OSError, RuntimeError):
+            listener.close()
+            self.close()
+            raise RuntimeError("telemetry socket creation failed") from None
+
+    def serve_once(self):
+        if self.listener is None:
+            raise RuntimeError("telemetry server is not started")
+        try:
+            connection, _ = self.listener.accept()
+        except TimeoutError:
+            return False
+        with connection:
+            connection.settimeout(0.5)
+            try:
+                if _peer_uid(connection) not in self.allowed_uids:
+                    return True
+                request = bytearray()
+                while len(request) <= len(REQUEST):
+                    chunk = connection.recv(len(REQUEST) + 1 - len(request))
+                    if not chunk:
+                        break
+                    request.extend(chunk)
+                if request != REQUEST:
+                    return True
+                response = {
+                    "version": VERSION,
+                    "available": True,
+                    "collected_at": datetime.now(UTC).isoformat(),
+                    "stop": _stop(self.stop_path),
+                    "provider": _provider(self.provider_db),
+                }
+                connection.sendall(encode(response))
+            except (OSError, TimeoutError, ValueError, struct.error):
+                pass
+        return True
+
+    def serve(self, *, should_stop=lambda: False):
+        try:
+            while not should_stop():
+                self.serve_once()
+        finally:
+            self.close()
+
+    def close(self):
+        if self.listener is not None:
+            self.listener.close()
+            self.listener = None
+        if self.identity is not None:
+            try:
+                entry = self.socket_path.lstat()
+                if (
+                    stat.S_ISSOCK(entry.st_mode)
+                    and (entry.st_dev, entry.st_ino) == self.identity
+                ):
+                    self.socket_path.unlink()
+            except FileNotFoundError:
+                pass
+            self.identity = None
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description="Read-only private worker telemetry")
+    parser.add_argument("--socket", required=True, type=Path)
+    parser.add_argument("--provider-db", required=True, type=Path)
+    parser.add_argument("--stop-file", required=True, type=Path)
+    parser.add_argument("--allow-uid", action="append", required=True, type=int)
+    parser.add_argument("--socket-group-gid", type=int)
+    args = parser.parse_args(argv)
+    server = WorkerTelemetryServer(
+        args.socket,
+        args.provider_db,
+        args.stop_file,
+        frozenset(args.allow_uid),
+        socket_group_gid=args.socket_group_gid,
+    )
+    stopping = False
+
+    def stop(_signum, _frame):
+        nonlocal stopping
+        stopping = True
+
+    previous_term = signal.signal(signal.SIGTERM, stop)
+    previous_int = signal.signal(signal.SIGINT, stop)
+    try:
+        server.start()
+        server.serve(should_stop=lambda: stopping)
+    finally:
+        server.close()
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
