@@ -2,6 +2,7 @@
 let csrf = null;
 const byId = id => document.getElementById(id);
 const message = text => { byId('message').textContent = text; };
+const stopResult = value => ({pending: 'Ожидается', confirmed: 'Подтверждено', unavailable: 'Недоступно', uncertain: 'Неизвестно'})[value] || 'Неизвестно';
 async function api(path, method = 'GET', payload = null, token = null) {
   const options = {method, credentials: 'same-origin', headers: {}};
   if (payload !== null) {options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(payload);}
@@ -30,6 +31,10 @@ async function refresh() {
   const worker = data.worker;
   show('Наблюдение воркера', worker.available ? `Собрано ${worker.collected_at}` : 'Недоступно');
   show('Stop воркера', worker.stop.valid ? (worker.stop.active ? 'Включён' : 'Выключен') : 'Недоступен');
+  if (data.emergency_operation) {
+    show('Последняя команда: приложение', stopResult(data.emergency_operation.application));
+    show('Последняя команда: воркер', stopResult(data.emergency_operation.worker));
+  }
   const provider = worker.provider;
   show('Приостановка расходов воркера', provider.available ? (provider.spend_suspended ? 'Приостановлены' : 'Не зафиксирована') : 'Недоступно');
   show('Попытки провайдера, записанные воркером', provider.available ? String(provider.attempt_count) : 'Недоступно');
@@ -54,8 +59,8 @@ async function refresh() {
   show('Реестр приватности', data.privacy.ledger_ready ? 'Доступен' : 'Недоступен');
   for (const item of data.audit) {
     const row = document.createElement('li');
-    const actions = {stop: 'включение Stop', resume: 'снятие Stop', stop_control: 'изменение Stop', session_control: 'управление сеансом'};
-    const results = {applied: 'выполнено', rejected: 'отклонено'};
+    const actions = {stop: 'включение Stop', resume: 'снятие Stop', stop_control: 'изменение Stop', worker_stop_control: 'изменение Stop воркера', session_control: 'управление сеансом', worker_stop: 'Stop воркера', application_stop: 'Stop приложения'};
+    const results = {applied: 'выполнено', rejected: 'отклонено', confirmed: 'подтверждено', unavailable: 'недоступно', uncertain: 'неизвестно'};
     row.textContent = `${item.occurred_at}: ${actions[item.action_type] || 'действие владельца'}, ${results[item.result] || 'результат записан'}`;
     byId('audit').append(row);
   }
@@ -83,6 +88,21 @@ async function change(active) {
   } catch (error) {message(error.message);}
 }
 byId('stop').addEventListener('click', () => change(true));
+byId('emergency-stop').addEventListener('click', async () => {
+  const button = byId('emergency-stop');
+  button.disabled = true;
+  byId('emergency-result').textContent = 'Приложение: ожидается; воркер: ожидается.';
+  try {
+    const operation = await api('/worker-stop-operation', 'POST', null, csrf);
+    const result = await api('/emergency-stop', 'POST', {operation_id: operation.operation_id}, csrf);
+    byId('emergency-result').textContent = `Приложение: ${stopResult(result.application)}; воркер: ${stopResult(result.worker)}.`;
+    try {await refresh();}
+    catch {message('Не удалось обновить состояние. Результат команды показан выше.');}
+  } catch (error) {
+    byId('emergency-result').textContent = 'Приложение: неизвестно; воркер: неизвестно. Проверьте состояние отдельно.';
+    message(error.message);
+  } finally {button.disabled = false;}
+});
 byId('resume').addEventListener('click', () => change(false));
 byId('logout').addEventListener('click', async () => {
   try {await api('/logout', 'POST', null, csrf); csrf = null; byId('control-panel').hidden = true; byId('login-panel').hidden = false; message('Вы вышли.');}

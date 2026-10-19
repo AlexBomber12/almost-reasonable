@@ -116,6 +116,9 @@ must choose one authoritative source, wire fresh reads before every provider
 call/retry and external effect, define failure/recovery policy and test process
 restart. An in-flight external call cannot be retroactively revoked.
 
+The later INT-26/B09B composition adds a separately configured, worker owned
+Stop assertion service for its private pilot. See `docs/b09b-worker-emergency-stop.md`.
+
 The INT-26 composition can optionally show independent worker observations
 through the separate read-only status process in `docs/worker-telemetry.md`.
 Its Stop observation is distinct from this application Stop. Its recorded

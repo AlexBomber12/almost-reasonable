@@ -14,6 +14,7 @@ from app.private_web.server import PrivateWSGIRequestHandler
 from app.core.store import EventStore
 from app.owner_control.store import OwnerStore
 from app.owner_control.worker_telemetry import WorkerTelemetryClient
+from app.owner_control.worker_stop import WorkerStopClient
 from app.owner_control.wsgi import OwnerApplication
 from app.private_web.cli import IPv6WSGIServer
 from app.private_web.wsgi import PrivateWebConfig, _valid_origin
@@ -112,6 +113,15 @@ def build_application(args):
             if telemetry_socket is not None
             else None
         )
+        stop_socket = getattr(args, "worker_stop_socket", None)
+        stop_uid = getattr(args, "worker_stop_uid", None)
+        if (stop_socket is None) != (stop_uid is None):
+            raise ValueError("worker Stop socket and UID must be configured together")
+        worker_stop = (
+            WorkerStopClient(Path(stop_socket), stop_uid)
+            if stop_socket is not None
+            else None
+        )
         return OwnerApplication(
             owner,
             events,
@@ -120,6 +130,7 @@ def build_application(args):
             allowed_clients=frozenset(args.allowed_client),
             pilot_provider_events=ipc,
             worker_telemetry=telemetry,
+            worker_stop=worker_stop,
         )
     except (OSError, RuntimeError, PermissionError, sqlite3.Error) as error:
         raise ValueError("application stores are unavailable or unsafe") from error
@@ -138,6 +149,8 @@ def main(argv=None, *, server_factory=make_server):
     parser.add_argument("--trusted-proxy", action="append", default=[])
     parser.add_argument("--worker-telemetry-socket")
     parser.add_argument("--worker-telemetry-uid", type=int)
+    parser.add_argument("--worker-stop-socket")
+    parser.add_argument("--worker-stop-uid", type=int)
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18026)
     args = parser.parse_args(argv)

@@ -113,6 +113,8 @@ Application-observed spend suspension and attempt count come from
 They are not a worker usage total or billing authority. The optional,
 independent read-only worker telemetry socket in `docs/worker-telemetry.md`
 supplies worker Stop and provider aggregates.
+For the separately configured B09B worker Stop assertion socket, operation
+outcomes and local recovery procedure, see `docs/b09b-worker-emergency-stop.md`.
 The display separates finalized usage, finalized attempts with incomplete
 token data, and reservations without a final result. A reservation does not
 confirm a provider call; actual total usage may be unknown even when recorded
@@ -130,9 +132,10 @@ secrets or raw database errors.
 
 ## Shutdown and validation
 
-For an authorized live pilot, first activate the independent worker Stop with
-the protected worker-side procedure in `docs/int22-private-pilot.md`, then
-activate application Stop through this console. Stop the owner console with
+For an authorized live pilot, use the B09B emergency control when configured,
+or first activate the independent worker Stop with the protected worker-side
+procedure in `docs/int22-private-pilot.md`, then activate application Stop
+through this console. Stop the owner console with
 the local process supervisor or `Ctrl-C`, and stop the worker/application by
 the INT-22 procedure. Preserve all databases and audit evidence. Stopping the
 console process does not change either Stop value.

@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import ssl
 import subprocess
+from types import SimpleNamespace
 from wsgiref.simple_server import make_server
 
 from playwright.sync_api import expect, sync_playwright
@@ -18,7 +19,7 @@ from test_private_web_browser import running
 
 
 @contextmanager
-def owner_server(tmp_path):
+def owner_server(tmp_path, *, worker_result=None):
     cert = Path(tmp_path, "cert.pem")
     key = Path(tmp_path, "key.pem")
     subprocess.run(
@@ -66,6 +67,11 @@ def owner_server(tmp_path):
                 frozenset({f"localhost:{server.server_port}"}), frozenset({origin})
             ),
             pilot_provider_events=provider,
+            worker_stop=(
+                SimpleNamespace(assert_stop=lambda: worker_result)
+                if worker_result is not None
+                else None
+            ),
         )
         tls = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         tls.load_cert_chain(cert, key)
@@ -88,10 +94,10 @@ def test_chromium_owner_login_stop_and_logout_have_no_credential_urls(tmp_path, 
             page.get_by_label("Пароль", exact=True).fill("synthetic browser password")
             page.get_by_role("button", name="Войти", exact=True).click()
             expect(
-                page.get_by_role("button", name="Снять Stop приложения")
+                page.get_by_role("button", name="Снять Stop только приложения")
             ).to_be_visible()
             page.on("dialog", lambda dialog: dialog.accept())
-            page.get_by_role("button", name="Снять Stop приложения").click()
+            page.get_by_role("button", name="Снять Stop только приложения").click()
             expect(page.locator("#message")).to_have_text("Stop приложения снят.")
             assert not store.active()
             page.get_by_role("button", name="Включить Stop приложения").click()
@@ -109,6 +115,66 @@ def test_chromium_owner_login_stop_and_logout_have_no_credential_urls(tmp_path, 
     assert ("POST", "/login", "") in observed
     assert all(query == "" for _, _, query in observed)
     assert "synthetic browser password" not in "".join(capsys.readouterr())
+
+
+def test_chromium_emergency_button_reports_separate_uncertain_worker(tmp_path):
+    with (
+        owner_server(tmp_path, worker_result="uncertain") as (origin, store, _),
+        sync_playwright() as playwright,
+    ):
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(ignore_https_errors=True)
+            page.goto(origin)
+            page.get_by_label("Имя", exact=True).fill("synthetic-owner")
+            page.get_by_label("Пароль", exact=True).fill("synthetic browser password")
+            page.get_by_role("button", name="Войти", exact=True).click()
+            page.on("dialog", lambda dialog: dialog.accept())
+            page.get_by_role("button", name="Снять Stop только приложения").click()
+            expect(page.locator("#message")).to_have_text("Stop приложения снят.")
+            assert not store.active()
+            page.get_by_role("button", name="Остановить приложение и воркер").click()
+            expect(page.locator("#emergency-result")).to_have_text(
+                "Приложение: Подтверждено; воркер: Неизвестно."
+            )
+            assert store.active()
+        finally:
+            browser.close()
+
+
+def test_chromium_emergency_result_survives_failed_status_refresh(tmp_path):
+    with (
+        owner_server(tmp_path, worker_result="confirmed") as (origin, store, _),
+        sync_playwright() as playwright,
+    ):
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(ignore_https_errors=True)
+            page.goto(origin)
+            page.get_by_label("Имя", exact=True).fill("synthetic-owner")
+            page.get_by_label("Пароль", exact=True).fill("synthetic browser password")
+            page.get_by_role("button", name="Войти", exact=True).click()
+            expect(
+                page.get_by_role("button", name="Остановить приложение и воркер")
+            ).to_be_visible()
+            page.route(
+                "**/status",
+                lambda route: route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body='{"error":"unavailable"}',
+                ),
+            )
+            page.get_by_role("button", name="Остановить приложение и воркер").click()
+            expect(page.locator("#emergency-result")).to_have_text(
+                "Приложение: Подтверждено; воркер: Подтверждено."
+            )
+            expect(page.locator("#message")).to_have_text(
+                "Не удалось обновить состояние. Результат команды показан выше."
+            )
+            assert store.active()
+        finally:
+            browser.close()
 
 
 @pytest.mark.parametrize("failure", ["disabled", "blocked", "broken"])
