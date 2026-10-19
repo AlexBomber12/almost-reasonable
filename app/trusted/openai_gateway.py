@@ -9,6 +9,11 @@ import math
 import time
 
 from app.core.agent_proposals import ProposalValidation, parse_agent_proposal
+from app.cognition.worker_extraction import (
+    ExtractionModelRequest,
+    ExtractionProposal,
+    parse_extraction_proposal,
+)
 from app.core.model_contract import ModelRequest
 from app.core.provider_contract import (
     PROVIDER_NAME,
@@ -18,6 +23,7 @@ from app.core.provider_contract import (
     ProviderUsage,
     build_openai_request,
     build_worker_context_request,
+    build_worker_extraction_request,
     estimate_cost,
     require_identifier,
     validate_pricing_config,
@@ -78,12 +84,14 @@ class GatewayResult:
     attempts: int
     safe_russian_message: str | None
     validation: ProposalValidation | None = field(repr=False)
+    extraction: ExtractionProposal | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
 class _ParsedResponse:
     outcome: GatewayOutcome
     validation: ProposalValidation | None
+    extraction: ExtractionProposal | None = None
 
 
 class TrustedOpenAIGateway:
@@ -142,6 +150,15 @@ class TrustedOpenAIGateway:
             request, correlation_id=correlation_id, operation_id=operation_id
         )
 
+    def submit_extraction(
+        self, request: ExtractionModelRequest, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
+        if type(request) is not ExtractionModelRequest:
+            raise TypeError("request must be an extraction request")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
     def _submit(
         self, request, *, correlation_id: str, operation_id: str
     ) -> GatewayResult:
@@ -152,6 +169,8 @@ class TrustedOpenAIGateway:
         provider_request = (
             build_openai_request(request, self._config)
             if type(request) is ModelRequest
+            else build_worker_extraction_request(request, self._config)
+            if type(request) is ExtractionModelRequest
             else build_worker_context_request(request, self._config)
         )
         if (
@@ -257,7 +276,9 @@ class TrustedOpenAIGateway:
             parsed = (
                 _ParsedResponse(GatewayOutcome.TIMEOUT, None)
                 if ended >= deadline
-                else _parse_response(response)
+                else _parse_response(
+                    response, extraction=type(request) is ExtractionModelRequest
+                )
             )
             persisted = self._record(
                 request=request,
@@ -283,6 +304,7 @@ class TrustedOpenAIGateway:
                 attempts=completed_attempts,
                 response_id=response.response_id,
                 validation=parsed.validation,
+                extraction=parsed.extraction,
             )
 
     def _preflight(
@@ -330,10 +352,16 @@ class TrustedOpenAIGateway:
             provider=PROVIDER_NAME,
             model_identifier=self._config.model,
             provider_config_version=self._config.version,
-            prompt_version=self._config.prompt_version,
+            prompt_version=(
+                "private-extraction-v1"
+                if type(request) is ExtractionModelRequest
+                else self._config.prompt_version
+            ),
             core_self_version=(
                 request.core_self_version
                 if type(request) is ModelRequest
+                else "private-extraction-v1"
+                if type(request) is ExtractionModelRequest
                 else request.conversation.core_self_version
             ),
             provider_response_id=response_id,
@@ -436,6 +464,7 @@ class TrustedOpenAIGateway:
         attempts: int,
         response_id: str | None = None,
         validation: ProposalValidation | None = None,
+        extraction: ExtractionProposal | None = None,
     ) -> GatewayResult:
         if outcome is GatewayOutcome.COMPLETED:
             message = None
@@ -448,7 +477,9 @@ class TrustedOpenAIGateway:
             message = _STOP_FAILURE_RU
         else:
             message = _GENERAL_FAILURE_RU
-        return GatewayResult(outcome, response_id, attempts, message, validation)
+        return GatewayResult(
+            outcome, response_id, attempts, message, validation, extraction
+        )
 
 
 _RETRYABLE_OUTCOMES = frozenset(
@@ -494,7 +525,9 @@ def _classify_error(error: OpenAITransportError) -> GatewayOutcome:
     return GatewayOutcome.UNKNOWN_ERROR
 
 
-def _parse_response(response: ProviderResponse) -> _ParsedResponse:
+def _parse_response(
+    response: ProviderResponse, *, extraction: bool = False
+) -> _ParsedResponse:
     if type(response) is not ProviderResponse:
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
     if response.status == "incomplete":
@@ -531,6 +564,12 @@ def _parse_response(response: ProviderResponse) -> _ParsedResponse:
         payload = json.loads(text)
     except (json.JSONDecodeError, UnicodeDecodeError):
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
+    if extraction:
+        try:
+            parsed = parse_extraction_proposal(text)
+        except ValueError:
+            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+        return _ParsedResponse(GatewayOutcome.COMPLETED, None, parsed)
     if type(payload) is not dict or set(payload) != {
         "decision",
         "reason_category",

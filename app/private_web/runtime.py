@@ -14,6 +14,9 @@ from app.cognition.conversation_context import (
 )
 from app.cognition.pipeline import CognitionEngine
 from app.cognition.contracts import CognitionCapabilities
+from app.cognition.contracts import CognitionOutcomeStatus
+from app.cognition.contracts import CognitionReason
+from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.synthetic import SyntheticMemoryExtractor
 from app.cognition.shared import SharedIntelligence
 from app.cognition.shared_context import SharedModelRequest, assemble_shared
@@ -70,6 +73,7 @@ from .conversation import (
     SubmittedMessage,
     _utc_now,
 )
+from .extraction_audit import ExtractionAuditStore
 
 
 _WORKER_FAILURE_RU = "Сервис модели временно недоступен. Попробуйте позже."
@@ -276,6 +280,13 @@ class _DurableConversationRuntime(ConversationService):
         operation_id = self._operation_id(event_id)
         route = TrustedActionContext(correlation, principal)
         existing = self._gate.read_reply(principal, operation_id)
+        if (
+            existing is not None
+            and getattr(self, "_extraction_audit", None) is not None
+        ):
+            self._reconcile_worker_extraction(
+                principal, event_id, content, operation_id
+            )
         if existing is None:
             self._checkpoint("before_reservation")
 
@@ -340,7 +351,15 @@ class _DurableConversationRuntime(ConversationService):
                         self._checkpoint("after_extraction")
                         # Deletion or changed controls during extraction block inference.
                         caps = self._gate.authorized(preflight)
-                    if self._cognition is not None and (
+                    if getattr(self, "_extraction_audit", None) is not None:
+                        self._extract_worker_memory(
+                            principal, event_id, content, correlation, operation_id
+                        )
+                        caps = self._gate.authorized(preflight)
+                    if (
+                        self._cognition is not None
+                        or getattr(self, "_extraction_audit", None) is not None
+                    ) and (
                         caps.emergency_stop_active
                         or caps.provider_spend_suspended
                         or not caps.private_reply_drafts_enabled
@@ -488,6 +507,151 @@ class _DurableConversationRuntime(ConversationService):
             )
         finally:
             self._memory_bridge.payload.reset(token)
+
+    def _reconcile_worker_extraction(
+        self, principal, event_id, content, reply_operation_id
+    ):
+        operation_id = "memory:" + reply_operation_id.removeprefix("reply:")
+        audit = self._extraction_audit.read(
+            operation_id, principal.principal_id.value, event_id, content
+        )
+        if audit is not None and audit.status == "received":
+            self._commit_worker_memory(
+                principal, event_id, operation_id, audit.proposal
+            )
+
+    def _commit_worker_memory(self, principal, event_id, operation_id, proposal):
+        def commit():
+            caps = self._capabilities()
+            if (
+                caps.emergency_stop_active
+                or caps.provider_spend_suspended
+                or not self._current_request.get()()
+            ):
+                return "unavailable"
+            if proposal.decision == "no_change":
+                return "no_change"
+            outcome = self._worker_cognition.commit_worker_extraction(
+                principal, event_id, operation_id, proposal
+            )
+            if outcome.reason in {
+                CognitionReason.SOURCE_NOT_FOUND,
+                CognitionReason.STALE_REVISION,
+            }:
+                return "unavailable"
+            return (
+                "accepted"
+                if outcome.status is CognitionOutcomeStatus.PERSISTED
+                else "rejected"
+            )
+
+        try:
+            status = self._gate.authorized(commit)
+        except PrivacyReadBlocked:
+            status = "unavailable"
+        if status == "accepted":
+            self._checkpoint("after_memory_store_commit")
+        self._extraction_audit.finish(operation_id, status)
+        self._checkpoint("after_extraction_commit")
+
+    def _extract_worker_memory(
+        self, principal, event_id, content, correlation, reply_operation_id
+    ):
+        operation_id = "memory:" + reply_operation_id.removeprefix("reply:")
+
+        def admit():
+            caps = self._capabilities()
+            if (
+                caps.emergency_stop_active
+                or caps.provider_spend_suspended
+                or not self._current_request.get()()
+            ):
+                return None
+            if (
+                self._worker_cognition._read.retrieve_exact_private_event(
+                    principal, event_id
+                )
+                is None
+            ):
+                return None
+            return self._extraction_audit.reserve(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+
+        audit = self._gate.authorized(admit)
+        if audit is None:
+            return
+        if not audit.created:
+            if audit.status == "received":
+                self._commit_worker_memory(
+                    principal, event_id, operation_id, audit.proposal
+                )
+            return
+        request = ExtractionModelRequest(content)
+        try:
+            request.serialize()
+        except ValueError:
+            self._extraction_audit.finish(operation_id, "rejected")
+            return
+        marker = "ipc:" + operation_id
+        reservation = self._provider.reserve_attempt(marker, correlation, self._clock())
+        if reservation is not AttemptReservationStatus.CREATED:
+            self._extraction_audit.finish(operation_id, "unavailable")
+            return
+        try:
+            result = self._worker.infer(
+                request,
+                correlation_id=correlation,
+                operation_id=operation_id,
+            )
+        except (TypeError, ValueError):
+            self._extraction_audit.finish(operation_id, "rejected")
+            return
+        if result.outcome == CLIENT_OUTCOME_UNCERTAIN:
+            self._extraction_audit.finish(operation_id, "uncertain")
+        elif result.outcome != "completed" or result.extraction is None:
+            self._extraction_audit.finish(
+                operation_id,
+                "unavailable"
+                if result.outcome
+                in {
+                    CLIENT_COMMUNICATION_FAILURE,
+                    "emergency_stop",
+                    "spend_suspended",
+                    "authorization_rejected",
+                }
+                else "rejected",
+            )
+        else:
+            try:
+
+                def receive():
+                    caps = self._capabilities()
+                    if (
+                        caps.emergency_stop_active
+                        or caps.provider_spend_suspended
+                        or not self._current_request.get()()
+                    ):
+                        return False
+                    self._extraction_audit.receive(
+                        operation_id,
+                        principal.principal_id.value,
+                        event_id,
+                        content,
+                        result.extraction,
+                    )
+                    return True
+
+                received = self._gate.authorized(receive)
+            except (PrivacyReadBlocked, ValueError):
+                received = False
+            if not received:
+                self._extraction_audit.finish(operation_id, "unavailable")
+                return
+            self._checkpoint("after_extraction_receipt")
+            self._commit_worker_memory(
+                principal, event_id, operation_id, result.extraction
+            )
 
     @staticmethod
     def _worker_result(outcome):
@@ -983,13 +1147,24 @@ class Stage0ConversationRuntime(_DurableConversationRuntime):
 class WorkerConversationRuntime(_DurableConversationRuntime):
     """Explicit application-only worker connection using durable reply policy."""
 
-    def __init__(self, event_store, privacy_gate, client, *, provider_state, **kwargs):
+    def __init__(
+        self,
+        event_store,
+        privacy_gate,
+        client,
+        *,
+        provider_state,
+        memory_extraction_enabled=False,
+        **kwargs,
+    ):
         if type(client) is not OpenAIWorkerClient:
             raise TypeError("worker runtime requires an exact worker client")
         if client._expected_worker_uid is None:
             raise ValueError("worker runtime requires an authenticated worker UID")
         if type(provider_state) is not ProviderStateStore:
             raise TypeError("worker runtime requires an exact provider state store")
+        if type(memory_extraction_enabled) is not bool:
+            raise TypeError("memory_extraction_enabled must be bool")
         if os.path.samefile(
             provider_state._event_store.database_path, event_store.database_path
         ):
@@ -1001,4 +1176,25 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise ValueError("worker conversation cannot run synthetic effects")
         super().__init__(
             event_store, privacy_gate, client, provider_state=provider_state, **kwargs
+        )
+        self._extraction_audit = (
+            ExtractionAuditStore(provider_state, event_store)
+            if memory_extraction_enabled
+            else None
+        )
+        self._worker_cognition = (
+            CognitionEngine(
+                event_store,
+                SelfStateStore(event_store),
+                capabilities=CognitionCapabilities(
+                    private_state_write=False,
+                    shared_abstraction_screening=False,
+                    generic_memory_write=True,
+                ),
+                clock=self._clock,
+                authorize=privacy_gate.authorized,
+                expose_current_candidates=False,
+            )
+            if memory_extraction_enabled
+            else None
         )

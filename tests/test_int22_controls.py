@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.cognition.conversation_context import MemoryModelRequest
+from app.cognition.worker_extraction import ExtractionModelRequest
 from app.core.model_contract import TRANSCRIPT_MODEL_CONTRACT_VERSION
 from app.core.store import EventStore
 from app.ops import private_pilot_ops
@@ -100,6 +101,51 @@ def test_gate_rejects_invalid_operation_without_consumption(tmp_path):
     )
     assert gate.authorize(request).outcome == "authorization_rejected"
     assert allowance.remaining() == 5
+
+
+def test_extraction_needs_separate_protected_permission_and_bounded_allowance(tmp_path):
+    path, _ = activation_file(tmp_path)
+    stop = path.parent / "stop.json"
+    _stop(stop, False)
+    activation = load_activation(path)
+    allowance = PilotAllowance.initialize(tmp_path / "allowance.sqlite3", activation)
+    request = InferenceRequest(
+        "memory:" + "a" * 64, "corr", ExtractionModelRequest("I collect old maps")
+    )
+    gate = private_pilot_worker.PilotRequestGate(
+        activation,
+        allowance,
+        activation_path=path,
+        stop=private_pilot_worker.PilotStop(stop),
+    )
+    assert gate.authorize(request).outcome == "authorization_rejected"
+    assert allowance.remaining() == 5
+    permission = path.parent / "memory.json"
+    permission.write_text(
+        json.dumps(
+            {
+                "version": "private-memory-extraction-permission-v1",
+                "pilot_id": activation.pilot_id,
+                "max_operations": 1,
+            }
+        )
+    )
+    permission.chmod(0o400)
+    gate.extraction_permission_path = permission
+    assert gate.authorize(request) is None
+    assert gate.extraction_commit_allowed()
+    assert gate.authorize(request).outcome == "authorization_rejected"
+    assert (
+        gate.authorize(
+            InferenceRequest(
+                "memory:" + "b" * 64, "corr", ExtractionModelRequest("Another input")
+            )
+        ).outcome
+        == "authorization_rejected"
+    )
+    assert allowance.remaining() == 4
+    _stop(stop, True)
+    assert not gate.extraction_commit_allowed()
 
 
 def test_operator_prepare_inspect_and_cli_keep_stop(tmp_path, capsys, monkeypatch):

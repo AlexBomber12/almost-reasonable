@@ -69,7 +69,7 @@ exchange. If the process exits or the response is lost after that marker, the
 reply remains `uncertain` after restart and is never automatically inferred
 again. A connection failure before private transmission is terminal
 `unavailable`. Distinct terminal `stopped`, `spend_suspended`, `rejected`,
-`failed`, `unsupported`, and `no_action` outcomes are stored in EventStore v8;
+`failed`, `unsupported`, and `no_action` outcomes are stored in EventStore v9;
 operational errors use fixed Russian messages without a second model call.
 Current session, stop, spend, privacy and protected sources are rechecked at
 inference admission, result persistence and release. A revoked session or erased
@@ -84,3 +84,61 @@ authorized synthetic live-model pilot, the operator still needs a non-smoke
 worker authorization and configuration review, threat and privacy review,
 current-head CI and Codex Review, human calibration, and explicit pilot approval.
 Production deployment and release readiness remain BLOCKED.
+
+## B03A: separately authorized private memory extraction
+
+The ordinary worker and web startup still perform reply-only conversation. To
+enable extraction for a separately authorized pilot, the application must add
+`--enable-memory-extraction` to the existing `serve --worker-socket ...` command.
+The credential-owning pilot worker must separately receive
+`--memory-extraction-permission /protected/control/memory-extraction.json`.
+The protected worker-owned file must be mode 0400 in a protected 0700 directory:
+
+```json
+{"version":"private-memory-extraction-permission-v1","pilot_id":"synthetic-pilot-id","max_operations":1}
+```
+
+The `pilot_id` must match the current activation, and `max_operations` must be
+between one and that activation's total allowance. The same worker-owned
+allowance counts reply and extraction operations separately; its extraction
+subset has its own cap. The existing closed INT22 activation grants no
+extraction permission, and this flag does not create or renew an activation,
+reset Stop, clear spend suspension, deploy a service, or make a provider call.
+
+`openai-worker-memory-extraction-v1` carries `extract_memory` and the closed
+`model-contract-private-extraction-v1` projection. Its only variable model input
+is the initiating participant's text, capped at 8 KiB. No transcript, previous
+reply, memory, shared record, research result, principal, account, consent,
+source, operation or storage identifier enters the provider input. The fixed
+instructions ask for one `new_memory` with a generic kind, statement and
+confidence, or explicit `no_change`. The output schema and application parser
+reject additional fields, forged authority or provenance, unsupported kinds,
+invalid confidence and oversized text. The application binds its own operation,
+item, principal, source, timestamps and `unverified` status before using the
+existing cognition validator and GenericMemoryStore. Revision and parent links
+are unavailable in this slice.
+
+The application commits an extraction intent in its separate IPC database and
+reserves an `ipc:memory:` attempt before sending. The worker independently
+checks Stop, spend, protected permission, total and extraction allowances, and
+its provider attempt ledger. A lost response stays `uncertain`; a reserved
+operation is never automatically retransmitted. A received proposal is stored
+temporarily in the source EventStore and can be reconciled after a crash using
+the same operation identity. The IPC audit keeps only an identity hash of the
+principal and source event, without message content, and a
+sanitized `accepted`, `no_change`, `rejected`, `unavailable`, or `uncertain`
+outcome. Receipt text is erased after resolution, on replay if finalization
+stopped between the two databases, and by source deletion, including quarantine
+of an older backup. The reply has an independent IPC
+reservation and provider budget; extraction failure can leave that reply
+eligible. Current session, source, privacy, application Stop and spend state
+are checked again before receipt and generic memory commit. No privacy lock or
+SQLite transaction spans provider I/O.
+
+The synthetic HTTP plus separate AF_UNIX fake-SDK tests prove the versioned
+codec, provider builder, parser, deterministic validation, SQLite durability,
+restart continuity, privacy graph, Stop/spend/session gates and operation
+accounting. They do not establish live-model memory quality. B03B still needs
+revision and consolidation of accumulated memories, typed interest/belief/goal
+evolution, shared promotion, research and narrative memory, autonomous
+behavior and live semantic evaluation. `complete_mvp=BLOCKED` remains unchanged.

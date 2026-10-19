@@ -7,6 +7,7 @@ from pathlib import Path
 import signal
 
 from app.cognition.conversation_context import MemoryModelRequest
+from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.shared_context import SharedModelRequest
 from app.core.provider_contract import (
     DeploymentStage,
@@ -40,6 +41,7 @@ STOP_PATH = Path("/run/almost-reasonable-private-pilot/control/emergency-stop.js
 STOP_VERSION = "private-pilot-emergency-stop-v1"
 _STOP_RU = "Новые запросы к модели временно остановлены."
 _REJECT_RU = "Локальный запрос не соответствует разрешённой проверке."
+EXTRACTION_PERMISSION_VERSION = "private-memory-extraction-permission-v1"
 
 
 def provider_config() -> OpenAIProviderConfig:
@@ -97,12 +99,41 @@ class PilotRequestGate:
         activation_path: Path,
         stop: PilotStop,
         provider_state_current: Callable[[], bool] | None = None,
+        extraction_permission_path: Path | None = None,
     ):
         self.activation = activation
         self.allowance = allowance
         self.activation_path = activation_path
         self.stop = stop
         self.provider_state_current = provider_state_current
+        self.extraction_permission_path = extraction_permission_path
+
+    def extraction_limit(self) -> int | None:
+        if self.extraction_permission_path is None:
+            return None
+        try:
+            value = json.loads(
+                read_pilot_control(self.extraction_permission_path, maximum_bytes=1024),
+                object_pairs_hook=_unique,
+            )
+            if (
+                type(value) is dict
+                and set(value) == {"version", "pilot_id", "max_operations"}
+                and value["version"] == EXTRACTION_PERMISSION_VERSION
+                and value["pilot_id"] == self.activation.pilot_id
+                and type(value["max_operations"]) is int
+                and 1 <= value["max_operations"] <= self.activation.max_operations
+            ):
+                return value["max_operations"]
+        except (
+            PilotAuthorityError,
+            TrustedTransportConfigurationError,
+            UnicodeError,
+            ValueError,
+            TypeError,
+        ):
+            pass
+        return None
 
     def current(self) -> bool:
         try:
@@ -113,8 +144,15 @@ class PilotRequestGate:
     def authorize(self, request: InferenceRequest) -> WorkerResponse | None:
         if self.stop.active():
             return WorkerResponse("emergency_stop", 0, _STOP_RU, None)
+        extraction = type(request.model_request) is ExtractionModelRequest
+        limit = self.extraction_limit() if extraction else None
         if (
-            type(request.model_request) not in {MemoryModelRequest, SharedModelRequest}
+            (
+                limit is None
+                if extraction
+                else type(request.model_request)
+                not in {MemoryModelRequest, SharedModelRequest}
+            )
             or not self.current()
             or (
                 self.provider_state_current is not None
@@ -123,7 +161,9 @@ class PilotRequestGate:
         ):
             return WorkerResponse("authorization_rejected", 0, _REJECT_RU, None)
         try:
-            reserved = self.allowance.reserve(request.operation_id)
+            reserved = self.allowance.reserve(
+                request.operation_id, extraction_limit=limit
+            )
         except PilotAuthorityError:
             reserved = False
         if not reserved:
@@ -140,6 +180,9 @@ class PilotRequestGate:
             )
         )
 
+    def extraction_commit_allowed(self) -> bool:
+        return not self.paid_transport_blocked() and self.extraction_limit() is not None
+
 
 def build_worker(
     *,
@@ -149,6 +192,7 @@ def build_worker(
     activation_path: Path = ACTIVATION_PATH,
     stop_path: Path = STOP_PATH,
     socket_group_gid: int | None = None,
+    extraction_permission_path: Path | None = None,
 ) -> OpenAIWorkerServer:
     """Live entry point; only the protected credential-file factory creates SDK."""
 
@@ -168,6 +212,7 @@ def build_worker(
         activation_path=activation_path,
         stop=PilotStop(stop_path),
         provider_state_current=provider_state_current,
+        extraction_permission_path=extraction_permission_path,
     )
     transport = build_worker_openai_transport(
         project_id=activation.project_id,
@@ -187,6 +232,8 @@ def build_worker(
         ),
         gateway,
         request_guard=gate.authorize,
+        extraction_enabled=extraction_permission_path is not None,
+        extraction_commit_guard=gate.extraction_commit_allowed,
     )
 
 
@@ -204,12 +251,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--provider-database", required=True, type=Path)
     parser.add_argument("--allowance-database", required=True, type=Path)
     parser.add_argument("--socket-group-gid", required=True, type=int)
+    parser.add_argument("--memory-extraction-permission", type=Path)
     args = parser.parse_args(argv)
     worker = build_worker(
         socket_path=args.socket,
         provider_database=args.provider_database,
         allowance_database=args.allowance_database,
         socket_group_gid=args.socket_group_gid,
+        extraction_permission_path=args.memory_extraction_permission,
     )
     stopping = False
 

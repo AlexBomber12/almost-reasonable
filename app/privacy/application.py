@@ -181,16 +181,36 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7, 8}:
+    if schema_version in {6, 7, 8, 9}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version in {7, 8}:
+    if schema_version in {7, 8, 9}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ApplicationPrivacyError("invalid_generic_graph") from error
+    if (
+        schema_version == 9
+        and db.execute(
+            """SELECT 1 FROM private_extraction_receipts r
+        JOIN event_envelopes e ON e.event_id=r.source_event_id
+        LEFT JOIN private_payloads p ON p.payload_id=e.payload_id
+        WHERE r.source_principal_id<>e.audience_principal_id
+           OR e.event_type<>'participant_input'
+           OR e.audience_type<>'private_participant'
+           OR e.provenance_type<>'participant_assertion'
+           OR e.verification_status<>'unverified'
+           OR p.audience_principal_id<>e.audience_principal_id
+           OR p.provenance_type<>'participant_assertion'
+           OR p.verification_status<>'unverified'
+           OR p.retention_status<>'active'
+           OR p.payload_id IS NULL LIMIT 1"""
+        ).fetchone()
+        is not None
+    ):
+        raise ApplicationPrivacyError("invalid_extraction_receipt")
     for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
@@ -250,10 +270,15 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version in {7, 8}:
+        if schema_version in {7, 8, 9}:
             erase_generic_source(db, request.content_reference)
-        if schema_version in {6, 7, 8}:
+        if schema_version in {6, 7, 8, 9}:
             erase_shared_source(db, request.content_reference)
+        if schema_version == 9:
+            db.execute(
+                "DELETE FROM private_extraction_receipts WHERE source_event_id=?",
+                (request.content_reference,),
+            )
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
         _validate_graph(db, schema_version)
     # SQLite updates indexes in this transaction. Legacy shared rows remain

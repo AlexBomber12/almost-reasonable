@@ -18,6 +18,12 @@ from app.core.agent_proposals import (
 )
 from app.core.context import ContextRole, ContextTrust, ConversationSegment
 from app.cognition.conversation_context import MemoryModelRequest, ModelMemory
+from app.cognition.worker_extraction import (
+    CONTRACT_VERSION as EXTRACTION_CONTRACT_VERSION,
+    ExtractionModelRequest,
+    ExtractionProposal,
+    parse_extraction_proposal,
+)
 from app.cognition.shared import SharedRecord
 from app.cognition.shared_context import SharedModelRequest
 from app.core.model_contract import (
@@ -37,7 +43,9 @@ from app.core.provider_contract import (
 PROTOCOL_VERSION = "openai-worker-v1"
 CONTEXT_PROTOCOL_VERSION = "openai-worker-context-v2"
 TRANSCRIPT_PROTOCOL_VERSION = "openai-worker-transcript-v3"
+EXTRACTION_PROTOCOL_VERSION = "openai-worker-memory-extraction-v1"
 OPERATION_INFER = "infer"
+OPERATION_EXTRACT = "extract_memory"
 FRAME_PREFIX_BYTES = 4
 MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
 MAX_SAFE_MESSAGE_UTF8_BYTES = 512
@@ -92,9 +100,9 @@ class WorkerProtocolError(ValueError):
 class InferenceRequest:
     operation_id: str
     correlation_id: str
-    model_request: ModelRequest | MemoryModelRequest | SharedModelRequest = field(
-        repr=False
-    )
+    model_request: (
+        ModelRequest | MemoryModelRequest | SharedModelRequest | ExtractionModelRequest
+    ) = field(repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -103,6 +111,8 @@ class WorkerResponse:
     attempts: int
     safe_russian_message: str | None
     validation: ProposalValidation | None = field(default=None, repr=False)
+    extraction: ExtractionProposal | None = field(default=None, repr=False)
+    extraction_operation: bool = False
 
 
 def encode_request(request: InferenceRequest) -> bytes:
@@ -128,11 +138,16 @@ def encode_request(request: InferenceRequest) -> bytes:
             == "model-contract-conversation-transcript-v4"
             else CONTEXT_PROTOCOL_VERSION
         )
+    elif type(model) is ExtractionModelRequest:
+        model_json = model.serialize()
+        version = EXTRACTION_PROTOCOL_VERSION
     else:
         raise TypeError("unsupported model request")
     payload = {
         "protocol_version": version,
-        "operation_type": OPERATION_INFER,
+        "operation_type": OPERATION_EXTRACT
+        if version == EXTRACTION_PROTOCOL_VERSION
+        else OPERATION_INFER,
         "operation_id": request.operation_id,
         "correlation_id": request.correlation_id,
         "model_request": json.loads(model_json),
@@ -158,16 +173,33 @@ def decode_request(payload: bytes) -> InferenceRequest:
         PROTOCOL_VERSION,
         CONTEXT_PROTOCOL_VERSION,
         TRANSCRIPT_PROTOCOL_VERSION,
+        EXTRACTION_PROTOCOL_VERSION,
     }:
         raise WorkerProtocolError("unsupported protocol version")
-    if value["operation_type"] != OPERATION_INFER:
+    if value["operation_type"] != (
+        OPERATION_EXTRACT
+        if value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION
+        else OPERATION_INFER
+    ):
         raise WorkerProtocolError("unsupported operation")
     try:
         operation_id = require_identifier("operation id", value["operation_id"])
         if len(operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
             raise ValueError("invalid operation id")
         correlation_id = require_identifier("correlation id", value["correlation_id"])
-        if value["protocol_version"] == PROTOCOL_VERSION:
+        if value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION:
+            model_value = value["model_request"]
+            _require_exact_dict(
+                model_value, {"contract_version", "task", "participant_input"}
+            )
+            if (
+                model_value["contract_version"] != EXTRACTION_CONTRACT_VERSION
+                or model_value["task"] != "extract_private_memory"
+            ):
+                raise WorkerProtocolError("invalid extraction request")
+            model_request = ExtractionModelRequest(model_value["participant_input"])
+            model_request.serialize()
+        elif value["protocol_version"] == PROTOCOL_VERSION:
             if (
                 type(value["model_request"]) is not dict
                 or value["model_request"].get("contract_version") != "model-contract-v1"
@@ -322,17 +354,29 @@ def encode_response(response: WorkerResponse) -> bytes:
         raise TypeError("response must be a WorkerResponse")
     _validate_response_fields(response)
     payload = {
-        "protocol_version": PROTOCOL_VERSION,
+        "protocol_version": EXTRACTION_PROTOCOL_VERSION
+        if response.extraction_operation
+        else PROTOCOL_VERSION,
         "outcome": response.outcome,
         "attempts": response.attempts,
         "safe_russian_message": response.safe_russian_message,
-        "agent_proposal": _proposal_data(response.validation),
+        "memory_proposal" if response.extraction_operation else "agent_proposal": (
+            None
+            if response.extraction is None
+            else vars_extraction(response.extraction)
+        )
+        if response.extraction is not None
+        else _proposal_data(response.validation),
     }
     return _encode_json(payload)
 
 
 def decode_response(payload: bytes) -> WorkerResponse:
     value = _decode_json(payload)
+    extraction_version = (
+        type(value) is dict
+        and value.get("protocol_version") == EXTRACTION_PROTOCOL_VERSION
+    )
     _require_exact_dict(
         value,
         {
@@ -340,11 +384,32 @@ def decode_response(payload: bytes) -> WorkerResponse:
             "outcome",
             "attempts",
             "safe_russian_message",
-            "agent_proposal",
+            "memory_proposal" if extraction_version else "agent_proposal",
         },
     )
-    if value["protocol_version"] != PROTOCOL_VERSION:
+    if value["protocol_version"] not in {PROTOCOL_VERSION, EXTRACTION_PROTOCOL_VERSION}:
         raise WorkerProtocolError("unsupported protocol version")
+    if extraction_version:
+        raw = value["memory_proposal"]
+        try:
+            extraction = (
+                None if raw is None else parse_extraction_proposal(json.dumps(raw))
+            )
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid worker proposal") from None
+        response = WorkerResponse(
+            value["outcome"],
+            value["attempts"],
+            value["safe_russian_message"],
+            None,
+            extraction,
+            True,
+        )
+        try:
+            _validate_response_fields(response)
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid worker response") from None
+        return response
     proposal = value["agent_proposal"]
     validation = None if proposal is None else parse_agent_proposal(proposal)
     if validation is not None and not validation.valid:
@@ -512,8 +577,25 @@ def _validate_response_fields(response: WorkerResponse) -> None:
             raise ValueError("response message is too large")
     if response.validation is not None:
         _proposal_data(response.validation)
-    if (response.outcome == "completed") != (response.validation is not None):
+    if response.extraction is not None:
+        parse_extraction_proposal(json.dumps(vars_extraction(response.extraction)))
+    if (response.extraction_operation and response.validation is not None) or (
+        not response.extraction_operation and response.extraction is not None
+    ):
+        raise ValueError("invalid extraction response")
+    if (response.outcome == "completed") != (
+        (response.validation is not None) or (response.extraction is not None)
+    ) or (response.validation is not None and response.extraction is not None):
         raise ValueError("completed response and proposal are inconsistent")
+
+
+def vars_extraction(proposal: ExtractionProposal) -> dict[str, object]:
+    return {
+        "decision": proposal.decision,
+        "kind": proposal.kind,
+        "statement": proposal.statement,
+        "confidence": proposal.confidence,
+    }
 
 
 def _encode_json(value: object) -> bytes:

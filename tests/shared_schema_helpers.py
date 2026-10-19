@@ -4,6 +4,8 @@ from app.core.store import _SCHEMA_V5
 
 
 def remove_v8(db):
+    db.execute("DROP TABLE private_extraction_receipts")
+    db.execute("DROP TABLE private_extraction_audit")
     db.execute("DROP TABLE agent_reply_resolutions")
     db.execute(_SCHEMA_V5[0])
 
