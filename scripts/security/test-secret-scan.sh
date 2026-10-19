@@ -23,9 +23,9 @@ scan() {
 
 assert_hidden() {
   local name=$1
-  if grep -Fq -- "$candidate" "$scratch/$name.log"; then
+  local value=${2:-$candidate}
+  if grep -Fq -- "$value" "$scratch/$name.log"; then
     printf 'FAIL: candidate disclosed in %s log\n' "$name" >&2
-    sed "s/$candidate/[REDACTED]/g" "$scratch/$name.log" >&2
     exit 1
   fi
 }
@@ -45,18 +45,21 @@ git -C "$scratch/present" switch --detach -q
 git -C "$scratch/present" branch -D "$branch" > /dev/null
 if scan present; then printf 'FAIL: candidate accepted\n' >&2; exit 1; fi
 assert_hidden present
-grep -Eq 'rule="github-pat" file="credential.txt" line=1' "$scratch/present.log" || {
+file_id=$(printf 'credential.txt' | sha256sum | cut -d ' ' -f 1)
+grep -Fq "rule=\"github-pat\" file_sha256=\"$file_id\" line=1" "$scratch/present.log" || {
   printf 'FAIL: missing rule and location in finding\n' >&2; exit 1;
 }
 
 new_repo pathleak
-printf 'token = %s\n' "$candidate" > "$scratch/pathleak/$candidate.txt"
+other_candidate="ghp_$(openssl rand -base64 48 | tr -cd 'A-Za-z0-9' | head -c 36)"
+printf 'token = %s\n' "$other_candidate" > "$scratch/pathleak/$candidate.txt"
 git -C "$scratch/pathleak" add .
 git -C "$scratch/pathleak" commit -qm add-candidate
 if scan pathleak; then printf 'FAIL: path candidate accepted\n' >&2; exit 1; fi
 assert_hidden pathleak
-grep -Eq '\[REDACTED\]\.txt' "$scratch/pathleak.log" || {
-  printf 'FAIL: path candidate not redacted\n' >&2; exit 1;
+assert_hidden pathleak "$other_candidate"
+grep -Eq 'file_sha256="[a-f0-9]{64}"' "$scratch/pathleak.log" || {
+  printf 'FAIL: missing hashed location\n' >&2; exit 1;
 }
 
 new_repo removed

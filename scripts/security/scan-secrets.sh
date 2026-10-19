@@ -35,19 +35,19 @@ git -C "$scratch/scan.git" fetch --quiet --no-tags "$repo" HEAD:refs/scan/head >
   exit 2
 }
 cat > "$scratch/metadata.tmpl" <<'TEMPLATE'
-{{ range . }}rule={{ printf "%q" .RuleID }} file={{ printf "%q" (replace .Secret "[REDACTED]" .File) }} line={{ .StartLine }} commit={{ printf "%q" .Commit }}
+{{ range . }}rule={{ printf "%q" .RuleID }} file_sha256={{ printf "%q" (sha256sum .File) }} line={{ .StartLine }} commit={{ printf "%q" .Commit }}
 {{ end }}
 TEMPLATE
 
 status=0
-# Keep scanner streams private. The template needs the original match to
-# remove it if it occurs in a filename; it emits metadata fields only.
+# Keep scanner streams private. The template emits metadata only and hashes
+# entire paths, which may themselves contain a different credential.
 "$scratch/bin/gitleaks" git "$scratch/scan.git" \
   --config "$scratch/default.toml" \
   --gitleaks-ignore-path "$scratch/empty-ignore" \
   --ignore-gitleaks-allow \
   --log-opts='--all refs/scan/head' \
-  --no-banner --redact=0 \
+  --no-banner --redact=100 \
   --report-format=template \
   --report-template "$scratch/metadata.tmpl" \
   --report-path "$scratch/metadata.txt" \

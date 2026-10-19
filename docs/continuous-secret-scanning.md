@@ -57,11 +57,21 @@ scans the bare mirror, so a repository `.gitleaks.toml` or `.gitleaksignore`
 cannot replace rules or suppress findings. It also disables `gitleaks:allow`
 comments. There are no path, test, documentation, commit, or baseline
 exclusions. Findings fail the check. Scanner stdout and stderr are withheld;
-only rule ID, quoted path, line, and commit from a metadata-only report appear
-in output. A matched value in a path is replaced with `[REDACTED]`. No raw
-report is uploaded, and temporary files are removed when the script exits.
-Paths and rule IDs are still repository-controlled metadata; do not put
-sensitive values in filenames.
+only rule ID, SHA-256 of the path, line, and commit from a metadata-only report
+appear in output. The path itself is never printed because it could contain an
+unrelated credential. No raw report is uploaded, and temporary files are
+removed when the script exits. To resolve a path hash locally without pasting
+filenames into CI logs, substitute the reported commit and hash below:
+
+```sh
+git ls-tree -rz --name-only COMMIT | python3 -c '
+import hashlib, sys
+wanted = sys.argv[1]
+for path in sys.stdin.buffer.read().split(b"\0"):
+    if path and hashlib.sha256(path).hexdigest() == wanted:
+        print(path.decode("utf-8", "surrogateescape"))
+' PATH_SHA256
+```
 
 If a real finding appears, treat the value as exposed: revoke or rotate it at
 its provider, investigate use and scope, and remove it from source and history
