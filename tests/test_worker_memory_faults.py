@@ -159,6 +159,27 @@ def test_final_audit_replay_cleans_receipt_after_cross_store_exit(
         ).fetchone() == (0,)
 
 
+@pytest.mark.parametrize("replay_method", ["read", "reserve"])
+def test_received_audit_without_receipt_becomes_unavailable(state, replay_method):
+    events, provider, audit, who, source, proposal = state
+    operation = "memory:" + "e" * 64
+    args = (operation, who.principal_id.value, source, "I collect old maps")
+    audit.reserve(*args)
+    audit.receive(*args, proposal)
+    with events._open() as db:
+        db.execute(
+            "DELETE FROM private_extraction_receipts WHERE operation_id=?",
+            (operation,),
+        )
+    replay = getattr(audit, replay_method)(*args)
+    assert replay.status == "unavailable" and replay.proposal is None
+    with provider._event_store._open() as db:
+        assert db.execute(
+            "SELECT status FROM private_extraction_audit WHERE operation_id=?",
+            (operation,),
+        ).fetchone() == ("unavailable",)
+
+
 def test_durable_receipt_reconciles_reserved_intent_and_source_deletion_erases_it(
     state, tmp_path
 ):
@@ -403,6 +424,36 @@ def test_worker_runtime_admission_and_replay_fail_closed(runtime_state):
     )
     assert len(GenericMemoryStore(events).current(who)) == 1
     assert provider.usage_attempt_count() == 0
+
+
+def test_reconcile_after_source_deletion_does_not_commit_missing_proposal(
+    runtime_state,
+):
+    events, provider, gate, runtime, who, source, reply, memory = runtime_state
+    proposal = ExtractionProposal(
+        "new_memory", "candidate_useful_memory", "Alice collects old maps", 0.8
+    )
+    runtime._extraction_audit.reserve(
+        memory, who.principal_id.value, source, "I collect old maps"
+    )
+    runtime._extraction_audit.receive(
+        memory, who.principal_id.value, source, "I collect old maps", proposal
+    )
+    deletion = DeletionCoordinator(gate._ledger, EventStoreErasureAdapter(events))
+    assert (
+        deletion.delete(
+            deletion_context(), deletion_request(content_reference=source)
+        ).disposition.value
+        == "applied"
+    )
+    assert gate.reconcile()
+    runtime._reconcile_worker_extraction(who, source, "I collect old maps", reply)
+    with provider._event_store._open() as db:
+        assert db.execute(
+            "SELECT status FROM private_extraction_audit WHERE operation_id=?",
+            (memory,),
+        ).fetchone() == ("unavailable",)
+    assert GenericMemoryStore(events).current(who) == ()
 
 
 @pytest.mark.parametrize("failure", ["input", "reservation", "client"])

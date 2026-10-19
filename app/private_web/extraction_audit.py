@@ -66,6 +66,21 @@ class ExtractionAuditStore:
                     (operation_id,),
                 )
 
+    def _missing_receipt(self, operation_id: str) -> ExtractionAudit:
+        with closing(self._provider._event_store._open()) as db:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                self._provider._event_store._verify_current_schema(db)
+                db.execute(
+                    "UPDATE private_extraction_audit SET status='unavailable' WHERE operation_id=? AND status='received'",
+                    (operation_id,),
+                )
+                status = db.execute(
+                    "SELECT status FROM private_extraction_audit WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()[0]
+        return ExtractionAudit(status, None)
+
     def _receipt(
         self, operation_id: str, principal_id: str, source_event_id: str
     ) -> ExtractionProposal | None:
@@ -106,6 +121,8 @@ class ExtractionAuditStore:
             self._delete_receipt(operation_id)
             return ExtractionAudit(row[1], None)
         proposal = self._receipt(operation_id, principal_id, source_event_id)
+        if row[1] == "received" and proposal is None:
+            return self._missing_receipt(operation_id)
         return ExtractionAudit("received" if proposal is not None else row[1], proposal)
 
     def read(
@@ -126,6 +143,8 @@ class ExtractionAuditStore:
             self._delete_receipt(operation_id)
             return ExtractionAudit(row[1], None)
         proposal = self._receipt(operation_id, principal_id, source_event_id)
+        if row[1] == "received" and proposal is None:
+            return self._missing_receipt(operation_id)
         return ExtractionAudit(
             "received"
             if proposal is not None and row[1] in {"reserved", "received"}
