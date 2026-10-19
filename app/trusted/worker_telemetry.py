@@ -199,6 +199,9 @@ def _provider(path):
                         OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?))
                         OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?))
                         OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?))
+                        OR cached_input_tokens > input_tokens
+                        OR (input_tokens IS NOT NULL AND output_tokens IS NOT NULL AND total_tokens IS NOT NULL
+                            AND (input_tokens > total_tokens OR output_tokens != total_tokens - input_tokens))
                         OR cost_estimate_status NOT IN ('estimated', 'usage_unavailable', 'usage_incomplete', 'pricing_unavailable')
                         OR valid_cost_metadata(cost_estimate_status, estimated_cost, pricing_version, currency) != 1
                         THEN 1 ELSE 0 END),0)

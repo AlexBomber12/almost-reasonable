@@ -342,7 +342,17 @@ def test_denied_peer_does_not_read_sources(tmp_path, monkeypatch):
 
 def test_owner_authentication_precedes_worker_contact(tmp_path, monkeypatch):
     db, stop, path = sources(tmp_path)
-    ProviderStateStore(EventStore(db)).reserve_attempt(
+    provider = ProviderStateStore(EventStore(db))
+    provider.record_attempt(
+        attempt(
+            "large:1",
+            input_tokens=9007199254740993,
+            cached_input_tokens=0,
+            output_tokens=0,
+            total_tokens=9007199254740993,
+        )
+    )
+    provider.reserve_attempt(
         "pending:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
     )
     args = settings(tmp_path)
@@ -369,8 +379,12 @@ def test_owner_authentication_precedes_worker_contact(tmp_path, monkeypatch):
         code, body, _ = call(app, cookie=cookie)
         thread.join()
         assert code == 200 and reads == [True]
-        assert body["worker"]["provider"]["attempt_count"] == 0
+        assert body["worker"]["provider"]["attempt_count"] == 1
         assert body["worker"]["provider"]["unresolved_reservations"] == 1
+        assert (
+            body["worker"]["provider"]["recorded_tokens"]["total_tokens"]
+            == "9007199254740993"
+        )
         assert "provider.sqlite" not in json.dumps(body)
     finally:
         server.close()
@@ -655,6 +669,24 @@ def test_unknown_cost_status_rejects_provider_evidence(tmp_path):
     assert provider["available"] is False
     assert provider["attempt_count"] is None
     assert provider["recorded_tokens"] is None
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"cached_input_tokens": 11},
+        {"total_tokens": 16},
+        {
+            "input_tokens": 2**63 - 1,
+            "output_tokens": 2**63 - 1,
+            "total_tokens": 2**63 - 1,
+        },
+    ],
+)
+def test_contradictory_token_counters_reject_provider_evidence(tmp_path, changes):
+    db, _stop_path, _path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1", **changes))
+    assert _provider(db)["available"] is False
 
 
 def test_non_openai_usage_row_rejects_provider_evidence(tmp_path):

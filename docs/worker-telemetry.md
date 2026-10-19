@@ -45,6 +45,10 @@ malformed, contended, or slow provider storage is **unavailable**, never zero.
 A known zero is shown only after a valid database query. The sums include every
 recorded provider attempt regardless of operation name. They total recorded
 token fields only; unknown or incomplete finalized usage is counted separately.
+Token counters must also satisfy the provider contract's relationships when
+the relevant fields are present. The AF_UNIX contract keeps exact integers;
+the owner HTTP response carries recorded token totals as decimal strings so
+browser number parsing cannot round them.
 An unresolved reservation has no final usage record. It may precede provider
 contact, so it is not a confirmed call or known charge. When one exists,
 actual total usage remains uncertain even if recorded tokens are zero. A

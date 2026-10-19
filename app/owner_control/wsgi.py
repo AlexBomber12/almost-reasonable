@@ -215,6 +215,12 @@ class OwnerApplication:
                 else None
             )
             if status is not None:
+                worker_provider = status["worker"]["provider"]
+                if worker_provider["available"]:
+                    worker_provider["recorded_tokens"] = {
+                        key: str(value)
+                        for key, value in worker_provider["recorded_tokens"].items()
+                    }
                 return 200, status, []
             return (
                 200,

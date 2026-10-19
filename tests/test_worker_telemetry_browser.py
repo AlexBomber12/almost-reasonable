@@ -22,6 +22,8 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
                 "Попытки провайдера, записанные воркеромНедоступно"
             )
 
+            large_total = [False]
+
             def status_with_worker(route):
                 response = route.fetch()
                 data = response.json()
@@ -33,10 +35,14 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
                         "available": True,
                         "attempt_count": 0,
                         "recorded_tokens": {
-                            "input_tokens": 0,
-                            "cached_input_tokens": 0,
-                            "output_tokens": 0,
-                            "total_tokens": 0,
+                            "input_tokens": "9007199254740993"
+                            if large_total[0]
+                            else "0",
+                            "cached_input_tokens": "0",
+                            "output_tokens": "0",
+                            "total_tokens": "9007199254740993"
+                            if large_total[0]
+                            else "0",
                         },
                         "unknown_usage_attempts": 0,
                         "unresolved_reservations": 1,
@@ -62,6 +68,11 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
             )
             expect(page.locator("#status")).to_contain_text(
                 "Приостановка расходов воркераПриостановлены"
+            )
+            large_total[0] = True
+            page.get_by_role("button", name="Обновить").click()
+            expect(page.locator("#status")).to_contain_text(
+                "Всего записанных токенов воркера9007199254740993"
             )
         finally:
             browser.close()
