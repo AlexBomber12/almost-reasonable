@@ -448,6 +448,20 @@ def test_unknown_cost_status_rejects_provider_evidence(tmp_path):
     assert provider["recorded_tokens"] is None
 
 
+def test_non_openai_usage_row_rejects_provider_evidence(tmp_path):
+    db, _stop_path, _path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1"))
+    with sqlite3.connect(db) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE provider_usage_attempts SET provider='synthetic_other'"
+        )
+    provider = _provider(db)
+    assert provider["available"] is False
+    assert provider["attempt_count"] is None
+    assert provider["recorded_tokens"] is None
+
+
 def test_spend_suspension_requires_valid_record(tmp_path):
     db, _stop_path, _path = sources(tmp_path)
     code = "project_spend_limit_exceeded"
