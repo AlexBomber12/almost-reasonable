@@ -132,7 +132,7 @@ def _provider(path):
                    COALESCE(SUM(output_tokens),0),
                    COALESCE(SUM(total_tokens),0),
                    COALESCE(SUM(CASE WHEN input_tokens IS NULL OR cached_input_tokens IS NULL OR output_tokens IS NULL OR total_tokens IS NULL OR cost_estimate_status IN ('usage_unavailable', 'usage_incomplete') THEN 1 ELSE 0 END),0),
-                   COALESCE(SUM(CASE WHEN (input_tokens IS NOT NULL AND (typeof(input_tokens) != 'integer' OR input_tokens < 0 OR input_tokens > ?)) OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?)) OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?)) OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?)) THEN 1 ELSE 0 END),0)
+                   COALESCE(SUM(CASE WHEN (input_tokens IS NOT NULL AND (typeof(input_tokens) != 'integer' OR input_tokens < 0 OR input_tokens > ?)) OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?)) OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?)) OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?)) OR cost_estimate_status NOT IN ('estimated', 'usage_unavailable', 'usage_incomplete', 'pricing_unavailable') THEN 1 ELSE 0 END),0)
             FROM provider_usage_attempts
         """,
             (MAX_PROVIDER_TOKEN_COUNT,) * 4,
