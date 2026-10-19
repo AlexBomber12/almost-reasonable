@@ -389,7 +389,11 @@ class OwnerStore:
                 (
                     secrets.token_hex(16),
                     str(session.principal_id),
-                    "stop_control" if action == "/stop" else "session_control",
+                    "stop_control"
+                    if action == "/stop"
+                    else "worker_stop_control"
+                    if action in {"/worker-stop-operation", "/emergency-stop"}
+                    else "session_control",
                     self._clock().isoformat(),
                     "rejected",
                     "request_admission",

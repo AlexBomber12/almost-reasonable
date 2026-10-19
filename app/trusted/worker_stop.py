@@ -72,6 +72,7 @@ def assert_stop(path):
             dir_fd=parent,
         )
         try:
+            os.fchmod(descriptor, 0o400)
             with os.fdopen(descriptor, "wb", closefd=False) as output:
                 output.write(
                     b'{"version":"private-pilot-emergency-stop-v1","stop":true}'

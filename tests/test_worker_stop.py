@@ -158,6 +158,20 @@ def test_worker_assertion_preserves_authority_allowance_and_accounting(tmp_path)
     assert provider.suspension() == original_suspension
 
 
+def test_assertion_preserves_mode_under_restrictive_umask(tmp_path):
+    path = stop_file(tmp_path)
+    previous = os.umask(0o777)
+    try:
+        assert_stop(path)
+    finally:
+        os.umask(previous)
+    assert stat_mode(path) == 0o400
+    assert PilotStop(path).active()
+    from app.trusted.worker_telemetry import _stop
+
+    assert _stop(path) == {"valid": True, "active": True}
+
+
 def test_socket_configuration_deadline_and_malformed_ack(tmp_path):
     path = stop_file(tmp_path)
     address = socket_path(tmp_path)
@@ -775,6 +789,11 @@ def test_worker_control_http_admission_blocks_participant_and_malformed_input(tm
         == 400
     )
     assert not PilotStop(path).active()
+    rejected = [
+        record for record in app.store.audit() if record["result"] == "rejected"
+    ]
+    assert len(rejected) >= 4
+    assert {record["action_type"] for record in rejected} == {"worker_stop_control"}
 
 
 def test_outcome_record_failures_remain_uncertain_and_worker_is_attempted(

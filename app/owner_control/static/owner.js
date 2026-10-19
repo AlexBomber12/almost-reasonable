@@ -59,7 +59,7 @@ async function refresh() {
   show('Реестр приватности', data.privacy.ledger_ready ? 'Доступен' : 'Недоступен');
   for (const item of data.audit) {
     const row = document.createElement('li');
-    const actions = {stop: 'включение Stop', resume: 'снятие Stop', stop_control: 'изменение Stop', session_control: 'управление сеансом', worker_stop: 'Stop воркера', application_stop: 'Stop приложения'};
+    const actions = {stop: 'включение Stop', resume: 'снятие Stop', stop_control: 'изменение Stop', worker_stop_control: 'изменение Stop воркера', session_control: 'управление сеансом', worker_stop: 'Stop воркера', application_stop: 'Stop приложения'};
     const results = {applied: 'выполнено', rejected: 'отклонено', confirmed: 'подтверждено', unavailable: 'недоступно', uncertain: 'неизвестно'};
     row.textContent = `${item.occurred_at}: ${actions[item.action_type] || 'действие владельца'}, ${results[item.result] || 'результат записан'}`;
     byId('audit').append(row);
