@@ -12,12 +12,8 @@ check on the validated PR head SHA. The check is created as in progress and
 completed only after the trusted scanner result and current PR head are checked.
 The publisher never uses artifacts from the PR's CI run as scan evidence.
 
-The initial installation PR runs a direct `pull_request` bootstrap scan from
-its verified base because this workflow does not yet exist on `main`. That
-bootstrap runs candidate scanner scripts and is **not** evidence that the
-trusted post-installation path has executed. Future direct PR jobs are skipped;
-only the default-branch `workflow_run` path and its published check are
-authoritative. It uses the standalone [Gitleaks v8.30.1
+The default-branch `workflow_run` path and its published check are authoritative
+for pull requests. The scanner uses the standalone [Gitleaks v8.30.1
 release](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1), with the
 built-in rules and no license or production credentials. The installer downloads
 `gitleaks_8.30.1_linux_x64.tar.gz` from that release and checks SHA-256
@@ -50,9 +46,11 @@ CI run's PR head commit (or the pushed `main` commit) separately, with
 `fetch-depth: 0`, and verifies that the evaluated checkout's `HEAD` equals the
 resolved SHA. It runs the trusted revision's scanner against the evaluated
 checkout (including public fork checkouts), regardless of whether the triggering
-CI run passed. The initial installation on base `c2054cb` uses the PR's
-scanner scripts because that base does not yet contain them; subsequent bases
-must contain the trusted scripts.
+CI run passed. The scanner and publisher scripts always come from the trusted
+default-branch revision; candidate files are only scan input. If the trusted
+scripts or resolved PR repository and SHA are missing, the scan fails rather
+than falling back to candidate code or the `main` checkout.
+
 Before the scan, trusted code verifies the triggering repository, completed
 `CI` workflow identity and path, run attempt, source repository, PR base, head
 repository, and exact SHA through the GitHub API. It can find a fork PR through
@@ -69,15 +67,15 @@ check.
 A whole workflow cancellation may leave no published result, which also is not
 success.
 
-The trusted `workflow_run` path can first execute **after this workflow is
-merged to `main`**. This PR's bootstrap check cannot prove the publisher works
-on GitHub. After installation, verify a new PR run in the Actions history and
-confirm **Trusted secret history scan** appears on that PR's exact head SHA.
-Then select that exact check name, from the GitHub Actions app, as a required
-check in the `main` branch protection or ruleset if merge gating is desired.
-This task does not change repository settings, so that requirement is not yet
-configured. A check name alone cannot prevent an actor authorized to change
-repository workflows or settings from spoofing or disabling it.
+The currently installed default-branch workflow publishes **Trusted secret
+history scan** on the PR's exact head SHA. This cleanup takes effect only after
+it is merged to `main`; checks on this PR exercise the existing default-branch
+workflow. After merge, verify a new PR commit has the authoritative check and
+no obsolete direct `pull_request` secret-scan jobs. Select the exact check name,
+from the GitHub Actions app, as a required check in the `main` branch protection
+or ruleset if merge gating is desired. A check name alone cannot prevent an
+actor authorized to change repository workflows or settings from spoofing or
+disabling it.
 
 The scanner makes a temporary bare mirror of all
 refs available in that checkout, adds the checked-out HEAD as a temporary ref,
