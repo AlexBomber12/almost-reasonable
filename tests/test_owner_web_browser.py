@@ -142,6 +142,41 @@ def test_chromium_emergency_button_reports_separate_uncertain_worker(tmp_path):
             browser.close()
 
 
+def test_chromium_emergency_result_survives_failed_status_refresh(tmp_path):
+    with (
+        owner_server(tmp_path, worker_result="confirmed") as (origin, store, _),
+        sync_playwright() as playwright,
+    ):
+        browser = playwright.chromium.launch(headless=True)
+        try:
+            page = browser.new_page(ignore_https_errors=True)
+            page.goto(origin)
+            page.get_by_label("Имя", exact=True).fill("synthetic-owner")
+            page.get_by_label("Пароль", exact=True).fill("synthetic browser password")
+            page.get_by_role("button", name="Войти", exact=True).click()
+            expect(
+                page.get_by_role("button", name="Остановить приложение и воркер")
+            ).to_be_visible()
+            page.route(
+                "**/status",
+                lambda route: route.fulfill(
+                    status=503,
+                    content_type="application/json",
+                    body='{"error":"unavailable"}',
+                ),
+            )
+            page.get_by_role("button", name="Остановить приложение и воркер").click()
+            expect(page.locator("#emergency-result")).to_have_text(
+                "Приложение: Подтверждено; воркер: Подтверждено."
+            )
+            expect(page.locator("#message")).to_have_text(
+                "Не удалось обновить состояние. Результат команды показан выше."
+            )
+            assert store.active()
+        finally:
+            browser.close()
+
+
 @pytest.mark.parametrize("failure", ["disabled", "blocked", "broken"])
 def test_owner_script_failure_blocks_submit_and_never_sends_credentials_in_url(
     tmp_path, failure

@@ -294,6 +294,7 @@ def test_client_peer_identity_extra_frame_and_expired_deadline(tmp_path, monkeyp
         worker.start()
         assert WorkerStopClient(address, expected).assert_stop() == "unavailable"
         worker.join(timeout=2)
+
         monkeypatch.setattr(Path, "lstat", original_lstat)
 
         def extra_ack():
@@ -958,5 +959,42 @@ def test_outcome_record_failures_remain_uncertain_and_worker_is_attempted(
             "application": "uncertain",
             "worker": "uncertain",
         }
+    finally:
+        server.close()
+
+
+def test_send_error_after_transmission_is_uncertain(tmp_path, monkeypatch):
+    from app.owner_control import worker_stop as client_module
+
+    path = stop_file(tmp_path)
+    address = socket_path(tmp_path)
+    server = WorkerStopServer(address, path, os.geteuid())
+    server.start()
+    original_socket = client_module.socket.socket
+
+    class FailingAfterSend:
+        def __init__(self, *args, **kwargs):
+            self.real = original_socket(*args, **kwargs)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            self.real.close()
+
+        def __getattr__(self, name):
+            return getattr(self.real, name)
+
+        def sendall(self, value):
+            self.real.sendall(value)
+            raise TimeoutError("synthetic acknowledgement lost after send")
+
+    try:
+        monkeypatch.setattr(client_module.socket, "socket", FailingAfterSend)
+        worker = Thread(target=server.serve_once)
+        worker.start()
+        assert WorkerStopClient(address, os.geteuid()).assert_stop() == "uncertain"
+        worker.join(timeout=2)
+        assert PilotStop(path).active()
     finally:
         server.close()

@@ -96,7 +96,8 @@ byId('emergency-stop').addEventListener('click', async () => {
     const operation = await api('/worker-stop-operation', 'POST', null, csrf);
     const result = await api('/emergency-stop', 'POST', {operation_id: operation.operation_id}, csrf);
     byId('emergency-result').textContent = `Приложение: ${stopResult(result.application)}; воркер: ${stopResult(result.worker)}.`;
-    await refresh();
+    try {await refresh();}
+    catch {message('Не удалось обновить состояние. Результат команды показан выше.');}
   } catch (error) {
     byId('emergency-result').textContent = 'Приложение: неизвестно; воркер: неизвестно. Проверьте состояние отдельно.';
     message(error.message);

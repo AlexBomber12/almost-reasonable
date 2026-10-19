@@ -44,8 +44,8 @@ class WorkerStopClient:
                 if struct.unpack("iII", credentials)[1] != self.expected_uid:
                     return "unavailable"
                 connection.settimeout(max(0.001, deadline - monotonic()))
-                connection.sendall(REQUEST)
                 sent = True
+                connection.sendall(REQUEST)
                 connection.shutdown(socket.SHUT_WR)
                 result = bytearray()
                 while len(result) < len(ACK) + 1:
