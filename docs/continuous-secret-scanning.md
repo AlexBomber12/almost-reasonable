@@ -3,11 +3,21 @@
 The separate **Secret scan** workflow runs after the existing `CI` workflow
 completes for each pull request, and on pushes to `main`. GitHub runs the
 [`workflow_run` definition from the default branch](https://docs.github.com/en/actions/reference/workflows-and-actions/events-that-trigger-workflows#workflow_run),
-so a PR cannot replace the scanner job. The initial installation PR runs
-directly on its verified base
-because the workflow does not yet exist on `main`. Future direct PR jobs are
-skipped; the default-branch `workflow_run` is the authoritative PR scan. It uses
-the standalone [Gitleaks v8.30.1
+so a PR cannot replace the trusted scanner or publisher job. The scanner job
+has read-only `contents`, `actions`, and `pull-requests` permissions. A separate
+publisher job has those read permissions plus `checks: write`; it never checks
+out candidate code. It uses GitHub's [check-run API](https://docs.github.com/en/rest/checks/runs)
+to publish the stable **Trusted secret history scan**
+check on the validated PR head SHA. The check is created as in progress and
+completed only after the trusted scanner result and current PR head are checked.
+The publisher never uses artifacts from the PR's CI run as scan evidence.
+
+The initial installation PR runs a direct `pull_request` bootstrap scan from
+its verified base because this workflow does not yet exist on `main`. That
+bootstrap runs candidate scanner scripts and is **not** evidence that the
+trusted post-installation path has executed. Future direct PR jobs are skipped;
+only the default-branch `workflow_run` path and its published check are
+authoritative. It uses the standalone [Gitleaks v8.30.1
 release](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1), with the
 built-in rules and no license or production credentials. The installer downloads
 `gitleaks_8.30.1_linux_x64.tar.gz` from that release and checks SHA-256
@@ -25,25 +35,47 @@ From a complete local checkout, run:
 
 ```sh
 bash scripts/security/test-secret-scan.sh
+node --test scripts/security/test-trusted-check.mjs
 bash scripts/security/scan-secrets.sh
 ```
 
 The scripts need Git, Bash, curl, `sha256sum`, tar, OpenSSL (for synthetic test
 data), grep (for the tests), and network access to the pinned release. The
-scanner accepts an optional repository path. A shallow checkout fails rather
-than silently scanning only recent commits.
+scanner accepts an optional repository path. The publisher regression tests
+also need Node.js; they mock GitHub API calls and use no token. A shallow
+checkout fails rather than silently scanning only recent commits.
 
 The workflow checks out the trusted default-branch revision and the triggering
 CI run's PR head commit (or the pushed `main` commit) separately, with
-`fetch-depth: 0`. It runs the trusted revision's scanner against the evaluated
+`fetch-depth: 0`, and verifies that the evaluated checkout's `HEAD` equals the
+resolved SHA. It runs the trusted revision's scanner against the evaluated
 checkout (including public fork checkouts), regardless of whether the triggering
-CI run passed. The initial
-installation on base `c2054cb` uses the PR's scanner scripts because that base
-does not yet contain them; subsequent bases must contain the trusted scripts.
-The trusted `workflow_run` path can first execute after this workflow is merged
-to `main`; this installation PR validates the same scan through its bootstrap
-PR job. That trusted run appears on the default branch's Actions history, so
-operators must inspect it alongside PR checks before merging a later PR.
+CI run passed. The initial installation on base `c2054cb` uses the PR's
+scanner scripts because that base does not yet contain them; subsequent bases
+must contain the trusted scripts.
+Before the scan, trusted code verifies the triggering repository, completed
+`CI` workflow identity and path, run attempt, source repository, PR base, head
+repository, and exact SHA through the GitHub API. It can find a fork PR through
+the open-PR API when `workflow_run.pull_requests` is empty. Missing, ambiguous,
+or inconsistent identity fails closed. The publisher independently rechecks that
+metadata and the live PR head. If the head changed, it marks the old SHA's
+check cancelled; it never marks the newer SHA successful. Duplicate events
+cannot upgrade an earlier failure, and an older run cannot overwrite a newer
+run's result on the same SHA. A skipped, failed, or cancelled scanner job,
+missing scan evidence, or API error cannot produce a new successful check.
+A whole workflow cancellation may leave no published result, which also is not
+success.
+
+The trusted `workflow_run` path can first execute **after this workflow is
+merged to `main`**. This PR's bootstrap check cannot prove the publisher works
+on GitHub. After installation, verify a new PR run in the Actions history and
+confirm **Trusted secret history scan** appears on that PR's exact head SHA.
+Then select that exact check name, from the GitHub Actions app, as a required
+check in the `main` branch protection or ruleset if merge gating is desired.
+This task does not change repository settings, so that requirement is not yet
+configured. A check name alone cannot prevent an actor authorized to change
+repository workflows or settings from spoofing or disabling it.
+
 The scanner makes a temporary bare mirror of all
 refs available in that checkout, adds the checked-out HEAD as a temporary ref,
 and scans `git log -p --all refs/scan/head`. This includes fetched branch and tag

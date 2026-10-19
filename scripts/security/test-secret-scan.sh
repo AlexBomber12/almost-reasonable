@@ -18,7 +18,12 @@ new_repo() {
 
 scan() {
   local name=$1
-  "$root/scripts/security/scan-secrets.sh" "$scratch/$name" > "$scratch/$name.log" 2>&1
+  local expected=$2 status=0
+  "$root/scripts/security/scan-secrets.sh" "$scratch/$name" > "$scratch/$name.log" 2>&1 || status=$?
+  if [[ $status -ne $expected ]]; then
+    printf 'FAIL: %s scan returned %s, expected %s\n' "$name" "$status" "$expected" >&2
+    exit 1
+  fi
 }
 
 assert_hidden() {
@@ -34,7 +39,7 @@ assert_hidden() {
 candidate="ghp_$(openssl rand -base64 48 | tr -cd 'A-Za-z0-9' | head -c 36)"
 
 new_repo clean
-scan clean || { printf 'FAIL: clean repository rejected\n' >&2; exit 1; }
+scan clean 0
 
 new_repo present
 printf 'token = %s\n' "$candidate" > "$scratch/present/credential.txt"
@@ -43,7 +48,7 @@ git -C "$scratch/present" commit -qm add-candidate
 branch=$(git -C "$scratch/present" branch --show-current)
 git -C "$scratch/present" switch --detach -q
 git -C "$scratch/present" branch -D "$branch" > /dev/null
-if scan present; then printf 'FAIL: candidate accepted\n' >&2; exit 1; fi
+scan present 1
 assert_hidden present
 file_id=$(printf 'credential.txt' | sha256sum | cut -d ' ' -f 1)
 grep -Fq "rule=\"github-pat\" file_sha256=\"$file_id\" line=1" "$scratch/present.log" || {
@@ -55,7 +60,7 @@ other_candidate="ghp_$(openssl rand -base64 48 | tr -cd 'A-Za-z0-9' | head -c 36
 printf 'token = %s\n' "$other_candidate" > "$scratch/pathleak/$candidate.txt"
 git -C "$scratch/pathleak" add .
 git -C "$scratch/pathleak" commit -qm add-candidate
-if scan pathleak; then printf 'FAIL: path candidate accepted\n' >&2; exit 1; fi
+scan pathleak 1
 assert_hidden pathleak
 assert_hidden pathleak "$other_candidate"
 grep -Eq 'file_sha256="[a-f0-9]{64}"' "$scratch/pathleak.log" || {
@@ -68,25 +73,25 @@ git -C "$scratch/removed" add credential.txt
 git -C "$scratch/removed" commit -qm add-candidate
 git -C "$scratch/removed" rm -q credential.txt
 git -C "$scratch/removed" commit -qm remove-candidate
-if scan removed; then printf 'FAIL: removed candidate accepted\n' >&2; exit 1; fi
+scan removed 1
 assert_hidden removed
 
 new_repo ignores
 printf 'token = %s # gitleaks:allow\n' "$candidate" > "$scratch/ignores/credential.txt"
 git -C "$scratch/ignores" add credential.txt
 git -C "$scratch/ignores" commit -qm add-candidate
-if scan ignores; then printf 'FAIL: inline allow comment suppressed candidate\n' >&2; exit 1; fi
+scan ignores 1
 assert_hidden ignores
 commit=$(git -C "$scratch/ignores" rev-parse HEAD)
 printf '%s:credential.txt:github-pat:1\n' "$commit" > "$scratch/ignores/.gitleaksignore"
 git -C "$scratch/ignores" add .gitleaksignore
 git -C "$scratch/ignores" commit -qm add-ignore-file
-if scan ignores; then printf 'FAIL: repository ignore file suppressed candidate\n' >&2; exit 1; fi
+scan ignores 1
 assert_hidden ignores
 printf '[allowlist]\nregexes = [".*"]\n' > "$scratch/ignores/.gitleaks.toml"
 git -C "$scratch/ignores" add .gitleaks.toml
 git -C "$scratch/ignores" commit -qm add-config-file
-if scan ignores; then printf 'FAIL: repository config suppressed candidate\n' >&2; exit 1; fi
+scan ignores 1
 assert_hidden ignores
 
 printf 'PASS: clean, present, detached, removed, ignored, and redaction cases\n'
