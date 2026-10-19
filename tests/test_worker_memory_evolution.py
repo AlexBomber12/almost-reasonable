@@ -1639,6 +1639,58 @@ def test_selection_omits_memory_whose_complete_source_union_exceeds_store_bound(
     assert reserved.snapshot.sources == ()
 
 
+def test_selection_counts_provenance_roles_before_provider_projection(tmp_path):
+    events = EventStore(tmp_path / "events.db")
+    audit = EvolutionAuditStore(
+        ProviderStateStore(EventStore(tmp_path / "ipc.db")), events
+    )
+    who = principal("a")
+    memory = GenericMemoryStore(events)
+    for item in ("one", "two"):
+        sources = tuple(
+            append_event(events, who, f"{item}-{index}", f"Synthetic {item} {index}")
+            for index in range(49)
+        )
+        proposal = GenericMemoryProposal(
+            ProposalContext(
+                f"memory:{item}",
+                sources[0],
+                sources,
+                (),
+                None,
+                "synthetic_role_bound",
+                NOW,
+                NOW + timedelta(days=30),
+            ),
+            MemoryKind.CANDIDATE_USEFUL_MEMORY,
+            f"Memory {item}",
+            0.8,
+            VerificationStatus.UNVERIFIED,
+            item_id=f"memory:{item}",
+        )
+        assert memory.commit(
+            who,
+            proposal,
+            model_identifier="worker-owned",
+            prompt_version="synthetic-v1",
+            core_self_version=CORE_SELF_VERSION,
+            decided_at=NOW,
+        ) == (f"memory:{item}", 1)
+    source = append_event(events, who, "query-roles", "Consolidate memories")
+    reserved = audit.reserve(
+        "evolution:" + "4" * 64, who, source, "Consolidate memories"
+    )
+    assert len(reserved.snapshot.visible) == 2
+    assert len(reserved.snapshot.selected) == len(reserved.request.memories) == 1
+    assert len(set(reserved.snapshot.sources) | {source}) == 50
+    with events._open() as db:
+        rows = db.execute(
+            "SELECT COUNT(*) FROM generic_memory_sources WHERE operation_id=?",
+            (reserved.snapshot.selected[0][1],),
+        ).fetchone()[0]
+    assert rows == 50
+
+
 @pytest.mark.parametrize("change", ["new_head", "erase_context"])
 def test_in_flight_snapshot_change_or_context_deletion_cannot_commit(tmp_path, change):
     events = EventStore(tmp_path / "events.db")

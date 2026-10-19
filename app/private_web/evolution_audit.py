@@ -1,6 +1,7 @@
 """Source-bound, erasable snapshot and proposal receipt for worker evolution."""
 
 from dataclasses import dataclass
+from contextlib import closing
 import json
 import secrets
 
@@ -146,29 +147,39 @@ class EvolutionAuditStore(ExtractionAuditStore):
         selected = []
         memories = []
         sources = set()
-        for read in ranked:
-            if len(memories) == MAX_MEMORIES:
-                break
-            if (
-                len(sources | set(read.source_event_ids) | {source_event_id})
-                > MAX_GENERIC_SOURCES
-            ):
-                continue
-            handle = "h" + secrets.token_hex(8)
-            record = EvolutionMemory(
-                handle,
-                read.view.memory_kind.value,
-                read.view.statement,
-                read.view.confidence,
-            )
-            trial = EvolutionModelRequest(content, tuple((*memories, record)))
-            try:
-                trial.serialize()
-            except ValueError:
-                continue
-            selected.append((handle, read.view.item_id, read.view.revision))
-            memories.append(record)
-            sources.update(read.source_event_ids)
+        source_roles = {
+            (source_event_id, "initiating"),
+            (source_event_id, "supporting"),
+        }
+        with closing(self._events._open()) as db:
+            self._events._verify_current_schema(db)
+            for read in ranked:
+                if len(memories) == MAX_MEMORIES:
+                    break
+                candidate_roles = source_roles | set(
+                    db.execute(
+                        "SELECT event_id,role FROM generic_memory_sources WHERE operation_id=? AND source_principal_id=?",
+                        (read.operation_id, principal_id),
+                    )
+                )
+                if len(candidate_roles) > MAX_GENERIC_SOURCES:
+                    continue
+                handle = "h" + secrets.token_hex(8)
+                record = EvolutionMemory(
+                    handle,
+                    read.view.memory_kind.value,
+                    read.view.statement,
+                    read.view.confidence,
+                )
+                trial = EvolutionModelRequest(content, tuple((*memories, record)))
+                try:
+                    trial.serialize()
+                except ValueError:
+                    continue
+                selected.append((handle, read.view.item_id, read.view.revision))
+                memories.append(record)
+                sources.update(read.source_event_ids)
+                source_roles = candidate_roles
         request = EvolutionModelRequest(content, tuple(memories))
         request.serialize()
         snapshot = EvolutionSnapshot(

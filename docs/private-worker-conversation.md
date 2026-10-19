@@ -168,8 +168,8 @@ I/O.
 participant input (at most 8 KiB) and up to eight whole current generic
 memories from that participant, with a 16 KiB serialized projection cap.
 Selection ranks authorized generic heads by overlap with the input and
-recency, and excludes records whose complete source union would exceed the
-100-source generic graph bound. Every shown record has an operation-local
+recency, and excludes records whose complete provenance role-row union would
+exceed the 100-row generic graph bound. Every shown record has an operation-local
 opaque handle, kind, statement, confidence, and explicit untrusted-data
 markers. Omitted records have no handle. No principal, event, item, revision,
 storage, permission or provenance identifier enters the provider input.
