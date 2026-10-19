@@ -124,10 +124,12 @@ checks Stop, spend, protected permission, total and extraction allowances, and
 its provider attempt ledger. A lost response stays `uncertain`; a reserved
 operation is never automatically retransmitted. A received proposal is stored
 temporarily in the source EventStore and can be reconciled after a crash using
-the same operation identity. The IPC audit keeps only a binding hash and a
+the same operation identity. The IPC audit keeps only an identity hash of the
+principal and source event, without message content, and a
 sanitized `accepted`, `no_change`, `rejected`, `unavailable`, or `uncertain`
-outcome. Receipt text is erased after resolution and by source deletion,
-including quarantine of an older backup. The reply has an independent IPC
+outcome. Receipt text is erased after resolution, on replay if finalization
+stopped between the two databases, and by source deletion, including quarantine
+of an older backup. The reply has an independent IPC
 reservation and provider budget; extraction failure can leave that reply
 eligible. Current session, source, privacy, application Stop and spend state
 are checked again before receipt and generic memory commit. No privacy lock or

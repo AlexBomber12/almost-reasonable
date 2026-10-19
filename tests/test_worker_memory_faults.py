@@ -2,6 +2,8 @@
 
 from pathlib import Path
 from datetime import datetime, timedelta
+from hashlib import sha256
+import json
 import os
 import sqlite3
 
@@ -60,6 +62,30 @@ def test_audit_binds_input_and_rejects_identity_conflicts(state):
     assert audit.reserve(
         op, who.principal_id.value, source, "I collect old maps"
     ).created
+    other_source = append_event(events, who, "two", "I collect old maps")
+    with pytest.raises(ValueError, match="identity conflict"):
+        audit.reserve(op, who.principal_id.value, other_source, "I collect old maps")
+    with pytest.raises(ValueError, match="identity conflict"):
+        audit.read(op, who.principal_id.value, other_source, "I collect old maps")
+    with provider._event_store._open() as db:
+        binding = db.execute(
+            "SELECT binding FROM private_extraction_audit WHERE operation_id=?", (op,)
+        ).fetchone()[0]
+    assert (
+        binding
+        == sha256(
+            json.dumps([who.principal_id.value, source], ensure_ascii=False).encode()
+        ).hexdigest()
+    )
+    assert (
+        binding
+        != sha256(
+            json.dumps(
+                [who.principal_id.value, source, "I collect old maps"],
+                ensure_ascii=False,
+            ).encode()
+        ).hexdigest()
+    )
     with pytest.raises(ValueError, match="identity conflict"):
         audit.reserve(op, who.principal_id.value, source, "changed")
     with pytest.raises(ValueError, match="identity conflict"):
@@ -100,6 +126,39 @@ def test_audit_binds_input_and_rejects_identity_conflicts(state):
         ).fetchone() == (0,)
 
 
+@pytest.mark.parametrize("replay_method", ["read", "reserve"])
+def test_final_audit_replay_cleans_receipt_after_cross_store_exit(
+    state, monkeypatch, replay_method
+):
+    events, provider, audit, who, source, proposal = state
+    op = "memory:" + "f" * 64
+    args = (op, who.principal_id.value, source, "I collect old maps")
+    audit.reserve(*args)
+    audit.receive(*args, proposal)
+
+    def fail_cleanup(_operation_id):
+        raise OSError("exit")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(audit, "_delete_receipt", fail_cleanup)
+        with pytest.raises(OSError, match="exit"):
+            audit.finish(op, "accepted")
+    with provider._event_store._open() as db:
+        assert db.execute(
+            "SELECT status FROM private_extraction_audit WHERE operation_id=?", (op,)
+        ).fetchone() == ("accepted",)
+    with events._open() as db:
+        assert db.execute(
+            "SELECT count(*) FROM private_extraction_receipts"
+        ).fetchone() == (1,)
+    replay = getattr(ExtractionAuditStore(provider, events), replay_method)(*args)
+    assert replay.status == "accepted" and replay.proposal is None
+    with events._open() as db:
+        assert db.execute(
+            "SELECT count(*) FROM private_extraction_receipts"
+        ).fetchone() == (0,)
+
+
 def test_durable_receipt_reconciles_reserved_intent_and_source_deletion_erases_it(
     state, tmp_path
 ):
@@ -129,6 +188,10 @@ def test_durable_receipt_reconciles_reserved_intent_and_source_deletion_erases_i
         assert db.execute(
             "SELECT count(*) FROM private_extraction_receipts"
         ).fetchone() == (0,)
+    with pytest.raises(ValueError, match="source unavailable"):
+        audit.reserve(
+            "memory:" + "d" * 64, who.principal_id.value, source, "I collect old maps"
+        )
     assert (
         audit.read(op, who.principal_id.value, source, "I collect old maps").proposal
         is None
