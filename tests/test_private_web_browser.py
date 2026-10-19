@@ -10,7 +10,7 @@ import subprocess
 from threading import Thread
 from wsgiref.simple_server import WSGIRequestHandler, make_server
 
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import expect, sync_playwright
 
 from app.core.context import ContextLimits, PrivateContextAssembler
 from app.core.store import EventStore
@@ -342,7 +342,7 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 editor.fill("После остановки")
                 page.get_by_role("button", name="Отправить сообщение").click()
                 page.get_by_text("Ответ остановлен.", exact=False).wait_for()
-                assert page.locator("#history li").count() == 5
+                expect(page.locator("#history li")).to_have_count(5)
                 assert page.get_by_text("Второй синтетический ответ").is_visible()
 
                 def reject_once(route):

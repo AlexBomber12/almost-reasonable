@@ -22,6 +22,7 @@ from app.core.store import EventStore
 from app.trusted.openai_gateway import GatewayResult, TrustedOpenAIGateway
 from app.core.model_contract import ModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest
+from app.cognition.worker_evolution import EvolutionModelRequest
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_protocol import (
     IPC_REJECTED,
@@ -94,6 +95,8 @@ class OpenAIWorkerServer:
         | None = None,
         extraction_enabled: bool = False,
         extraction_commit_guard: Callable[[], bool] | None = None,
+        evolution_enabled: bool = False,
+        evolution_commit_guard: Callable[[], bool] | None = None,
     ):
         if type(config) is not WorkerServerConfig:
             raise TypeError("config must be a WorkerServerConfig")
@@ -107,6 +110,10 @@ class OpenAIWorkerServer:
             extraction_commit_guard
         ):
             raise TypeError("extraction commit guard must be callable")
+        if type(evolution_enabled) is not bool or (
+            evolution_commit_guard is not None and not callable(evolution_commit_guard)
+        ):
+            raise TypeError("invalid evolution guard")
         if not hasattr(socket, "SO_PEERCRED"):
             raise RuntimeError("Unix peer credentials are unavailable")
         self._config = config
@@ -114,6 +121,8 @@ class OpenAIWorkerServer:
         self._request_guard = request_guard
         self._extraction_enabled = extraction_enabled
         self._extraction_commit_guard = extraction_commit_guard
+        self._evolution_enabled = evolution_enabled
+        self._evolution_commit_guard = evolution_commit_guard
         self._listener: socket.socket | None = None
         self._socket_identity: tuple[int, int] | None = None
 
@@ -209,11 +218,13 @@ class OpenAIWorkerServer:
                 response = WorkerResponse(IPC_REJECTED, 0, _INVALID_REQUEST_RU, None)
             else:
                 extraction = type(request.model_request) is ExtractionModelRequest
+                evolution = type(request.model_request) is EvolutionModelRequest
                 guarded = (
                     WorkerResponse(
                         "authorization_rejected", 0, _INVALID_REQUEST_RU, None
                     )
-                    if extraction and not self._extraction_enabled
+                    if (extraction and not self._extraction_enabled)
+                    or (evolution and not self._evolution_enabled)
                     else None
                     if self._request_guard is None
                     else self._request_guard(request)
@@ -221,7 +232,11 @@ class OpenAIWorkerServer:
                 if guarded is not None:
                     if type(guarded) is not WorkerResponse:
                         return
-                    response = replace(guarded, extraction_operation=extraction)
+                    response = replace(
+                        guarded,
+                        extraction_operation=extraction,
+                        evolution_operation=evolution,
+                    )
                 else:
                     gateway_allowance = (
                         MAX_OVERALL_TIMEOUT_SECONDS + self._config.io_timeout_seconds
@@ -233,6 +248,7 @@ class OpenAIWorkerServer:
                             _TIMEOUT_RU,
                             None,
                             extraction_operation=extraction,
+                            evolution_operation=evolution,
                         )
                     else:
                         try:
@@ -241,6 +257,8 @@ class OpenAIWorkerServer:
                                 if type(request.model_request) is ModelRequest
                                 else self._gateway.submit_extraction
                                 if extraction
+                                else self._gateway.submit_evolution
+                                if evolution
                                 else self._gateway.submit_context
                             )
                             result = submit(
@@ -250,7 +268,9 @@ class OpenAIWorkerServer:
                             )
                         except (TypeError, ValueError):
                             return
-                        response = _gateway_response(result, extraction=extraction)
+                        response = _gateway_response(
+                            result, extraction=extraction, evolution=evolution
+                        )
                         if (
                             extraction
                             and self._extraction_commit_guard is not None
@@ -262,6 +282,18 @@ class OpenAIWorkerServer:
                                 _INVALID_REQUEST_RU,
                                 None,
                                 extraction_operation=True,
+                            )
+                        if (
+                            evolution
+                            and self._evolution_commit_guard is not None
+                            and not self._evolution_commit_guard()
+                        ):
+                            response = WorkerResponse(
+                                "authorization_rejected",
+                                result.attempts,
+                                _INVALID_REQUEST_RU,
+                                None,
+                                evolution_operation=True,
                             )
             try:
                 send_frame(
@@ -398,7 +430,7 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def _gateway_response(
-    result: GatewayResult, *, extraction: bool = False
+    result: GatewayResult, *, extraction: bool = False, evolution: bool = False
 ) -> WorkerResponse:
     validation = (
         result.validation
@@ -412,6 +444,8 @@ def _gateway_response(
         validation,
         result.extraction,
         extraction,
+        result.evolution,
+        evolution,
     )
 
 

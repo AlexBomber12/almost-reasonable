@@ -3,9 +3,11 @@
 The historical Stage 0 description below applies to the synthetic extractor.
 The independently metered B03A worker extraction path, audit and recovery
 contract are documented in [private-worker-conversation.md](private-worker-conversation.md).
-It accepts one new generic memory or no-change from only the initiating
-participant input; it does not enable synthetic extraction in the worker
-runtime. The production store is now EventStore v9.
+That B03A contract accepts one new generic memory or no-change from only the
+initiating participant input. B03B adds a separate opt-in worker contract for
+bounded generic memory revision and consolidation; see the worker document for
+its authority and recovery rules. Neither path enables synthetic extraction
+in the worker runtime. The production store is now EventStore v9.
 
 Current synthetic integration and exact scenario status are documented in
 [integration-contracts.md](integration-contracts.md) and the validated

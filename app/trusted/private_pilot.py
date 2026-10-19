@@ -264,7 +264,7 @@ class PilotAllowance:
                             0
                             if extraction_limit is None
                             else connection.execute(
-                                "SELECT count(*) FROM consumed WHERE operation_id LIKE 'memory:%'"
+                                "SELECT count(*) FROM consumed WHERE operation_id LIKE 'memory:%' OR operation_id LIKE 'evolution:%'"
                             ).fetchone()[0]
                         )
                         if extraction_limit is None or extracted < extraction_limit:
@@ -291,7 +291,7 @@ class PilotAllowance:
         if (
             type(operation_id) is not str
             or re.fullmatch(
-                r"memory:[0-9a-f]{64}"
+                r"(?:memory|evolution):[0-9a-f]{64}"
                 if extraction_limit is not None
                 else r"reply:[0-9a-f]{64}",
                 operation_id,

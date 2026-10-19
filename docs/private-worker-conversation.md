@@ -138,7 +138,73 @@ SQLite transaction spans provider I/O.
 The synthetic HTTP plus separate AF_UNIX fake-SDK tests prove the versioned
 codec, provider builder, parser, deterministic validation, SQLite durability,
 restart continuity, privacy graph, Stop/spend/session gates and operation
-accounting. They do not establish live-model memory quality. B03B still needs
-revision and consolidation of accumulated memories, typed interest/belief/goal
+accounting. They do not establish live-model memory quality.
+
+## B03B: bounded private generic-memory evolution
+
+The application can explicitly select `--enable-memory-evolution` for the
+worker conversation path. When selected, it uses one evolution operation for
+the input and does not run B03A extraction for that input. Both options remain
+off by default. The worker needs its own protected 0400 file in a protected
+0700 directory, supplied through `--memory-evolution-permission`:
+
+```json
+{"version":"private-memory-evolution-permission-v1","pilot_id":"synthetic-pilot-id","max_operations":1}
+```
+
+The extraction permission cannot authorize evolution. The pilot ID and cap
+must match the current activation and its total allowance. Evolution consumes
+the same bounded pilot operation and provider attempt ledgers as extraction
+and replies; evolution and extraction share the conservative memory-operation
+subset cap. The worker rechecks Stop, protected permission, activation,
+provider-store identity and spend suspension before the provider and before
+returning an actionable result. The application separately checks its current
+session, privacy gate, source, Stop and spend state before sending and before
+committing. Neither the privacy fence nor a SQLite transaction spans provider
+I/O.
+
+`openai-worker-memory-evolution-v1` contains one
+`model-contract-private-evolution-v1` request. It carries only the initiating
+participant input (at most 8 KiB) and up to eight whole current generic
+memories from that participant, with a 16 KiB serialized projection cap.
+Selection ranks authorized generic heads by overlap with the input and
+recency, and excludes records whose complete source union would exceed the
+100-source generic graph bound. Every shown record has an operation-local
+opaque handle, kind, statement, confidence, and explicit untrusted-data
+markers. Omitted records have no handle. No principal, event, item, revision,
+storage, permission or provenance identifier enters the provider input.
+Fixed instructions treat both participant text and memory text as data.
+
+The closed model output is one `new_memory`, `revise_memory` (one shown handle),
+`consolidate_memories` (at least two distinct shown handles), or explicit
+`no_change`. Kind, statement and confidence remain bounded and unverified.
+The parser rejects extra fields, duplicates, unknown decisions, invalid
+handles, oversized text and invalid or huge numeric confidence. The
+application resolves handles only against the immutable snapshot stored
+before provider I/O in a source-bound EventStore receipt. It owns source,
+operation, item, expected revision, timestamps, review state, verification,
+parents and contextual lineage. The GenericMemoryStore compares the original
+visible head set and exact selected heads in its write transaction. A newer
+revision or changed snapshot is rejected; it is never silently retargeted.
+Consolidation creates a new derived item with exact parent edges and leaves
+its sources and their revision histories intact. All shown records, including
+unselected context, contribute complete protected source dependencies. A
+repeated or consolidated participant assertion is still unverified and is
+not independent factual corroboration.
+
+The IPC intent is content-free. Its source-bound application receipt holds
+the selected handle bindings, visible head references and source IDs without
+plaintext memory or a content-derived digest. It is erased on finalization,
+source deletion and contextual-source deletion. A lost response stays
+uncertain; replay never calls the provider again. A received proposal can be
+reconciled after a crash before or after the memory store commit using the
+original operation identity, creating no second revision. A deleted receipt
+becomes unavailable. Quarantined restore reapplies ledger deletion to old
+backups, including contextual dependencies.
+
+Synthetic fake-SDK tests inspect the actual provider projection and exercise
+the authenticated HTTP, AF_UNIX worker, parser, codec and SQLite path. They
+do not establish live-model semantic quality. Typed interest/belief/goal
 evolution, shared promotion, research and narrative memory, autonomous
-behavior and live semantic evaluation. `complete_mvp=BLOCKED` remains unchanged.
+behavior, deployment and live semantic evaluation remain separate work.
+`complete_mvp=BLOCKED` remains unchanged.

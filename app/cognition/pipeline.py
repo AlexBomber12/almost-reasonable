@@ -52,6 +52,7 @@ from .contracts import (
     ProposalContext,
 )
 from .worker_extraction import ExtractionProposal
+from .worker_evolution import EvolutionProposal, parse_evolution_proposal
 from .read_store import CognitionReadStore
 from .generic_store import (
     GenericMemoryConflict,
@@ -198,6 +199,104 @@ class CognitionEngine:
             tuple((candidate.item_id, candidate.revision) for candidate in current),
             tuple((read.view.item_id, read.view.revision) for read in generic),
             (),
+        )
+
+    def commit_worker_evolution(
+        self,
+        context,
+        source_event_id,
+        operation_id,
+        snapshot,
+        proposal: EvolutionProposal,
+    ) -> CognitionOutcome:
+        """Interpret only handles bound before provider I/O, then compare store heads."""
+        if not self._capabilities.generic_memory_write:
+            return self._rejected(CognitionReason.CAPABILITY_DISABLED)
+        if type(proposal) is not EvolutionProposal or not self._valid_token(
+            operation_id
+        ):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        try:
+            verified = parse_evolution_proposal(
+                json.dumps(
+                    {
+                        "decision": proposal.decision,
+                        "handles": proposal.handles,
+                        "kind": proposal.kind,
+                        "statement": proposal.statement,
+                        "confidence": proposal.confidence,
+                    }
+                )
+            )
+        except (TypeError, ValueError):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if verified != proposal:
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        source = self._read.retrieve_exact_private_event(context, source_event_id)
+        if source is None:
+            return self._rejected(CognitionReason.SOURCE_NOT_FOUND)
+        current_generic = self._generic.current(context)
+        current_heads = tuple(
+            (read.view.item_id, read.view.revision) for read in current_generic
+        )
+        if current_heads != snapshot.visible and not self._generic.operation_exists(
+            context, operation_id
+        ):
+            return self._rejected(CognitionReason.STALE_REVISION)
+        shown = {
+            handle: (item, revision) for handle, item, revision in snapshot.selected
+        }
+        if any(handle not in shown for handle in proposal.handles):
+            return self._rejected(CognitionReason.INVALID_PROPOSAL)
+        if proposal.decision == "no_change":
+            return CognitionOutcome(
+                CognitionOutcomeStatus.NO_CHANGE, CognitionReason.AUTHORIZED
+            )
+        from datetime import timedelta
+        from .contracts import ProposalContext, GenericMemoryProposal
+        import hashlib
+
+        kind = MemoryKind(proposal.kind)
+        target = (
+            shown[proposal.handles[0]] if proposal.decision == "revise_memory" else None
+        )
+        parents = (
+            tuple(shown[handle] for handle in proposal.handles)
+            if proposal.decision == "consolidate_memories"
+            else ()
+        )
+        candidate = GenericMemoryProposal(
+            ProposalContext(
+                operation_id,
+                source_event_id,
+                (source_event_id,),
+                (),
+                target[1] if target is not None else None,
+                "worker_private_evolution_v1",
+                source.occurred_at,
+                source.occurred_at + timedelta(days=30),
+            ),
+            kind,
+            proposal.statement,
+            proposal.confidence,
+            VerificationStatus.UNVERIFIED,
+            item_id=target[0]
+            if target is not None
+            else "memory:" + hashlib.sha256(operation_id.encode()).hexdigest(),
+            parent_revisions=parents,
+        )
+        current = self._state.retrieve_private_candidates(context)
+        return self._authorize(
+            context,
+            source_event_id,
+            candidate,
+            ExtractorIdentity("worker-owned", "private-evolution-v1"),
+            source.occurred_at,
+            frozenset((source_event_id,)),
+            frozenset(item.item_id for item in current),
+            tuple((item.item_id, item.revision) for item in current),
+            snapshot.visible,
+            tuple((item, revision) for _handle, item, revision in snapshot.selected),
         )
 
     def _prepare(self, context, source_event_id, evidence_event_ids):

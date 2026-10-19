@@ -276,8 +276,14 @@ def _erase(
             erase_shared_source(db, request.content_reference)
         if schema_version == 9:
             db.execute(
-                "DELETE FROM private_extraction_receipts WHERE source_event_id=?",
-                (request.content_reference,),
+                """DELETE FROM private_extraction_receipts
+                WHERE source_event_id=? OR EXISTS (
+                    SELECT 1 FROM json_each(
+                        CASE WHEN json_valid(proposal) THEN
+                            json_extract(proposal,'$.snapshot.sources') ELSE NULL END
+                    ) WHERE value=?
+                )""",
+                (request.content_reference, request.content_reference),
             )
         db.execute("DELETE FROM private_payloads WHERE payload_id=?", (source[1],))
         _validate_graph(db, schema_version)

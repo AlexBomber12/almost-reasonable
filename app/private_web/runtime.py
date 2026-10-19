@@ -74,6 +74,7 @@ from .conversation import (
     _utc_now,
 )
 from .extraction_audit import ExtractionAuditStore
+from .evolution_audit import EvolutionAuditStore
 
 
 _WORKER_FAILURE_RU = "Сервис модели временно недоступен. Попробуйте позже."
@@ -280,13 +281,18 @@ class _DurableConversationRuntime(ConversationService):
         operation_id = self._operation_id(event_id)
         route = TrustedActionContext(correlation, principal)
         existing = self._gate.read_reply(principal, operation_id)
-        if (
-            existing is not None
-            and getattr(self, "_extraction_audit", None) is not None
+        if existing is not None and (
+            getattr(self, "_extraction_audit", None) is not None
+            or getattr(self, "_evolution_audit", None) is not None
         ):
-            self._reconcile_worker_extraction(
-                principal, event_id, content, operation_id
-            )
+            if getattr(self, "_evolution_audit", None) is not None:
+                self._reconcile_worker_evolution(
+                    principal, event_id, content, operation_id
+                )
+            else:
+                self._reconcile_worker_extraction(
+                    principal, event_id, content, operation_id
+                )
         if existing is None:
             self._checkpoint("before_reservation")
 
@@ -351,7 +357,12 @@ class _DurableConversationRuntime(ConversationService):
                         self._checkpoint("after_extraction")
                         # Deletion or changed controls during extraction block inference.
                         caps = self._gate.authorized(preflight)
-                    if getattr(self, "_extraction_audit", None) is not None:
+                    if getattr(self, "_evolution_audit", None) is not None:
+                        self._evolve_worker_memory(
+                            principal, event_id, content, correlation, operation_id
+                        )
+                        caps = self._gate.authorized(preflight)
+                    elif getattr(self, "_extraction_audit", None) is not None:
                         self._extract_worker_memory(
                             principal, event_id, content, correlation, operation_id
                         )
@@ -359,6 +370,7 @@ class _DurableConversationRuntime(ConversationService):
                     if (
                         self._cognition is not None
                         or getattr(self, "_extraction_audit", None) is not None
+                        or getattr(self, "_evolution_audit", None) is not None
                     ) and (
                         caps.emergency_stop_active
                         or caps.provider_spend_suspended
@@ -518,6 +530,169 @@ class _DurableConversationRuntime(ConversationService):
         if audit is not None and audit.status == "received":
             self._commit_worker_memory(
                 principal, event_id, operation_id, audit.proposal
+            )
+
+    def _reconcile_worker_evolution(
+        self, principal, event_id, content, reply_operation_id
+    ):
+        operation_id = "evolution:" + reply_operation_id.removeprefix("reply:")
+        audit = self._evolution_audit.read(
+            operation_id, principal.principal_id.value, event_id, content
+        )
+        if audit is not None and audit.status == "received":
+            self._commit_worker_evolution(principal, event_id, operation_id, audit)
+
+    def _commit_worker_evolution(self, principal, event_id, operation_id, audit):
+        def commit():
+            caps = self._capabilities()
+            if (
+                caps.emergency_stop_active
+                or caps.provider_spend_suspended
+                or not self._current_request.get()()
+            ):
+                return "unavailable"
+            outcome = self._worker_cognition.commit_worker_evolution(
+                principal, event_id, operation_id, audit.snapshot, audit.proposal
+            )
+            if outcome.reason in {
+                CognitionReason.SOURCE_NOT_FOUND,
+                CognitionReason.STALE_REVISION,
+            }:
+                return "unavailable"
+            if outcome.status is CognitionOutcomeStatus.NO_CHANGE:
+                return "no_change"
+            return (
+                "accepted"
+                if outcome.status is CognitionOutcomeStatus.PERSISTED
+                else "rejected"
+            )
+
+        try:
+            status = self._gate.authorized(commit)
+        except PrivacyReadBlocked:
+            status = "unavailable"
+        if status == "accepted":
+            self._checkpoint("after_memory_store_commit")
+        self._evolution_audit.finish(operation_id, status)
+        self._checkpoint("after_extraction_commit")
+
+    def _evolve_worker_memory(
+        self, principal, event_id, content, correlation, reply_operation_id
+    ):
+        operation_id = "evolution:" + reply_operation_id.removeprefix("reply:")
+
+        def admit():
+            caps = self._capabilities()
+            if (
+                caps.emergency_stop_active
+                or caps.provider_spend_suspended
+                or not self._current_request.get()()
+            ):
+                return None
+            return self._evolution_audit.reserve(
+                operation_id, principal, event_id, content
+            )
+
+        try:
+            audit = self._gate.authorized(admit)
+        except (PrivacyReadBlocked, ValueError):
+            return
+        if audit is None:
+            return
+        if audit.request is None:
+            if audit.status == "received":
+                self._commit_worker_evolution(principal, event_id, operation_id, audit)
+            return
+        marker = "ipc:" + operation_id
+        reservation = self._provider.reserve_attempt(marker, correlation, self._clock())
+        if reservation is not AttemptReservationStatus.CREATED:
+            self._evolution_audit.finish(operation_id, "unavailable")
+            return
+
+        def preflight():
+            caps = self._capabilities()
+            if (
+                caps.emergency_stop_active
+                or caps.provider_spend_suspended
+                or not self._current_request.get()()
+            ):
+                return False
+            if (
+                self._worker_cognition._read.retrieve_exact_private_event(
+                    principal, event_id
+                )
+                is None
+            ):
+                return False
+            visible = tuple(
+                (read.view.item_id, read.view.revision)
+                for read in self._worker_cognition._generic.current(principal)
+            )
+            return visible == audit.snapshot.visible
+
+        try:
+            allowed = self._gate.authorized(preflight)
+        except PrivacyReadBlocked:
+            allowed = False
+        if not allowed:
+            self._evolution_audit.finish(operation_id, "unavailable")
+            return
+        try:
+            result = self._worker.infer(
+                audit.request, correlation_id=correlation, operation_id=operation_id
+            )
+        except (TypeError, ValueError):
+            self._evolution_audit.finish(operation_id, "rejected")
+            return
+        if result.outcome == CLIENT_OUTCOME_UNCERTAIN:
+            self._evolution_audit.finish(operation_id, "uncertain")
+        elif result.outcome != "completed" or result.evolution is None:
+            status = (
+                "unavailable"
+                if result.outcome
+                in {
+                    CLIENT_COMMUNICATION_FAILURE,
+                    "emergency_stop",
+                    "spend_suspended",
+                    "authorization_rejected",
+                }
+                else "rejected"
+            )
+            self._evolution_audit.finish(operation_id, status)
+        else:
+            try:
+
+                def receive():
+                    caps = self._capabilities()
+                    if (
+                        caps.emergency_stop_active
+                        or caps.provider_spend_suspended
+                        or not self._current_request.get()()
+                    ):
+                        return False
+                    self._evolution_audit.receive(
+                        operation_id,
+                        principal.principal_id.value,
+                        event_id,
+                        content,
+                        result.evolution,
+                    )
+                    return True
+
+                received = self._gate.authorized(receive)
+            except (PrivacyReadBlocked, ValueError):
+                received = False
+            if not received:
+                self._evolution_audit.finish(operation_id, "unavailable")
+                return
+            self._checkpoint("after_extraction_receipt")
+            self._commit_worker_evolution(
+                principal,
+                event_id,
+                operation_id,
+                replace(
+                    audit, status="received", proposal=result.evolution, request=None
+                ),
             )
 
     def _commit_worker_memory(self, principal, event_id, operation_id, proposal):
@@ -1155,6 +1330,7 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         *,
         provider_state,
         memory_extraction_enabled=False,
+        memory_evolution_enabled=False,
         **kwargs,
     ):
         if type(client) is not OpenAIWorkerClient:
@@ -1165,6 +1341,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("worker runtime requires an exact provider state store")
         if type(memory_extraction_enabled) is not bool:
             raise TypeError("memory_extraction_enabled must be bool")
+        if type(memory_evolution_enabled) is not bool:
+            raise TypeError("memory_evolution_enabled must be bool")
         if os.path.samefile(
             provider_state._event_store.database_path, event_store.database_path
         ):
@@ -1179,7 +1357,12 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         )
         self._extraction_audit = (
             ExtractionAuditStore(provider_state, event_store)
-            if memory_extraction_enabled
+            if memory_extraction_enabled and not memory_evolution_enabled
+            else None
+        )
+        self._evolution_audit = (
+            EvolutionAuditStore(provider_state, event_store)
+            if memory_evolution_enabled
             else None
         )
         self._worker_cognition = (
@@ -1190,11 +1373,12 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
                     private_state_write=False,
                     shared_abstraction_screening=False,
                     generic_memory_write=True,
+                    private_consolidation=memory_evolution_enabled,
                 ),
                 clock=self._clock,
                 authorize=privacy_gate.authorized,
                 expose_current_candidates=False,
             )
-            if memory_extraction_enabled
+            if memory_extraction_enabled or memory_evolution_enabled
             else None
         )
