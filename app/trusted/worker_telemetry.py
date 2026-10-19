@@ -12,7 +12,7 @@ import stat
 import struct
 from time import monotonic
 
-from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT
+from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT, require_identifier
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES
 from app.core.store import EventStore, EventStoreError
 from app.trusted.openai_credential_files import TrustedTransportConfigurationError
@@ -107,7 +107,7 @@ def _sidecar_identities(path):
     return tuple(identities)
 
 
-def _valid_reservation_time(value):
+def _valid_stored_time(value):
     try:
         timestamp = datetime.fromisoformat(value)
     except (TypeError, ValueError):
@@ -115,6 +115,14 @@ def _valid_reservation_time(value):
     return int(
         timestamp.tzinfo is not None and EventStore._serialize_time(timestamp) == value
     )
+
+
+def _valid_identifier(value):
+    try:
+        require_identifier("telemetry identifier", value)
+    except ValueError:
+        return 0
+    return 1
 
 
 def _provider(path):
@@ -133,7 +141,10 @@ def _provider(path):
             lambda: 1 if monotonic() > deadline else 0, 1000
         )
         connection.create_function(
-            "valid_reservation_time", 1, _valid_reservation_time, deterministic=True
+            "valid_stored_time", 1, _valid_stored_time, deterministic=True
+        )
+        connection.create_function(
+            "valid_identifier", 1, _valid_identifier, deterministic=True
         )
         connection.execute("BEGIN")
         EventStore._verify_current_schema(connection)
@@ -145,7 +156,23 @@ def _provider(path):
                    COALESCE(SUM(output_tokens),0),
                    COALESCE(SUM(total_tokens),0),
                    COALESCE(SUM(CASE WHEN input_tokens IS NULL OR cached_input_tokens IS NULL OR output_tokens IS NULL OR total_tokens IS NULL OR cost_estimate_status IN ('usage_unavailable', 'usage_incomplete') THEN 1 ELSE 0 END),0),
-                   COALESCE(SUM(CASE WHEN provider != 'openai' OR (input_tokens IS NOT NULL AND (typeof(input_tokens) != 'integer' OR input_tokens < 0 OR input_tokens > ?)) OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?)) OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?)) OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?)) OR cost_estimate_status NOT IN ('estimated', 'usage_unavailable', 'usage_incomplete', 'pricing_unavailable') THEN 1 ELSE 0 END),0)
+                   COALESCE(SUM(CASE WHEN provider != 'openai'
+                        OR valid_identifier(attempt_id) != 1
+                        OR valid_identifier(correlation_id) != 1
+                        OR valid_identifier(model_identifier) != 1
+                        OR valid_identifier(provider_config_version) != 1
+                        OR valid_identifier(prompt_version) != 1
+                        OR valid_identifier(core_self_version) != 1
+                        OR valid_identifier(outcome) != 1
+                        OR (provider_response_id IS NOT NULL AND valid_identifier(provider_response_id) != 1)
+                        OR (provider_error_code IS NOT NULL AND valid_identifier(provider_error_code) != 1)
+                        OR valid_stored_time(started_at) != 1
+                        OR (input_tokens IS NOT NULL AND (typeof(input_tokens) != 'integer' OR input_tokens < 0 OR input_tokens > ?))
+                        OR (cached_input_tokens IS NOT NULL AND (typeof(cached_input_tokens) != 'integer' OR cached_input_tokens < 0 OR cached_input_tokens > ?))
+                        OR (output_tokens IS NOT NULL AND (typeof(output_tokens) != 'integer' OR output_tokens < 0 OR output_tokens > ?))
+                        OR (total_tokens IS NOT NULL AND (typeof(total_tokens) != 'integer' OR total_tokens < 0 OR total_tokens > ?))
+                        OR cost_estimate_status NOT IN ('estimated', 'usage_unavailable', 'usage_incomplete', 'pricing_unavailable')
+                        THEN 1 ELSE 0 END),0)
             FROM provider_usage_attempts
         """,
             (MAX_PROVIDER_TOKEN_COUNT,) * 4,
@@ -154,9 +181,9 @@ def _provider(path):
             """
             SELECT COUNT(CASE WHEN u.attempt_id IS NULL THEN 1 END),
                    COUNT(CASE WHEN r.provider != 'openai'
-                        OR typeof(r.attempt_id) != 'text' OR r.attempt_id = ''
-                        OR typeof(r.correlation_id) != 'text' OR r.correlation_id = ''
-                        OR valid_reservation_time(r.reserved_at) != 1
+                        OR valid_identifier(r.attempt_id) != 1
+                        OR valid_identifier(r.correlation_id) != 1
+                        OR valid_stored_time(r.reserved_at) != 1
                         OR (u.attempt_id IS NOT NULL AND
                             (u.correlation_id != r.correlation_id OR u.provider != r.provider))
                         THEN 1 END)
@@ -165,7 +192,13 @@ def _provider(path):
             """
         ).fetchone()
         suspensions = connection.execute(
-            "SELECT provider, confirmed_at, provider_error_code, provider_config_version, attempt_id FROM provider_spend_suspensions LIMIT 2"
+            """SELECT s.provider, s.confirmed_at, s.provider_error_code,
+                      s.provider_config_version, s.attempt_id, u.provider,
+                      u.started_at, u.provider_error_code,
+                      u.provider_config_version, u.outcome
+               FROM provider_spend_suspensions AS s
+               LEFT JOIN provider_usage_attempts AS u ON u.attempt_id = s.attempt_id
+               LIMIT 2"""
         ).fetchall()
         connection.execute("ROLLBACK")
         if (
@@ -176,16 +209,27 @@ def _provider(path):
         ):
             raise ValueError("invalid provider records")
         if suspensions:
-            provider, confirmed_at, code, config, attempt_id = suspensions[0]
+            (
+                provider,
+                confirmed_at,
+                code,
+                config,
+                attempt_id,
+                usage_provider,
+                started_at,
+                usage_code,
+                usage_config,
+                usage_outcome,
+            ) = suspensions[0]
             if (
                 provider != "openai"
                 or code not in CONFIRMED_SPEND_LIMIT_CODES
-                or type(config) is not str
-                or not config
-                or type(attempt_id) is not str
-                or not attempt_id
+                or not _valid_identifier(config)
+                or not _valid_identifier(attempt_id)
                 or EventStore._serialize_time(datetime.fromisoformat(confirmed_at))
                 != confirmed_at
+                or (usage_provider, started_at, usage_code, usage_config, usage_outcome)
+                != (provider, confirmed_at, code, config, "confirmed_spend_limit")
             ):
                 raise ValueError("invalid spend suspension")
         current_sidecars = _sidecar_identities(path)

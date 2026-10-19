@@ -187,6 +187,18 @@ def test_malformed_reservation_timestamp_fails_closed(tmp_path, timestamp):
     assert _provider(db)["available"] is False
 
 
+def test_malformed_reservation_identity_fails_closed(tmp_path):
+    db, _stop, _socket = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).reserve_attempt(
+        "pending:1", "synthetic-correlation", datetime(2026, 10, 19, tzinfo=UTC)
+    )
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            "UPDATE provider_attempt_reservations SET correlation_id='bad value'"
+        )
+    assert _provider(db)["available"] is False
+
+
 def test_overlapping_reservation_is_not_counted_twice_and_mismatch_fails_closed(
     tmp_path,
 ):
@@ -659,6 +671,23 @@ def test_non_openai_usage_row_rejects_provider_evidence(tmp_path):
     assert provider["recorded_tokens"] is None
 
 
+@pytest.mark.parametrize(
+    ("column", "invalid"),
+    [
+        ("attempt_id", ""),
+        ("correlation_id", "bad value"),
+        ("model_identifier", ""),
+        ("started_at", "not-a-time"),
+    ],
+)
+def test_malformed_usage_identity_rejects_provider_evidence(tmp_path, column, invalid):
+    db, _stop_path, _path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1"))
+    with sqlite3.connect(db) as connection:
+        connection.execute(f"UPDATE provider_usage_attempts SET {column}=?", (invalid,))
+    assert _provider(db)["available"] is False
+
+
 def test_spend_suspension_requires_valid_record(tmp_path):
     db, _stop_path, _path = sources(tmp_path)
     code = "project_spend_limit_exceeded"
@@ -680,6 +709,32 @@ def test_spend_suspension_requires_valid_record(tmp_path):
         connection.execute("PRAGMA ignore_check_constraints=ON")
         connection.execute(
             "UPDATE provider_spend_suspensions SET confirmed_at='2026-10-19T00:00:00.000000Z', provider='other'"
+        )
+    assert _provider(db)["available"] is False
+
+
+@pytest.mark.parametrize(
+    ("column", "invalid"),
+    [
+        ("attempt_id", "missing:1"),
+        ("provider_config_version", "wrong-config"),
+        ("confirmed_at", "2026-10-20T00:00:00.000000Z"),
+    ],
+)
+def test_spend_suspension_requires_matching_usage(tmp_path, column, invalid):
+    db, _stop_path, _path = sources(tmp_path)
+    code = "project_spend_limit_exceeded"
+    ProviderStateStore(EventStore(db)).record_attempt(
+        replace(
+            attempt("synthetic:1"),
+            outcome="confirmed_spend_limit",
+            provider_error_code=code,
+        ),
+        confirmed_spend_limit_code=code,
+    )
+    with sqlite3.connect(db) as connection:
+        connection.execute(
+            f"UPDATE provider_spend_suspensions SET {column}=?", (invalid,)
         )
     assert _provider(db)["available"] is False
 
