@@ -3,8 +3,18 @@
 from app.core.store import _SCHEMA_V2, _SCHEMA_V5
 
 
+def remove_v11(db):
+    for table in (
+        "protected_reviewed_consents",
+        "reviewed_shared_revocations",
+        "reviewed_shared_decisions",
+    ):
+        db.execute(f"DROP TABLE {table}")
+
+
 def remove_v10(db):
     """Restore the original typed provenance constraint for old fixtures."""
+    remove_v11(db)
     rows = db.execute("SELECT * FROM protected_state_provenance").fetchall()
     db.execute("DROP TABLE protected_state_provenance")
     db.execute(

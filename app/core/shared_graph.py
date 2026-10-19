@@ -113,13 +113,38 @@ _CHECKS = (
     """SELECT 1 FROM shared_mission_document d WHERE d.status='ready' AND EXISTS (
         SELECT 1 FROM protected_mission_shared m JOIN shared_operations o
             ON o.operation_id=m.shared_operation WHERE o.status<>'active' OR o.mission_evidence<>1)""",
+    """SELECT 1 FROM shared_operations o LEFT JOIN protected_shared_manifests m USING(operation_id)
+        LEFT JOIN reviewed_shared_decisions d USING(operation_id)
+        WHERE (o.status<>'invalidated' AND COALESCE(json_extract(m.binding,'$.reviewed'),0)=1
+            AND (o.mission_evidence<>0 OR
+                (o.status='active' AND (d.decision IS NULL OR d.decision<>'approved')) OR
+                (d.decision='approved' AND o.status<>'active') OR
+                (d.decision='rejected' AND o.status<>'quarantined')))
+        OR (o.status<>'invalidated' AND COALESCE(json_extract(m.binding,'$.reviewed'),0)<>1
+            AND d.operation_id IS NOT NULL)""",
+    """SELECT 1 FROM protected_reviewed_consents c
+        JOIN shared_operations o USING(operation_id)
+        LEFT JOIN protected_shared_sources s ON s.operation_id=c.operation_id AND s.event_id=c.event_id
+        LEFT JOIN protected_shared_audiences a ON a.operation_id=c.operation_id AND a.principal_id=c.audience
+        WHERE s.event_id IS NULL OR a.principal_id IS NULL OR o.status='quarantined'""",
+    """SELECT 1 FROM reviewed_shared_decisions d JOIN shared_operations o USING(operation_id)
+        WHERE d.decision='approved' AND o.status='active' AND
+            (SELECT COUNT(*) FROM protected_reviewed_consents c WHERE c.operation_id=o.operation_id)
+            <>o.source_count*o.audience_count""",
+    """SELECT 1 FROM reviewed_shared_revocations r JOIN shared_operations o USING(operation_id)
+        WHERE o.status<>'invalidated'""",
 )
 
 
 def validate_shared_graph(db: sqlite3.Connection) -> None:
     """Counts, complete inherited dependencies, scope, and retention fail closed."""
+    checks = (
+        _CHECKS
+        if db.execute("PRAGMA user_version").fetchone()[0] >= 11
+        else _CHECKS[:-4]
+    )
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None or any(
-        db.execute(sql).fetchone() is not None for sql in _CHECKS
+        db.execute(sql).fetchone() is not None for sql in checks
     ):
         raise ValueError("invalid_protected_shared_graph")
     if any(
@@ -140,10 +165,40 @@ def erase_shared_source(db: sqlite3.Connection, event_id: str) -> None:
             JOIN protected_shared_sources s USING(operation_id) WHERE s.event_id=?)""",
         (event_id,),
     )
+    _erase_invalidated_shared(db)
+
+
+def erase_shared_review(db: sqlite3.Connection, consent_id: str) -> None:
+    """A revoked source consent invalidates its reviewed item and dependent replies."""
+    db.execute(
+        """UPDATE shared_operations SET status='invalidated', reason='review_revoked'
+        WHERE item_id IN (SELECT o.item_id FROM shared_operations o
+            JOIN protected_reviewed_consents c USING(operation_id)
+            WHERE c.consent_id=?)""",
+        (consent_id,),
+    )
+    _erase_invalidated_shared(db)
+
+
+def revoke_shared_authorization(db: sqlite3.Connection, operation_id: str) -> None:
+    db.execute(
+        """UPDATE shared_operations SET status='invalidated', reason='review_revoked'
+        WHERE item_id=(SELECT item_id FROM shared_operations WHERE operation_id=?)""",
+        (operation_id,),
+    )
+    _erase_invalidated_shared(db)
+
+
+def _erase_invalidated_shared(db: sqlite3.Connection) -> None:
     db.execute(
         "DELETE FROM protected_shared_manifests WHERE operation_id IN "
         "(SELECT operation_id FROM shared_operations WHERE status='invalidated')"
     )
+    if db.execute("PRAGMA user_version").fetchone()[0] >= 11:
+        db.execute(
+            "DELETE FROM protected_reviewed_consents WHERE operation_id IN "
+            "(SELECT operation_id FROM shared_operations WHERE status='invalidated')"
+        )
     db.execute(
         "DELETE FROM shared_payloads WHERE operation_id IN "
         "(SELECT operation_id FROM shared_operations WHERE status='invalidated')"

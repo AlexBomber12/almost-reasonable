@@ -680,6 +680,37 @@ class PrivacyLedger:
             ).fetchone()
         return None if row is None else row[0]
 
+    def active_shared_consent(
+        self, principal_id: str, content_reference: str, audience: str, at: datetime
+    ) -> str | None:
+        """Read exact live source consent; the caller holds the privacy read fence."""
+        require_token(principal_id, "principal id")
+        require_token(content_reference, "content reference")
+        require_token(audience, "audience")
+        require_utc(at, "consent check timestamp")
+        with self._open() as connection:
+            if (
+                connection.execute(
+                    "SELECT 1 FROM deletion_records WHERE principal_id=? AND content_reference=? "
+                    "AND disposition IN ('pending','applied','incomplete_blocked')",
+                    (principal_id, content_reference),
+                ).fetchone()
+                is not None
+            ):
+                return None
+            row = connection.execute(
+                """SELECT g.consent_id,g.granted_at,g.expires_at,r.revoked_at
+                FROM consent_grants g LEFT JOIN consent_revocations r USING(consent_id)
+                WHERE g.principal_id=? AND g.content_reference=? AND g.audience=?
+                    AND g.purpose=? ORDER BY g.revision DESC LIMIT 1""",
+                (principal_id, content_reference, audience, "shared_abstraction"),
+            ).fetchone()
+        if row is None or not (_time(row[1]) <= at < _time(row[2])):
+            return None
+        if row[3] is not None and at >= _time(row[3]):
+            return None
+        return row[0]
+
     def insert_revocation(
         self,
         *,

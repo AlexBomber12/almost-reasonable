@@ -232,10 +232,10 @@ def test_old_backup_cannot_resurrect_released_reply(setup, tmp_path):
     store, ledger, gate, fake, runtime = setup
     runtime.submit(principal("a"), "backup", "Удаляемый синтетический секрет")
     backup = tmp_path / "old.db"
-    create_sqlite_backup(store.database_path, backup, 10, NOW)
+    create_sqlite_backup(store.database_path, backup, 11, NOW)
     event_id = gate.retrieve_private_events(principal("a"))[0].event_id
     delete_source(setup, event_id)
-    result = QuarantinedRestore(ledger, 10, EventStoreRestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter).restore(
         backup, tmp_path / "quarantine.db", NOW
     )
     assert result.activation_eligible
@@ -897,10 +897,10 @@ def test_commit_boundary_survives_restart_backup_and_vacuum(setup, tmp_path):
     store.append_private_input(principal("a"), original)
     store.append_private_input(principal("a"), later)
     backup = tmp_path / "snapshot.db"
-    create_sqlite_backup(store.database_path, backup, 10, NOW)
+    create_sqlite_backup(store.database_path, backup, 11, NOW)
     quarantine = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 10, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter)
         .restore(backup, quarantine, NOW)
         .activation_eligible
     )

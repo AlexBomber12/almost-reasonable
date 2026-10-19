@@ -47,6 +47,7 @@ class OperationOrigin(StrEnum):
 class ConsentPurpose(StrEnum):
     IDENTIFIABLE_QUOTATION = "identifiable_quotation"
     IDENTIFIABLE_DISCLOSURE = "identifiable_disclosure"
+    SHARED_ABSTRACTION = "shared_abstraction"
 
 
 class ContentCategory(StrEnum):

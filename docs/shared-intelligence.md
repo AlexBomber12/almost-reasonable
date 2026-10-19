@@ -5,6 +5,11 @@ principals and `FakeOpenAITransport`; the HTTP, worker and real provider v1
 contracts remain unchanged. Production promotion, enrollment, restore activation,
 publication, research dispatch and deployment are disabled.
 
+B04A adds a separate, default-off [locally reviewed general-text path](reviewed-shared-abstractions.md).
+The closed synthetic approval path below remains available with its original
+vocabulary and authority limits. Neither path authorizes live enrollment or
+automatic model-driven sharing.
+
 ## Ownership and authorization
 
 | Boundary | Owner and authority |
@@ -181,7 +186,7 @@ full M5 acceptance.
 | Missing graph edges and forged audience metadata | Completed: forged graph and missing edge tests |
 | Stop/spend guards and no external effects | Completed: shared guard tests; only offline fake transport constructed |
 | INT-01 through INT-05A and INT-08 preservation | Complete local suite required by `scripts/ci.sh`; recorded in PR validation |
-| General prose abstraction and real-model privacy evaluation | Blocked for production: closed synthetic vocabulary only; calibrated semantic screening and behavioral evaluation required |
+| General prose abstraction and real-model privacy evaluation | Local B04A review path exists; automatic sharing, calibrated semantic screening and behavioral evaluation remain blocked for production |
 | Real independent corroboration and general mission reassessment | Blocked for production: this adapter proves synthetic authorization and invalidation, not external truth or recovery-policy adequacy |
 | Enrollment, processor disclosures, structured real authorization and retention policy | Blocked for production: existing pre-enrollment decisions remain unresolved |
 | Production database/restore activation, shared promotion, public/research dispatch, deployment | Disabled; requires separate authorized work and review |
