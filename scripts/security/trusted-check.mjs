@@ -24,7 +24,7 @@ export async function resolve(api, event, repository, preferredNumber) {
     run.head_repository?.id && run.event === 'pull_request' &&
     run.workflow_id === workflow.id && workflow.path === '.github/workflows/ci.yml' &&
     workflow.name === 'CI' && run.name === 'CI' &&
-    run.path === workflow.path && run.status === 'completed' &&
+    run.path?.split('@')[0] === workflow.path && run.status === 'completed' &&
     run.id === trigger.id && run.run_attempt === trigger.run_attempt &&
     run.head_sha === trigger.head_sha && SHA.test(run.head_sha) &&
     trigger.head_repository?.id === run.head_repository.id,
@@ -52,12 +52,6 @@ export async function resolve(api, event, repository, preferredNumber) {
   }
   requireValue(numbers.length === 1 && Number.isInteger(numbers[0]), 'Ambiguous or missing PR identity');
   const number = numbers[0];
-  if (payloadPRs.length) {
-    requireValue(payloadPRs.length === 1 && payloadPRs[0].number === number &&
-      payloadPRs[0].head?.sha === run.head_sha &&
-      payloadPRs[0].head?.repo?.id === run.head_repository.id,
-    'Inconsistent PR payload');
-  }
   const pr = await api('GET', `/repos/${repository}/pulls/${number}`);
   requireValue(pr.number === number && pr.state === 'open' &&
     pr.base?.ref === 'main' && pr.base.repo?.id === repo.id &&
@@ -65,6 +59,14 @@ export async function resolve(api, event, repository, preferredNumber) {
     pr.head.repo.full_name === run.head_repository.full_name &&
     pr.head.ref === run.head_branch,
   'PR source or base changed');
+  if (payloadPRs.length) {
+    const payloadHead = payloadPRs[0].head;
+    // GitHub can refresh a completed run's PR entry to its newer live head.
+    requireValue(payloadPRs.length === 1 && payloadPRs[0].number === number &&
+      payloadHead?.repo?.id === run.head_repository.id &&
+      (payloadHead.sha === run.head_sha || payloadHead.sha === pr.head.sha),
+    'Inconsistent PR payload');
+  }
   return {
     number, sha: run.head_sha, headRepo: run.head_repository.full_name,
     current: pr.head.sha === run.head_sha,
@@ -102,8 +104,9 @@ export async function publish(api, event, repository, evidence) {
   const duplicates = checks.filter(check => check.external_id === externalId);
   requireValue(duplicates.length <= 1, 'Duplicate check runs require inspection');
   const existing = duplicates[0];
-  // An earlier failure for this same run cannot be upgraded by a duplicate event.
-  const finalConclusion = existing?.conclusion === 'failure' ? 'failure' : conclusion;
+  // A duplicate cannot upgrade a prior non-success result for this run.
+  const finalConclusion = existing?.conclusion && existing.conclusion !== 'success' ?
+    'failure' : conclusion;
   const summary = finalConclusion === 'success' ? 'Trusted Gitleaks history scan passed.' :
     finalConclusion === 'cancelled' ? 'PR head changed before publication; scan is obsolete.' :
     'Trusted scan did not produce a verified clean result. Inspect the scanner job.';

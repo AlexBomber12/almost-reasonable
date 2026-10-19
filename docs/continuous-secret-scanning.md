@@ -59,10 +59,13 @@ repository, and exact SHA through the GitHub API. It can find a fork PR through
 the open-PR API when `workflow_run.pull_requests` is empty. Missing, ambiguous,
 or inconsistent identity fails closed. The publisher independently rechecks that
 metadata and the live PR head. If the head changed, it marks the old SHA's
-check cancelled; it never marks the newer SHA successful. Duplicate events
-cannot upgrade an earlier failure, and an older run cannot overwrite a newer
-run's result on the same SHA. A skipped, failed, or cancelled scanner job,
-missing scan evidence, or API error cannot produce a new successful check.
+check cancelled; it never marks the newer SHA successful. GitHub may refresh a
+completed run's PR entry to the newer head, so the resolver compares that entry
+with both the immutable run SHA and the live PR before classifying it as stale.
+Duplicate events cannot upgrade an earlier failure, and an older run cannot
+overwrite a newer run's result on the same SHA. A skipped, failed, or cancelled
+scanner job, missing scan evidence, or API error cannot produce a new successful
+check.
 A whole workflow cancellation may leave no published result, which also is not
 success.
 

@@ -7,7 +7,8 @@ const fork = 'contributor/project';
 const sha = 'a'.repeat(40);
 const nextSha = 'b'.repeat(40);
 
-function fixture({forked = false, emptyPayload = false, stale = false} = {}) {
+function fixture({forked = false, emptyPayload = false, stale = false,
+  refreshedPayload = false} = {}) {
   const source = forked ? fork : repo;
   const sourceId = forked ? 2 : 1;
   const pr = {number: 7, state: 'open', base: {ref: 'main', repo: {id: 1}},
@@ -20,7 +21,7 @@ function fixture({forked = false, emptyPayload = false, stale = false} = {}) {
   const event = {repository: {id: 1, full_name: repo}, workflow_run: {
     id: 42, run_attempt: 1, head_sha: sha,
     head_repository: {id: sourceId}, pull_requests: emptyPayload ? [] :
-      [{number: 7, head: {sha, repo: {id: sourceId}}}],
+      [{number: 7, head: {sha: refreshedPayload ? nextSha : sha, repo: {id: sourceId}}}],
   }};
   const checks = [];
   const calls = [];
@@ -59,6 +60,7 @@ function evidence(overrides = {}) {
 test('resolves same-repository and fork PRs, including empty fork payload', async () => {
   for (const options of [{}, {forked: true, emptyPayload: true}]) {
     const f = fixture(options);
+    if (options.forked) f.run.path += '@refs/pull/7/merge';
     const target = await resolve(f.api, f.event, repo);
     assert.equal(target.sha, sha);
     assert.equal(target.headRepo, options.forked ? fork : repo);
@@ -119,6 +121,9 @@ test('findings, scanner errors, missing evidence, and wrong SHA publish failure'
 test('changed head and a head changed during publication cannot get success', async () => {
   const f = fixture({stale: true});
   assert.equal((await publish(f.api, f.event, repo, evidence())).conclusion, 'cancelled');
+  const refreshed = fixture({stale: true, refreshedPayload: true});
+  assert.equal((await publish(refreshed.api, refreshed.event, repo,
+    evidence())).conclusion, 'cancelled');
   const g = fixture();
   const api = async (method, path, body) => {
     const response = await g.api(method, path, body);
@@ -134,6 +139,11 @@ test('duplicate and out-of-order runs do not upgrade failure or replace newer re
   f.checks.push({id: 13, name: CHECK_NAME, external_id: 'sec02:42:1', conclusion: 'failure'});
   assert.equal((await publish(f.api, f.event, repo, evidence())).conclusion, 'failure');
   assert.equal(f.checks.length, 1);
+  const cancelled = fixture();
+  cancelled.checks.push({id: 15, name: CHECK_NAME, external_id: 'sec02:42:1',
+    conclusion: 'cancelled'});
+  assert.equal((await publish(cancelled.api, cancelled.event, repo,
+    evidence())).conclusion, 'failure');
   const g = fixture();
   g.checks.push({id: 14, name: CHECK_NAME, external_id: 'sec02:43:1', conclusion: 'failure'});
   assert.equal((await publish(g.api, g.event, repo, evidence())).conclusion, 'obsolete');
@@ -147,4 +157,11 @@ test('publication API errors never create a successful check', async () => {
     await assert.rejects(publish(f.api, f.event, repo, evidence()), /publication error/);
     assert.equal(f.checks.some(check => check.conclusion === 'success'), false);
   }
+  const f = fixture();
+  const readFailure = async (method, path, body) => {
+    if (path.includes('/check-runs?')) throw new Error('simulated read error');
+    return f.api(method, path, body);
+  };
+  await assert.rejects(publish(readFailure, f.event, repo, evidence()), /read error/);
+  assert.equal(f.checks.length, 0);
 });
