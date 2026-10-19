@@ -2,7 +2,6 @@
 
 from dataclasses import dataclass
 import json
-import math
 
 
 CONTRACT_VERSION = "model-contract-private-extraction-v1"
@@ -86,7 +85,6 @@ def parse_extraction_proposal(text: str) -> ExtractionProposal:
             or not statement.strip()
             or len(statement.encode("utf-8")) > MAX_STATEMENT_BYTES
             or type(confidence) not in {int, float}
-            or not math.isfinite(confidence)
             or not 0 <= confidence <= 1
         ):
             raise ValueError

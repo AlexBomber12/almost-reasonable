@@ -119,6 +119,100 @@ def test_extraction_output_is_one_closed_proposal_or_no_change():
             parse_extraction_proposal(raw)
 
 
+def _confidence_response(confidence):
+    return json.dumps(
+        {
+            "decision": "new_memory",
+            "kind": "candidate_useful_memory",
+            "statement": "Synthetic memory",
+            "confidence": confidence,
+        }
+    )
+
+
+@pytest.mark.parametrize(
+    "confidence",
+    [
+        10**400,
+        -(10**400),
+        1.1,
+        -0.1,
+        float("inf"),
+        -float("inf"),
+        float("nan"),
+        True,
+        "0.5",
+        None,
+    ],
+)
+def test_extraction_rejects_invalid_confidence_without_numeric_overflow(confidence):
+    raw = _confidence_response(confidence)
+    assert len(raw.encode()) < 8192
+    with pytest.raises(ValueError, match="invalid extraction proposal"):
+        parse_extraction_proposal(raw)
+
+
+@pytest.mark.parametrize("confidence", [0, 1, 0.5])
+def test_extraction_accepts_finite_confidence_boundaries(confidence):
+    assert parse_extraction_proposal(
+        _confidence_response(confidence)
+    ).confidence == float(confidence)
+
+
+def test_large_confidence_response_is_invalid_proposal_and_usage_is_recorded(tmp_path):
+    raw = _confidence_response(10**400)
+    assert len(raw.encode()) == 511
+    response = provider_response(raw)
+    assert (
+        _parse_response(response, extraction=True).outcome
+        is GatewayOutcome.INVALID_PROPOSAL
+    )
+    transport = FakeOpenAITransport([response])
+    state = EventStore(tmp_path / "provider.db")
+    store = ProviderStateStore(state)
+    gateway = TrustedOpenAIGateway(
+        store=store,
+        transport=transport,
+        config=replace(
+            default_openai_provider_config(),
+            deployment_stage=DeploymentStage.STAGE_1,
+            paid_calls_enabled=True,
+            max_attempts=1,
+        ),
+    )
+    operation = "memory:" + "a" * 64
+    result = gateway.submit_extraction(
+        ExtractionModelRequest("I collect old maps"),
+        correlation_id="synthetic-correlation",
+        operation_id=operation,
+    )
+    assert result.outcome is GatewayOutcome.INVALID_PROPOSAL
+    assert result.extraction is None and result.attempts == 1
+    assert len(transport.calls) == 1
+    record = store.usage_attempt(operation + ":1")
+    assert record.outcome == "invalid_proposal"
+    assert (
+        record.input_tokens,
+        record.cached_input_tokens,
+        record.output_tokens,
+        record.total_tokens,
+    ) == (100, 40, 20, 120)
+    with state._open() as db:
+        assert db.execute(
+            "SELECT count(*) FROM provider_usage_attempts"
+        ).fetchone() == (1,)
+        assert db.execute(
+            "SELECT count(*) FROM provider_attempt_reservations"
+        ).fetchone() == (0,)
+    replay = gateway.submit_extraction(
+        ExtractionModelRequest("I collect old maps"),
+        correlation_id="synthetic-correlation",
+        operation_id=operation,
+    )
+    assert replay.outcome is GatewayOutcome.DUPLICATE_OPERATION
+    assert len(transport.calls) == 1
+
+
 def test_extraction_wire_and_provider_projection_exclude_protected_fields():
     request = ExtractionModelRequest("I collect old maps")
     wire = encode_request(InferenceRequest("memory:" + "a" * 64, "corr", request))
@@ -245,6 +339,7 @@ def _extraction_worker(
     class FakeSDK:
         def __init__(self):
             self.inputs = []
+            self._overflow_sent = False
 
         def create(self, **kwargs):
             self.inputs.append(kwargs["input"])
@@ -260,7 +355,7 @@ def _extraction_worker(
                         "statement": "Alice collects old maps",
                         "confidence": 0.8,
                     }
-                    if decision == "new_memory"
+                    if decision in {"new_memory", "overflow_first"}
                     else {
                         "decision": "no_change",
                         "kind": None,
@@ -270,6 +365,9 @@ def _extraction_worker(
                 )
                 if decision == "invalid":
                     proposal["source_event_id"] = "forged"
+                if decision == "overflow_first" and not self._overflow_sent:
+                    proposal["confidence"] = 10**400
+                    self._overflow_sent = True
                 if decision == "hostile":
                     proposal = {
                         "decision": "new_memory",
@@ -349,6 +447,53 @@ def _extraction_worker(
     finally:
         server.close()
         ready.close()
+
+
+def test_same_worker_process_serves_valid_extraction_after_overflow(tmp_path):
+    worker_dir = tmp_path / "worker"
+    worker_dir.mkdir(mode=0o700)
+    socket_path = worker_dir / "worker.sock"
+    provider_path = tmp_path / "worker-provider.db"
+    parent, child = multiprocessing.Pipe(duplex=False)
+    worker = multiprocessing.Process(
+        target=_extraction_worker,
+        args=(str(socket_path), str(provider_path), child, 2, "overflow_first"),
+    )
+    worker.start()
+    child.close()
+    try:
+        assert parent.poll(5) and parent.recv() is True
+        client = OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid())
+        first = client.infer(
+            ExtractionModelRequest("Synthetic first input"),
+            correlation_id="synthetic-first",
+            operation_id="memory:" + "a" * 64,
+        )
+        assert first.outcome == "invalid_proposal"
+        assert first.attempts == 1 and first.extraction is None
+        second = client.infer(
+            ExtractionModelRequest("Synthetic second input"),
+            correlation_id="synthetic-second",
+            operation_id="memory:" + "b" * 64,
+        )
+        assert second.outcome == "completed"
+        assert second.attempts == 1
+        assert second.extraction.statement == "Alice collects old maps"
+        assert parent.poll(5) and len(parent.recv()) == 2
+        worker.join(5)
+        assert worker.exitcode == 0
+        with EventStore(provider_path)._open() as db:
+            assert db.execute(
+                "SELECT outcome,total_tokens FROM provider_usage_attempts ORDER BY attempt_id"
+            ).fetchall() == [("invalid_proposal", 2), ("completed", 2)]
+            assert db.execute(
+                "SELECT count(*) FROM provider_attempt_reservations"
+            ).fetchone() == (0,)
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(5)
+        parent.close()
 
 
 def _pilot_authority(tmp_path):
@@ -628,6 +773,62 @@ def test_worker_no_change_and_rejected_outputs_are_durable_without_memory(
         if process.is_alive():
             process.terminate()
             process.join(5)
+        parent.close()
+
+
+def test_malformed_extraction_creates_no_memory_and_app_replay_does_not_call_worker(
+    tmp_path,
+):
+    worker_dir = tmp_path / "worker"
+    worker_dir.mkdir(mode=0o700)
+    socket_path = worker_dir / "worker.sock"
+    auth, events, _ledger, gate, app, browser, _other = _app(tmp_path, socket_path)
+    ipc_path = tmp_path / "ipc-state.db"
+    provider_path = tmp_path / "worker-provider.db"
+    app._conversations = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
+        provider_state=ProviderStateStore(EventStore(ipc_path)),
+        memory_extraction_enabled=True,
+    )
+    parent, child = multiprocessing.Pipe(duplex=False)
+    worker = multiprocessing.Process(
+        target=_extraction_worker,
+        args=(str(socket_path), str(provider_path), child, 2, "overflow_first"),
+    )
+    worker.start()
+    child.close()
+    try:
+        assert parent.poll(5) and parent.recv() is True
+        first = json.loads(browser.submit("malformed", "I collect old maps")[2])
+        assert first["model_state"] == "completed"
+        principal = auth.authenticate(browser.cookies["ar_session"]).trusted_context
+        assert GenericMemoryStore(events).current(principal) == ()
+        with EventStore(ipc_path)._open() as db:
+            assert db.execute(
+                "SELECT status FROM private_extraction_audit"
+            ).fetchall() == [("rejected",)]
+        assert parent.poll(5) and len(parent.recv()) == 2
+        worker.join(5)
+        assert worker.exitcode == 0
+        replay = json.loads(browser.submit("malformed", "I collect old maps")[2])
+        assert replay["message_status"] == "duplicate"
+        assert GenericMemoryStore(events).current(principal) == ()
+        with EventStore(provider_path)._open() as db:
+            assert db.execute(
+                "SELECT prompt_version,outcome,total_tokens FROM provider_usage_attempts ORDER BY attempt_id"
+            ).fetchall() == [
+                ("private-extraction-v1", "invalid_proposal", 2),
+                ("agent-proposal-v1", "completed", 2),
+            ]
+            assert db.execute(
+                "SELECT count(*) FROM provider_attempt_reservations"
+            ).fetchone() == (0,)
+    finally:
+        if worker.is_alive():
+            worker.terminate()
+            worker.join(5)
         parent.close()
 
 
