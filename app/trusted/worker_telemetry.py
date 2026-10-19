@@ -384,8 +384,13 @@ class WorkerTelemetryServer:
             try:
                 if _peer_uid(connection) not in self.allowed_uids:
                     return True
+                deadline = monotonic() + 0.5
                 request = bytearray()
                 while len(request) <= len(REQUEST):
+                    remaining = deadline - monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError("telemetry request deadline exceeded")
+                    connection.settimeout(remaining)
                     chunk = connection.recv(len(REQUEST) + 1 - len(request))
                     if not chunk:
                         break

@@ -1022,6 +1022,55 @@ def test_server_disconnect_timeout_and_shutdown(tmp_path):
     assert not thread.is_alive() and not path.exists()
 
 
+@pytest.mark.parametrize("obeys_timeout", [True, False])
+def test_server_request_deadline_rejects_trickling_before_source_reads(
+    tmp_path, monkeypatch, obeys_timeout
+):
+    import app.trusted.worker_telemetry as module
+
+    db, stop, path = sources(tmp_path)
+    elapsed = [0.0]
+    reads = []
+
+    class Trickle:
+        offset = 0
+        timeout = None
+        sent = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            pass
+
+        def settimeout(self, timeout):
+            self.timeout = timeout
+
+        def recv(self, _size):
+            if obeys_timeout and self.timeout < 0.2:
+                elapsed[0] += self.timeout
+                raise TimeoutError
+            elapsed[0] += 0.2
+            chunk = REQUEST[self.offset : self.offset + 1]
+            self.offset += 1
+            return chunk
+
+        def sendall(self, payload):
+            self.sent.append(payload)
+
+    peer = Trickle()
+    server = WorkerTelemetryServer(path, db, stop, frozenset({os.geteuid()}))
+    server.listener = SimpleNamespace(accept=lambda: (peer, None))
+    monkeypatch.setattr(module, "monotonic", lambda: elapsed[0])
+    monkeypatch.setattr(module, "_peer_uid", lambda _: os.geteuid())
+    monkeypatch.setattr(module, "_provider", lambda _: reads.append("provider"))
+    monkeypatch.setattr(module, "_stop", lambda _: reads.append("stop"))
+    assert server.serve_once() is True
+    assert elapsed[0] == pytest.approx(0.5 if obeys_timeout else 0.6)
+    assert reads == []
+    assert peer.sent == []
+
+
 def test_server_start_failures_and_replaced_socket_cleanup(tmp_path, monkeypatch):
     db, stop, path = sources(tmp_path)
     import app.trusted.worker_telemetry as module
