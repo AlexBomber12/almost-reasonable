@@ -1133,6 +1133,8 @@ class _DurableConversationRuntime(ConversationService):
                 is None
             ):
                 raise PrivacyReadBlocked("reply_sources_unavailable")
+            if not self._shared_consent_live(operation, route.principal):
+                return "research_unavailable"
             caps = self._capabilities()
             if caps.emergency_stop_active:
                 return "research_stopped"

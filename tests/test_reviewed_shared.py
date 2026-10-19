@@ -35,6 +35,12 @@ from app.privacy.models import (
     TrustedPrivacyContext,
 )
 from app.private_web.runtime import Stage0ConversationRuntime, WorkerConversationRuntime
+from app.private_web.research_bridge import (
+    SyntheticResearchBridge,
+    SyntheticResearchClient,
+    started_id,
+)
+from app.trusted.research_worker import ResearchWorkerRequest
 from app.trusted.openai_transport import FakeOpenAITransport
 from test_cognition_pipeline import NOW, append_event, principal
 from test_private_conversation_runtime import response
@@ -43,6 +49,7 @@ from test_privacy_deletion import (
     context as deletion_context,
     request as deletion_request,
 )
+from test_research_worker import FIXTURE
 from test_shared_intelligence import approval
 from shared_schema_helpers import remove_v11
 import test_shared_intelligence as shared_tests
@@ -987,3 +994,124 @@ def test_reviewed_revision_preserves_counterevidence_and_current_head(shared):
             "WHERE operation_id=? ORDER BY event_id",
             (second.proposal.operation_id,),
         ).fetchall() == [(a, "inherited", "supporting"), (b, "counter", "counter")]
+
+
+def test_expired_older_revision_is_absent_from_current_alternatives(shared):
+    events, ledger, gate, a, b = shared
+    first = candidate(a)
+    source_grants = (
+        consent(ledger, a),
+        consent(ledger, b, principal_id="participant-b"),
+    )
+    assert gate.reconcile()
+    current = [NOW]
+    app = SharedIntelligence(events, gate, clock=lambda: current[0])
+    app.review(
+        first,
+        decision_id="first-expiry-decision",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    current[0] = NOW + timedelta(days=731)
+    for service, control, old in source_grants:
+        renewed = replace(
+            old,
+            consent_id=old.consent_id + "-renewed",
+            operation_id=old.operation_id + "-renewed",
+            granted_at=NOW + timedelta(days=729),
+            expires_at=NOW + timedelta(days=1000),
+            revision=2,
+            correlation_id=old.correlation_id + "-renewed",
+        )
+        assert service.grant(control, renewed).created
+    assert gate.reconcile()
+    newer = approval(
+        b,
+        op="reviewed-new-consent",
+        revision=1,
+        author="b",
+        counter=(b,),
+        value="Independent viewpoints can reveal omitted alternatives.",
+    )
+    second = ReviewedSharedCandidate(
+        newer.principal,
+        newer.proposal,
+        newer.item_id,
+        newer.expected_revision,
+        ("participant-b",),
+        newer.counter_event_ids,
+    )
+    app.review(
+        second,
+        decision_id="second-expiry-decision",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    context = app.context(principal("b"))
+    assert len(context) == 1
+    assert context[0].text == second.proposal.candidate.value
+    assert context[0].memory.alternatives == ()
+    fake = FakeOpenAITransport([response()])
+    Stage0ConversationRuntime(
+        events, gate, fake, shared_intelligence=app, clock=lambda: current[0]
+    ).submit(principal("b"), "renewed-context", "Обсудим идеи")
+    assert first.proposal.candidate.value not in fake.calls[0].request.input_text
+    assert second.proposal.candidate.value in fake.calls[0].request.input_text
+
+
+def test_research_does_not_persist_after_shared_consent_expires(shared, tmp_path):
+    events, ledger, gate, a, _ = shared
+    item = candidate(a)
+    _, _, grant = consent(ledger, a)
+    assert gate.reconcile()
+    current = [NOW]
+    app = SharedIntelligence(events, gate, clock=lambda: current[0])
+    app.review(
+        item,
+        decision_id="research-expiry-decision",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    request = ResearchWorkerRequest(FIXTURE, "0" * 64)
+    bridge = SyntheticResearchBridge(
+        events,
+        gate,
+        SyntheticResearchClient(
+            tmp_path / "unused-research.sock",
+            (request,),
+            worker_state=ProviderStateStore(events),
+        ),
+        enabled=True,
+        clock=lambda: NOW,
+    )
+
+    def expire(point):
+        if point == "after_model":
+            event = gate.retrieve_private_events(principal("b"))[-1]
+            bridge.authorize_input(principal("b"), event.event_id, FIXTURE)
+            current[0] = grant.expires_at
+
+    fake = FakeOpenAITransport([response("research", FIXTURE.value)])
+    result = Stage0ConversationRuntime(
+        events,
+        gate,
+        fake,
+        shared_intelligence=app,
+        research_bridge=bridge,
+        clock=lambda: current[0],
+        checkpoint=expire,
+    ).submit(principal("b"), "expired-research", "Исследуй этот вопрос")
+    assert result.model_state.value == "unavailable"
+    assert len(fake.calls) == 1
+    with events._open() as db:
+        reply_id = db.execute(
+            "SELECT operation_id FROM protected_reply_shared WHERE shared_operation=?",
+            (item.proposal.operation_id,),
+        ).fetchone()[0]
+        assert (
+            db.execute(
+                "SELECT 1 FROM agent_reply_payloads WHERE operation_id=?", (reply_id,)
+            ).fetchone()
+            is None
+        )
+    assert not ProviderStateStore(events).attempt_exists(started_id(reply_id))

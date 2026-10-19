@@ -615,12 +615,7 @@ class SharedIntelligence:
         rows = db.execute(
             """SELECT o.operation_id, o.kind, p.value, p.confidence,
             (SELECT COUNT(*) FROM protected_shared_sources s WHERE s.operation_id=o.operation_id AND classification='counter'),
-            o.source_count, o.revision,
-            (SELECT json_group_array(past.value) FROM shared_operations h
-                JOIN shared_payloads past ON past.operation_id=h.operation_id
-                WHERE h.item_id=o.item_id AND h.status='active' AND h.revision<o.revision
-                    AND past.value<>p.value AND EXISTS (SELECT 1 FROM protected_shared_audiences ha
-                        WHERE ha.operation_id=h.operation_id AND ha.principal_id=a.principal_id))
+            o.source_count, o.revision, o.item_id
             FROM shared_operations o JOIN shared_payloads p USING(operation_id)
             JOIN protected_shared_audiences a USING(operation_id)
             WHERE a.principal_id=? AND a.purpose='conversation' AND o.status='active'
@@ -628,33 +623,54 @@ class SharedIntelligence:
             ORDER BY o.item_id, o.revision""",
             (principal.principal_id.value,),
         ).fetchall()
-        return tuple(
-            SharedRecord(
-                op,
-                ModelMemory(
-                    "belief_or_hypothesis" if kind == "unresolved_question" else kind,
-                    value,
-                    "active",
-                    confidence,
-                    "uncertain",
-                    None,
-                    "Compare competing evidence; retain uncertainty.",
-                    count - counter,
-                    counter,
-                    None,
-                    tuple(json.loads(alternatives)),
-                    None,
-                    (),
-                    None,
-                    "unverified",
-                    "model_inference",
-                ),
-                revision,
-                kind,
+        audience = principal.principal_id.value
+        now = self._clock()
+        records = []
+        for op, kind, value, confidence, counter, count, revision, item_id in rows:
+            if not self._reviewed_consent_live(db, op, audience, now):
+                continue
+            history = db.execute(
+                """SELECT h.operation_id,past.value FROM shared_operations h
+                JOIN shared_payloads past ON past.operation_id=h.operation_id
+                JOIN protected_shared_audiences ha ON ha.operation_id=h.operation_id
+                WHERE h.item_id=? AND h.status='active' AND h.revision<?
+                    AND past.value<>? AND ha.principal_id=?
+                ORDER BY h.revision""",
+                (item_id, revision, value, audience),
+            ).fetchall()
+            alternatives = tuple(
+                past_value
+                for past_op, past_value in history
+                if self._reviewed_consent_live(db, past_op, audience, now)
             )
-            for op, kind, value, confidence, counter, count, revision, alternatives in rows
-            if self._reviewed_consent_live(db, op, principal.principal_id.value)
-        )
+            records.append(
+                SharedRecord(
+                    op,
+                    ModelMemory(
+                        "belief_or_hypothesis"
+                        if kind == "unresolved_question"
+                        else kind,
+                        value,
+                        "active",
+                        confidence,
+                        "uncertain",
+                        None,
+                        "Compare competing evidence; retain uncertainty.",
+                        count - counter,
+                        counter,
+                        None,
+                        alternatives,
+                        None,
+                        (),
+                        None,
+                        "unverified",
+                        "model_inference",
+                    ),
+                    revision,
+                    kind,
+                )
+            )
+        return tuple(records)
 
     def _reviewed_consent_live(
         self, db, operation_id: str, audience: str, at=None
