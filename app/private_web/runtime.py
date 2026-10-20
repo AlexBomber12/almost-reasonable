@@ -97,7 +97,7 @@ _WORKER_REJECTED_RU = "Ответ модели отклонён проверко
 def _narrative_requested(content: str) -> bool:
     return (
         re.search(
-            r"истори|вымышлен|сюжет|эпизод|story|fiction|narrative|episode",
+            r"(?<!\w)(?:истори[а-яё]*|вымышлен[а-яё]*|сюжет[а-яё]*|эпизод[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives|episode|episodes)(?!\w)",
             content.casefold(),
         )
         is not None

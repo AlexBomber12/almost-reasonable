@@ -1682,3 +1682,56 @@ def test_narrative_worker_rechecks_permission_before_returning_result(tmp_path):
     finally:
         thread.join(10)
         server.close()
+
+
+def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
+    tmp_path, monkeypatch
+):
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+    from app.core.openai_worker_client import ClientResult
+    from app.private_web.runtime import _narrative_requested
+
+    assert not _narrative_requested("What is the history of Rome?")
+    assert not _narrative_requested("A bookstore has maps")
+    assert _narrative_requested("Tell me a story")
+    assert _narrative_requested("Расскажи историю")
+    assert _narrative_requested("a fictional episode")
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(request)
+        assert not isinstance(request, NarrativeModelRequest)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            validation=ProposalValidation(ReplyProposal("Синтетический ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(tmp_path / "missing.sock", expected_worker_uid=os.getuid()),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc.db")),
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    assert (
+        runtime.submit(
+            principal("a"), "rome", "What is the history of Rome?"
+        ).model_state.value
+        == "completed"
+    )
+    assert len(calls) == 1
+    with events._open() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM private_narrative_receipts"
+        ).fetchone() == (0,)
