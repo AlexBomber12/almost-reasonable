@@ -197,6 +197,10 @@ class PilotRequestGate:
         evolution = type(request.model_request) is EvolutionModelRequest
         typed = type(request.model_request) is TypedModelRequest
         narrative = type(request.model_request) is NarrativeModelRequest
+        narrative_context = (
+            type(request.model_request) is MemoryModelRequest
+            and request.model_request.narrative_mode
+        )
         shared = type(request.model_request) is SharedProposalRequest
         limit = (
             self.extraction_limit()
@@ -224,6 +228,7 @@ class PilotRequestGate:
                 and not self.provider_state_current()
             )
             or self._spend_blocked()
+            or (narrative_context and self.narrative_limit() is None)
         ):
             return WorkerResponse("authorization_rejected", 0, _REJECT_RU, None)
         try:

@@ -1701,6 +1701,154 @@ def test_post_commit_recognition_requires_exact_episode_and_source_binding(tmp_p
     assert not store.committed(a, **revise)
 
 
+def test_worker_permission_gates_narrative_reply_context_without_extra_charge(tmp_path):
+    activation_path, _ = activation_file(tmp_path)
+    activation = load_activation(activation_path)
+    allowance = PilotAllowance.initialize(tmp_path / "allowance.db", activation)
+    stop_path = activation_path.parent / "stop.json"
+    stop_path.write_text(
+        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": False})
+    )
+    stop_path.chmod(0o400)
+    gate = PilotRequestGate(
+        activation,
+        allowance,
+        activation_path=activation_path,
+        stop=PilotStop(stop_path),
+    )
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    first = append_event(events, who, "first", "Синтетический источник")
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:story",
+        source_event_id=first,
+        text="Я видел вымышленный маяк.",
+        item_id="episode:story",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(first,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    second = append_event(events, who, "second", "Продолжим беседу")
+    with events._open() as db:
+        context, _sources = MemoryConversationAssembler(
+            events, ContextLimits(32000, 99)
+        ).build(who, second, db, include_memories=False, include_narrative=True)
+    assert context.narrative_mode and context.episodes
+    request = InferenceRequest("reply:" + "c" * 64, "corr", context)
+    before = allowance.remaining()
+    assert gate.authorize(request).outcome == "authorization_rejected"
+    assert allowance.remaining() == before
+    permission = activation_path.parent / "narrative.json"
+    permission.write_text(
+        json.dumps(
+            {
+                "version": "private-narrative-permission-v1",
+                "pilot_id": activation.pilot_id,
+                "max_operations": 1,
+            }
+        )
+    )
+    permission.chmod(0o400)
+    gate.narrative_permission_path = permission
+    assert gate.authorize(request) is None
+    assert allowance.remaining() == before - 1
+    permission.chmod(0o600)
+    permission.write_text(
+        json.dumps(
+            {
+                "version": "private-narrative-permission-v1",
+                "pilot_id": activation.pilot_id,
+                "max_operations": 0,
+            }
+        )
+    )
+    permission.chmod(0o400)
+    assert (
+        gate.authorize(InferenceRequest("reply:" + "d" * 64, "corr", context)).outcome
+        == "authorization_rejected"
+    )
+    assert allowance.remaining() == before - 1
+
+
+def test_worker_blocks_narrative_reply_when_permission_changes_after_provider(tmp_path):
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "first", "Продолжим историю")
+    with events._open() as db:
+        context, _sources = MemoryConversationAssembler(
+            events, ContextLimits(32000, 99)
+        ).build(who, source, db, include_memories=False, include_narrative=True)
+    directory = tmp_path / "worker"
+    directory.mkdir(mode=0o700)
+    socket_path = directory / "worker.sock"
+    transport = FakeOpenAITransport([_reply("Синтетический ответ.")])
+    gateway = TrustedOpenAIGateway(
+        store=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        transport=transport,
+        config=replace(
+            default_openai_provider_config(),
+            deployment_stage=DeploymentStage.STAGE_1,
+            paid_calls_enabled=True,
+            max_attempts=1,
+        ),
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(socket_path, frozenset({os.getuid()})),
+        gateway,
+        narrative_enabled=True,
+        narrative_commit_guard=lambda: False,
+    )
+    server.start()
+    thread = Thread(target=server.serve, kwargs={"max_connections": 1})
+    thread.start()
+    try:
+        result = OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()).infer(
+            context, correlation_id="corr", operation_id="reply:" + "e" * 64
+        )
+        assert result.outcome == "authorization_rejected"
+        assert len(transport.calls) == 1
+    finally:
+        thread.join(10)
+        server.close()
+
+
+def test_worker_rejects_narrative_reply_context_when_mode_is_disabled(tmp_path):
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "first", "Продолжим историю")
+    with events._open() as db:
+        context, _sources = MemoryConversationAssembler(
+            events, ContextLimits(32000, 99)
+        ).build(who, source, db, include_memories=False, include_narrative=True)
+    directory = tmp_path / "worker"
+    directory.mkdir(mode=0o700)
+    socket_path = directory / "worker.sock"
+    transport = FakeOpenAITransport([])
+    gateway = TrustedOpenAIGateway(
+        store=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+        transport=transport,
+        config=default_openai_provider_config(),
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(socket_path, frozenset({os.getuid()})), gateway
+    )
+    server.start()
+    thread = Thread(target=server.serve, kwargs={"max_connections": 1})
+    thread.start()
+    try:
+        result = OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()).infer(
+            context, correlation_id="corr", operation_id="reply:" + "f" * 64
+        )
+        assert result.outcome == "authorization_rejected"
+        assert transport.calls == []
+    finally:
+        thread.join(10)
+        server.close()
+
+
 def test_received_narrative_status_without_payload_cannot_replay(tmp_path):
     _events, provider, audit, who, source, content, _reply, _context, operation, _ = (
         _reserved_audit(tmp_path)

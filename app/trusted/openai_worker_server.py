@@ -21,6 +21,7 @@ from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore
 from app.trusted.openai_gateway import GatewayResult, TrustedOpenAIGateway
 from app.core.model_contract import ModelRequest
+from app.cognition.conversation_context import MemoryModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.worker_evolution import EvolutionModelRequest
 from app.cognition.worker_typed import TypedModelRequest
@@ -248,6 +249,10 @@ class OpenAIWorkerServer:
                 evolution = type(request.model_request) is EvolutionModelRequest
                 typed = type(request.model_request) is TypedModelRequest
                 narrative = type(request.model_request) is NarrativeModelRequest
+                narrative_context = (
+                    type(request.model_request) is MemoryModelRequest
+                    and request.model_request.narrative_mode
+                )
                 shared = type(request.model_request) is SharedProposalRequest
                 guarded = (
                     WorkerResponse(
@@ -256,7 +261,9 @@ class OpenAIWorkerServer:
                     if (extraction and not self._extraction_enabled)
                     or (evolution and not self._evolution_enabled)
                     or (typed and not self._typed_enabled)
-                    or (narrative and not self._narrative_enabled)
+                    or (
+                        (narrative or narrative_context) and not self._narrative_enabled
+                    )
                     or (shared and not self._shared_enabled)
                     else None
                     if self._request_guard is None
@@ -358,7 +365,7 @@ class OpenAIWorkerServer:
                                 typed_operation=True,
                             )
                         if (
-                            narrative
+                            (narrative or narrative_context)
                             and self._narrative_commit_guard is not None
                             and not self._narrative_commit_guard()
                         ):
@@ -367,7 +374,7 @@ class OpenAIWorkerServer:
                                 result.attempts,
                                 _INVALID_REQUEST_RU,
                                 None,
-                                narrative_operation=True,
+                                narrative_operation=narrative,
                             )
                         if (
                             shared
