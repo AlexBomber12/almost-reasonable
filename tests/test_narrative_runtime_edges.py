@@ -33,8 +33,18 @@ def _caps():
 
 def _runtime_double(case):
     state = {"authorized": 0, "current": 0, "worker": 0, "finished": [], "commits": []}
-    proposal = NarrativeProposal("no_change", None, None)
-    audit = NarrativeAudit("reserved", sources=("source",), request=object())
+    proposal = (
+        NarrativeProposal("create", None, "Новая сцена.")
+        if case == "full_create"
+        else NarrativeProposal("revise", "h0123456789abcdef", "Новая сцена.")
+        if case == "unshown_revision"
+        else NarrativeProposal("no_change", None, None)
+    )
+    audit = NarrativeAudit(
+        "reserved",
+        sources=("source",),
+        request=SimpleNamespace(create_allowed=case != "full_create"),
+    )
 
     def authorize(fn):
         state["authorized"] += 1
@@ -120,6 +130,8 @@ def _runtime_double(case):
         ("unknown", "uncertain", 1, 0),
         ("transport_failed", "unavailable", 1, 0),
         ("rejected", "rejected", 1, 0),
+        ("full_create", "rejected", 1, 0),
+        ("unshown_revision", "rejected", 1, 0),
         ("receipt_lost", "unavailable", 1, 0),
         ("receipt_changed", "unavailable", 1, 0),
         ("completed", None, 1, 0),

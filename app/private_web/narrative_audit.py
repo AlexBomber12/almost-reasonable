@@ -5,7 +5,7 @@ from dataclasses import dataclass
 import json
 import secrets
 
-from app.cognition.narrative_store import NarrativeStore
+from app.cognition.narrative_store import MAX_EPISODES, MAX_REVISIONS, NarrativeStore
 from app.cognition.worker_narrative import (
     NarrativeModelRequest,
     NarrativeProjection,
@@ -183,13 +183,19 @@ class NarrativeAuditStore(ExtractionAuditStore):
             ):
                 raise ValueError("narrative context unavailable")
             selected = tuple(
-                ("h" + secrets.token_hex(8), operation) for operation in projected
+                ("h" + secrets.token_hex(8), operation)
+                for operation in projected
+                if indexed[operation].revision < MAX_REVISIONS
             )
             episodes = tuple(
                 NarrativeProjection(handle, indexed[operation].text)
                 for handle, operation in selected
             )
-            request = NarrativeModelRequest(context.conversation.conversation, episodes)
+            request = NarrativeModelRequest(
+                context.conversation.conversation,
+                episodes,
+                create_allowed=len(current) < MAX_EPISODES,
+            )
             request.serialize()
             sources = reply_operation.source_event_ids
             receipt = json.dumps(

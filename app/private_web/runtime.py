@@ -506,6 +506,7 @@ class _DurableConversationRuntime(ConversationService):
                             principal, event_id, content, correlation, operation_id
                         )
                         caps = self._gate.authorized(preflight)
+                    narrative_blocked = False
                     if getattr(
                         self, "_narrative_audit", None
                     ) is not None and _narrative_requested(content):
@@ -524,6 +525,7 @@ class _DurableConversationRuntime(ConversationService):
                                     context, narrative_audit
                                 )
                             except ValueError:
+                                narrative_blocked = True
                                 self._narrative_audit.finish(
                                     "narrative:" + operation_id.removeprefix("reply:"),
                                     "unavailable",
@@ -540,6 +542,7 @@ class _DurableConversationRuntime(ConversationService):
                         caps.emergency_stop_active
                         or caps.provider_spend_suspended
                         or not caps.private_reply_drafts_enabled
+                        or narrative_blocked
                         or (
                             getattr(self, "_narrative_audit", None) is not None
                             and (
@@ -1267,6 +1270,15 @@ class _DurableConversationRuntime(ConversationService):
                 }
                 else "rejected",
             )
+            return
+        if (
+            result.narrative.decision == "create" and not audit.request.create_allowed
+        ) or (
+            result.narrative.decision == "revise"
+            and result.narrative.handle
+            not in {handle for handle, _operation in audit.selected}
+        ):
+            self._narrative_audit.finish(operation_id, "rejected")
             return
         try:
 

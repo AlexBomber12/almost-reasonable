@@ -296,13 +296,21 @@ def decode_request(payload: bytes) -> InferenceRequest:
         if value["protocol_version"] == NARRATIVE_PROTOCOL_VERSION:
             model_value = value["model_request"]
             _require_exact_dict(
-                model_value, {"contract_version", "task", "conversation", "episodes"}
+                model_value,
+                {
+                    "contract_version",
+                    "task",
+                    "conversation",
+                    "episodes",
+                    "create_allowed",
+                },
             )
             if (
                 model_value["contract_version"] != NARRATIVE_CONTRACT_VERSION
                 or model_value["task"] != "propose_private_narrative"
                 or type(model_value["conversation"]) is not list
                 or type(model_value["episodes"]) is not list
+                or type(model_value["create_allowed"]) is not bool
             ):
                 raise WorkerProtocolError("invalid narrative request")
             conversation = []
@@ -342,7 +350,9 @@ def decode_request(payload: bytes) -> InferenceRequest:
                 ):
                     raise WorkerProtocolError("invalid narrative episode")
                 episodes.append(NarrativeProjection(record["handle"], record["text"]))
-            model_request = NarrativeModelRequest(tuple(conversation), tuple(episodes))
+            model_request = NarrativeModelRequest(
+                tuple(conversation), tuple(episodes), model_value["create_allowed"]
+            )
             model_request.serialize()
         elif value["protocol_version"] == SHARED_PROTOCOL_VERSION:
             model_value = value["model_request"]

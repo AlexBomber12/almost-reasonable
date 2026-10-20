@@ -21,6 +21,7 @@ class NarrativeProjection:
 class NarrativeModelRequest:
     conversation: tuple[ConversationSegment, ...]
     episodes: tuple[NarrativeProjection, ...]
+    create_allowed: bool = True
 
     def serialize(self) -> str:
         if (
@@ -28,6 +29,7 @@ class NarrativeModelRequest:
             or not 1 <= len(self.conversation) <= 99
             or type(self.episodes) is not tuple
             or len(self.episodes) > 16
+            or type(self.create_allowed) is not bool
         ):
             raise ValueError("invalid narrative request")
         shown = set()
@@ -77,6 +79,7 @@ class NarrativeModelRequest:
             "task": "propose_private_narrative",
             "conversation": conversation,
             "episodes": episodes,
+            "create_allowed": self.create_allowed,
         }
         serialized = json.dumps(
             value, ensure_ascii=False, sort_keys=True, separators=(",", ":")

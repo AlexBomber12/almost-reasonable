@@ -801,6 +801,17 @@ def test_malformed_narrative_proposals_fail_closed(value):
                 NarrativeProjection("h0123456789abcdef", "Другая история"),
             ),
         ),
+        NarrativeModelRequest(
+            (
+                ConversationSegment(
+                    ContextRole.PARTICIPANT,
+                    ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,
+                    "Текст",
+                ),
+            ),
+            (),
+            create_allowed="yes",
+        ),
     ],
 )
 def test_malformed_narrative_requests_fail_closed(candidate):
@@ -831,6 +842,7 @@ def test_narrative_ipc_rejects_tampered_authority_fields():
             {"verification": "verified"}
         ),
         lambda value: value["model_request"].update({"audience_principal_id": "b"}),
+        lambda value: value["model_request"].update({"create_allowed": "yes"}),
         lambda value: value["model_request"]["conversation"][0].update(
             {"can_instruct": True}
         ),
@@ -1299,8 +1311,9 @@ def test_narrative_storage_bounds_are_enforced(tmp_path):
         )
 
 
+@pytest.mark.parametrize("decision", ["revise", "create"])
 def test_cued_revision_reserves_reply_dependency_slot_at_episode_limit(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, decision
 ):
     from app.core.openai_worker_client import ClientResult
 
@@ -1337,6 +1350,7 @@ def test_cued_revision_reserves_reply_dependency_slot_at_episode_limit(
     def infer(_client, request, *, correlation_id, operation_id):
         if isinstance(request, NarrativeModelRequest):
             assert len(request.episodes) == 15
+            assert request.create_allowed is False
             return ClientResult(
                 operation_id,
                 correlation_id,
@@ -1344,8 +1358,8 @@ def test_cued_revision_reserves_reply_dependency_slot_at_episode_limit(
                 1,
                 None,
                 narrative=NarrativeProposal(
-                    "revise",
-                    request.episodes[0].handle,
+                    decision,
+                    request.episodes[0].handle if decision == "revise" else None,
                     "Я видел новый вымышленный берег.",
                 ),
             )
@@ -1373,17 +1387,83 @@ def test_cued_revision_reserves_reply_dependency_slot_at_episode_limit(
     result = runtime.submit(who, "revision", "Продолжим историю")
     assert result.model_state.value == "completed"
     assert len(seen[0]) == 15
-    assert any(
-        item["text"] == "Я видел новый вымышленный берег." and item["revision"] == 2
-        for item in seen[0]
-    )
+    if decision == "revise":
+        assert any(
+            item["text"] == "Я видел новый вымышленный берег." and item["revision"] == 2
+            for item in seen[0]
+        )
     revised = [episode for episode in episodes.current(who) if episode.revision == 2]
-    assert len(revised) == 1
-    reply = AgentOutputStore(events).read_reply(
-        who, "reply:" + revised[0].operation_id.removeprefix("narrative:")
+    assert len(revised) == (1 if decision == "revise" else 0)
+    with events._open() as db:
+        reply_id = db.execute(
+            "SELECT operation_id FROM agent_reply_operations"
+        ).fetchone()[0]
+    reply = AgentOutputStore(events).read_reply(who, reply_id)
+    assert len(reply.operation.narrative_operation_ids) == (
+        16 if decision == "revise" else 15
     )
-    assert len(reply.operation.narrative_operation_ids) == 16
-    assert revised[0].operation_id in reply.operation.narrative_operation_ids
+    if revised:
+        assert revised[0].operation_id in reply.operation.narrative_operation_ids
+
+
+def test_max_revision_episode_remains_reply_context_without_revisable_handle(tmp_path):
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Исходная вымышленная сцена")
+    episodes = NarrativeStore(events)
+    for revision in range(1, 17):
+        episodes.commit(
+            who,
+            operation_id=f"narrative:revision:{revision}",
+            source_event_id=source,
+            text=f"Вымышленная сцена {revision}.",
+            item_id="episode:revised",
+            expected_revision=revision - 1,
+            expected_heads=()
+            if revision == 1
+            else (("episode:revised", revision - 1),),
+            exposed_sources=(source,),
+            exposed_episodes=(f"narrative:revision:{revision - 1}",)
+            if revision > 1
+            else (),
+            created_at=NOW,
+        )
+    current = append_event(events, who, "current", "Продолжим историю")
+    with events._open() as db:
+        request, sources = MemoryConversationAssembler(
+            events, ContextLimits(32000, 99)
+        ).build(
+            who,
+            current,
+            db,
+            include_memories=False,
+            include_narrative=True,
+            reserve_narrative_slot=True,
+        )
+        correlation = db.execute(
+            "SELECT correlation_id FROM event_envelopes WHERE event_id=?", (current,)
+        ).fetchone()[0]
+    assert request.episodes[0].revision == 16
+    operation = ReplyOperation(
+        "reply:current",
+        current,
+        "conversation:current",
+        correlation,
+        "worker-owned",
+        "worker-context-v2",
+        "core-self-v1",
+        sources,
+        narrative_operation_ids=request.narrative_operation_ids,
+    )
+    AgentOutputStore(events).reserve_reply(who, operation)
+    audit = NarrativeAuditStore(
+        ProviderStateStore(EventStore(tmp_path / "ipc.db")), events
+    ).reserve(
+        "narrative:current", who, current, "Продолжим историю", operation, request
+    )
+    assert audit.request.create_allowed is True
+    assert audit.request.episodes == ()
+    assert audit.selected == ()
 
 
 def test_invalidated_head_cannot_be_resurrected_or_exceed_storage_bound(tmp_path):
@@ -1975,7 +2055,7 @@ def test_same_turn_narrative_is_visible_and_only_saved_with_reply(
     )
     result = runtime.submit(principal("a"), "first", "Расскажи историю")
     if reply_outcome == "projection_failure":
-        assert seen[0] == []
+        assert seen == []
     else:
         assert seen[0][-1]["text"] == "Я видел вымышленный маяк."
         assert seen[0][-1]["trust"] == "untrusted_fiction_data"
