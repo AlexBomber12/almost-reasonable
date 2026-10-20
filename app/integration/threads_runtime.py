@@ -705,7 +705,11 @@ class ThreadsRuntime(ThreadsStage0):
             and self.mission_evolution is not None
             and evolution_context
         ):
-            pending = self.mission_evolution.pending()
+            try:
+                pending = self.mission_evolution.pending()
+            except ValueError:
+                self.journal.finish(operation, payload, held=True)
+                return
             if (
                 (
                     proposal.action == "propose"

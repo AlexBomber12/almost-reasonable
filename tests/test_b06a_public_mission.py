@@ -976,7 +976,6 @@ def test_full_mission_history_withholds_new_proposals(tmp_path, monkeypatch):
         clock.advance(timedelta(minutes=1))
         decide_wakeup(app, worker, clock)
         assert app.mission_evolution.pending() is None
-        monkeypatch.setattr(app, "available_topics", lambda _profile: ("ocean",))
         assert app.mission_evolution.model_context() == ()
     finally:
         worker.close()
@@ -1131,6 +1130,65 @@ def test_withdrawn_evidence_during_inference_holds_operation(
             (),
         )
         assert app.journal.read("withdrawn-context")["phase"] == "held"
+    finally:
+        worker.close()
+
+
+def test_withdrawn_evidence_after_inference_holds_operation(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        for role in ("application", "worker"):
+            profile_path = tmp_path / f"{role}.json"
+            profile = json.loads(profile_path.read_text())
+            profile["aggregate_limit"] = 2
+            profile["topics"][0]["limit"] = 2
+            profile_path.write_text(json.dumps(profile))
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.mission_evolution.pending() is None
+
+        def withdraw_after_inference(request):
+            app.model.public_context(request.correlation_id)
+            assert app.model.mission_evolution_context(request.correlation_id) == (
+                "enabled",
+            )
+            with app.journal.transaction() as db:
+                db.execute("UPDATE public_research_ops SET phase='held'")
+            return DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice("propose", MissionPurpose.REFLECTION),
+                None,
+                1,
+                1,
+            )
+
+        monkeypatch.setattr(app.engine, "deliberate", withdraw_after_inference)
+        clock.advance(timedelta(minutes=1))
+        app._decide(
+            "after-inference",
+            {
+                "kind": "wake",
+                "event": "wake-3",
+                "correlation": "after-inference",
+            },
+            (),
+        )
+        assert app.journal.read("after-inference")["phase"] == "held"
     finally:
         worker.close()
 
