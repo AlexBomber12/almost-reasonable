@@ -291,7 +291,11 @@ class PublicMissionEvolution:
                         sources,
                     )
                 )
-            if app.ledger.control_generation() != payload["generation"]:
+            app.guard()
+            if (
+                app.ledger.control_generation() != payload["generation"]
+                or self.invariants() != invariants
+            ):
                 raise ValueError("public mission source changed")
             db.execute(
                 "UPDATE intents SET phase='linked' WHERE operation=? AND phase='intent'",

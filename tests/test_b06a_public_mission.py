@@ -11,6 +11,7 @@ from app.behavior.mission import (
     EvidenceProvenance,
     MissionEvidenceSource,
     MissionPurpose,
+    MissionStateMachine,
     MissionStatus,
     _MISSION_PURPOSE_TEXT,
 )
@@ -257,8 +258,12 @@ def test_proposal_stores_the_validated_invariant_snapshot(tmp_path, monkeypatch)
             return baseline if len(calls) == 1 else changed
 
         monkeypatch.setattr(app.mission_evolution, "invariants", changing_invariants)
+        with pytest.raises(ValueError, match="source changed"):
+            app.mission_evolution.apply("snapshot-test", payload)
+        assert app.mission_evolution.document().proposals == ()
+        monkeypatch.setattr(app.mission_evolution, "invariants", lambda: baseline)
         app.mission_evolution.apply("snapshot-test", payload)
-        assert len(calls) == 1
+        assert len(calls) == 2
         assert app.mission_evolution.pending().proposal.invariants == baseline
     finally:
         worker.close()
@@ -291,6 +296,36 @@ def test_generation_change_inside_mission_transaction_rolls_back(tmp_path, monke
             with pytest.raises(ValueError, match="source changed"):
                 app.mission_evolution.apply("generation-race", payload)
         assert len(calls) >= 2
+        assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
+def test_stop_change_inside_mission_transaction_rolls_back(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        run_once(app, worker)
+        payload = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "decision": "revise_mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+            "correlation": "stop-race",
+        }
+        _staged_intent(app, "stop-race", payload)
+        original = MissionStateMachine.propose
+
+        def stop_after_save(machine, proposal):
+            result = original(machine, proposal)
+            app.policy.emergency_stop = True
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(MissionStateMachine, "propose", stop_after_save)
+            with pytest.raises(PolicyDeniedError):
+                app.mission_evolution.apply("stop-race", payload)
         assert app.mission_evolution.document().proposals == ()
     finally:
         worker.close()
