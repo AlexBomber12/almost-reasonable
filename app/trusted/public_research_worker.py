@@ -12,12 +12,14 @@ from app.core.public_research_authority import (
     load_operator_approval,
     validate_trusted_directories,
 )
+from app.core.public_research_profile import load_research_profile
 from app.core.store import EventStore
 from app.trusted.openai_credential_files import read_protected_worker_file
 from app.trusted.openai_transport import TrustedTransportConfigurationError
 from app.trusted.openai_worker_server import WorkerServerConfig
 from app.trusted.public_research import PublicResearchBoundary, PublicResearchServer
 from app.trusted.public_research_transport import PublicResearchTransport
+from app.trusted.research_authority_journal import AuthorityJournal
 
 
 class PublicResearchStop:
@@ -89,7 +91,9 @@ def build_worker(
     *,
     socket_path: Path,
     provider_database: Path,
-    approval_path: Path,
+    approval_path: Path | None = None,
+    profile_path: Path | None = None,
+    authority_journal: Path | None = None,
     stop_path: Path,
     project_id: str,
     organization_id: str,
@@ -97,7 +101,15 @@ def build_worker(
     transport: PublicResearchTransport | None = None,
 ):
     _validate_provider_database(provider_database)
-    approval = load_operator_approval(approval_path, role="worker")
+    if (approval_path is None) == (profile_path is None):
+        raise ValueError("choose exactly one public research authority")
+    if (profile_path is None) != (authority_journal is None):
+        raise ValueError("profile requires a separate authority journal")
+    authority = (
+        load_operator_approval(approval_path, role="worker")
+        if approval_path is not None
+        else load_research_profile(profile_path, role="worker")
+    )
     stop = PublicResearchStop(stop_path)
     boundary = PublicResearchBoundary(
         store=ProviderStateStore(EventStore(provider_database)),
@@ -109,11 +121,18 @@ def build_worker(
         enabled=True,
         emergency_stop=stop.active,
     )
-    boundary.install_operator_authorization(approval, approval_path=approval_path)
+    if approval_path is not None:
+        boundary.install_operator_authorization(authority, approval_path=approval_path)
+    else:
+        boundary.install_profile(
+            authority,
+            profile_path=profile_path,
+            journal=AuthorityJournal(authority_journal),
+        )
     return PublicResearchServer(
         WorkerServerConfig(
             socket_path,
-            frozenset({approval.peer_uid}),
+            frozenset({authority.peer_uid}),
             trusted_ipc_gid=trusted_ipc_gid,
         ),
         boundary,
@@ -124,7 +143,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="Run bounded public research worker")
     parser.add_argument("--socket", type=Path, required=True)
     parser.add_argument("--provider-database", type=Path, required=True)
-    parser.add_argument("--approval", type=Path, required=True)
+    parser.add_argument("--approval", type=Path)
+    parser.add_argument("--profile", type=Path)
+    parser.add_argument("--authority-journal", type=Path)
     parser.add_argument("--stop-file", type=Path, required=True)
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--organization-id", required=True)
@@ -134,6 +155,8 @@ def main(argv=None):
         socket_path=args.socket,
         provider_database=args.provider_database,
         approval_path=args.approval,
+        profile_path=args.profile,
+        authority_journal=args.authority_journal,
         stop_path=args.stop_file,
         project_id=args.project_id,
         organization_id=args.organization_id,

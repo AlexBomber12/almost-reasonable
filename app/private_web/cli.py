@@ -15,6 +15,7 @@ from app.core.store import EventStore
 from app.core.openai_worker_client import OpenAIWorkerClient
 from app.core.provider_spend import ProviderStateStore
 from app.core.public_research_authority import load_operator_approval
+from app.core.public_research_profile import load_research_profile
 from app.core.public_research_client import PublicResearchClient
 from app.core.events import (
     AuthenticatedSourceReference,
@@ -63,6 +64,8 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--public-research-socket")
     serve.add_argument("--public-research-worker-uid", type=int)
     serve.add_argument("--public-research-approval")
+    serve.add_argument("--public-research-profile")
+    serve.add_argument("--public-research-scope")
     serve.add_argument("--privacy-ledger")
     serve.add_argument("--owner-directory")
     serve.add_argument("--listen-host", default="127.0.0.1")
@@ -173,14 +176,27 @@ def main(
         research_options = (
             args.public_research_socket,
             args.public_research_worker_uid,
-            args.public_research_approval,
         )
         if (
             args.enable_public_research
-            and not all(item is not None for item in research_options)
+            and (
+                not all(item is not None for item in research_options)
+                or (args.public_research_approval is None)
+                == (args.public_research_profile is None)
+                or (args.public_research_profile is None)
+                != (args.public_research_scope is None)
+            )
         ) or (
             not args.enable_public_research
-            and any(item is not None for item in research_options)
+            and any(
+                item is not None
+                for item in (
+                    *research_options,
+                    args.public_research_approval,
+                    args.public_research_profile,
+                    args.public_research_scope,
+                )
+            )
         ):
             raise SystemExit(
                 "public research requires explicit enablement, socket, UID and approval"
@@ -194,6 +210,8 @@ def main(
         or args.public_research_socket is not None
         or args.public_research_worker_uid is not None
         or args.public_research_approval is not None
+        or args.public_research_profile is not None
+        or args.public_research_scope is not None
         or args.enable_memory_extraction
         or args.enable_memory_evolution
         or args.enable_typed_memory
@@ -217,8 +235,13 @@ def main(
         shared = SharedIntelligence(event_store, gate, clock=_utc_now)
         research = None
         if args.enable_public_research:
-            approval = load_operator_approval(
-                args.public_research_approval, role="application"
+            authority_path = (
+                args.public_research_approval or args.public_research_profile
+            )
+            approval = (
+                load_operator_approval(authority_path, role="application")
+                if args.public_research_approval is not None
+                else load_research_profile(authority_path, role="application")
             )
             research = PublicResearchBridge(
                 event_store,
@@ -229,15 +252,17 @@ def main(
                 ),
                 enabled=True,
                 clock=_utc_now,
-                approval_path=args.public_research_approval,
+                approval_path=authority_path,
+                application_scope=args.public_research_scope,
             )
-            research.install_approval(
-                approval,
-                TrustedPrincipalContext(
-                    ParticipantId(approval.principal_id),
-                    AuthenticatedSourceReference(approval.authenticated_source_ref),
-                ),
+            principal = TrustedPrincipalContext(
+                ParticipantId(approval.principal_id),
+                AuthenticatedSourceReference(approval.authenticated_source_ref),
             )
+            if args.public_research_profile is not None:
+                research.install_profile(approval, principal)
+            else:
+                research.install_approval(approval, principal)
         conversations = WorkerConversationRuntime(
             event_store,
             gate,
