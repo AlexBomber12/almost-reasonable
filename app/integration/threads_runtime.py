@@ -247,6 +247,11 @@ class ThreadsRuntime(ThreadsStage0):
         self.model.public_context = self.inference_public_context
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
+        if (
+            mission_evolution_enabled
+            and mission.root_mission().parent_version is not None
+        ):
+            raise ValueError("public mission evolution requires a trusted root mission")
         self.mission = mission
         self.mission_evolution_enabled = mission_evolution_enabled
         journal_existed = Path(journal_path).exists()

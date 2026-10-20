@@ -1,6 +1,6 @@
 # B06A: optional public mission evolution
 
-The public runtime may enable `enable_public_mission_evolution` in its reviewed configuration. It defaults to `false` and requires the existing protected `public_mission_path`, enabled public research, and a current authorized research profile. A new proposal is offered only while that profile has research capacity; otherwise normal public decisions remain available. The option does not activate the runtime, provider worker, research, Threads, or publication; each retains its existing authorization. The initial mission file remains the trusted root. Its closed purpose and canonical Russian text are read from the existing mission contract.
+The public runtime may enable `enable_public_mission_evolution` in its reviewed configuration. It defaults to `false` and requires the existing protected `public_mission_path` to contain a parentless trusted root, enabled public research, and a current authorized research profile. A parented mission is rejected before the evolution journal is created. A new proposal is offered only while that profile has research capacity; otherwise normal public decisions remain available. The option does not activate the runtime, provider worker, research, Threads, or publication; each retains its existing authorization. The initial mission file remains the trusted root. Its closed purpose and canonical Russian text are read from the existing mission contract.
 
 ## Decisions and evidence
 

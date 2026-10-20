@@ -36,7 +36,7 @@ from test_int24_runtime import NOW, run_once, setup
 import os
 
 
-def configured(tmp_path, first):
+def configured(tmp_path, first, *, parent_version=None):
     path = tmp_path / "mission.json"
     path.write_text(
         json.dumps(
@@ -45,7 +45,7 @@ def configured(tmp_path, first):
                 "purpose": "general_inquiry",
                 "text": _MISSION_PURPOSE_TEXT[MissionPurpose.GENERAL_INQUIRY],
                 "activated_at": (NOW - timedelta(hours=1)).isoformat(),
-                "parent_version": None,
+                "parent_version": parent_version,
             }
         )
     )
@@ -63,6 +63,18 @@ def configured(tmp_path, first):
         research_scope="public-test",
         research_enabled=True,
     )
+
+
+def test_parented_mission_is_rejected_before_evolution_state_exists(tmp_path):
+    decision = {"decision": "no_action", "reason_category": "low_value"}
+    with pytest.raises(ValueError, match="requires a trusted root mission"):
+        configured(tmp_path, decision, parent_version="earlier-mission")
+    assert not (tmp_path / "journal.sqlite").exists()
+    mission = PublicMissionContext(
+        tmp_path / "mission.json", clock=lambda: NOW + timedelta(days=1)
+    )
+    _, worker, _, _, _ = setup(tmp_path, decision, mission=mission)
+    worker.close()
 
 
 def decide_inbound(app, worker):
