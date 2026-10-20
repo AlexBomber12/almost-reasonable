@@ -285,6 +285,10 @@ class ThreadsRuntime(ThreadsStage0):
                 "phase TEXT NOT NULL CHECK(phase IN ('started','completed','failed','uncertain','held')), "
                 "evidence TEXT CHECK(evidence IS NULL OR length(evidence)<=2048))"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS public_research_completions("
+                "operation TEXT PRIMARY KEY, completed_at TEXT NOT NULL)"
+            )
         if mission is not None and self.journal.needs_mission_initialization:
             self.journal.mark_mission_initialized()
         if mission_evolution_enabled and self.current_research_profile() is None:
@@ -530,10 +534,10 @@ class ThreadsRuntime(ThreadsStage0):
             text, binding = self.mission.snapshot()
             mission_text = (text,)
             origin = {**origin, "mission": binding}
-        evolution_context = (
-            ()
+        evolution_context, mission_pending_id = (
+            ((), None)
             if self.mission_evolution is None
-            else self.mission_evolution.model_context()
+            else self.mission_evolution.decision_context()
         )
         offered_profile = self.current_research_profile()
         mission_evidence_operation = None
@@ -557,6 +561,7 @@ class ThreadsRuntime(ThreadsStage0):
         }
         if self.mission_evolution is not None:
             origin["mission_invariants"] = self.mission_evolution.invariants().to_dict()
+            origin["mission_pending_id"] = mission_pending_id
             origin["mission_evidence_operation"] = mission_evidence_operation
             origin["mission_evidence_digest"] = mission_evidence_digest
         if not self.journal.start(operation, origin):
@@ -641,7 +646,17 @@ class ThreadsRuntime(ThreadsStage0):
             and evolution_context
         ):
             pending = self.mission_evolution.pending()
-            if (proposal.action == "propose") != (pending is None):
+            if (
+                proposal.action == "propose"
+                and (mission_pending_id is not None or pending is not None)
+            ) or (
+                proposal.action != "propose"
+                and (
+                    mission_pending_id is None
+                    or pending is None
+                    or pending.proposal.proposal_id != mission_pending_id
+                )
+            ):
                 rejected = True
             else:
                 payload.update(
@@ -913,10 +928,15 @@ class ThreadsRuntime(ThreadsStage0):
         except (PolicyDeniedError, ValueError):
             phase, evidence = "held", None
         with self.journal.transaction() as db:
-            db.execute(
+            updated = db.execute(
                 "UPDATE public_research_ops SET phase=?, evidence=? WHERE operation=? AND phase='started'",
                 (phase, evidence, operation),
             )
+            if updated.rowcount == 1 and phase == "completed":
+                db.execute(
+                    "INSERT OR IGNORE INTO public_research_completions VALUES(?,?)",
+                    (operation, self.clock.now().isoformat()),
+                )
 
     def readiness(self):
         if not self.enabled or not self.live_enabled:

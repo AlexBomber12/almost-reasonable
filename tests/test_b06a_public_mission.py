@@ -206,8 +206,15 @@ def test_replay_and_duplicate_proposal_are_held(tmp_path):
         duplicate = "duplicate-proposal"
         app.journal.start(duplicate, payload)
         app.journal.finish(duplicate, payload)
-        with pytest.raises(ValueError, match="already pending"):
+        with pytest.raises(ValueError, match="proposal changed"):
             app.mission_evolution.apply(duplicate, payload)
+        repeated = {
+            **payload,
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+        }
+        _staged_intent(app, "repeated-proposal", repeated)
+        with pytest.raises(ValueError, match="already pending"):
+            app.mission_evolution.apply("repeated-proposal", repeated)
         assert app.mission.snapshot()[1]["version"] == "mission-v1"
     finally:
         worker.close()
@@ -458,7 +465,11 @@ def test_cas_stale_event_and_stop_hold_mission_transition(tmp_path, monkeypatch)
         _staged_intent(app, "withdrawn", withdrawn)
         with pytest.raises(ValueError, match="source changed"):
             app.mission_evolution.apply("withdrawn", withdrawn)
-        same_time = {**payload, "mission_action": "confirm"}
+        same_time = {
+            **payload,
+            "mission_action": "confirm",
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+        }
         _staged_intent(app, "same-time", same_time)
         with pytest.raises(ValueError, match="independent later"):
             app.mission_evolution.apply("same-time", same_time)
@@ -582,6 +593,7 @@ def test_internal_invalid_action_is_rejected(tmp_path):
         payload = {
             **app.journal.read(app.wakeup_operation("wake-1")),
             "mission_action": "unknown",
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
         }
         _staged_intent(app, "invalid-action", payload)
         with pytest.raises(ValueError, match="invalid public mission action"):
@@ -723,6 +735,7 @@ def test_research_arriving_after_decision_cannot_confirm(tmp_path, monkeypatch):
             "correlation": "stale-confirm",
             "mission_action": "confirm",
             "mission_purpose": None,
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
             "decided_at": (NOW + timedelta(minutes=1)).isoformat(),
         }
         _staged_intent(app, "stale-confirm", stale_confirmation)
@@ -832,5 +845,154 @@ def test_confirmed_mission_holds_old_approved_publication(tmp_path, monkeypatch)
         with pytest.raises(PolicyDeniedError):
             app.dispatch(old_operation)
         assert not any(call[0] == "POST" for call in http.calls)
+    finally:
+        worker.close()
+
+
+def test_resolution_cannot_target_proposal_created_during_inference(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+
+        def overlap(_input):
+            started = app.journal.read("first-decision")
+            other = {
+                **started,
+                "event": "other-event",
+                "correlation": "other-decision",
+                "generation": app.ledger.control_generation(),
+                "decided_at": app.clock.now().isoformat(),
+                "decision": "revise_mission",
+                "mission_action": "propose",
+                "mission_purpose": "research",
+            }
+            _staged_intent(app, "other-decision", other)
+            app.mission_evolution.apply("other-decision", other)
+            return DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice("confirm", None),
+                None,
+                1,
+                1,
+            )
+
+        monkeypatch.setattr(app.engine, "deliberate", overlap)
+        app._decide(
+            "first-decision",
+            {"kind": "wake", "event": "first-event", "correlation": "first-decision"},
+            (),
+        )
+        first = app.journal.read("first-decision")
+        assert first["phase"] == "rejected"
+        assert (
+            app.mission_evolution.pending().proposal.initiating_event_id
+            == "other-event"
+        )
+        forged = {
+            **first,
+            "mission_action": "confirm",
+            "mission_purpose": None,
+            "decided_at": (app.clock.now() + timedelta(minutes=1)).isoformat(),
+            "generation": app.ledger.control_generation(),
+        }
+        _staged_intent(app, "unseen-confirmation", forged)
+        with pytest.raises(ValueError, match="proposal changed"):
+            app.mission_evolution.apply("unseen-confirmation", forged)
+    finally:
+        worker.close()
+
+
+def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        proposal_at = app.mission_evolution.pending().proposal.decided_at
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            db.execute(
+                "UPDATE public_research_completions SET completed_at=?",
+                ((proposal_at - timedelta(seconds=1)).isoformat(),),
+            )
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.mission_evolution.pending() is not None
+        with pytest.raises(PolicyDeniedError, match="mission transition"):
+            operation = app.wakeup_operation("wake-2")
+            app._handoff(operation, app.journal.read(operation))
+    finally:
+        worker.close()
+
+
+def test_noncanonical_root_binding_survives_enabling_evolution(tmp_path):
+    mission_path = tmp_path / "mission.json"
+    mission_path.write_text(
+        json.dumps(
+            {
+                "version": "mission-v1",
+                "purpose": "general_inquiry",
+                "text": _MISSION_PURPOSE_TEXT[MissionPurpose.GENERAL_INQUIRY],
+                "activated_at": "2026-10-17T11:00:00Z",
+                "parent_version": None,
+            }
+        )
+    )
+    mission_path.chmod(0o600)
+    root = PublicMissionContext(mission_path, clock=lambda: NOW + timedelta(days=1))
+    root_binding = root.snapshot()[1]
+    app, worker, _, _, _ = setup(
+        tmp_path,
+        {"decision": "no_action", "reason_category": "low_value"},
+        mission=root,
+    )
+    try:
+        run_once(app, worker)
+        payload = app.journal.read(app.wakeup_operation("wake-1"))
+        application_profile, _ = _profile(tmp_path)
+        enabled = ThreadsRuntime(
+            tmp_path / "journal.sqlite",
+            tmp_path / "scheduler.sqlite",
+            tmp_path / "threads.sqlite",
+            model=PublicBehaviorClient(
+                tmp_path / "next-worker.sock", expected_uid=os.getuid()
+            ),
+            transport=app.simulator,
+            policy=app.policy,
+            owner=app.owner,
+            provider=app.provider,
+            ledger=app.ledger,
+            clock=app.clock,
+            wakeup_policy=app.scheduler.policy,
+            operator=app.operator,
+            mission=PublicMissionContext(
+                mission_path, clock=lambda: NOW + timedelta(days=1)
+            ),
+            research_client=PublicResearchClient(
+                tmp_path / "unused-research.sock", expected_worker_uid=os.geteuid()
+            ),
+            research_profile_path=application_profile,
+            research_scope="public-test",
+            research_enabled=True,
+            mission_evolution_enabled=True,
+            enabled=True,
+            live_enabled=True,
+        )
+        assert enabled.mission.snapshot()[1] == root_binding
+        enabled.require_mission(payload)
     finally:
         worker.close()

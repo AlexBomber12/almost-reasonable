@@ -95,11 +95,19 @@ class PublicMissionEvolution:
         )
 
     def model_context(self):
+        return self.decision_context()[0]
+
+    def decision_context(self):
         record = self.pending()
         if record is not None:
-            return ("pending", record.proposal.purpose.value)
+            return (
+                "pending",
+                record.proposal.purpose.value,
+            ), record.proposal.proposal_id
         profile = self.app.current_research_profile()
-        return ("enabled",) if profile and self.app.available_topics(profile) else ()
+        return (
+            ("enabled",) if profile and self.app.available_topics(profile) else ()
+        ), None
 
     def source_id(self, content):
         return _digest(str(self.app.ledger.control_generation()) + ":" + content)
@@ -114,7 +122,9 @@ class PublicMissionEvolution:
                 with sqlite3.connect(self.app.journal.path) as db:
                     row = db.execute(
                         "SELECT r.phase,r.evidence,r.profile_digest,i.payload FROM public_research_ops r "
-                        "JOIN intents i ON i.operation=r.operation WHERE r.operation=?",
+                        "JOIN intents i ON i.operation=r.operation "
+                        "JOIN public_research_completions c ON c.operation=r.operation "
+                        "WHERE r.operation=?",
                         (source.evidence_id,),
                     ).fetchone()
                 profile = self.app.current_research_profile()
@@ -194,7 +204,7 @@ class PublicMissionEvolution:
             machine = MissionStateMachine(repository, self.authorized)
             if payload["mission"]["version"] != document.current.version:
                 raise ValueError("public mission parent changed")
-            at = datetime.fromisoformat(payload["decided_at"])
+            at = app.clock.now()
             action = payload["mission_action"]
             pending = next(
                 (
@@ -204,6 +214,10 @@ class PublicMissionEvolution:
                 ),
                 None,
             )
+            if payload.get("mission_pending_id") != (
+                None if pending is None else pending.proposal.proposal_id
+            ):
+                raise ValueError("public mission proposal changed")
             if action == "propose" and pending is not None:
                 raise ValueError("public mission proposal already pending")
             if action in ("confirm", "reject") and (
@@ -276,17 +290,17 @@ class PublicMissionEvolution:
             raise ValueError("independent public research evidence was not offered")
         with sqlite3.connect(self.app.journal.path) as db:
             row = db.execute(
-                "SELECT r.operation,r.evidence,i.payload FROM public_research_ops r "
-                "JOIN intents i ON i.operation=r.operation WHERE r.phase='completed' "
+                "SELECT r.operation,r.evidence,c.completed_at FROM public_research_ops r "
+                "JOIN public_research_completions c ON c.operation=r.operation "
+                "WHERE r.phase='completed' "
                 "AND r.operation=?",
                 (operation,),
             ).fetchone()
         if (
             row is None
             or public_context_digest((row[1],)) != payload["mission_evidence_digest"]
-            or datetime.fromisoformat(json.loads(row[2])["decided_at"])
-            <= proposal.decided_at
-            or datetime.fromisoformat(json.loads(row[2])["decided_at"])
+            or datetime.fromisoformat(row[2]) <= proposal.decided_at
+            or datetime.fromisoformat(row[2])
             >= datetime.fromisoformat(payload["decided_at"])
         ):
             raise ValueError("independent later public research evidence missing")

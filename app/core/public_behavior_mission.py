@@ -50,6 +50,8 @@ class PublicMissionContext:
             ):
                 raise ValueError("public mission evidence withdrawn")
         current = document.current
+        if current == root:
+            return text, binding
         value = {
             "version": current.version,
             "purpose": current.purpose.value,
