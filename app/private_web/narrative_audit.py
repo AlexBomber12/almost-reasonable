@@ -27,6 +27,43 @@ class NarrativeAudit:
 
 
 class NarrativeAuditStore(ExtractionAuditStore):
+    def status(self, operation_id, principal_id, source_event_id):
+        with closing(self._provider._event_store._open()) as db:
+            self._provider._event_store._verify_current_schema(db)
+            row = db.execute(
+                "SELECT binding,status FROM private_extraction_audit WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        if row[0] != self._binding(principal_id, source_event_id):
+            raise ValueError("narrative operation conflict")
+        if row[1] == "unavailable":
+            receipt = self._receipt(operation_id, principal_id, source_event_id)
+            if receipt is not None and receipt.proposal is not None:
+                return "withheld"
+        return row[1]
+
+    def finish(self, operation_id, status):
+        if status != "unavailable":
+            return super().finish(operation_id, status)
+        with closing(self._provider._event_store._open()) as db:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                changed = db.execute(
+                    "UPDATE private_extraction_audit SET status='unavailable' WHERE operation_id=? AND status IN ('reserved','received')",
+                    (operation_id,),
+                ).rowcount
+                if changed != 1:
+                    raise ValueError("extraction outcome conflict")
+        with closing(self._events._open()) as db:
+            row = db.execute(
+                "SELECT principal_id,source_event_id FROM private_narrative_receipts WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+        if row is None or self._receipt(operation_id, *row).proposal is None:
+            self._delete_receipt(operation_id)
+
     def _delete_receipt(self, operation_id):
         with closing(self._events._open()) as db:
             with db:
@@ -101,7 +138,12 @@ class NarrativeAuditStore(ExtractionAuditStore):
         if row[0] != self._binding(principal_id, source_event_id):
             raise ValueError("narrative operation conflict")
         if row[1] not in {"reserved", "received"}:
-            self._delete_receipt(operation_id)
+            if (
+                row[1] != "unavailable"
+                or self.status(operation_id, principal_id, source_event_id)
+                != "withheld"
+            ):
+                self._delete_receipt(operation_id)
             return NarrativeAudit(row[1])
         receipt = self._receipt(operation_id, principal_id, source_event_id)
         if receipt is None or (row[1] == "received" and receipt.proposal is None):

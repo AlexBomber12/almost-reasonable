@@ -21,6 +21,8 @@ from app.cognition.worker_narrative import (
 from app.core.context import ContextRole, ContextTrust, ConversationSegment
 from app.core.context import ContextLimits
 from app.core.agent_output_store import AgentOutputStore, ReplyOperation
+from app.core.action_policy import ActionPolicy, CapabilityState, TrustedActionContext
+from app.core.agent_proposals import ProposalValidation, ReplyProposal
 from app.core.openai_worker_client import OpenAIWorkerClient
 from app.core.provider_contract import (
     DeploymentStage,
@@ -28,7 +30,7 @@ from app.core.provider_contract import (
     default_openai_provider_config,
 )
 from app.core.provider_spend import ProviderStateStore
-from app.core.store import EventStore, EventValidationError
+from app.core.store import EventStore, EventStoreError, EventValidationError
 from app.private_web.runtime import WorkerConversationRuntime
 from app.private_web.narrative_audit import NarrativeAuditStore
 from app.privacy.application import (
@@ -178,6 +180,145 @@ def test_narrative_reply_rejects_unbound_source_and_corrupt_edges(tmp_path):
             (bound.operation_id,),
         )
     assert outputs.read_reply(who, bound.operation_id) is None
+
+
+def _narrative_reply_fixture(tmp_path, *, persist=True):
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Синтетическая история")
+    with events._open() as db:
+        correlation = db.execute(
+            "SELECT correlation_id FROM event_envelopes WHERE event_id=?", (source,)
+        ).fetchone()[0]
+    operation = ReplyOperation(
+        "reply:source",
+        source,
+        "conversation:source",
+        correlation,
+        "worker-owned",
+        "worker-context-v2",
+        "core-self-v1",
+        (source,),
+    )
+    outputs = AgentOutputStore(events)
+    outputs.reserve_reply(who, operation)
+    if persist:
+        route = TrustedActionContext(correlation, who)
+        caps = CapabilityState("caps-v1", False, False, True, False, True)
+        grant = ActionPolicy().evaluate(
+            ProposalValidation(ReplyProposal("Синтетический ответ."), None), route, caps
+        )
+        outputs.persist_reply(route, operation, grant, caps)
+    return events, who, source, operation, outputs
+
+
+def test_attach_narrative_requires_persisted_unreleased_bound_reply(tmp_path):
+    events, who, source, operation, outputs = _narrative_reply_fixture(
+        tmp_path, persist=False
+    )
+    with pytest.raises(EventValidationError, match="held reply unavailable"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:unknown")
+    route = TrustedActionContext(operation.correlation_id, who)
+    caps = CapabilityState("caps-v1", False, False, True, False, True)
+    grant = ActionPolicy().evaluate(
+        ProposalValidation(ReplyProposal("Синтетический ответ."), None), route, caps
+    )
+    outputs.persist_reply(route, operation, grant, caps)
+    with pytest.raises(EventValidationError, match="invalid narrative reply sources"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:unknown")
+    other = append_event(events, who, "other", "Другой источник")
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:other",
+        source_event_id=other,
+        text="Другой эпизод.",
+        item_id="episode:other",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(other,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    with pytest.raises(EventValidationError, match="invalid narrative reply sources"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:other")
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:source",
+        source_event_id=source,
+        text="Сцена.",
+        item_id="episode:source",
+        expected_revision=0,
+        expected_heads=(("episode:other", 1),),
+        exposed_sources=(source,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    bound = outputs.attach_narrative(who, operation.operation_id, "narrative:source")
+    assert bound.operation.narrative_operation_ids == ("narrative:source",)
+    assert (
+        outputs.attach_narrative(who, operation.operation_id, "narrative:source")
+        == bound
+    )
+    outputs.release_reply(route, bound.operation, grant, caps, "release:reply:source")
+    with pytest.raises(EventValidationError, match="reply already released"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:source")
+
+
+def test_attach_narrative_graph_bound_and_transaction_rollback(tmp_path, monkeypatch):
+    events, who, source, operation, outputs = _narrative_reply_fixture(tmp_path)
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:source",
+        source_event_id=source,
+        text="Сцена.",
+        item_id="episode:source",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(source,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    original_read = outputs._read
+
+    def full_reply(db, context, operation_id):
+        reply = original_read(db, context, operation_id)
+        return replace(
+            reply,
+            operation=replace(
+                reply.operation,
+                narrative_operation_ids=tuple(
+                    f"narrative:{index}" for index in range(16)
+                ),
+            ),
+        )
+
+    monkeypatch.setattr(outputs, "_read", full_reply)
+    with pytest.raises(EventValidationError, match="graph bound"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:source")
+
+    reads = []
+
+    def disappear(db, context, operation_id):
+        reads.append(True)
+        return original_read(db, context, operation_id) if len(reads) == 1 else None
+
+    monkeypatch.setattr(outputs, "_read", disappear)
+    with pytest.raises(EventValidationError, match="sources unavailable"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:source")
+    monkeypatch.setattr(outputs, "_read", original_read)
+    assert (
+        outputs.read_reply(
+            who, operation.operation_id
+        ).operation.narrative_operation_ids
+        == ()
+    )
+
+    def storage_error(*_args):
+        raise sqlite3.OperationalError("synthetic storage failure")
+
+    monkeypatch.setattr(outputs, "_read", storage_error)
+    with pytest.raises(EventStoreError, match="operation failed"):
+        outputs.attach_narrative(who, operation.operation_id, "narrative:source")
 
 
 def test_narrative_permission_is_separate_and_bounded(tmp_path):
@@ -459,7 +600,10 @@ def test_worker_narrative_continuity_across_restart_and_a_b_isolation(tmp_path):
             for call in fake.calls
             if json.loads(call.request.input_text)["task"] == "private_conversation"
         ]
-        assert reply_requests[0]["fictional_episodes"] == []
+        assert (
+            reply_requests[0]["fictional_episodes"][0]["text"]
+            == "Я видел вымышленный маяк."
+        )
         assert (
             reply_requests[1]["fictional_episodes"][0]["text"]
             == "Я видел вымышленный маяк."
@@ -1324,6 +1468,20 @@ def test_missing_narrative_receipt_is_conservative_after_crash(tmp_path):
         ).fetchone() == ("unavailable",)
 
 
+def test_narrative_audit_status_binding_and_terminal_conflict(tmp_path):
+    _events, _provider, audit, who, source, content, _reply, _context, operation, _ = (
+        _reserved_audit(tmp_path)
+    )
+    assert audit.status("narrative:missing", who.principal_id.value, source) is None
+    with pytest.raises(ValueError, match="narrative operation conflict"):
+        audit.status(operation, principal("b").principal_id.value, source)
+    assert audit.status(operation, who.principal_id.value, source) == "reserved"
+    audit.finish(operation, "unavailable")
+    with pytest.raises(ValueError, match="outcome conflict"):
+        audit.finish(operation, "unavailable")
+    assert audit.status(operation, who.principal_id.value, source) == "unavailable"
+
+
 @pytest.mark.parametrize(
     "damaged",
     [
@@ -1545,6 +1703,93 @@ def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
         assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
             "received",
         )
+    reopened = EventStore(events.database_path)
+    fresh_gate = PrivacyReadGate(ledger, reopened)
+    assert fresh_gate.reconcile()
+    recovered = WorkerConversationRuntime(
+        reopened,
+        fresh_gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    result = recovered.submit(principal("a"), "first", "Расскажи историю")
+    assert result.model_state.value == "completed"
+    assert len(calls) == 2
+    assert len(NarrativeStore(events).current(principal("a"))) == 1
+    with provider._event_store._open() as db:
+        assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
+            "accepted",
+        )
+
+
+@pytest.mark.parametrize(
+    "crash_point,expected_state,expected_episodes,expected_calls",
+    [
+        ("after_extraction_receipt", "unavailable", 0, 1),
+        ("after_reply_commit", "completed", 1, 2),
+    ],
+)
+def test_narrative_crash_reconciles_only_when_reply_was_persisted(
+    tmp_path,
+    monkeypatch,
+    crash_point,
+    expected_state,
+    expected_episodes,
+    expected_calls,
+):
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(operation_id)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            narrative=(
+                NarrativeProposal("create", None, "Я видел вымышленный маяк.")
+                if isinstance(request, NarrativeModelRequest)
+                else None
+            ),
+            validation=(
+                None
+                if isinstance(request, NarrativeModelRequest)
+                else ProposalValidation(ReplyProposal("Ответ."), None)
+            ),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+
+    def crash(point):
+        if point == crash_point:
+            raise RuntimeError("synthetic crash")
+
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+        checkpoint=crash,
+    )
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        runtime.submit(principal("a"), "first", "Расскажи историю")
+    assert NarrativeStore(events).current(principal("a")) == ()
 
     reopened = EventStore(events.database_path)
     fresh_gate = PrivacyReadGate(ledger, reopened)
@@ -1558,13 +1803,164 @@ def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
         narrative_permission_current=lambda: True,
     )
     result = recovered.submit(principal("a"), "first", "Расскажи историю")
-    assert result.model_state.value == "unavailable"
+    assert result.model_state.value == expected_state
+    episodes = NarrativeStore(events).current(principal("a"))
+    assert len(episodes) == expected_episodes
+    assert len(calls) == expected_calls
+    if episodes:
+        reply = AgentOutputStore(events).read_reply(
+            principal("a"),
+            "reply:" + episodes[0].operation_id.removeprefix("narrative:"),
+        )
+        assert reply.operation.narrative_operation_ids == (episodes[0].operation_id,)
+
+
+@pytest.mark.parametrize(
+    "reply_outcome",
+    ["completed", "invalid_response", "projection_failure", "commit_conflict"],
+)
+def test_same_turn_narrative_is_visible_and_only_saved_with_reply(
+    tmp_path, monkeypatch, reply_outcome
+):
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    seen = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        if isinstance(request, NarrativeModelRequest):
+            return ClientResult(
+                operation_id,
+                correlation_id,
+                "completed",
+                1,
+                None,
+                narrative=NarrativeProposal(
+                    "create", None, "Я видел вымышленный маяк."
+                ),
+            )
+        seen.append(json.loads(request.serialize())["fictional_episodes"])
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "invalid_response" if reply_outcome == "invalid_response" else "completed",
+            1,
+            None,
+            validation=(
+                ProposalValidation(ReplyProposal("Я видел вымышленный маяк."), None)
+                if reply_outcome != "invalid_response"
+                else None
+            ),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+    if reply_outcome == "projection_failure":
+
+        def reject_projection(_context, _audit):
+            raise ValueError("synthetic projection overflow")
+
+        monkeypatch.setattr(
+            WorkerConversationRuntime,
+            "_project_narrative",
+            staticmethod(reject_projection),
+        )
+    if reply_outcome == "commit_conflict":
+
+        def reject_commit(*_args, **_kwargs):
+            raise NarrativeConflict("synthetic stale heads")
+
+        monkeypatch.setattr(NarrativeStore, "commit", reject_commit)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    result = runtime.submit(principal("a"), "first", "Расскажи историю")
+    if reply_outcome == "projection_failure":
+        assert seen[0] == []
+    else:
+        assert seen[0][-1]["text"] == "Я видел вымышленный маяк."
+        assert seen[0][-1]["trust"] == "untrusted_fiction_data"
+    episodes = NarrativeStore(events).current(principal("a"))
+    if reply_outcome == "completed":
+        assert result.model_state.value == "completed"
+        assert len(episodes) == 1
+        reply = AgentOutputStore(events).read_reply(
+            principal("a"),
+            "reply:" + episodes[0].operation_id.removeprefix("narrative:"),
+        )
+        assert reply.operation.narrative_operation_ids == (episodes[0].operation_id,)
+    else:
+        assert result.model_state.value != "completed"
+        assert episodes == ()
+
+
+def test_stop_after_narrative_receipt_closes_proposal_before_reply(
+    tmp_path, monkeypatch
+):
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    stopped = {"now": False}
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(operation_id)
+        assert isinstance(request, NarrativeModelRequest)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            narrative=NarrativeProposal("create", None, "Я видел вымышленный маяк."),
+        )
+
+    def checkpoint(point):
+        if point == "after_extraction_receipt":
+            stopped["now"] = True
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+        emergency_stop=lambda: stopped["now"],
+        checkpoint=checkpoint,
+    )
+    result = runtime.submit(principal("a"), "first", "Расскажи историю")
+    assert result.model_state.value == "stopped"
     assert len(calls) == 1
-    assert len(NarrativeStore(events).current(principal("a"))) == 1
+    assert NarrativeStore(events).current(principal("a")) == ()
     with provider._event_store._open() as db:
         assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
-            "accepted",
+            "unavailable",
         )
+    assert (
+        runtime.submit(principal("a"), "first", "Расскажи историю").model_state.value
+        == "stopped"
+    )
 
 
 def test_revoked_narrative_permission_withholds_released_history(tmp_path, monkeypatch):

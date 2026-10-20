@@ -1,5 +1,6 @@
 """Participant-scoped fictional episodes, separate from events and factual state."""
 
+from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import datetime
 import sqlite3
@@ -183,6 +184,7 @@ class NarrativeStore:
         exposed_sources: tuple[str, ...],
         exposed_episodes: tuple[str, ...],
         created_at: datetime,
+        _connection: sqlite3.Connection | None = None,
     ) -> Episode:
         """CAS against all visible heads and the complete model-visible source union."""
         EventStore._validate_context(context)
@@ -206,10 +208,11 @@ class NarrativeStore:
         ):
             raise NarrativeConflict("invalid narrative proposal")
         principal = context.principal_id.value
-        db = self._events._open()
+        db = _connection if _connection is not None else self._events._open()
         try:
-            with db:
-                db.execute("BEGIN IMMEDIATE")
+            with db if _connection is None else nullcontext(db):
+                if _connection is None:
+                    db.execute("BEGIN IMMEDIATE")
                 self._events._verify_current_schema(db)
                 existing = db.execute(
                     "SELECT item_id,revision FROM narrative_operations WHERE principal_id=? AND operation_id=?",
@@ -332,7 +335,8 @@ class NarrativeStore:
                     created_at.isoformat(),
                 )
         finally:
-            db.close()
+            if _connection is None:
+                db.close()
 
 
 def erase_narrative_source(db: sqlite3.Connection, event_id: str) -> None:

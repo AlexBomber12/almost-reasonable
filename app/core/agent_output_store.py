@@ -403,6 +403,68 @@ class AgentOutputStore:
         finally:
             db.close()
 
+    def attach_narrative(
+        self,
+        context: TrustedPrincipalContext,
+        reply_operation_id: str,
+        narrative_operation_id: str,
+        *,
+        _connection: sqlite3.Connection | None = None,
+    ) -> PrivateReply:
+        """Bind a held draft to a newly committed episode before release."""
+        EventStore._validate_context(context)
+        EventStore._require_token("reply operation", reply_operation_id)
+        EventStore._require_token("narrative operation", narrative_operation_id)
+        db = _connection if _connection is not None else self._store._open()
+        try:
+            with db if _connection is None else nullcontext(db):
+                if _connection is None:
+                    db.execute("BEGIN IMMEDIATE")
+                self._store._verify_current_schema(db)
+                reply = self._read(db, context, reply_operation_id)
+                if reply is None or reply.result_state is not ResultState.PERSISTED:
+                    raise EventValidationError("held reply unavailable")
+                if (
+                    db.execute(
+                        "SELECT 1 FROM agent_reply_resolutions WHERE operation_id=?",
+                        (reply_operation_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise EventValidationError("reply already released")
+                if narrative_operation_id in reply.operation.narrative_operation_ids:
+                    return reply
+                if len(reply.operation.narrative_operation_ids) >= 16:
+                    raise EventValidationError("narrative reply graph bound")
+                dependencies = _eligible(
+                    db, context.principal_id.value, narrative_operation_id
+                )
+                if dependencies is None or not set(dependencies) <= set(
+                    reply.operation.source_event_ids
+                ):
+                    raise EventValidationError("invalid narrative reply sources")
+                db.execute(
+                    "INSERT INTO protected_reply_narrative VALUES (?, ?, ?)",
+                    (
+                        reply_operation_id,
+                        context.principal_id.value,
+                        narrative_operation_id,
+                    ),
+                )
+                db.execute(
+                    "UPDATE agent_reply_operations SET narrative_count=narrative_count+1 WHERE operation_id=?",
+                    (reply_operation_id,),
+                )
+                result = self._read(db, context, reply_operation_id)
+                if result is None:
+                    raise EventValidationError("narrative reply sources unavailable")
+                return result
+        except sqlite3.Error as error:
+            raise self._store._translated_error(error) from None
+        finally:
+            if _connection is None:
+                db.close()
+
     def read_reply(
         self, context: TrustedPrincipalContext, operation_id: str
     ) -> PrivateReply | None:

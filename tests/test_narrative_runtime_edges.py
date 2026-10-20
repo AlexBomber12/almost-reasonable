@@ -14,6 +14,7 @@ from app.core.openai_worker_client import (
     OpenAIWorkerClient,
 )
 from app.core.provider_spend import AttemptReservationStatus, ProviderStateStore
+from app.core.agent_output_store import ResultState
 from app.core.store import EventStore
 from app.private_web.narrative_audit import NarrativeAudit
 from app.private_web.runtime import WorkerConversationRuntime
@@ -110,7 +111,7 @@ def _runtime_double(case):
         ("permission_lost", None, 0, 0),
         ("admission_lost", None, 0, 0),
         ("no_receipt", None, 0, 0),
-        ("received", None, 0, 1),
+        ("received", None, 0, 0),
         ("terminal", None, 0, 0),
         ("attempt_duplicate", "unavailable", 0, 0),
         ("preflight_lost", "unavailable", 0, 0),
@@ -121,7 +122,7 @@ def _runtime_double(case):
         ("rejected", "rejected", 1, 0),
         ("receipt_lost", "unavailable", 1, 0),
         ("receipt_changed", "unavailable", 1, 0),
-        ("completed", None, 1, 1),
+        ("completed", None, 1, 0),
     ],
 )
 def test_narrative_operation_stops_at_each_authority_boundary(
@@ -150,7 +151,7 @@ def test_narrative_operation_stops_at_each_authority_boundary(
     [
         ("reply_missing", "unavailable"),
         ("authority_changed", "unavailable"),
-        ("unknown_revision", "rejected"),
+        ("unknown_revision", "unavailable"),
         ("stale_write", "unavailable"),
     ],
 )
@@ -161,7 +162,7 @@ def test_narrative_receipt_commit_requires_current_reply_and_revision(case, expe
         narrative_operation_ids=("narrative:old",),
         source_event_ids=("source",),
     )
-    reply = SimpleNamespace(operation=operation)
+    reply = SimpleNamespace(operation=operation, result_state=ResultState.PERSISTED)
     proposal = NarrativeProposal(
         "revise" if case == "unknown_revision" else "create",
         "h0123456789abcdef" if case == "unknown_revision" else None,
@@ -181,14 +182,15 @@ def test_narrative_receipt_commit_requires_current_reply_and_revision(case, expe
 
     fake = SimpleNamespace(
         _outputs=SimpleNamespace(
-            read_reply=lambda *_args: None if case == "reply_missing" else reply
+            read_reply=lambda *_args: None if case == "reply_missing" else reply,
+            attach_narrative=lambda *_args: None,
         ),
         _narrative_current=lambda *_args, **_kwargs: case != "authority_changed",
         _narrative_store=SimpleNamespace(
             current=lambda *_args: (),
             committed=lambda *_args, **_kwargs: False,
-            commit=write,
         ),
+        _write_narrative=write,
         _gate=SimpleNamespace(authorized=lambda fn: fn()),
         _clock=lambda: datetime(2026, 10, 20, tzinfo=UTC),
         _checkpoint=lambda *_args: None,
@@ -221,10 +223,45 @@ def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_receiv
     )
     assert state == []
     fake._narrative_audit.read = lambda *_args: NarrativeAudit("received")
+    fake._gate = SimpleNamespace(authorized=lambda fn: fn())
+    fake._outputs = SimpleNamespace(
+        read_reply=lambda *_args: SimpleNamespace(result_state=ResultState.PERSISTED)
+    )
     WorkerConversationRuntime._reconcile_narrative(
         fake, principal("a"), "source", "История", "reply:source"
     )
     assert len(state) == 1
+
+
+def test_received_narrative_waits_for_existing_reply_attempt(tmp_path):
+    finished = []
+    fake = SimpleNamespace(
+        _event_store=SimpleNamespace(database_path=tmp_path / "events.db"),
+        _narrative_audit=SimpleNamespace(
+            read=lambda *_args: NarrativeAudit("received"),
+            finish=lambda *_args: finished.append(True),
+        ),
+        _gate=SimpleNamespace(authorized=lambda fn: fn()),
+        _outputs=SimpleNamespace(
+            read_reply=lambda *_args: SimpleNamespace(result_state=ResultState.PENDING)
+        ),
+        _provider=SimpleNamespace(attempt_exists=lambda *_args: True),
+    )
+    WorkerConversationRuntime._reconcile_narrative(
+        fake, principal("a"), "source", "История", "reply:source"
+    )
+    assert finished == []
+
+
+def test_narrative_projection_refuses_unshown_revision_handle():
+    audit = NarrativeAudit(
+        "received",
+        selected=(("h0123456789abcdef", "narrative:unshown"),),
+        proposal=NarrativeProposal("revise", "h0123456789abcdef", "Новая сцена."),
+    )
+    context = SimpleNamespace(episodes=(), projected_narrative_operation_ids=())
+    with pytest.raises(ValueError, match="projection unavailable"):
+        WorkerConversationRuntime._project_narrative(context, audit)
 
 
 def test_active_narrative_operation_is_not_entered_twice(tmp_path):
