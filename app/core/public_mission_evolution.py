@@ -152,6 +152,7 @@ class PublicMissionEvolution:
     def invariants(self):
         app = self.app
         policy = app.policy
+        profile = app.current_research_profile()
         policy_fields = (
             policy.account_ref,
             policy.stage.value,
@@ -176,6 +177,7 @@ class PublicMissionEvolution:
                         policy.publication_capability_enabled,
                         app.research_enabled,
                         app.research_scope,
+                        None if profile is None else profile.digest,
                     )
                 )
             ),

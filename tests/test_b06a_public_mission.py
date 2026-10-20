@@ -247,6 +247,38 @@ def test_permission_change_holds_confirmation(tmp_path, monkeypatch):
         worker.close()
 
 
+def test_research_profile_replacement_holds_confirmation(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        original_digest = app.current_research_profile().digest
+        run_once(app, worker)
+        profile_path = app.research_profile_path
+        replacement = json.loads(profile_path.read_text())
+        replacement["authorization"] = "c" * 64
+        profile_path.write_text(json.dumps(replacement))
+        assert app.current_research_profile().digest != original_digest
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.mission_evolution.pending() is not None
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
 def test_confirmed_mission_survives_restart_and_withdrawal_fails_closed(
     tmp_path, monkeypatch
 ):
