@@ -10,6 +10,8 @@ The model may choose confirmation or rejection on a later decision. It supplies 
 
 The pending proposal and bounded history live in `public_mission_state` in the existing public SQLite journal. Mission transition and intent linkage commit in one journal transaction. The model's single inference does not run a second confirmation call or create a background loop. The closed mission vocabulary cannot grant budget, credentials, tools, deployment stage, policy permissions, or a publishing approval. A confirmed mission is read into later deliberation and checked again before public handoff and publication effects. Stale publication intents are held by their mission binding.
 
+Once an evolution journal exists, disabling `enable_public_mission_evolution` fails startup. This prevents a restart from silently reading the root mission in place of a confirmed mission. Operators must retain the feature configuration to read the evolved state; disabling public runtime authority remains a separate control.
+
 ## Recovery and limits
 
 The journal serializes concurrent mission operations and checks the current parent version. Replayed or conflicting operations do not transition again. A crash before the journal commit leaves the intent eligible for guarded recovery; after commit, the mission transition is durable. For a public inbound event, recording its no-action conversation outcome is in the separate Threads store. Recovery retries that acknowledgement for a linked mission intent. This is reconciliation across stores, **not** an atomic cross-store transaction.

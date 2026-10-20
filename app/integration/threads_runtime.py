@@ -287,6 +287,15 @@ class ThreadsRuntime(ThreadsStage0):
             )
         if mission is not None and self.journal.needs_mission_initialization:
             self.journal.mark_mission_initialized()
+        if not mission_evolution_enabled:
+            with self.journal.transaction() as db:
+                if db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='public_mission_state'"
+                ).fetchone():
+                    raise ValueError(
+                        "persisted public mission evolution requires enabled configuration"
+                    )
         self.mission_evolution = None
         self.engine = DeliberationEngine(
             model,

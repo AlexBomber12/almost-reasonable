@@ -255,6 +255,28 @@ def test_confirmed_mission_survives_restart_and_withdrawal_fails_closed(
         assert app.policy.publication_capability_enabled is True
         assert repr(app.policy) == initial_policy
         assert app.provider.is_spend_suspended() is initial_spend
+        with pytest.raises(ValueError, match="persisted public mission evolution"):
+            ThreadsRuntime(
+                tmp_path / "journal.sqlite",
+                tmp_path / "scheduler.sqlite",
+                tmp_path / "threads.sqlite",
+                model=PublicBehaviorClient(
+                    tmp_path / "disabled-worker.sock", expected_uid=os.getuid()
+                ),
+                transport=app.simulator,
+                policy=app.policy,
+                owner=app.owner,
+                provider=app.provider,
+                ledger=app.ledger,
+                clock=app.clock,
+                wakeup_policy=app.scheduler.policy,
+                operator=app.operator,
+                mission=PublicMissionContext(
+                    app.mission.path, clock=lambda: NOW + timedelta(days=1)
+                ),
+                enabled=True,
+                live_enabled=True,
+            )
         sdk.proposal = {"decision": "no_action", "reason_category": "low_value"}
         clock.advance(timedelta(minutes=1))
         decide_wakeup(app, worker, clock, "wake-3")
