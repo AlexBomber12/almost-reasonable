@@ -65,6 +65,10 @@ from app.behavior.worker_client import PublicBehaviorClient
 PUBLIC_RUNTIME_VERSION = "threads-public-runtime-v1"
 
 
+class PublicInferenceContextChanged(ValueError):
+    """Persisted inference context no longer matches current public evidence."""
+
+
 @dataclass(frozen=True, slots=True)
 class LocalOperator:
     """Trusted local administrative procedure: UID is read from the kernel."""
@@ -411,7 +415,9 @@ class ThreadsRuntime(ThreadsStage0):
             source != payload.get("mission_evidence_operation")
             or public_context_digest(evidence) != payload.get("mission_evidence_digest")
         ):
-            raise ValueError("public mission evidence changed during inference")
+            raise PublicInferenceContextChanged(
+                "public mission evidence changed during inference"
+            )
         return catalog, evidence
 
     def _public_context(self, profile):
@@ -441,18 +447,23 @@ class ThreadsRuntime(ThreadsStage0):
                     "SELECT r.operation,r.evidence,i.payload,c.completed_at,i.rowid AS intent_rowid "
                     "FROM public_research_ops r "
                     "JOIN intents i ON i.operation=r.operation "
-                    "JOIN public_research_completions c ON c.operation=r.operation "
+                    "LEFT JOIN public_research_completions c ON c.operation=r.operation "
                     "WHERE r.phase='completed' AND r.profile_digest=?",
                     (profile.digest,),
                 ).fetchall()
             for row in sorted(
                 rows,
                 key=lambda item: (
-                    datetime.fromisoformat(item["completed_at"]),
+                    datetime.fromisoformat(
+                        item["completed_at"]
+                        or json.loads(item["payload"])["decided_at"]
+                    ),
                     item["intent_rowid"],
                 ),
                 reverse=True,
             ):
+                if self.mission_evolution is not None and row["completed_at"] is None:
+                    continue
                 if pending is not None and (
                     datetime.fromisoformat(row["completed_at"])
                     <= pending.proposal.decided_at
@@ -514,7 +525,9 @@ class ThreadsRuntime(ThreadsStage0):
             return ()
         value = tuple(payload["mission_evolution"])
         if value != self.mission_evolution.model_context():
-            raise ValueError("public mission proposal changed during inference")
+            raise PublicInferenceContextChanged(
+                "public mission proposal changed during inference"
+            )
         return value
 
     def reservation_evidence(self, request):
@@ -597,39 +610,46 @@ class ThreadsRuntime(ThreadsStage0):
         self.guard()
         now = self.clock.now()
         generation = self.ledger.control_generation()
-        result = self.engine.deliberate(
-            DeliberationInput(
-                operation,
-                context,
-                initial_core_self(),
-                mission_text,
-                (),
-                BehaviorCapabilities(
-                    "threads-public-v1",
-                    False,
-                    False,
-                    mission_allows_publication
-                    and not bool(
-                        self.policy.publication_blockers(
-                            PublicationType.REPLY, live_transport_enabled=True
-                        )
-                    ),
-                    bool(self.available_topics(self.current_research_profile())),
-                    mission_allows_publication
-                    and not bool(
-                        self.policy.publication_blockers(
-                            PublicationType.POST, live_transport_enabled=True
-                        )
-                    ),
-                ),
-                TriggerType(trigger),
-                DeliberationBudget(1, 1, timeout),
-                now,
-                now + timedelta(seconds=timeout),
-                PriorResultCategory.NONE,
+        deliberation = DeliberationInput(
+            operation,
+            context,
+            initial_core_self(),
+            mission_text,
+            (),
+            BehaviorCapabilities(
+                "threads-public-v1",
                 False,
-            )
+                False,
+                mission_allows_publication
+                and not bool(
+                    self.policy.publication_blockers(
+                        PublicationType.REPLY, live_transport_enabled=True
+                    )
+                ),
+                bool(self.available_topics(self.current_research_profile())),
+                mission_allows_publication
+                and not bool(
+                    self.policy.publication_blockers(
+                        PublicationType.POST, live_transport_enabled=True
+                    )
+                ),
+            ),
+            TriggerType(trigger),
+            DeliberationBudget(1, 1, timeout),
+            now,
+            now + timedelta(seconds=timeout),
+            PriorResultCategory.NONE,
+            False,
         )
+        try:
+            result = self.engine.deliberate(deliberation)
+        except PublicInferenceContextChanged:
+            self.journal.finish(
+                operation,
+                {**origin, "reason": "public_inference_context_changed"},
+                held=True,
+            )
+            return
         payload = {
             **origin,
             "generation": generation,

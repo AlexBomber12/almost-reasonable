@@ -199,6 +199,7 @@ class PublicMissionEvolution:
                         None if profile is None else profile.digest,
                         str(app.research_client._path),
                         app.research_client._expected_worker_uid,
+                        app.ledger.control_generation(),
                     )
                 )
             ),

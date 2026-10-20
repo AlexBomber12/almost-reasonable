@@ -288,7 +288,7 @@ def test_generation_change_inside_mission_transaction_rolls_back(tmp_path, monke
         def generation():
             calls.append(None)
             return (
-                payload["generation"] if len(calls) == 1 else payload["generation"] + 1
+                payload["generation"] if len(calls) <= 2 else payload["generation"] + 1
             )
 
         with monkeypatch.context() as patch:
@@ -420,6 +420,35 @@ def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
         decide_wakeup(app, worker, clock)
         assert app.mission_evolution.pending() is not None
         assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
+def test_privacy_generation_change_holds_pending_proposal(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        admitted = app.ledger.control_generation()
+        with monkeypatch.context() as patch:
+            patch.setattr(app.ledger, "control_generation", lambda: admitted + 1)
+            research_after_proposal(app, worker, sdk, clock)
+            sdk.proposal = {
+                "decision": "mission",
+                "mission_action": "confirm",
+                "mission_purpose": None,
+            }
+            clock.advance(timedelta(minutes=1))
+            decide_wakeup(app, worker, clock)
+            assert app.mission_evolution.pending() is not None
+            assert app.mission.snapshot()[1]["version"] == "mission-v1"
     finally:
         worker.close()
 
@@ -1008,6 +1037,37 @@ def test_research_arriving_after_decision_cannot_confirm(tmp_path, monkeypatch):
         worker.close()
 
 
+def test_context_race_finishes_started_operation(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        original = app._public_context_with_source
+        calls = []
+
+        def changing_context(profile):
+            calls.append(None)
+            if len(calls) == 1:
+                return original(profile)
+            return (), ("new research evidence",), "new-research-operation"
+
+        monkeypatch.setattr(app, "_public_context_with_source", changing_context)
+        monkeypatch.setattr(
+            app.engine,
+            "deliberate",
+            lambda _request: app.model.public_context("context-race"),
+        )
+        app._decide(
+            "context-race",
+            {"kind": "wake", "event": "wake-race", "correlation": "context-race"},
+            (),
+        )
+        assert app.journal.read("context-race")["phase"] == "held"
+        assert len(calls) == 2
+    finally:
+        worker.close()
+
+
 def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
@@ -1112,6 +1172,15 @@ def test_latest_qualifying_research_completion_is_offered(tmp_path, monkeypatch)
         )
         assert source == valid["operation"]
         assert len(evidence) == 1
+        with app.journal.transaction() as db:
+            db.execute(
+                "DELETE FROM public_research_completions WHERE operation=?",
+                (valid["operation"],),
+            )
+        assert app._public_context_with_source(app.current_research_profile())[1:] == (
+            (),
+            None,
+        )
     finally:
         worker.close()
 
