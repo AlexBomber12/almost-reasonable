@@ -390,6 +390,40 @@ def test_research_profile_replacement_holds_confirmation(tmp_path, monkeypatch):
         worker.close()
 
 
+def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        original_invariants = app.mission_evolution.pending().proposal.invariants
+        execute = app.research_client.execute
+        replacement = PublicResearchClient(
+            tmp_path / "replacement-research.sock", expected_worker_uid=os.geteuid()
+        )
+        monkeypatch.setattr(replacement, "execute", execute)
+        app.research_client = replacement
+        assert app.mission_evolution.invariants() != original_invariants
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.mission_evolution.pending() is not None
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
 def test_confirmed_mission_survives_restart_and_withdrawal_fails_closed(
     tmp_path, monkeypatch
 ):
