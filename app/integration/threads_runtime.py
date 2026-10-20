@@ -759,6 +759,13 @@ class ThreadsRuntime(ThreadsStage0):
         except ValueError:
             self.journal.finish(operation, payload, held=True)
             return
+        if (
+            self.mission_evolution is not None
+            and self.mission_evolution.invariants().to_dict()
+            != origin["mission_invariants"]
+        ):
+            self.journal.finish(operation, payload, held=True)
+            return
         self.journal.finish(operation, payload, rejected=rejected)
         self.checkpoint("after_intent")
 

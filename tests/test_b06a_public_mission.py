@@ -424,6 +424,27 @@ def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
         worker.close()
 
 
+def test_research_worker_change_during_inference_holds_intent(tmp_path):
+    app, worker, _, _, clock = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+
+        def checkpoint(point):
+            if point == "after_started":
+                app.research_client = PublicResearchClient(
+                    tmp_path / "replacement-research.sock",
+                    expected_worker_uid=os.geteuid(),
+                )
+
+        app.checkpoint = checkpoint
+        decide_wakeup(app, worker, clock, "wake-1")
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "held"
+        assert app.journal.recoverable() == ()
+    finally:
+        worker.close()
+
+
 def test_privacy_generation_change_holds_pending_proposal(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
