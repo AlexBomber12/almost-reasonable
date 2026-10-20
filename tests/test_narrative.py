@@ -2494,6 +2494,77 @@ def test_revoked_narrative_permission_withholds_released_history(tmp_path, monke
     permission["current"] = False
     assert all(item.role != "agent" for item in runtime.history(who))
 
+    disabled = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(tmp_path / "missing.sock", expected_worker_uid=os.getuid()),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc.db")),
+        narrative_enabled=False,
+        narrative_permission_current=lambda: False,
+    )
+    assert (
+        AgentOutputStore(events)
+        .read_reply(
+            who,
+            runtime._operation_id(
+                next(
+                    event.event_id
+                    for event in events.retrieve_private_events_in_commit_order(who)
+                    if event.content == "Продолжим беседу"
+                )
+            ),
+        )
+        .operation.narrative_operation_ids
+    )
+    assert (
+        disabled.submit(who, "second", "Продолжим беседу").model_state.value
+        == "unavailable"
+    )
+    assert all(item.role != "agent" for item in disabled.history(who))
+    requests = []
+
+    def capture_reply(_client, request, *, correlation_id, operation_id):
+        requests.append(request)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            validation=ProposalValidation(ReplyProposal("Новый ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", capture_reply)
+    assert (
+        disabled.submit(who, "third", "Продолжим обычную беседу").model_state.value
+        == "completed"
+    )
+    assert requests
+    assert "Синтетический ответ." not in requests[-1].serialize()
+
+    permission["current"] = True
+
+    def crash_before_release(point):
+        if point == "before_release":
+            raise RuntimeError("synthetic crash before release")
+
+    runtime._checkpoint = crash_before_release
+    with pytest.raises(RuntimeError, match="synthetic crash before release"):
+        runtime.submit(who, "fourth", "Продолжим беседу")
+    fourth_event, _ = runtime._input(who, "fourth", "Продолжим беседу")
+    fourth_operation = runtime._operation_id(fourth_event)
+    held, resolution = AgentOutputStore(events).read_reply_and_resolution(
+        who, fourth_operation
+    )
+    assert held.result_state.value == "persisted"
+    assert held.operation.narrative_operation_ids
+    assert resolution is None
+    assert (
+        disabled.submit(who, "fourth", "Продолжим беседу").model_state.value
+        == "unavailable"
+    )
+    assert AgentOutputStore(events).resolution(who, fourth_operation) is None
+
 
 def test_post_commit_recognition_requires_exact_episode_and_source_binding(tmp_path):
     events = EventStore(tmp_path / "events.db")

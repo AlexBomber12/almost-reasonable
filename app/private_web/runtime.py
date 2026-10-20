@@ -662,6 +662,7 @@ class _DurableConversationRuntime(ConversationService):
                     db,
                     reply_permitted=lambda reply: self._current_request.get()()
                     and self._shared_consent_live(reply.operation, principal)
+                    and self._narrative_reply_permitted(reply.operation)
                     and self._research_evidence(reply.operation.operation_id) is None
                     and self._historical_research_permitted(principal, reply),
                     include_memories=getattr(self, "_narrative_audit", None) is None,
@@ -2139,6 +2140,8 @@ class _DurableConversationRuntime(ConversationService):
             raise PrivacyReadBlocked("reply_sources_unavailable")
         if not self._shared_consent_live(reply.operation, route.principal):
             return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
+        if not self._narrative_reply_permitted(reply.operation):
+            return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
         if (
             getattr(self, "_narrative_audit", None) is not None
             and not self._narrative_permission()
@@ -2282,6 +2285,7 @@ class _DurableConversationRuntime(ConversationService):
                         or self._narrative_permission()
                     )
                     and self._shared_consent_live(reply.operation, principal)
+                    and self._narrative_reply_permitted(reply.operation)
                     and self._historical_research_permitted(principal, reply)
                 ):
                     items.append(
@@ -2299,6 +2303,12 @@ class _DurableConversationRuntime(ConversationService):
             or self._shared_guard.operations_consent_live(
                 operation.shared_operation_ids, principal
             )
+        )
+
+    def _narrative_reply_permitted(self, operation):
+        return not operation.narrative_operation_ids or (
+            getattr(self, "_narrative_audit", None) is not None
+            and self._narrative_permission()
         )
 
     def _inference_consent_live(self, principal, operation_id):
