@@ -540,6 +540,54 @@ def test_profile_replacement_after_decision_blocks_handoff(tmp_path, monkeypatch
         worker.close()
 
 
+def test_profile_change_during_inference_cannot_rebind_topic(tmp_path, monkeypatch):
+    app, worker, sdk, _, _ = _setup(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    calls = _attach_fake_research(app, tmp_path, monkeypatch)
+    original_create = sdk.create
+
+    def changed_profile(**kwargs):
+        value = json.loads(app.research_profile_path.read_text())
+        value["profile_id"] = "c" * 64
+        value["authorization"] = "d" * 64
+        value["topics"][0]["question"] = "What causes auroras?"
+        app.research_profile_path.write_text(json.dumps(value))
+        app.research_profile_path.chmod(0o600)
+        return original_create(**kwargs)
+
+    sdk.create = changed_profile
+    try:
+        run_once(app, worker)
+        assert calls == []
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "rejected"
+    finally:
+        worker.close()
+
+
+def test_profile_change_before_inference_hides_old_catalog(tmp_path, monkeypatch):
+    app, worker, _, _, _ = _setup(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    calls = _attach_fake_research(app, tmp_path, monkeypatch)
+
+    def checkpoint(point):
+        if point == "after_started":
+            value = json.loads(app.research_profile_path.read_text())
+            value["profile_id"] = "c" * 64
+            value["topics"][0]["question"] = "What causes auroras?"
+            app.research_profile_path.write_text(json.dumps(value))
+            app.research_profile_path.chmod(0o600)
+
+    app.checkpoint = checkpoint
+    try:
+        run_once(app, worker)
+        assert calls == []
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "started"
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize("change", ["source", "race", "last_slot"])
 def test_handoff_rechecks_source_and_atomic_last_slot(tmp_path, monkeypatch, change):
     app, worker, _, _, _ = _setup(

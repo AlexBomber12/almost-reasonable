@@ -237,7 +237,7 @@ class ThreadsRuntime(ThreadsStage0):
         self.research_client = research_client
         self.research_profile_path = research_profile_path
         self.research_scope = research_scope
-        self.model.public_context = self.public_context
+        self.model.public_context = self.inference_public_context
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
         self.mission = mission
@@ -350,7 +350,20 @@ class ThreadsRuntime(ThreadsStage0):
         return profile
 
     def public_context(self, operation):
+        return self._public_context(self.current_research_profile())
+
+    def inference_public_context(self, operation):
+        payload = self.journal.read(operation)
         profile = self.current_research_profile()
+        if (
+            payload["phase"] != "started"
+            or profile is None
+            or profile.digest != payload.get("offered_profile_digest")
+        ):
+            return (), ()
+        return self._public_context(profile)
+
+    def _public_context(self, profile):
         choices = self.available_topics(profile)
         catalog = (
             ()
@@ -412,7 +425,7 @@ class ThreadsRuntime(ThreadsStage0):
             and payload["trigger"] == request.trigger
             and payload["context_digest"] == public_context_digest(request.context)
             and tuple(payload["mission_text"]) == request.mission
-            and self.public_context(request.operation_id)
+            and self.inference_public_context(request.operation_id)
             == (request.catalog, request.evidence)
             and 0 < request.deadline_seconds <= payload["timeout"]
         )
@@ -458,9 +471,13 @@ class ThreadsRuntime(ThreadsStage0):
             text, binding = self.mission.snapshot()
             mission_text = (text,)
             origin = {**origin, "mission": binding}
+        offered_profile = self.current_research_profile()
         trigger = "autonomous_wakeup" if origin["kind"] == "wake" else "public_message"
         origin = {
             **origin,
+            "offered_profile_digest": None
+            if offered_profile is None
+            else offered_profile.digest,
             "trigger": trigger,
             "context_digest": public_context_digest(context),
             "mission_text": mission_text,
@@ -530,7 +547,11 @@ class ThreadsRuntime(ThreadsStage0):
                     None,
                 )
             )
-            if topic is None or topic.topic_id not in self.available_topics(profile):
+            if (
+                topic is None
+                or profile.digest != origin["offered_profile_digest"]
+                or topic.topic_id not in self.available_topics(profile)
+            ):
                 rejected = True
             else:
                 payload.update(
