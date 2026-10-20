@@ -478,6 +478,14 @@ def test_confirmed_mission_survives_restart_and_withdrawal_fails_closed(
         clock.advance(timedelta(minutes=1))
         decide_wakeup(app, worker, clock, "wake-3")
         assert app.journal.read(app.wakeup_operation("wake-3"))["phase"] == "linked"
+        sdk.proposal = {
+            "decision": "propose_publication",
+            "draft": "Публичный черновик после отказа от канала.",
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock, "wake-4")
+        assert app.journal.read(app.wakeup_operation("wake-4"))["phase"] == "rejected"
+        assert app.mission.publication_allowed() is False
         restarted = ThreadsRuntime(
             tmp_path / "journal.sqlite",
             tmp_path / "scheduler.sqlite",

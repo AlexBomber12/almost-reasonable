@@ -558,6 +558,9 @@ class ThreadsRuntime(ThreadsStage0):
             text, binding = self.mission.snapshot()
             mission_text = (text,)
             origin = {**origin, "mission": binding}
+        mission_allows_publication = (
+            self.mission is None or self.mission.publication_allowed()
+        )
         evolution_context, mission_pending_id = (
             ((), None)
             if self.mission_evolution is None
@@ -605,13 +608,15 @@ class ThreadsRuntime(ThreadsStage0):
                     "threads-public-v1",
                     False,
                     False,
-                    not bool(
+                    mission_allows_publication
+                    and not bool(
                         self.policy.publication_blockers(
                             PublicationType.REPLY, live_transport_enabled=True
                         )
                     ),
                     bool(self.available_topics(self.current_research_profile())),
-                    not bool(
+                    mission_allows_publication
+                    and not bool(
                         self.policy.publication_blockers(
                             PublicationType.POST, live_transport_enabled=True
                         )
@@ -704,7 +709,8 @@ class ThreadsRuntime(ThreadsStage0):
                 type(proposal) is PublicationProposal
             )
             if (
-                not route_ok
+                not mission_allows_publication
+                or not route_ok
                 or RussianOutputPolicy(max_regenerations=0)
                 .deliver(content)
                 .used_fallback

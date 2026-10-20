@@ -282,7 +282,18 @@ def test_discontinued_mission_rejects_new_publication(tmp_path):
     )
     try:
         run_once(app, worker)
-        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "intent"
+        rejected = app.journal.read(app.wakeup_operation("wake-1"))
+        assert rejected["phase"] == "rejected"
+        stale = {
+            **rejected,
+            "decision": "propose_publication",
+            "content": "Не публиковать при остановленной миссии.",
+            "draft": "stale-publication",
+        }
+        app.journal.start("stale-publication", stale)
+        app.journal.finish("stale-publication", stale)
+        with pytest.raises(PolicyDeniedError, match="mission excludes publication"):
+            app._handoff("stale-publication", stale)
         assert http.calls == []
     finally:
         worker.close()
