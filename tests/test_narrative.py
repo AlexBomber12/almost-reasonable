@@ -1934,6 +1934,64 @@ def test_privacy_gate_accepts_received_narrative_receipt_and_bounds_count(tmp_pa
             _validate_narrative_receipts(db)
 
 
+def test_narrative_receipt_capacity_rejects_new_reservation(tmp_path, monkeypatch):
+    from app.private_web import narrative_audit as audit_module
+
+    events, provider, audit, who, source, content, _reply, _context, operation, _ = (
+        _reserved_audit(tmp_path)
+    )
+    audit.receive(
+        operation,
+        who.principal_id.value,
+        source,
+        content,
+        NarrativeProposal("no_change", None, None),
+    )
+    audit.finish(operation, "unavailable")
+    assert audit.status(operation, who.principal_id.value, source) == "withheld"
+    second_content = "Продолжим историю"
+    second_source = append_event(events, who, "second", second_content)
+    with events._open() as db:
+        context, sources = MemoryConversationAssembler(
+            events, ContextLimits(32000, 99)
+        ).build(
+            who,
+            second_source,
+            db,
+            include_memories=False,
+            include_narrative=True,
+        )
+        correlation = db.execute(
+            "SELECT correlation_id FROM event_envelopes WHERE event_id=?",
+            (second_source,),
+        ).fetchone()[0]
+    second_reply = ReplyOperation(
+        "reply:second",
+        second_source,
+        "conversation:second",
+        correlation,
+        "worker-owned",
+        "worker-context-v2",
+        "core-self-v1",
+        sources,
+    )
+    AgentOutputStore(events).reserve_reply(who, second_reply)
+    monkeypatch.setattr(audit_module, "MAX_NARRATIVE_RECEIPTS", 1, raising=False)
+    outcome = audit.reserve(
+        "narrative:second", who, second_source, second_content, second_reply, context
+    )
+    assert outcome.status == "unavailable"
+    with events._open() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM private_narrative_receipts"
+        ).fetchone() == (1,)
+        _validate_narrative_receipts(db)
+    with provider._event_store._open() as db:
+        assert db.execute(
+            "SELECT status FROM private_extraction_audit WHERE operation_id='narrative:second'"
+        ).fetchone() == ("unavailable",)
+
+
 def test_narrative_receipt_rejects_duplicate_or_late_provider_result(tmp_path):
     events, provider, audit, who, source, content, _reply, _context, operation, _ = (
         _reserved_audit(tmp_path)

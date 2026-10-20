@@ -5,7 +5,12 @@ from dataclasses import dataclass
 import json
 import secrets
 
-from app.cognition.narrative_store import MAX_EPISODES, MAX_REVISIONS, NarrativeStore
+from app.cognition.narrative_store import (
+    MAX_EPISODES,
+    MAX_NARRATIVE_RECEIPTS,
+    MAX_REVISIONS,
+    NarrativeStore,
+)
 from app.cognition.worker_narrative import (
     NarrativeModelRequest,
     NarrativeProjection,
@@ -222,10 +227,20 @@ class NarrativeAuditStore(ExtractionAuditStore):
         with closing(self._events._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                db.execute(
-                    "INSERT INTO private_narrative_receipts VALUES (?,?,?,?)",
-                    (operation_id, source_event_id, principal_id, receipt),
+                at_capacity = (
+                    db.execute(
+                        "SELECT COUNT(*) FROM private_narrative_receipts"
+                    ).fetchone()[0]
+                    >= MAX_NARRATIVE_RECEIPTS
                 )
+                if not at_capacity:
+                    db.execute(
+                        "INSERT INTO private_narrative_receipts VALUES (?,?,?,?)",
+                        (operation_id, source_event_id, principal_id, receipt),
+                    )
+        if at_capacity:
+            self.finish(operation_id, "unavailable")
+            return NarrativeAudit("unavailable")
         return NarrativeAudit("reserved", heads, selected, sources, None, request)
 
     def receive(self, operation_id, principal_id, source_event_id, content, proposal):

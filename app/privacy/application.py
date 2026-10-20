@@ -21,6 +21,7 @@ from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, SCHEMA_VERSION
 from app.core.generic_graph import validate_generic_graph, erase_generic_source
 from app.cognition.narrative_store import (
+    MAX_NARRATIVE_RECEIPTS,
     erase_narrative_source,
     validate_narrative_graph,
 )
@@ -345,7 +346,7 @@ def _validate_narrative_receipts(db: sqlite3.Connection) -> None:
     rows = db.execute(
         "SELECT operation_id,source_event_id,principal_id,receipt FROM private_narrative_receipts"
     ).fetchall()
-    if len(rows) > 4096:
+    if len(rows) > MAX_NARRATIVE_RECEIPTS:
         raise ValueError("invalid narrative receipts")
     for operation, source, principal, raw in rows:
         try:
