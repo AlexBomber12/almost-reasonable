@@ -97,6 +97,10 @@ def setup(
     checkpoint=lambda _point: None,
     mission=None,
     mission_evolution_enabled=False,
+    research_client=None,
+    research_profile_path=None,
+    research_scope=None,
+    research_enabled=False,
 ):
     clock = MutableClock(NOW)
     owner = OwnerStore(tmp_path / "owner", clock=clock.now)
@@ -154,6 +158,10 @@ def setup(
         operator=LocalOperator(os.geteuid(), "local-operator"),
         mission=mission,
         mission_evolution_enabled=mission_evolution_enabled,
+        research_client=research_client,
+        research_profile_path=research_profile_path,
+        research_scope=research_scope,
+        research_enabled=research_enabled,
         enabled=enabled,
         live_enabled=enabled,
         checkpoint=checkpoint,

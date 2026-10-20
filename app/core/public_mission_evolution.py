@@ -96,11 +96,10 @@ class PublicMissionEvolution:
 
     def model_context(self):
         record = self.pending()
-        return (
-            ("enabled",)
-            if record is None
-            else ("pending", record.proposal.purpose.value)
-        )
+        if record is not None:
+            return ("pending", record.proposal.purpose.value)
+        profile = self.app.current_research_profile()
+        return ("enabled",) if profile and self.app.available_topics(profile) else ()
 
     def source_id(self, content):
         return _digest(str(self.app.ledger.control_generation()) + ":" + content)

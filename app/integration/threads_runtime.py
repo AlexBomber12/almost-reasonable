@@ -216,7 +216,7 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise ValueError("exact public runtime components required")
         if type(mission_evolution_enabled) is not bool or (
-            mission_evolution_enabled and mission is None
+            mission_evolution_enabled and (mission is None or not research_enabled)
         ):
             raise ValueError("invalid public mission evolution configuration")
         self.enabled, self.live_enabled = enabled, live_enabled
@@ -287,6 +287,10 @@ class ThreadsRuntime(ThreadsStage0):
             )
         if mission is not None and self.journal.needs_mission_initialization:
             self.journal.mark_mission_initialized()
+        if mission_evolution_enabled and self.current_research_profile() is None:
+            raise ValueError(
+                "public mission evolution requires active research profile"
+            )
         if not mission_evolution_enabled:
             with self.journal.transaction() as db:
                 if db.execute(
@@ -632,7 +636,9 @@ class ThreadsRuntime(ThreadsStage0):
                     profile_digest=profile.digest,
                 )
         elif (
-            type(proposal) is PublicMissionChoice and self.mission_evolution is not None
+            type(proposal) is PublicMissionChoice
+            and self.mission_evolution is not None
+            and evolution_context
         ):
             pending = self.mission_evolution.pending()
             if (proposal.action == "propose") != (pending is None):

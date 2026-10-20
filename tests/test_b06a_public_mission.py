@@ -15,17 +15,23 @@ from app.behavior.mission import (
     _MISSION_PURPOSE_TEXT,
 )
 from app.behavior.scheduler import WakeupEvent
+from app.behavior.deliberation import DeliberationOutcome, DeliberationResult
 from app.behavior.worker_client import PublicBehaviorClient
 from app.core.public_behavior_mission import PublicMissionContext
-from app.core.public_behavior import PublicBehaviorRequest, parse_public_proposal
+from app.core.public_behavior import (
+    PublicBehaviorRequest,
+    PublicMissionChoice,
+    parse_public_proposal,
+)
 from app.core.public_behavior import public_context_digest
+from app.core.public_research_client import PublicResearchClient
 from app.integration.threads_runtime import ThreadsRuntime
 from app.threads.service import PolicyDeniedError
 from app.trusted.public_behavior_worker import PublicSDKAdapter
 from test_int24_runtime import FakeSDK
 from app.threads.domain import InboundKind
 from app.threads.domain import OutboxState
-from test_b05b_public_runtime import _attach_fake_research
+from test_b05b_public_runtime import _attach_fake_research, _profile
 from test_int24_runtime import NOW, run_once, setup
 import os
 
@@ -44,11 +50,18 @@ def configured(tmp_path, first):
         )
     )
     path.chmod(0o600)
+    application_profile, _ = _profile(tmp_path)
     return setup(
         tmp_path,
         first,
         mission=PublicMissionContext(path, clock=lambda: NOW + timedelta(days=1)),
         mission_evolution_enabled=True,
+        research_client=PublicResearchClient(
+            tmp_path / "unused-research.sock", expected_worker_uid=os.geteuid()
+        ),
+        research_profile_path=application_profile,
+        research_scope="public-test",
+        research_enabled=True,
     )
 
 
@@ -604,6 +617,25 @@ def test_public_mission_runtime_rejects_invalid_configuration(tmp_path):
             ThreadsRuntime(
                 *paths, **common, mission=app.mission, mission_evolution_enabled=1
             )
+        with pytest.raises(ValueError, match="invalid public mission evolution"):
+            ThreadsRuntime(
+                *paths, **common, mission=app.mission, mission_evolution_enabled=True
+            )
+        with pytest.raises(ValueError, match="active research profile"):
+            ThreadsRuntime(
+                *paths,
+                **common,
+                mission=PublicMissionContext(
+                    app.mission.path, clock=lambda: NOW + timedelta(days=1)
+                ),
+                research_client=PublicResearchClient(
+                    tmp_path / "unused-research.sock", expected_worker_uid=os.geteuid()
+                ),
+                research_profile_path=tmp_path / "missing-profile.json",
+                research_scope="public-test",
+                research_enabled=True,
+                mission_evolution_enabled=True,
+            )
     finally:
         worker.close()
 
@@ -639,6 +671,35 @@ def test_stale_worker_context_and_repeated_proposal_are_held(tmp_path):
         payload = app.journal.read(app.wakeup_operation("wake-1"))
         with pytest.raises(PolicyDeniedError, match="evolution disabled"):
             app._handoff(app.wakeup_operation("wake-1"), payload)
+    finally:
+        worker.close()
+
+
+def test_exhausted_research_catalog_withholds_new_mission_proposals(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        assert app.mission_evolution.model_context() == ()
+        with monkeypatch.context() as patch:
+            patch.setattr(app, "current_research_profile", lambda: None)
+            assert app.mission_evolution.model_context() == ()
+        patch_choice = PublicMissionChoice("propose", MissionPurpose.RESEARCH)
+        monkeypatch.setattr(
+            app.engine,
+            "deliberate",
+            lambda _input: DeliberationResult(
+                DeliberationOutcome.PROPOSED, patch_choice, None, 1, 1
+            ),
+        )
+        clock.advance(timedelta(minutes=1))
+        app.run((WakeupEvent("wake-2", clock.now(), "public reflection"),))
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
+        assert app.mission_evolution.document().proposals == ()
     finally:
         worker.close()
 
