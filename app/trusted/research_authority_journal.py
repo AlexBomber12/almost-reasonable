@@ -9,6 +9,7 @@ import weakref
 
 from app.core.public_research_authority import validate_trusted_directories
 from app.core.public_research_profile import ResearchProfile
+from app.core.public_research_profile import PUBLIC_PURPOSE
 
 
 class AuthorityJournal:
@@ -56,10 +57,14 @@ class AuthorityJournal:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS reservations (operation_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL REFERENCES profiles(profile_id), topic_id TEXT NOT NULL)"
             )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS public_reservations (operation_id TEXT PRIMARY KEY, account_ref TEXT NOT NULL, topic_id TEXT NOT NULL)"
+            )
             expected = {
                 "schema_metadata": "CREATE TABLE schema_metadata (version TEXT NOT NULL)",
                 "profiles": "CREATE TABLE profiles (profile_id TEXT PRIMARY KEY, digest TEXT NOT NULL, revoked INTEGER NOT NULL DEFAULT 0 CHECK(revoked IN (0,1)))",
                 "reservations": "CREATE TABLE reservations (operation_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL REFERENCES profiles(profile_id), topic_id TEXT NOT NULL)",
+                "public_reservations": "CREATE TABLE public_reservations (operation_id TEXT PRIMARY KEY, account_ref TEXT NOT NULL, topic_id TEXT NOT NULL)",
             }
             actual = dict(
                 db.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")
@@ -104,6 +109,15 @@ class AuthorityJournal:
                 "SELECT COUNT(*) FROM reservations WHERE profile_id=? AND topic_id=?",
                 (profile.profile_id, topic_id),
             ).fetchone()[0]
+            if profile.purpose == PUBLIC_PURPOSE:
+                aggregate = db.execute(
+                    "SELECT COUNT(*) FROM public_reservations WHERE account_ref=?",
+                    (profile.account_ref,),
+                ).fetchone()[0]
+                per_topic = db.execute(
+                    "SELECT COUNT(*) FROM public_reservations WHERE account_ref=? AND topic_id=?",
+                    (profile.account_ref, topic_id),
+                ).fetchone()[0]
             topic = next(
                 (item for item in profile.topics if item.topic_id == topic_id), None
             )
@@ -117,6 +131,11 @@ class AuthorityJournal:
                 "INSERT INTO reservations VALUES (?,?,?)",
                 (operation_id, profile.profile_id, topic_id),
             )
+            if profile.purpose == PUBLIC_PURPOSE:
+                db.execute(
+                    "INSERT INTO public_reservations VALUES (?,?,?)",
+                    (operation_id, profile.account_ref, topic_id),
+                )
         return True
 
     def activate(self, profile: ResearchProfile) -> None:

@@ -28,6 +28,7 @@ class PublicBehaviorClient:
         self.socket_path, self.expected_uid = socket_path, expected_uid
         self.reservation_evidence = None
         self.provider_store = None
+        self.public_context = None
 
     def complete(self, request, timeout_seconds):
         operation = request["correlation_id"]
@@ -39,6 +40,9 @@ class PublicBehaviorClient:
             tuple(request["permitted_mutable_state"]),
             timeout_seconds,
         )
+        if self.public_context is not None:
+            catalog, evidence = self.public_context(operation)
+            public = replace(public, catalog=catalog, evidence=evidence)
         if self.reservation_evidence is not None:
             public = replace(public, reservation=self.reservation_evidence(public))
         payload = public.encode()

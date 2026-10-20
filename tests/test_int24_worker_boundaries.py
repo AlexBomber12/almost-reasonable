@@ -85,6 +85,7 @@ def test_public_sdk_receives_strict_schema_and_fixed_bounded_kwargs():
         "reply",
         "propose_publication",
         "no_action",
+        "research",
     }
 
 
@@ -156,7 +157,7 @@ def test_public_sdk_keeps_usage_for_incomplete_and_refused_responses(status, ref
 )
 def test_public_sdk_rechecks_schema_variants_and_local_policy(proposal):
     adapter = PublicSDKAdapter(SDK(json.dumps(proposal)), model="reviewed-model")
-    with pytest.raises(ValueError, match="proposal"):
+    with pytest.raises(ValueError, match="proposal|selection"):
         adapter.complete(
             PublicBehaviorRequest(
                 "operation-1", "operation-1", "autonomous_wakeup", (), (), 5

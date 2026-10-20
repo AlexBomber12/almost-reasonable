@@ -380,6 +380,20 @@ def test_operator_protected_config_and_runtime_use_application_owned_state(
     monkeypatch.setattr(module, "PublicMissionContext", lambda *_a, **_k: "mission")
     module._runtime(config | {"public_mission_path": str(tmp_path / "mission.json")})
     assert seen[-1][1]["mission"] == "mission"
+    module._runtime(
+        config
+        | {
+            "public_mission_path": str(tmp_path / "mission.json"),
+            "enable_public_research": True,
+            "public_research_socket": str(tmp_path / "research.sock"),
+            "public_research_worker_uid": os.geteuid(),
+            "public_research_profile": str(tmp_path / "public-profile.json"),
+            "public_research_scope": "test-public",
+        }
+    )
+    assert seen[-1][1]["research_enabled"] is True
+    assert seen[-1][1]["research_client"] is not None
+    assert seen[-1][1]["research_scope"] == "test-public"
 
 
 def test_operator_remaining_routes_and_expiry_guards(monkeypatch, capsys):
