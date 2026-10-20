@@ -1894,6 +1894,7 @@ def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
 @pytest.mark.parametrize(
     "crash_point,expected_state,expected_episodes,expected_calls",
     [
+        ("after_reservation", "unavailable", 0, 0),
         ("after_extraction_receipt", "unavailable", 0, 1),
         ("after_reply_commit", "completed", 1, 2),
     ],
@@ -2468,8 +2469,9 @@ def test_reserved_narrative_receipt_after_crash_resolves_without_replay(
         )
 
 
+@pytest.mark.parametrize("pause_point", ["after_reservation", "after_finish"])
 def test_concurrent_duplicate_does_not_resolve_active_narrative_reply(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, pause_point
 ):
     from app.core.agent_proposals import ProposalValidation, ReplyProposal
     from app.core.openai_worker_client import ClientResult
@@ -2507,7 +2509,12 @@ def test_concurrent_duplicate_does_not_resolve_active_narrative_reply(
 
     def pause_after_finish(audit, operation_id, status):
         original_finish(audit, operation_id, status)
-        if status == "no_change":
+        if status == "no_change" and pause_point == "after_finish":
+            arrived.set()
+            assert release.wait(5)
+
+    def checkpoint(point):
+        if point == "after_reservation" and pause_point == "after_reservation":
             arrived.set()
             assert release.wait(5)
 
@@ -2519,6 +2526,7 @@ def test_concurrent_duplicate_does_not_resolve_active_narrative_reply(
         provider_state=ProviderStateStore(EventStore(tmp_path / "ipc.db")),
         narrative_enabled=True,
         narrative_permission_current=lambda: True,
+        checkpoint=checkpoint,
     )
     first = []
     worker = Thread(
@@ -2529,6 +2537,17 @@ def test_concurrent_duplicate_does_not_resolve_active_narrative_reply(
     worker.start()
     try:
         assert arrived.wait(5)
+        if pause_point == "after_reservation":
+            original_read = PrivacyReadGate.read_reply
+            race = {"miss_once": True}
+
+            def stale_read(gate, principal_context, reply_operation_id):
+                if race["miss_once"]:
+                    race["miss_once"] = False
+                    return None
+                return original_read(gate, principal_context, reply_operation_id)
+
+            monkeypatch.setattr(PrivacyReadGate, "read_reply", stale_read)
         duplicate = runtime.submit(principal("a"), "one", "Расскажи историю")
         assert duplicate.model_state.value == "pending"
     finally:
@@ -2742,7 +2761,14 @@ def test_narrative_worker_rechecks_permission_before_returning_result(tmp_path):
 
 
 @pytest.mark.parametrize(
-    "question", ["What is the history of Rome?", "Расскажи историю Рима"]
+    "question",
+    [
+        "What is the history of Rome?",
+        "Расскажи историю Рима",
+        "I had a seizure episode",
+        "What caused this depressive episode?",
+        "У меня был эпизод депрессии",
+    ],
 )
 def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
     tmp_path, monkeypatch, question
@@ -2751,9 +2777,9 @@ def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
     from app.core.openai_worker_client import ClientResult
     from app.private_web.runtime import _narrative_requested
 
-    assert not _narrative_requested("What is the history of Rome?")
-    assert not _narrative_requested("Расскажи историю Рима")
+    assert not _narrative_requested(question)
     assert not _narrative_requested("A bookstore has maps")
+    assert not _narrative_requested("episode")
     assert _narrative_requested("Tell me a story")
     assert _narrative_requested("Расскажи историю")
     assert _narrative_requested("Продолжим историю")

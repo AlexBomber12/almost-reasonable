@@ -110,7 +110,7 @@ def _narrative_requested(content: str) -> bool:
     folded = content.casefold()
     return bool(
         re.search(
-            r"(?<!\w)(?:вымышлен[а-яё]*|сюжет[а-яё]*|эпизод[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives|episode|episodes)(?!\w)",
+            r"(?<!\w)(?:вымышлен[а-яё]*|сюжет[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives)(?!\w)",
             folded,
         )
         or re.fullmatch(
@@ -450,7 +450,20 @@ class _DurableConversationRuntime(ConversationService):
                 )
                 return self._outputs.reserve_reply(principal, operation), context
 
-            reserved, context = self._gate.authorized(reserve)
+            if getattr(
+                self, "_narrative_audit", None
+            ) is not None and _narrative_requested(content):
+                key = _narrative_active_key(
+                    self._event_store,
+                    "narrative:" + operation_id.removeprefix("reply:"),
+                )
+                with _NARRATIVE_ACTIVE_LOCK:
+                    reserved, context = self._gate.authorized(reserve)
+                    if reserved.reservation_created and key not in _NARRATIVE_ACTIVE:
+                        _NARRATIVE_ACTIVE.add(key)
+                        _NARRATIVE_SUBMIT_KEY.set(key)
+            else:
+                reserved, context = self._gate.authorized(reserve)
             if reserved.reservation_created:
                 self._checkpoint("after_reservation")
 
@@ -985,11 +998,28 @@ class _DurableConversationRuntime(ConversationService):
             )
         except ValueError:
             return
-        if audit is not None:
-            key = _narrative_active_key(self._event_store, operation_id)
-            with _NARRATIVE_ACTIVE_LOCK:
-                if key in _NARRATIVE_ACTIVE:
-                    return
+        key = _narrative_active_key(self._event_store, operation_id)
+        with _NARRATIVE_ACTIVE_LOCK:
+            if key in _NARRATIVE_ACTIVE:
+                return
+        if audit is None and _narrative_requested(content):
+
+            def resolve_missing_audit():
+                reply, resolution = self._outputs.read_reply_and_resolution(
+                    principal, reply_operation_id
+                )
+                if (
+                    reply is not None
+                    and reply.result_state is ResultState.PENDING
+                    and resolution is None
+                    and not self._provider.attempt_exists("ipc:" + reply_operation_id)
+                ):
+                    self._outputs.resolve_without_reply(
+                        principal, reply_operation_id, "unavailable"
+                    )
+
+            self._gate.authorized(resolve_missing_audit)
+            return
         if audit is not None and audit.status == "reserved":
             self._narrative_audit.finish(operation_id, "unavailable")
             audit = self._narrative_audit.read(
@@ -1177,8 +1207,10 @@ class _DurableConversationRuntime(ConversationService):
         key = _narrative_active_key(self._event_store, operation_id)
         with _NARRATIVE_ACTIVE_LOCK:
             if key in _NARRATIVE_ACTIVE:
-                return
-            _NARRATIVE_ACTIVE.add(key)
+                if _NARRATIVE_SUBMIT_KEY.get() != key:
+                    return
+            else:
+                _NARRATIVE_ACTIVE.add(key)
         try:
             return self._evolve_narrative_once(
                 principal,
