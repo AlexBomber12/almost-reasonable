@@ -321,6 +321,107 @@ def test_attach_narrative_graph_bound_and_transaction_rollback(tmp_path, monkeyp
         outputs.attach_narrative(who, operation.operation_id, "narrative:source")
 
 
+def test_reply_narrative_edge_capacity_is_checked_before_both_insertions(
+    tmp_path, monkeypatch
+):
+    from app.core import agent_output_store as output_module
+
+    events, who, source, first, outputs = _narrative_reply_fixture(tmp_path)
+    later = append_event(events, who, "later", "Продолжение")
+    third = append_event(events, who, "third", "Ещё продолжение")
+
+    def reply_for(event_id):
+        with events._open() as db:
+            correlation = db.execute(
+                "SELECT correlation_id FROM event_envelopes WHERE event_id=?",
+                (event_id,),
+            ).fetchone()[0]
+        return ReplyOperation(
+            "reply:" + event_id,
+            event_id,
+            "conversation:" + event_id,
+            correlation,
+            "worker-owned",
+            "worker-context-v2",
+            "core-self-v1",
+            tuple(sorted((source, event_id))),
+        )
+
+    second = reply_for(later)
+    outputs.reserve_reply(who, second)
+    route = TrustedActionContext(second.correlation_id, who)
+    caps = CapabilityState("caps-v1", False, False, True, False, True)
+    grant = ActionPolicy().evaluate(
+        ProposalValidation(ReplyProposal("Ответ."), None), route, caps
+    )
+    outputs.persist_reply(route, second, grant, caps)
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:source",
+        source_event_id=source,
+        text="Сцена.",
+        item_id="episode:source",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(source,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    outputs.attach_narrative(who, first.operation_id, "narrative:source")
+    monkeypatch.setattr(output_module, "MAX_NARRATIVE_GRAPH_REPLIES", 1)
+    third_reply = replace(
+        reply_for(third), narrative_operation_ids=("narrative:source",)
+    )
+    with pytest.raises(EventValidationError, match="narrative reply graph bound"):
+        outputs.reserve_reply(who, third_reply)
+    with pytest.raises(EventValidationError, match="narrative reply graph bound"):
+        outputs.attach_narrative(who, second.operation_id, "narrative:source")
+    with events._open() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM protected_reply_narrative"
+        ).fetchone() == (1,)
+    assert (
+        outputs.read_reply(who, second.operation_id).operation.narrative_operation_ids
+        == ()
+    )
+
+
+def test_narrative_reply_count_validation_uses_bounded_query_count(tmp_path):
+    from app.cognition.narrative_store import validate_narrative_graph
+
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    outputs = AgentOutputStore(events)
+    for index in range(20):
+        event_id = append_event(events, who, f"message:{index}", "Синтетический ввод")
+        with events._open() as db:
+            correlation = db.execute(
+                "SELECT correlation_id FROM event_envelopes WHERE event_id=?",
+                (event_id,),
+            ).fetchone()[0]
+        outputs.reserve_reply(
+            who,
+            ReplyOperation(
+                f"reply:{index}",
+                event_id,
+                "conversation:synthetic",
+                correlation,
+                "worker-owned",
+                "worker-context-v2",
+                "core-self-v1",
+                (event_id,),
+            ),
+        )
+    with events._open() as db:
+        statements = []
+        db.set_trace_callback(statements.append)
+        try:
+            validate_narrative_graph(db)
+        finally:
+            db.set_trace_callback(None)
+    assert len(statements) < 20
+
+
 def test_narrative_permission_is_separate_and_bounded(tmp_path):
     activation_path, _ = activation_file(tmp_path)
     activation = load_activation(activation_path)

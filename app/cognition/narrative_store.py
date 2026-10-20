@@ -11,6 +11,7 @@ from app.core.store import EventStore
 MAX_EPISODES = 16
 MAX_REVISIONS = 16
 MAX_EPISODE_BYTES = 4096
+MAX_NARRATIVE_GRAPH_REPLIES = 65536
 
 
 class NarrativeConflict(ValueError):
@@ -383,7 +384,7 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
         ("narrative_operations", 4096),
         ("narrative_sources", 409600),
         ("narrative_context", 65536),
-        ("protected_reply_narrative", 65536),
+        ("protected_reply_narrative", MAX_NARRATIVE_GRAPH_REPLIES),
     )
     for table, maximum in bounds:
         if db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] > maximum:
@@ -501,12 +502,15 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
         }
         if not sources <= reply_sources:
             raise ValueError("invalid narrative graph")
-    for reply, count in db.execute(
-        "SELECT operation_id,narrative_count FROM agent_reply_operations"
+    if (
+        db.execute(
+            """SELECT 1 FROM agent_reply_operations r
+           LEFT JOIN protected_reply_narrative n
+             ON n.reply_operation_id=r.operation_id
+           GROUP BY r.operation_id
+           HAVING COUNT(n.narrative_operation_id) != r.narrative_count
+           LIMIT 1"""
+        ).fetchone()
+        is not None
     ):
-        actual = db.execute(
-            "SELECT COUNT(*) FROM protected_reply_narrative WHERE reply_operation_id=?",
-            (reply,),
-        ).fetchone()[0]
-        if actual != count:
-            raise ValueError("invalid narrative graph")
+        raise ValueError("invalid narrative graph")

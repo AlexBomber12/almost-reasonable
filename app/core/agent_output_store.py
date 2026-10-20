@@ -20,7 +20,11 @@ from .agent_proposals import ReplyProposal
 from .events import TrustedPrincipalContext
 from .shared_graph import validate_shared_graph
 from .generic_graph import MAX_GENERIC_GRAPH_REPLIES, validate_generic_graph
-from app.cognition.narrative_store import _eligible, validate_narrative_graph
+from app.cognition.narrative_store import (
+    MAX_NARRATIVE_GRAPH_REPLIES,
+    _eligible,
+    validate_narrative_graph,
+)
 
 from .store import (
     EventIdentityConflictError,
@@ -277,6 +281,14 @@ class AgentOutputStore:
                     > MAX_GENERIC_GRAPH_REPLIES
                 ):
                     raise EventValidationError("generic reply graph bound")
+                if operation.narrative_operation_ids and (
+                    db.execute(
+                        "SELECT COUNT(*) FROM protected_reply_narrative"
+                    ).fetchone()[0]
+                    + len(operation.narrative_operation_ids)
+                    > MAX_NARRATIVE_GRAPH_REPLIES
+                ):
+                    raise EventValidationError("narrative reply graph bound")
                 db.execute(
                     """
                     INSERT INTO agent_reply_operations(operation_id, audience_principal_id,
@@ -435,6 +447,13 @@ class AgentOutputStore:
                 if narrative_operation_id in reply.operation.narrative_operation_ids:
                     return reply
                 if len(reply.operation.narrative_operation_ids) >= 16:
+                    raise EventValidationError("narrative reply graph bound")
+                if (
+                    db.execute(
+                        "SELECT COUNT(*) FROM protected_reply_narrative"
+                    ).fetchone()[0]
+                    >= MAX_NARRATIVE_GRAPH_REPLIES
+                ):
                     raise EventValidationError("narrative reply graph bound")
                 dependencies = _eligible(
                     db, context.principal_id.value, narrative_operation_id
