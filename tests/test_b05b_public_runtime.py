@@ -392,6 +392,26 @@ def test_wrong_public_authority_cannot_offer_research(tmp_path, monkeypatch, cha
         worker.close()
 
 
+@pytest.mark.parametrize("malformed", ["invalid_utf8", "surrogate"])
+def test_malformed_profile_encoding_fails_closed(tmp_path, monkeypatch, malformed):
+    app, worker, _, _, _ = _setup(
+        tmp_path, {"decision": "no_action", "reason_category": "other"}
+    )
+    _attach_fake_research(app, tmp_path, monkeypatch)
+    if malformed == "invalid_utf8":
+        app.research_profile_path.write_bytes(b"\xff")
+    else:
+        value = json.loads(app.research_profile_path.read_text())
+        value["topics"][0]["question"] = "\ud800"
+        app.research_profile_path.write_text(json.dumps(value))
+    app.research_profile_path.chmod(0o600)
+    try:
+        assert app.current_research_profile() is None
+        assert app.public_context("next") == ((), ())
+    finally:
+        worker.close()
+
+
 def test_lost_result_is_uncertain_and_never_retransmitted(tmp_path, monkeypatch):
     app, worker, _, _, _ = _setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}
@@ -669,7 +689,16 @@ def test_public_worker_quota_survives_profile_replacement_and_concurrency(tmp_pa
     assert sorted(admitted) == [False, True]
     journal = AuthorityJournal(journal_path)
     assert journal.reserve(first, "search-after-restart", "ocean") is False
+    changed_account = json.loads(worker_path.read_text())
+    changed_account["account_ref"] = "other-account"
+    worker_path.write_text(json.dumps(changed_account))
+    worker_path.chmod(0o600)
+    changed = load_research_profile(worker_path, role="worker")
+    assert changed.digest != first.digest
+    with pytest.raises(ValueError, match="replayed or changed"):
+        journal.activate(changed)
     replacement = json.loads(worker_path.read_text())
+    replacement["account_ref"] = "account-1"
     replacement["profile_id"] = "c" * 64
     worker_path.write_text(json.dumps(replacement))
     worker_path.chmod(0o600)

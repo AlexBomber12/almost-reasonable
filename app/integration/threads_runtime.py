@@ -337,7 +337,7 @@ class ThreadsRuntime(ThreadsStage0):
             profile = load_research_profile(
                 self.research_profile_path, role="application"
             )
-        except (OSError, ValueError, TypeError):
+        except (OSError, ValueError, TypeError, UnicodeError):
             return None
         if (
             profile.purpose != PUBLIC_PURPOSE

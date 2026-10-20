@@ -213,6 +213,8 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         ):
             raise ValueError("invalid private profile scope")
     public = {key: data[key] for key in common if key != "role"}
+    if purpose == PUBLIC_PURPOSE:
+        public["account_ref"] = account_ref
     digest = hashlib.sha256(
         json.dumps(
             public, sort_keys=True, separators=(",", ":"), ensure_ascii=False
