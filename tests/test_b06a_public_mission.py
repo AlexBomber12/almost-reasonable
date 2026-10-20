@@ -264,6 +264,38 @@ def test_proposal_stores_the_validated_invariant_snapshot(tmp_path, monkeypatch)
         worker.close()
 
 
+def test_generation_change_inside_mission_transaction_rolls_back(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        run_once(app, worker)
+        payload = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "decision": "revise_mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+            "correlation": "generation-race",
+        }
+        _staged_intent(app, "generation-race", payload)
+        calls = []
+
+        def generation():
+            calls.append(None)
+            return (
+                payload["generation"] if len(calls) == 1 else payload["generation"] + 1
+            )
+
+        with monkeypatch.context() as patch:
+            patch.setattr(app.ledger, "control_generation", generation)
+            with pytest.raises(ValueError, match="source changed"):
+                app.mission_evolution.apply("generation-race", payload)
+        assert len(calls) >= 2
+        assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
 def test_permission_change_holds_confirmation(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
@@ -636,6 +668,7 @@ def test_invalid_research_provenance_holds_confirmation(tmp_path, monkeypatch):
                     "mission_evidence_digest": public_context_digest(
                         (row["evidence"],)
                     ),
+                    "generation": app.ledger.control_generation(),
                     "decided_at": (clock.now() + timedelta(minutes=1)).isoformat(),
                 },
                 app.mission_evolution.pending().proposal,
@@ -919,6 +952,7 @@ def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch
         payload = {
             "mission_evidence_operation": row["operation"],
             "mission_evidence_digest": public_context_digest((row["evidence"],)),
+            "generation": app.ledger.control_generation(),
             "decided_at": (clock.now() + timedelta(minutes=1)).isoformat(),
         }
         with pytest.raises(ValueError, match="independent later"):
@@ -931,11 +965,29 @@ def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch
             )
         with pytest.raises(ValueError, match="independent later"):
             app.mission_evolution._confirmation_sources(
+                payload | {"generation": payload["generation"] + 1}, proposal
+            )
+        with pytest.raises(ValueError, match="independent later"):
+            app.mission_evolution._confirmation_sources(
                 payload, replace(proposal, decided_at=clock.now())
             )
         with pytest.raises(ValueError, match="independent later"):
             app.mission_evolution._confirmation_sources(
                 payload | {"decided_at": clock.now().isoformat()}, proposal
+            )
+        source = MissionEvidenceSource(
+            row["operation"],
+            app.mission_evolution.source_id(row["evidence"]),
+            EvidenceProvenance.AGENT_OBSERVATION,
+        )
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                app.ledger,
+                "control_generation",
+                lambda: payload["generation"] + 1,
+            )
+            assert not app.mission_evolution.authorized(
+                proposal.initiating_source_id, (source,)
             )
     finally:
         worker.close()

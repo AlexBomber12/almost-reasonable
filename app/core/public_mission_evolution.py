@@ -122,8 +122,10 @@ class PublicMissionEvolution:
             else ()
         ), None
 
-    def source_id(self, content):
-        return _digest(str(self.app.ledger.control_generation()) + ":" + content)
+    def source_id(self, content, generation=None):
+        if generation is None:
+            generation = self.app.ledger.control_generation()
+        return _digest(str(generation) + ":" + content)
 
     def authorized(self, initiating_source_id, sources):
         if not sources or all(
@@ -141,13 +143,17 @@ class PublicMissionEvolution:
                         (source.evidence_id,),
                     ).fetchone()
                 profile = self.app.current_research_profile()
+                research_payload = None if row is None else json.loads(row[3])
                 if (
                     row is None
                     or row[0] != "completed"
-                    or source.source_id != self.source_id(row[1])
+                    or research_payload["generation"]
+                    != self.app.ledger.control_generation()
+                    or source.source_id
+                    != self.source_id(row[1], research_payload["generation"])
                     or profile is None
                     or profile.digest != row[2]
-                    or not self.app.source_valid(json.loads(row[3]))
+                    or not self.app.source_valid(research_payload)
                 ):
                     return False
             else:
@@ -285,6 +291,8 @@ class PublicMissionEvolution:
                         sources,
                     )
                 )
+            if app.ledger.control_generation() != payload["generation"]:
+                raise ValueError("public mission source changed")
             db.execute(
                 "UPDATE intents SET phase='linked' WHERE operation=? AND phase='intent'",
                 (operation,),
@@ -298,7 +306,7 @@ class PublicMissionEvolution:
         )
         if event is None:
             raise ValueError("public mission source missing")
-        return self.source_id(event.content)
+        return self.source_id(event.content, payload["generation"])
 
     def _confirmation_sources(self, payload, proposal):
         operation = payload.get("mission_evidence_operation")
@@ -306,15 +314,18 @@ class PublicMissionEvolution:
             raise ValueError("independent public research evidence was not offered")
         with sqlite3.connect(self.app.journal.path) as db:
             row = db.execute(
-                "SELECT r.operation,r.evidence,c.completed_at FROM public_research_ops r "
+                "SELECT r.operation,r.evidence,c.completed_at,i.payload FROM public_research_ops r "
                 "JOIN public_research_completions c ON c.operation=r.operation "
+                "JOIN intents i ON i.operation=r.operation "
                 "WHERE r.phase='completed' "
                 "AND r.operation=?",
                 (operation,),
             ).fetchone()
+        research_payload = None if row is None else json.loads(row[3])
         if (
             row is None
             or public_context_digest((row[1],)) != payload["mission_evidence_digest"]
+            or research_payload["generation"] != payload["generation"]
             or datetime.fromisoformat(row[2]) <= proposal.decided_at
             or datetime.fromisoformat(row[2])
             >= datetime.fromisoformat(payload["decided_at"])
@@ -323,7 +334,7 @@ class PublicMissionEvolution:
         sources = (
             MissionEvidenceSource(
                 row[0],
-                self.source_id(row[1]),
+                self.source_id(row[1], research_payload["generation"]),
                 EvidenceProvenance.AGENT_OBSERVATION,
             ),
         )
