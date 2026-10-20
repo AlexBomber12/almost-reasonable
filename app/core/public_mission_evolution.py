@@ -95,6 +95,18 @@ class PublicMissionEvolution:
             None,
         )
 
+    def pending_id_in(self, db):
+        document = _Repository(db, self.root).load()
+        record = next(
+            (
+                item
+                for item in document.proposals
+                if item.status is MissionStatus.PENDING
+            ),
+            None,
+        )
+        return None if record is None else record.proposal.proposal_id
+
     def model_context(self):
         return self.decision_context()[0]
 

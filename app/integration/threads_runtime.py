@@ -410,7 +410,12 @@ class ThreadsRuntime(ThreadsStage0):
             or profile.digest != payload.get("offered_profile_digest")
         ):
             return (), ()
-        catalog, evidence, source = self._public_context_with_source(profile)
+        try:
+            catalog, evidence, source = self._public_context_with_source(profile)
+        except ValueError as error:
+            raise PublicInferenceContextChanged(
+                "public mission evidence changed during inference"
+            ) from error
         if self.mission_evolution is not None and (
             source != payload.get("mission_evidence_operation")
             or public_context_digest(evidence) != payload.get("mission_evidence_digest")
@@ -524,7 +529,13 @@ class ThreadsRuntime(ThreadsStage0):
         if payload["phase"] != "started":
             return ()
         value = tuple(payload["mission_evolution"])
-        if value != self.mission_evolution.model_context():
+        try:
+            current = self.mission_evolution.model_context()
+        except ValueError as error:
+            raise PublicInferenceContextChanged(
+                "public mission proposal changed during inference"
+            ) from error
+        if value != current:
             raise PublicInferenceContextChanged(
                 "public mission proposal changed during inference"
             )
@@ -766,7 +777,15 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             self.journal.finish(operation, payload, held=True)
             return
-        self.journal.finish(operation, payload, rejected=rejected)
+        self.journal.finish(
+            operation,
+            payload,
+            rejected=rejected,
+            admissible=None
+            if self.mission_evolution is None
+            else lambda db: self.mission_evolution.pending_id_in(db)
+            == mission_pending_id,
+        )
         self.checkpoint("after_intent")
 
     def _handoff(self, operation, payload):

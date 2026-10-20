@@ -1089,6 +1089,52 @@ def test_context_race_finishes_started_operation(tmp_path, monkeypatch):
         worker.close()
 
 
+@pytest.mark.parametrize("skip_public_context", [False, True])
+def test_withdrawn_evidence_during_inference_holds_operation(
+    tmp_path, monkeypatch, skip_public_context
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        if skip_public_context:
+            app.model.public_context = None
+
+        def withdraw(point):
+            if point == "after_started":
+                with app.journal.transaction() as db:
+                    db.execute("UPDATE public_research_ops SET phase='held'")
+
+        app.checkpoint = withdraw
+        app._decide(
+            "withdrawn-context",
+            {
+                "kind": "wake",
+                "event": "wake-withdrawn",
+                "correlation": "withdrawn-context",
+            },
+            (),
+        )
+        assert app.journal.read("withdrawn-context")["phase"] == "held"
+    finally:
+        worker.close()
+
+
 def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
@@ -1289,7 +1335,7 @@ def test_resolution_cannot_target_proposal_created_during_inference(
             (),
         )
         first = app.journal.read("first-decision")
-        assert first["phase"] == "rejected"
+        assert first["phase"] == "held"
         assert (
             app.mission_evolution.pending().proposal.initiating_event_id
             == "other-event"
@@ -1304,6 +1350,57 @@ def test_resolution_cannot_target_proposal_created_during_inference(
         _staged_intent(app, "unseen-confirmation", forged)
         with pytest.raises(ValueError, match="proposal changed"):
             app.mission_evolution.apply("unseen-confirmation", forged)
+    finally:
+        worker.close()
+
+
+def test_pending_change_before_intent_commit_holds_operation(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        monkeypatch.setattr(
+            app.engine,
+            "deliberate",
+            lambda _input: DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice("propose", MissionPurpose.RESEARCH),
+                None,
+                1,
+                1,
+            ),
+        )
+        original_finish = app.journal.finish
+        injected = []
+
+        def finish_with_overlap(operation, payload, **kwargs):
+            if operation == "first-proposal" and kwargs.get("admissible"):
+                other = {
+                    **payload,
+                    "event": "other-event",
+                    "correlation": "other-proposal",
+                }
+                _staged_intent(app, "other-proposal", other)
+                app.mission_evolution.apply("other-proposal", other)
+                injected.append(None)
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_with_overlap)
+        app._decide(
+            "first-proposal",
+            {
+                "kind": "wake",
+                "event": "first-event",
+                "correlation": "first-proposal",
+            },
+            (),
+        )
+        assert len(injected) == 1
+        assert app.journal.read("first-proposal")["phase"] == "held"
+        assert (
+            app.mission_evolution.pending().proposal.initiating_event_id
+            == "other-event"
+        )
     finally:
         worker.close()
 

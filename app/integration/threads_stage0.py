@@ -274,8 +274,12 @@ class Stage0Journal:
             )
             return True
 
-    def finish(self, operation, payload, *, rejected=False, held=False):
+    def finish(
+        self, operation, payload, *, rejected=False, held=False, admissible=None
+    ):
         with self.transaction() as db:
+            if admissible is not None and not admissible(db):
+                held = True
             db.execute(
                 "UPDATE intents SET phase=?, payload=? WHERE operation=? AND phase='started'",
                 (
