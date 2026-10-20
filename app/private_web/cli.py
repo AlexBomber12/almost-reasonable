@@ -131,7 +131,9 @@ def _narrative_permission_current(path: Path, pilot_id: str) -> bool:
             and value["version"] == "private-narrative-permission-v1"
             and value["pilot_id"] == pilot_id
             and type(value["max_operations"]) is int
-            and value["max_operations"] >= 1
+            # Every valid pilot permits at least one operation; this narrower
+            # permission limit cannot exceed its active allowance.
+            and value["max_operations"] == 1
         )
     except (
         PilotAuthorityError,

@@ -1078,7 +1078,7 @@ def test_narrative_gateway_rejects_malformed_model_output(tmp_path):
 def test_application_permission_file_requires_exact_current_authority(tmp_path):
     from app.private_web.cli import _narrative_permission_current
 
-    activation_path, _ = activation_file(tmp_path)
+    activation_path, activation_value = activation_file(tmp_path)
     activation = load_activation(activation_path)
     permission = activation_path.parent / "narrative.json"
     assert not _narrative_permission_current(permission, activation.pilot_id)
@@ -1094,6 +1094,25 @@ def test_application_permission_file_requires_exact_current_authority(tmp_path):
     permission.chmod(0o400)
     assert _narrative_permission_current(permission, activation.pilot_id)
     assert not _narrative_permission_current(permission, "different")
+    activation_path.chmod(0o600)
+    activation_value["max_operations"] = 1
+    activation_path.write_text(json.dumps(activation_value))
+    activation_path.chmod(0o400)
+    active_single_operation_pilot = load_activation(activation_path)
+    permission.chmod(0o600)
+    permission.write_text(
+        json.dumps(
+            {
+                "version": "private-narrative-permission-v1",
+                "pilot_id": active_single_operation_pilot.pilot_id,
+                "max_operations": 2,
+            }
+        )
+    )
+    permission.chmod(0o400)
+    assert not _narrative_permission_current(
+        permission, active_single_operation_pilot.pilot_id
+    )
     permission.chmod(0o600)
     permission.write_text(
         json.dumps(
