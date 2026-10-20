@@ -1635,6 +1635,51 @@ def test_missing_narrative_receipt_is_conservative_after_crash(tmp_path):
         ).fetchone() == ("unavailable",)
 
 
+def test_active_narrative_receipt_gap_is_not_mistaken_for_crash(tmp_path):
+    from app.private_web.runtime import _NARRATIVE_ACTIVE, _NARRATIVE_ACTIVE_LOCK
+    from app.private_web.runtime import _narrative_active_key
+
+    events, provider, _audit, who, source, content, reply, _context, operation, _ = (
+        _reserved_audit(tmp_path)
+    )
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(tmp_path / "missing.sock", expected_worker_uid=os.getuid()),
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    with events._open() as db:
+        with db:
+            db.execute(
+                "DELETE FROM private_narrative_receipts WHERE operation_id=?",
+                (operation,),
+            )
+    key = _narrative_active_key(events, operation)
+    with _NARRATIVE_ACTIVE_LOCK:
+        _NARRATIVE_ACTIVE.add(key)
+    try:
+        runtime._reconcile_narrative(who, source, content, reply.operation_id)
+        with provider._event_store._open() as db:
+            assert db.execute(
+                "SELECT status FROM private_extraction_audit WHERE operation_id=?",
+                (operation,),
+            ).fetchone() == ("reserved",)
+    finally:
+        with _NARRATIVE_ACTIVE_LOCK:
+            _NARRATIVE_ACTIVE.remove(key)
+    runtime._reconcile_narrative(who, source, content, reply.operation_id)
+    with provider._event_store._open() as db:
+        assert db.execute(
+            "SELECT status FROM private_extraction_audit WHERE operation_id=?",
+            (operation,),
+        ).fetchone() == ("unavailable",)
+
+
 def test_narrative_audit_status_binding_and_terminal_conflict(tmp_path):
     _events, _provider, audit, who, source, content, _reply, _context, operation, _ = (
         _reserved_audit(tmp_path)

@@ -992,15 +992,15 @@ class _DurableConversationRuntime(ConversationService):
 
     def _reconcile_narrative(self, principal, event_id, content, reply_operation_id):
         operation_id = "narrative:" + reply_operation_id.removeprefix("reply:")
-        try:
-            audit = self._narrative_audit.read(
-                operation_id, principal.principal_id.value, event_id, content
-            )
-        except ValueError:
-            return
         key = _narrative_active_key(self._event_store, operation_id)
         with _NARRATIVE_ACTIVE_LOCK:
             if key in _NARRATIVE_ACTIVE:
+                return
+            try:
+                audit = self._narrative_audit.read(
+                    operation_id, principal.principal_id.value, event_id, content
+                )
+            except ValueError:
                 return
         if audit is None and _narrative_requested(content):
 
