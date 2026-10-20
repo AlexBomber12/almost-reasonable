@@ -15,7 +15,11 @@ import os
 from types import SimpleNamespace
 
 from app.core.events import TrustedPrincipalContext
-from app.core.shared_graph import validate_shared_graph, revoke_shared_authorization
+from app.core.shared_graph import (
+    validate_shared_graph,
+    revoke_shared_authorization,
+    erase_model_shared_candidates,
+)
 from app.core.store import EventStore
 from app.privacy.application import PrivacyReadGate
 
@@ -176,7 +180,12 @@ class SharedIntelligence:
     def screen(self, approval: SyntheticSharedApproval) -> str:
         return self._screen(approval, reviewed=False)
 
-    def quarantine(self, candidate: ReviewedSharedCandidate) -> str:
+    def quarantine(
+        self,
+        candidate: ReviewedSharedCandidate,
+        *,
+        persistence_guard: Callable[[], bool] | None = None,
+    ) -> str:
         if type(candidate) is not ReviewedSharedCandidate:
             raise ValueError("reviewed candidate required")
         approval = SyntheticSharedApproval(
@@ -187,9 +196,17 @@ class SharedIntelligence:
             candidate.audience,
             candidate.counter_event_ids,
         )
-        return self._screen(approval, reviewed=True)
+        return self._screen(
+            approval, reviewed=True, persistence_guard=persistence_guard
+        )
 
-    def _screen(self, approval: SyntheticSharedApproval, *, reviewed: bool) -> str:
+    def _screen(
+        self,
+        approval: SyntheticSharedApproval,
+        *,
+        reviewed: bool,
+        persistence_guard: Callable[[], bool] | None = None,
+    ) -> str:
         self._shape(approval)
         # Screening is a short deterministic offline read fence. Persistence uses
         # a separate transaction and rechecks source availability after screening.
@@ -205,6 +222,8 @@ class SharedIntelligence:
             with closing(self._events._open()) as db, db:
                 db.execute("BEGIN IMMEDIATE")
                 self._events._verify_current_schema(db)
+                if persistence_guard is not None and not persistence_guard():
+                    raise ValueError("shared proposal authorization unavailable")
                 validate_shared_graph(db)
                 parent, sources = self._binding_sources(db, approval)
                 payload = approval.proposal.candidate
@@ -499,6 +518,10 @@ class SharedIntelligence:
                     ),
                 )
                 revoke_shared_authorization(db, operation_id)
+                erase_model_shared_candidates(db)
+                db.execute(
+                    "DELETE FROM private_extraction_receipts WHERE operation_id LIKE 'sharedgen:%'"
+                )
                 validate_shared_graph(db)
                 return "revoked"
 

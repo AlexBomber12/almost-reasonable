@@ -16,9 +16,15 @@ from app.cognition.pipeline import CognitionEngine
 from app.cognition.contracts import CognitionCapabilities
 from app.cognition.contracts import CognitionOutcomeStatus
 from app.cognition.contracts import CognitionReason
+from app.cognition.contracts import (
+    AbstractCandidate,
+    AbstractToSharedProposal,
+    MemoryKind,
+)
 from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.synthetic import SyntheticMemoryExtractor
-from app.cognition.shared import SharedIntelligence
+from app.cognition.shared import SharedIntelligence, ReviewedSharedCandidate
+from app.core.events import VerificationStatus
 from app.cognition.shared_context import SharedModelRequest, assemble_shared
 from app.core.self_state_store import SelfStateStore
 from app.core.openai_worker_client import (
@@ -76,6 +82,7 @@ from .conversation import (
 from .extraction_audit import ExtractionAuditStore
 from .evolution_audit import EvolutionAuditStore
 from .typed_audit import TypedAuditStore
+from .shared_audit import SharedProposalAuditStore
 
 
 _WORKER_FAILURE_RU = "Сервис модели временно недоступен. Попробуйте позже."
@@ -333,6 +340,8 @@ class _DurableConversationRuntime(ConversationService):
         operation_id = self._operation_id(event_id)
         route = TrustedActionContext(correlation, principal)
         existing = self._gate.read_reply(principal, operation_id)
+        if getattr(self, "_shared_proposal_audit", None) is not None:
+            self._reconcile_shared_proposal(principal, event_id, content, operation_id)
         if existing is not None and (
             getattr(self, "_extraction_audit", None) is not None
             or getattr(self, "_evolution_audit", None) is not None
@@ -427,11 +436,17 @@ class _DurableConversationRuntime(ConversationService):
                             principal, event_id, content, correlation, operation_id
                         )
                         caps = self._gate.authorized(preflight)
+                    if getattr(self, "_shared_proposal_audit", None) is not None:
+                        self._propose_shared(
+                            principal, event_id, content, correlation, operation_id
+                        )
+                        caps = self._gate.authorized(preflight)
                     if (
                         self._cognition is not None
                         or getattr(self, "_extraction_audit", None) is not None
                         or getattr(self, "_evolution_audit", None) is not None
                         or getattr(self, "_typed_audit", None) is not None
+                        or getattr(self, "_shared_proposal_audit", None) is not None
                     ) and (
                         caps.emergency_stop_active
                         or caps.provider_spend_suspended
@@ -586,6 +601,195 @@ class _DurableConversationRuntime(ConversationService):
             )
         finally:
             self._memory_bridge.payload.reset(token)
+
+    def _shared_proposal_controls(self):
+        caps = self._capabilities()
+        return (
+            not caps.emergency_stop_active
+            and not caps.provider_spend_suspended
+            and caps.private_reply_drafts_enabled
+            and self._current_request.get()()
+        )
+
+    def _reconcile_shared_proposal(
+        self, principal, event_id, content, reply_operation_id
+    ):
+        operation_id = "sharedgen:" + reply_operation_id.removeprefix("reply:")
+        try:
+            audit = self._shared_proposal_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+        except ValueError:
+            return
+        if audit is not None and audit.status == "received":
+            self._commit_shared_proposal(
+                principal, event_id, content, operation_id, audit
+            )
+
+    def _commit_shared_proposal(
+        self, principal, event_id, content, operation_id, audit
+    ):
+        def commit():
+            if (
+                not self._shared_proposal_controls()
+                or not self._shared_proposal_audit.valid(
+                    principal, event_id, content, audit.snapshot
+                )
+            ):
+                return "unavailable"
+            suggestion = audit.suggestion
+            if suggestion.decision == "no_change":
+                return "no_change"
+            selected = {
+                handle: (item, revision, parent)
+                for handle, item, revision, parent in audit.snapshot.selected
+            }
+            if suggestion.decision == "revise":
+                if suggestion.handle not in selected:
+                    return "rejected"
+                item_id, revision, _parent = selected[suggestion.handle]
+                sources = (event_id,)
+            else:
+                item_id = "shared-model:" + operation_id.removeprefix("sharedgen:")
+                revision = 0
+                sources = audit.snapshot.sources
+            with self._event_store._open() as db:
+                row = db.execute(
+                    "SELECT occurred_at FROM event_envelopes WHERE event_id=?",
+                    (event_id,),
+                ).fetchone()
+            if row is None:
+                return "unavailable"
+            candidate = ReviewedSharedCandidate(
+                principal,
+                AbstractToSharedProposal(
+                    operation_id,
+                    AbstractCandidate(
+                        MemoryKind(suggestion.kind),
+                        suggestion.statement,
+                        suggestion.confidence,
+                        VerificationStatus.UNVERIFIED,
+                    ),
+                    sources,
+                    datetime.fromisoformat(row[0]),
+                ),
+                item_id,
+                revision,
+                self._shared_proposal_audit._audience,
+            )
+            return candidate
+
+        try:
+            result = self._gate.authorized(commit)
+            if type(result) is ReviewedSharedCandidate:
+                reason = self._shared.quarantine(
+                    result, persistence_guard=self._shared_proposal_controls
+                )
+                status = (
+                    "accepted" if reason == "shared_commit_disabled" else "rejected"
+                )
+            else:
+                status = result
+        except (PrivacyReadBlocked, ValueError):
+            status = "unavailable"
+        self._shared_proposal_audit.finish(operation_id, status)
+        self._checkpoint("after_shared_proposal_commit")
+
+    def _propose_shared(
+        self, principal, event_id, content, correlation, reply_operation_id
+    ):
+        operation_id = "sharedgen:" + reply_operation_id.removeprefix("reply:")
+
+        def admit():
+            if not self._shared_proposal_controls():
+                return None
+            return self._shared_proposal_audit.reserve(
+                operation_id, principal, event_id, content
+            )
+
+        try:
+            audit = self._gate.authorized(admit)
+        except (PrivacyReadBlocked, ValueError):
+            return
+        if audit is None:
+            return
+        if audit.request is None:
+            if audit.status == "received":
+                self._commit_shared_proposal(
+                    principal, event_id, content, operation_id, audit
+                )
+            return
+        reservation = self._provider.reserve_attempt(
+            "ipc:" + operation_id, correlation, self._clock()
+        )
+        if reservation is not AttemptReservationStatus.CREATED:
+            self._shared_proposal_audit.finish(operation_id, "unavailable")
+            return
+        try:
+            allowed = self._gate.authorized(
+                lambda: self._shared_proposal_controls()
+                and self._shared_proposal_audit.valid(
+                    principal, event_id, content, audit.snapshot
+                )
+            )
+        except PrivacyReadBlocked:
+            allowed = False
+        if not allowed:
+            self._shared_proposal_audit.finish(operation_id, "unavailable")
+            return
+        try:
+            result = self._worker.infer(
+                audit.request, correlation_id=correlation, operation_id=operation_id
+            )
+        except (TypeError, ValueError):
+            self._shared_proposal_audit.finish(operation_id, "rejected")
+            return
+        if result.outcome == CLIENT_OUTCOME_UNCERTAIN:
+            self._shared_proposal_audit.finish(operation_id, "uncertain")
+            return
+        if result.outcome != "completed" or result.shared is None:
+            self._shared_proposal_audit.finish(
+                operation_id,
+                "unavailable"
+                if result.outcome
+                in {
+                    CLIENT_COMMUNICATION_FAILURE,
+                    "emergency_stop",
+                    "spend_suspended",
+                    "authorization_rejected",
+                }
+                else "rejected",
+            )
+            return
+        try:
+
+            def receive():
+                if (
+                    not self._shared_proposal_controls()
+                    or not self._shared_proposal_audit.valid(
+                        principal, event_id, content, audit.snapshot
+                    )
+                ):
+                    return False
+                self._shared_proposal_audit.receive(
+                    operation_id, principal.principal_id.value, event_id, result.shared
+                )
+                return True
+
+            received = self._gate.authorized(receive)
+        except (PrivacyReadBlocked, ValueError):
+            received = False
+        if not received:
+            self._shared_proposal_audit.finish(operation_id, "unavailable")
+            return
+        self._checkpoint("after_shared_proposal_receipt")
+        self._commit_shared_proposal(
+            principal,
+            event_id,
+            content,
+            operation_id,
+            replace(audit, status="received", suggestion=result.shared, request=None),
+        )
 
     def _reconcile_worker_extraction(
         self, principal, event_id, content, reply_operation_id
@@ -1596,6 +1800,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         memory_extraction_enabled=False,
         memory_evolution_enabled=False,
         typed_memory_enabled=False,
+        shared_proposals_enabled=False,
+        shared_proposal_audience=(),
         **kwargs,
     ):
         if type(client) is not OpenAIWorkerClient:
@@ -1610,6 +1816,10 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("memory_evolution_enabled must be bool")
         if type(typed_memory_enabled) is not bool:
             raise TypeError("typed_memory_enabled must be bool")
+        if type(shared_proposals_enabled) is not bool:
+            raise TypeError("shared_proposals_enabled must be bool")
+        if shared_proposals_enabled and kwargs.get("shared_intelligence") is None:
+            raise ValueError("shared proposals require shared intelligence")
         if typed_memory_enabled and (
             memory_extraction_enabled or memory_evolution_enabled
         ):
@@ -1639,6 +1849,17 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         self._typed_audit = (
             TypedAuditStore(provider_state, event_store)
             if typed_memory_enabled
+            else None
+        )
+        self._shared_proposal_audit = (
+            SharedProposalAuditStore(
+                provider_state,
+                event_store,
+                self._shared,
+                shared_proposal_audience,
+                self._clock,
+            )
+            if shared_proposals_enabled
             else None
         )
         self._worker_cognition = (

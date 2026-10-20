@@ -189,6 +189,15 @@ def revoke_shared_authorization(db: sqlite3.Connection, operation_id: str) -> No
     _erase_invalidated_shared(db)
 
 
+def erase_model_shared_candidates(db: sqlite3.Connection) -> None:
+    """A changed review or consent invalidates model-derived dependent text."""
+    db.execute(
+        """UPDATE shared_operations SET status='invalidated',reason='review_revoked'
+        WHERE operation_id LIKE 'sharedgen:%' AND status<>'invalidated'"""
+    )
+    _erase_invalidated_shared(db)
+
+
 def _erase_invalidated_shared(db: sqlite3.Connection) -> None:
     db.execute(
         "DELETE FROM protected_shared_manifests WHERE operation_id IN "

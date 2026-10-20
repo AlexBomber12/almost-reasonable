@@ -67,7 +67,35 @@ older backup cannot resurrect an authorization revoked after that backup. A fres
 item and review are required after restoring such a snapshot. Synthetic records
 retain their existing recovery behavior.
 
-Automatic model-driven sharing and calibrated semantic privacy remain unfinished.
-This local reviewed path does not establish anonymity, real-participant enrollment,
-production restore activation, mission changes, or full behavioral acceptance.
+## B04B: private worker suggestions
+
+The private worker can now suggest one new general abstraction, one revision of a
+shown eligible abstraction, or `no_change` per admitted turn. Application setup
+must explicitly use `--enable-shared-proposals` and one or more
+`--shared-proposal-audience` values. The credential-holding worker separately
+requires `--shared-proposal-permission`, a protected control file using
+`private-shared-proposal-permission-v1`, the active pilot ID, and a bounded
+`max_operations`. Both switches default off.
+
+The application sends the initiating participant's input and at most one of that
+participant's eligible, previously active abstractions. The worker sees an opaque
+handle for that item. The application binds the complete source union, the item
+head, the configured audience, and current consent state in an erasable receipt.
+A changed snapshot blocks persistence. Intent is recorded before provider contact;
+an uncertain result is never blindly retried. A received result can be reconciled
+after restart while its original binding is valid. Source deletion erases bound
+receipts and candidate payloads. Consent or review revocation conservatively
+invalidates all model-derived candidates and erases their receipts. Old-backup
+quarantine drops the receipts.
+
+The suggested text enters the existing `SharedIntelligence.quarantine` path. It
+remains invisible to other participants until independent local review and exact
+current source consent allow promotion. The model does not set source identities,
+audience, operation identity, revision, verification, or review approval. The
+deterministic screen and local review are still required, including assessment of
+recognizable paraphrases and source inference.
+
+Calibrated semantic privacy, real-participant enrollment, live behavioral
+evaluation, production restore activation, and complete end-to-end Stop evidence
+remain open. The screen does not establish semantic anonymity.
 `complete_mvp=BLOCKED`.

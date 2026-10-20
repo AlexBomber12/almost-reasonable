@@ -60,6 +60,8 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-memory-evolution", action="store_true")
     serve.add_argument("--enable-typed-memory", action="store_true")
+    serve.add_argument("--enable-shared-proposals", action="store_true")
+    serve.add_argument("--shared-proposal-audience", action="append", default=[])
     serve.add_argument("--enable-public-research", action="store_true")
     serve.add_argument("--public-research-socket")
     serve.add_argument("--public-research-worker-uid", type=int)
@@ -215,6 +217,8 @@ def main(
         or args.enable_memory_extraction
         or args.enable_memory_evolution
         or args.enable_typed_memory
+        or args.enable_shared_proposals
+        or args.shared_proposal_audience
     ):
         raise SystemExit("privacy and owner stores require worker mode")
     auth = AuthStore(args.auth_db)
@@ -274,6 +278,8 @@ def main(
             memory_extraction_enabled=args.enable_memory_extraction,
             memory_evolution_enabled=args.enable_memory_evolution,
             typed_memory_enabled=args.enable_typed_memory,
+            shared_proposals_enabled=args.enable_shared_proposals,
+            shared_proposal_audience=tuple(sorted(set(args.shared_proposal_audience))),
         )
         privacy = ParticipantPrivacyControls(
             auth, event_store, ledger, gate, clock=conversations._clock

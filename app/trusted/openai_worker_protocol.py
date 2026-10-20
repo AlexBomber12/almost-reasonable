@@ -39,6 +39,14 @@ from app.cognition.worker_typed import (
     TypedProposal,
     parse_typed_proposal,
 )
+from app.cognition.worker_shared import (
+    CONTRACT_VERSION as SHARED_CONTRACT_VERSION,
+    SharedProposalItem,
+    SharedProposalRequest,
+    SharedSuggestion,
+    parse_shared_suggestion,
+    suggestion_data,
+)
 from app.cognition.shared import SharedRecord
 from app.cognition.shared_context import SharedModelRequest
 from app.core.model_contract import (
@@ -61,10 +69,12 @@ TRANSCRIPT_PROTOCOL_VERSION = "openai-worker-transcript-v3"
 EXTRACTION_PROTOCOL_VERSION = "openai-worker-memory-extraction-v1"
 EVOLUTION_PROTOCOL_VERSION = "openai-worker-memory-evolution-v1"
 TYPED_PROTOCOL_VERSION = "openai-worker-typed-memory-v1"
+SHARED_PROTOCOL_VERSION = "openai-worker-shared-proposal-v1"
 MAX_EVOLUTION_IPC_BYTES = MAX_EVOLUTION_PROJECTION_BYTES + 1024
 OPERATION_INFER = "infer"
 OPERATION_EXTRACT = "extract_memory"
 OPERATION_EVOLVE = "evolve_memory"
+OPERATION_SHARED = "propose_shared"
 FRAME_PREFIX_BYTES = 4
 MAX_IPC_FRAME_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 64 * 1024
 MAX_SAFE_MESSAGE_UTF8_BYTES = 512
@@ -126,6 +136,7 @@ class InferenceRequest:
         | ExtractionModelRequest
         | EvolutionModelRequest
         | TypedModelRequest
+        | SharedProposalRequest
     ) = field(repr=False)
 
 
@@ -141,6 +152,8 @@ class WorkerResponse:
     evolution_operation: bool = False
     typed: TypedProposal | None = field(default=None, repr=False)
     typed_operation: bool = False
+    shared: SharedSuggestion | None = field(default=None, repr=False)
+    shared_operation: bool = False
 
 
 def encode_request(request: InferenceRequest) -> bytes:
@@ -175,12 +188,17 @@ def encode_request(request: InferenceRequest) -> bytes:
     elif type(model) is TypedModelRequest:
         model_json = model.serialize()
         version = TYPED_PROTOCOL_VERSION
+    elif type(model) is SharedProposalRequest:
+        model_json = model.serialize()
+        version = SHARED_PROTOCOL_VERSION
     else:
         raise TypeError("unsupported model request")
     payload = {
         "protocol_version": version,
         "operation_type": OPERATION_EXTRACT
         if version == EXTRACTION_PROTOCOL_VERSION
+        else OPERATION_SHARED
+        if version == SHARED_PROTOCOL_VERSION
         else OPERATION_EVOLVE
         if version in {EVOLUTION_PROTOCOL_VERSION, TYPED_PROTOCOL_VERSION}
         else OPERATION_INFER,
@@ -212,6 +230,7 @@ def decode_request(payload: bytes) -> InferenceRequest:
         EXTRACTION_PROTOCOL_VERSION,
         EVOLUTION_PROTOCOL_VERSION,
         TYPED_PROTOCOL_VERSION,
+        SHARED_PROTOCOL_VERSION,
     }:
         raise WorkerProtocolError("unsupported protocol version")
     if (
@@ -223,6 +242,8 @@ def decode_request(payload: bytes) -> InferenceRequest:
     if value["operation_type"] != (
         OPERATION_EXTRACT
         if value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION
+        else OPERATION_SHARED
+        if value["protocol_version"] == SHARED_PROTOCOL_VERSION
         else OPERATION_EVOLVE
         if value["protocol_version"]
         in {EVOLUTION_PROTOCOL_VERSION, TYPED_PROTOCOL_VERSION}
@@ -234,7 +255,59 @@ def decode_request(payload: bytes) -> InferenceRequest:
         if len(operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
             raise ValueError("invalid operation id")
         correlation_id = require_identifier("correlation id", value["correlation_id"])
-        if value["protocol_version"] == TYPED_PROTOCOL_VERSION:
+        if value["protocol_version"] == SHARED_PROTOCOL_VERSION:
+            model_value = value["model_request"]
+            _require_exact_dict(
+                model_value,
+                {
+                    "contract_version",
+                    "task",
+                    "participant_input",
+                    "participant_input_trust",
+                    "participant_input_can_instruct",
+                    "items",
+                },
+            )
+            if (
+                model_value["contract_version"] != SHARED_CONTRACT_VERSION
+                or model_value["task"] != "propose_shared_abstraction"
+                or model_value["participant_input_trust"]
+                != "untrusted_conversational_data"
+                or model_value["participant_input_can_instruct"] is not False
+                or type(model_value["items"]) is not list
+            ):
+                raise WorkerProtocolError("invalid shared proposal request")
+            items = []
+            for record in model_value["items"]:
+                _require_exact_dict(
+                    record,
+                    {
+                        "handle",
+                        "kind",
+                        "statement",
+                        "confidence",
+                        "trust",
+                        "can_instruct",
+                    },
+                )
+                if (
+                    record["trust"] != "untrusted_memory_data"
+                    or record["can_instruct"] is not False
+                ):
+                    raise WorkerProtocolError("invalid shared proposal item")
+                items.append(
+                    SharedProposalItem(
+                        record["handle"],
+                        record["kind"],
+                        record["statement"],
+                        record["confidence"],
+                    )
+                )
+            model_request = SharedProposalRequest(
+                model_value["participant_input"], tuple(items)
+            )
+            model_request.serialize()
+        elif value["protocol_version"] == TYPED_PROTOCOL_VERSION:
             model_value = value["model_request"]
             _require_exact_dict(
                 model_value,
@@ -491,7 +564,9 @@ def encode_response(response: WorkerResponse) -> bytes:
         raise TypeError("response must be a WorkerResponse")
     _validate_response_fields(response)
     payload = {
-        "protocol_version": TYPED_PROTOCOL_VERSION
+        "protocol_version": SHARED_PROTOCOL_VERSION
+        if response.shared_operation
+        else TYPED_PROTOCOL_VERSION
         if response.typed_operation
         else EVOLUTION_PROTOCOL_VERSION
         if response.evolution_operation
@@ -505,8 +580,11 @@ def encode_response(response: WorkerResponse) -> bytes:
         if response.extraction_operation
         or response.evolution_operation
         or response.typed_operation
+        or response.shared_operation
         else "agent_proposal": (
-            vars_typed(response.typed)
+            suggestion_data(response.shared)
+            if response.shared is not None
+            else vars_typed(response.typed)
             if response.typed is not None
             else vars_evolution(response.evolution)
             if response.evolution is not None
@@ -516,6 +594,7 @@ def encode_response(response: WorkerResponse) -> bytes:
             if response.extraction_operation
             or response.evolution_operation
             or response.typed_operation
+            or response.shared_operation
             else _proposal_data(response.validation)
         ),
     }
@@ -535,6 +614,9 @@ def decode_response(payload: bytes) -> WorkerResponse:
     typed_version = (
         type(value) is dict and value.get("protocol_version") == TYPED_PROTOCOL_VERSION
     )
+    shared_version = (
+        type(value) is dict and value.get("protocol_version") == SHARED_PROTOCOL_VERSION
+    )
     _require_exact_dict(
         value,
         {
@@ -543,7 +625,10 @@ def decode_response(payload: bytes) -> WorkerResponse:
             "attempts",
             "safe_russian_message",
             "memory_proposal"
-            if extraction_version or evolution_version or typed_version
+            if extraction_version
+            or evolution_version
+            or typed_version
+            or shared_version
             else "agent_proposal",
         },
     )
@@ -552,8 +637,24 @@ def decode_response(payload: bytes) -> WorkerResponse:
         EXTRACTION_PROTOCOL_VERSION,
         EVOLUTION_PROTOCOL_VERSION,
         TYPED_PROTOCOL_VERSION,
+        SHARED_PROTOCOL_VERSION,
     }:
         raise WorkerProtocolError("unsupported protocol version")
+    if shared_version:
+        raw = value["memory_proposal"]
+        try:
+            shared = None if raw is None else parse_shared_suggestion(json.dumps(raw))
+            response = WorkerResponse(
+                value["outcome"],
+                value["attempts"],
+                value["safe_russian_message"],
+                shared=shared,
+                shared_operation=True,
+            )
+            _validate_response_fields(response)
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid worker proposal") from None
+        return response
     if typed_version:
         raw = value["memory_proposal"]
         try:
@@ -786,12 +887,27 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         parse_evolution_proposal(json.dumps(vars_evolution(response.evolution)))
     if response.typed is not None:
         parse_typed_proposal(json.dumps(vars_typed(response.typed)))
+    if response.shared is not None:
+        parse_shared_suggestion(json.dumps(suggestion_data(response.shared)))
+    if response.shared_operation and (
+        response.validation is not None
+        or response.extraction is not None
+        or response.evolution is not None
+        or response.typed is not None
+        or response.extraction_operation
+        or response.evolution_operation
+        or response.typed_operation
+    ):
+        raise ValueError("invalid shared response")
+    if not response.shared_operation and response.shared is not None:
+        raise ValueError("invalid shared response")
     if response.typed_operation and (
         response.validation is not None
         or response.extraction is not None
         or response.evolution is not None
         or response.extraction_operation
         or response.evolution_operation
+        or response.shared_operation
     ):
         raise ValueError("invalid typed response")
     if not response.typed_operation and response.typed is not None:
@@ -801,6 +917,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         or response.extraction is not None
         or response.extraction_operation
         or response.typed_operation
+        or response.shared_operation
     ):
         raise ValueError("invalid evolution response")
     if not response.evolution_operation and response.evolution is not None:
@@ -814,6 +931,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         or (response.extraction is not None)
         or (response.evolution is not None)
         or (response.typed is not None)
+        or (response.shared is not None)
     ) or sum(
         item is not None
         for item in (
@@ -821,6 +939,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
             response.extraction,
             response.evolution,
             response.typed,
+            response.shared,
         )
     ) > 1:
         raise ValueError("completed response and proposal are inconsistent")

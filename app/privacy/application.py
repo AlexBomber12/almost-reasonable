@@ -24,6 +24,7 @@ from app.core.shared_graph import (
     validate_shared_graph,
     erase_shared_source,
     erase_shared_review,
+    erase_model_shared_candidates,
     revoke_shared_authorization,
 )
 
@@ -427,6 +428,10 @@ class EventStoreErasureAdapter:
             self.store._verify_current_schema(db)
             validate_shared_graph(db)
             erase_shared_review(db, consent_id)
+            erase_model_shared_candidates(db)
+            db.execute(
+                "DELETE FROM private_extraction_receipts WHERE operation_id LIKE 'sharedgen:%'"
+            )
             validate_shared_graph(db)
         return True
 
@@ -468,6 +473,10 @@ class EventStoreRestoreAdapter:
                 _validate_graph(db, version)
                 if version >= 11:
                     erase_shared_review(db, consent_id)
+                    erase_model_shared_candidates(db)
+                    db.execute(
+                        "DELETE FROM private_extraction_receipts WHERE operation_id LIKE 'sharedgen:%'"
+                    )
                     _validate_graph(db, version)
         return True
 
@@ -478,6 +487,9 @@ class EventStoreRestoreAdapter:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 _validate_graph(db, version)
                 if version >= 11:
+                    db.execute(
+                        "DELETE FROM private_extraction_receipts WHERE operation_id LIKE 'sharedgen:%'"
+                    )
                     # The external privacy ledger has no review-decision journal.
                     # A restored snapshot cannot establish that a later local
                     # revocation did not occur, so all reviewed grants fail closed.

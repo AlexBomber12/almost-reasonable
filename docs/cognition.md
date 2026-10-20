@@ -254,3 +254,6 @@ older component description above does not authorize production sharing.
 B04A adds a separate, default-off [local review path for general abstractions](reviewed-shared-abstractions.md).
 The earlier standalone validator description above still explains the H screen;
 the local review and structured source consent supply the additional authority.
+B04B connects a separately permitted private worker suggestion to that quarantine.
+It supplies no review or consent authority and does not resolve semantic privacy
+or live evaluation. `complete_mvp=BLOCKED`.
