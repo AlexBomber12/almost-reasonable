@@ -186,7 +186,7 @@ full M5 acceptance.
 | Missing graph edges and forged audience metadata | Completed: forged graph and missing edge tests |
 | Stop/spend guards and no external effects | Completed: shared guard tests; only offline fake transport constructed |
 | INT-01 through INT-05A and INT-08 preservation | Complete local suite required by `scripts/ci.sh`; recorded in PR validation |
-| General prose abstraction and real-model privacy evaluation | Local B04A review path exists; automatic sharing, calibrated semantic screening and behavioral evaluation remain blocked for production |
+| General prose abstraction and real-model privacy evaluation | Local B04A review and default-off B04B worker suggestions exist; calibrated semantic screening and live behavioral evaluation remain blocked for production |
 | Real independent corroboration and general mission reassessment | Blocked for production: this adapter proves synthetic authorization and invalidation, not external truth or recovery-policy adequacy |
 | Enrollment, processor disclosures, structured real authorization and retention policy | Blocked for production: existing pre-enrollment decisions remain unresolved |
 | Production database/restore activation, shared promotion, public/research dispatch, deployment | Disabled; requires separate authorized work and review |

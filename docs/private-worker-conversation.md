@@ -217,3 +217,12 @@ path is documented in [private typed worker memory](private-typed-worker-memory.
 It uses EventStore v10 contextual typed provenance, the existing SelfStateStore,
 and its own application flag and protected worker permission. The B03A and B03B
 generic modes remain separate. `complete_mvp=BLOCKED` remains unchanged.
+
+## B04B: reviewed shared proposal generation
+
+An explicitly enabled private worker can suggest one bounded general abstraction
+per admitted turn. The application binds its source snapshot and configured
+audience, then submits it to the existing reviewed shared quarantine. See
+[reviewed shared abstractions](reviewed-shared-abstractions.md) for the separate
+worker permission, review, consent, erasure, and recovery controls. Semantic
+privacy and live-model evaluation remain open; `complete_mvp=BLOCKED`.

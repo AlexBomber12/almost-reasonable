@@ -24,6 +24,7 @@ from app.core.shared_graph import (
     validate_shared_graph,
     erase_shared_source,
     erase_shared_review,
+    erase_model_shared_candidates,
     revoke_shared_authorization,
 )
 
@@ -419,7 +420,9 @@ class EventStoreErasureAdapter:
         except ApplicationPrivacyError as error:
             return ErasureReport(False, False, frozenset(), (str(error),))
 
-    def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool:
+    def apply_revocation(
+        self, consent_id: str, revoked_at: datetime, scope=None
+    ) -> bool:
         require_token(consent_id, "consent id")
         require_utc(revoked_at, "revocation timestamp")
         with closing(self.store._open()) as db, db:
@@ -427,6 +430,7 @@ class EventStoreErasureAdapter:
             self.store._verify_current_schema(db)
             validate_shared_graph(db)
             erase_shared_review(db, consent_id)
+            erase_model_shared_candidates(db, consent_id, scope)
             validate_shared_graph(db)
         return True
 
@@ -458,7 +462,9 @@ class EventStoreRestoreAdapter:
                 db, record.request, db.execute("PRAGMA user_version").fetchone()[0]
             )
 
-    def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool:
+    def apply_revocation(
+        self, consent_id: str, revoked_at: datetime, scope=None
+    ) -> bool:
         require_token(consent_id, "consent id")
         require_utc(revoked_at, "revocation timestamp")
         with closing(self._open()) as db:
@@ -468,6 +474,7 @@ class EventStoreRestoreAdapter:
                 _validate_graph(db, version)
                 if version >= 11:
                     erase_shared_review(db, consent_id)
+                    erase_model_shared_candidates(db, consent_id, scope)
                     _validate_graph(db, version)
         return True
 
@@ -478,6 +485,12 @@ class EventStoreRestoreAdapter:
                 version = db.execute("PRAGMA user_version").fetchone()[0]
                 _validate_graph(db, version)
                 if version >= 11:
+                    # Legacy receipts did not bind the exact configured audience.
+                    # They cannot reauthorize a proposal after recovery.
+                    db.execute(
+                        "DELETE FROM private_extraction_receipts WHERE operation_id LIKE 'sharedgen:%' "
+                        "AND json_extract(proposal,'$.version') IS NOT 'shared-proposal-receipt-v2'"
+                    )
                     # The external privacy ledger has no review-decision journal.
                     # A restored snapshot cannot establish that a later local
                     # revocation did not occur, so all reviewed grants fail closed.
@@ -551,7 +564,9 @@ class PrivacyReadGate:
                 for consent_id, revoked_at in snapshot.revocations:
                     if revoked_at > now:
                         continue
-                    if not adapter.apply_revocation(consent_id, revoked_at):
+                    if not adapter.apply_revocation(
+                        consent_id, revoked_at, self._ledger.consent_scope(consent_id)
+                    ):
                         return False
                 for record in snapshot.deletions:
                     if (

@@ -24,6 +24,11 @@ from app.cognition.worker_typed import (
     TypedProposal,
     parse_typed_proposal,
 )
+from app.cognition.worker_shared import (
+    SharedProposalRequest,
+    SharedSuggestion,
+    parse_shared_suggestion,
+)
 from app.core.model_contract import ModelRequest
 from app.core.provider_contract import (
     PROVIDER_NAME,
@@ -36,6 +41,7 @@ from app.core.provider_contract import (
     build_worker_extraction_request,
     build_worker_evolution_request,
     build_worker_typed_request,
+    build_worker_shared_request,
     estimate_cost,
     require_identifier,
     validate_pricing_config,
@@ -99,6 +105,7 @@ class GatewayResult:
     extraction: ExtractionProposal | None = field(default=None, repr=False)
     evolution: EvolutionProposal | None = field(default=None, repr=False)
     typed: TypedProposal | None = field(default=None, repr=False)
+    shared: SharedSuggestion | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,6 +115,7 @@ class _ParsedResponse:
     extraction: ExtractionProposal | None = None
     evolution: EvolutionProposal | None = None
     typed: TypedProposal | None = None
+    shared: SharedSuggestion | None = None
 
 
 class TrustedOpenAIGateway:
@@ -193,6 +201,15 @@ class TrustedOpenAIGateway:
             request, correlation_id=correlation_id, operation_id=operation_id
         )
 
+    def submit_shared(
+        self, request: SharedProposalRequest, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
+        if type(request) is not SharedProposalRequest:
+            raise TypeError("request must be a shared proposal request")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
     def _submit(
         self, request, *, correlation_id: str, operation_id: str
     ) -> GatewayResult:
@@ -209,6 +226,8 @@ class TrustedOpenAIGateway:
             if type(request) is EvolutionModelRequest
             else build_worker_typed_request(request, self._config)
             if type(request) is TypedModelRequest
+            else build_worker_shared_request(request, self._config)
+            if type(request) is SharedProposalRequest
             else build_worker_context_request(request, self._config)
         )
         if (
@@ -319,6 +338,7 @@ class TrustedOpenAIGateway:
                     extraction=type(request) is ExtractionModelRequest,
                     evolution=type(request) is EvolutionModelRequest,
                     typed=type(request) is TypedModelRequest,
+                    shared=type(request) is SharedProposalRequest,
                 )
             )
             persisted = self._record(
@@ -348,6 +368,7 @@ class TrustedOpenAIGateway:
                 extraction=parsed.extraction,
                 evolution=parsed.evolution,
                 typed=parsed.typed,
+                shared=parsed.shared,
             )
 
     def _preflight(
@@ -400,6 +421,8 @@ class TrustedOpenAIGateway:
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
+                else "shared-proposal-v1"
+                if type(request) is SharedProposalRequest
                 else "private-extraction-v1"
                 if type(request) is ExtractionModelRequest
                 else self._config.prompt_version
@@ -411,6 +434,8 @@ class TrustedOpenAIGateway:
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
+                else "shared-proposal-v1"
+                if type(request) is SharedProposalRequest
                 else "private-extraction-v1"
                 if type(request) is ExtractionModelRequest
                 else request.conversation.core_self_version
@@ -518,6 +543,7 @@ class TrustedOpenAIGateway:
         extraction: ExtractionProposal | None = None,
         evolution: EvolutionProposal | None = None,
         typed: TypedProposal | None = None,
+        shared: SharedSuggestion | None = None,
     ) -> GatewayResult:
         if outcome is GatewayOutcome.COMPLETED:
             message = None
@@ -539,6 +565,7 @@ class TrustedOpenAIGateway:
             extraction,
             evolution,
             typed,
+            shared,
         )
 
 
@@ -591,6 +618,7 @@ def _parse_response(
     extraction: bool = False,
     evolution: bool = False,
     typed: bool = False,
+    shared: bool = False,
 ) -> _ParsedResponse:
     if type(response) is not ProviderResponse:
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
@@ -648,6 +676,12 @@ def _parse_response(
         except ValueError:
             return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
+    if shared:
+        try:
+            parsed_shared = parse_shared_suggestion(text)
+        except ValueError:
+            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+        return _ParsedResponse(GatewayOutcome.COMPLETED, None, shared=parsed_shared)
     if type(payload) is not dict or set(payload) != {
         "decision",
         "reason_category",

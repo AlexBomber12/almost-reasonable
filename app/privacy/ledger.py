@@ -680,6 +680,14 @@ class PrivacyLedger:
             ).fetchone()
         return None if row is None else row[0]
 
+    def consent_scope(self, consent_id: str) -> tuple[str, str, str, str] | None:
+        """Authoritative grant scope for application and quarantine erasure."""
+        with self._open() as connection:
+            return connection.execute(
+                "SELECT principal_id,content_reference,audience,purpose FROM consent_grants WHERE consent_id=?",
+                (consent_id,),
+            ).fetchone()
+
     def active_shared_consent(
         self, principal_id: str, content_reference: str, audience: str, at: datetime
     ) -> str | None:

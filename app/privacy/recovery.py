@@ -104,7 +104,12 @@ class _QuarantineIdentityError(RuntimeError):
 class RestoreAdapter(Protocol):
     def apply_deletion(self, record: DeletionRecord) -> ErasureReport: ...
 
-    def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool: ...
+    def apply_revocation(
+        self,
+        consent_id: str,
+        revoked_at: datetime,
+        scope: tuple[str, str, str, str] | None = None,
+    ) -> bool: ...
 
     def rebuild_dependencies(self) -> bool: ...
 
@@ -967,7 +972,7 @@ class QuarantinedRestore:
                     restore_id, restored_at, "quarantine_identity_changed"
                 )
             try:
-                reason = self._reconcile(adapter, snapshot)
+                reason = self._reconcile(adapter, snapshot, restored_at)
             except BaseException:
                 _cleanup_created_database(owned)
                 raise
@@ -1126,17 +1131,22 @@ class QuarantinedRestore:
             raise _QuarantineIdentityError
 
     def _reconcile(
-        self, adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
+        self,
+        adapter: RestoreAdapter,
+        snapshot: PrivacyReconciliationSnapshot,
+        restored_at: datetime,
     ) -> str | None:
         try:
-            reason = self._reconcile_operations(adapter, snapshot)
+            reason = self._reconcile_operations(adapter, snapshot, restored_at)
         finally:
             release_reason = self._release_adapter_writers(adapter)
         return release_reason or reason
 
-    @staticmethod
     def _reconcile_operations(
-        adapter: RestoreAdapter, snapshot: PrivacyReconciliationSnapshot
+        self,
+        adapter: RestoreAdapter,
+        snapshot: PrivacyReconciliationSnapshot,
+        restored_at: datetime,
     ) -> str | None:
         required = frozenset(ContentCategory.required_erasure_categories())
         for record in snapshot.deletions:
@@ -1154,8 +1164,15 @@ class QuarantinedRestore:
             ):
                 return "deletion_reconciliation_incomplete"
         for consent_id, revoked_at in snapshot.revocations:
+            if revoked_at > restored_at:
+                continue
             try:
-                if adapter.apply_revocation(consent_id, revoked_at) is not True:
+                if (
+                    adapter.apply_revocation(
+                        consent_id, revoked_at, self.ledger.consent_scope(consent_id)
+                    )
+                    is not True
+                ):
                     return "revocation_reconciliation_incomplete"
             except Exception:
                 return "revocation_adapter_failure"

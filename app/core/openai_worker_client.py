@@ -12,6 +12,7 @@ from app.cognition.conversation_context import MemoryModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest, ExtractionProposal
 from app.cognition.worker_evolution import EvolutionModelRequest, EvolutionProposal
 from app.cognition.worker_typed import TypedModelRequest, TypedProposal
+from app.cognition.worker_shared import SharedProposalRequest, SharedSuggestion
 from app.cognition.shared_context import SharedModelRequest
 from app.core.provider_contract import require_identifier
 from app.trusted.openai_worker_protocol import (
@@ -41,6 +42,7 @@ class ClientResult:
     extraction: ExtractionProposal | None = field(default=None, repr=False)
     evolution: EvolutionProposal | None = field(default=None, repr=False)
     typed: TypedProposal | None = field(default=None, repr=False)
+    shared: SharedSuggestion | None = field(default=None, repr=False)
 
 
 class OpenAIWorkerClient:
@@ -73,7 +75,8 @@ class OpenAIWorkerClient:
         | SharedModelRequest
         | ExtractionModelRequest
         | EvolutionModelRequest
-        | TypedModelRequest,
+        | TypedModelRequest
+        | SharedProposalRequest,
         *,
         operation_id: str,
         correlation_id: str,
@@ -127,6 +130,7 @@ class OpenAIWorkerClient:
                 or response.evolution_operation
                 != (type(request) is EvolutionModelRequest)
                 or response.typed_operation != (type(request) is TypedModelRequest)
+                or response.shared_operation != (type(request) is SharedProposalRequest)
             ):
                 raise WorkerProtocolError("worker operation mismatch")
         except (OSError, WorkerProtocolError):
@@ -148,6 +152,7 @@ class OpenAIWorkerClient:
             response.extraction,
             response.evolution,
             response.typed,
+            response.shared,
         )
 
 

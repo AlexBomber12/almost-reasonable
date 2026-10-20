@@ -409,7 +409,7 @@ def test_consent_revocation_and_source_deletion_invalidate_reviewed_sharing(
         patcher.setattr(
             EventStoreErasureAdapter,
             "apply_revocation",
-            lambda _self, _consent_id, _revoked_at: False,
+            lambda _self, _consent_id, _revoked_at, _scope=None: False,
         )
         assert gate.reconcile()
     assert app.context(principal("b"))[0].text == item.proposal.candidate.value
@@ -422,7 +422,7 @@ def test_consent_revocation_and_source_deletion_invalidate_reviewed_sharing(
         patcher.setattr(
             EventStoreErasureAdapter,
             "apply_revocation",
-            lambda _self, _consent_id, _revoked_at: False,
+            lambda _self, _consent_id, _revoked_at, _scope=None: False,
         )
         assert gate.reconcile() is False
     assert gate.reconcile()

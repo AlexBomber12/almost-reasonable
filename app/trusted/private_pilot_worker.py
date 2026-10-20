@@ -10,6 +10,7 @@ from app.cognition.conversation_context import MemoryModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.worker_evolution import EvolutionModelRequest
 from app.cognition.worker_typed import TypedModelRequest
+from app.cognition.worker_shared import SharedProposalRequest
 from app.cognition.shared_context import SharedModelRequest
 from app.core.provider_contract import (
     DeploymentStage,
@@ -46,6 +47,7 @@ _REJECT_RU = "Локальный запрос не соответствует р
 EXTRACTION_PERMISSION_VERSION = "private-memory-extraction-permission-v1"
 EVOLUTION_PERMISSION_VERSION = "private-memory-evolution-permission-v1"
 TYPED_PERMISSION_VERSION = "private-typed-memory-permission-v1"
+SHARED_PERMISSION_VERSION = "private-shared-proposal-permission-v1"
 
 
 def provider_config() -> OpenAIProviderConfig:
@@ -107,6 +109,7 @@ class PilotRequestGate:
         extraction_permission_path: Path | None = None,
         evolution_permission_path: Path | None = None,
         typed_permission_path: Path | None = None,
+        shared_permission_path: Path | None = None,
     ):
         self.activation = activation
         self.allowance = allowance
@@ -117,6 +120,7 @@ class PilotRequestGate:
         self.extraction_permission_path = extraction_permission_path
         self.evolution_permission_path = evolution_permission_path
         self.typed_permission_path = typed_permission_path
+        self.shared_permission_path = shared_permission_path
 
     def extraction_limit(self) -> int | None:
         return self._memory_limit(
@@ -130,6 +134,11 @@ class PilotRequestGate:
 
     def typed_limit(self) -> int | None:
         return self._memory_limit(self.typed_permission_path, TYPED_PERMISSION_VERSION)
+
+    def shared_limit(self) -> int | None:
+        return self._memory_limit(
+            self.shared_permission_path, SHARED_PERMISSION_VERSION
+        )
 
     def _memory_limit(self, path: Path | None, version: str) -> int | None:
         if path is None:
@@ -178,6 +187,7 @@ class PilotRequestGate:
         extraction = type(request.model_request) is ExtractionModelRequest
         evolution = type(request.model_request) is EvolutionModelRequest
         typed = type(request.model_request) is TypedModelRequest
+        shared = type(request.model_request) is SharedProposalRequest
         limit = (
             self.extraction_limit()
             if extraction
@@ -185,12 +195,14 @@ class PilotRequestGate:
             if evolution
             else self.typed_limit()
             if typed
+            else self.shared_limit()
+            if shared
             else None
         )
         if (
             (
                 limit is None
-                if extraction or evolution or typed
+                if extraction or evolution or typed or shared
                 else type(request.model_request)
                 not in {MemoryModelRequest, SharedModelRequest}
             )
@@ -232,6 +244,9 @@ class PilotRequestGate:
     def typed_commit_allowed(self) -> bool:
         return not self.paid_transport_blocked() and self.typed_limit() is not None
 
+    def shared_commit_allowed(self) -> bool:
+        return not self.paid_transport_blocked() and self.shared_limit() is not None
+
 
 def build_worker(
     *,
@@ -244,6 +259,7 @@ def build_worker(
     extraction_permission_path: Path | None = None,
     evolution_permission_path: Path | None = None,
     typed_permission_path: Path | None = None,
+    shared_permission_path: Path | None = None,
 ) -> OpenAIWorkerServer:
     """Live entry point; only the protected credential-file factory creates SDK."""
 
@@ -268,6 +284,7 @@ def build_worker(
         extraction_permission_path=extraction_permission_path,
         evolution_permission_path=evolution_permission_path,
         typed_permission_path=typed_permission_path,
+        shared_permission_path=shared_permission_path,
     )
     transport = build_worker_openai_transport(
         project_id=activation.project_id,
@@ -293,6 +310,8 @@ def build_worker(
         evolution_commit_guard=gate.evolution_commit_allowed,
         typed_enabled=typed_permission_path is not None,
         typed_commit_guard=gate.typed_commit_allowed,
+        shared_enabled=shared_permission_path is not None,
+        shared_commit_guard=gate.shared_commit_allowed,
     )
 
 
@@ -313,6 +332,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory-extraction-permission", type=Path)
     parser.add_argument("--memory-evolution-permission", type=Path)
     parser.add_argument("--typed-memory-permission", type=Path)
+    parser.add_argument("--shared-proposal-permission", type=Path)
     args = parser.parse_args(argv)
     worker = build_worker(
         socket_path=args.socket,
@@ -322,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
         extraction_permission_path=args.memory_extraction_permission,
         evolution_permission_path=args.memory_evolution_permission,
         typed_permission_path=args.typed_memory_permission,
+        shared_permission_path=args.shared_proposal_permission,
     )
     stopping = False
 
