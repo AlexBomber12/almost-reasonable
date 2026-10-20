@@ -262,10 +262,11 @@ def test_consent_and_review_revocations_erase_model_derived_candidates(
         == "revoked"
     )
     with events2._open() as db:
-        assert db.execute("SELECT COUNT(*) FROM shared_payloads").fetchone() == (0,)
+        # The proposal predates this review and never consumed its content.
+        assert db.execute("SELECT COUNT(*) FROM shared_payloads").fetchone() == (1,)
         assert db.execute(
             "SELECT COUNT(*) FROM shared_operations WHERE status='invalidated'"
-        ).fetchone() == (2,)
+        ).fetchone() == (1,)
 
 
 def test_stop_during_shared_screen_blocks_quarantine_persistence(tmp_path, monkeypatch):
@@ -933,16 +934,17 @@ def test_shared_receipt_fails_closed_on_loss_and_corruption(tmp_path):
         "x" * 131073,
         json.dumps({"version": "unknown", "snapshot": {}, "proposal": None}),
         json.dumps(
-            {"version": "shared-proposal-receipt-v1", "snapshot": {}, "proposal": None}
+            {"version": "shared-proposal-receipt-v2", "snapshot": {}, "proposal": None}
         ),
         json.dumps(
             {
-                "version": "shared-proposal-receipt-v1",
+                "version": "shared-proposal-receipt-v2",
                 "snapshot": {
                     "selected": [],
                     "visible": [],
                     "sources": [],
                     "digest": "bad",
+                    "dependencies": first.snapshot.dependencies,
                 },
                 "proposal": None,
             }
@@ -1033,6 +1035,7 @@ def test_shared_snapshot_excludes_ineligible_heads_and_fails_on_changed_sources(
             snapshot.visible,
             snapshot.sources,
             snapshot.digest,
+            snapshot.dependencies,
         ),
     )
     # A changed source payload cannot reconcile a previously received suggestion.

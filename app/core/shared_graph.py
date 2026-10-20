@@ -4,6 +4,12 @@ import sqlite3
 import hashlib
 import json
 
+from .model_shared_dependencies import (
+    dependency_records,
+    invalidate_dependencies,
+    validate_dependencies,
+)
+
 
 _CHECKS = (
     """SELECT 1 FROM shared_mission_document d WHERE d.status='ready' AND (
@@ -155,6 +161,48 @@ def validate_shared_graph(db: sqlite3.Connection) -> None:
         )
     ):
         raise ValueError("shared_payload_binding_mismatch")
+    for operation, dependencies, receipt in dependency_records(db):
+        validate_dependencies(db, dependencies)
+        if receipt:
+            row = db.execute(
+                "SELECT source_principal_id,source_event_id,proposal FROM private_extraction_receipts WHERE operation_id=?",
+                (operation,),
+            ).fetchone()
+            snapshot = json.loads(row[2])["snapshot"]
+            if (
+                row[0] != dependencies["principal"]
+                or row[1] not in dependencies["sources"]
+                or snapshot["sources"] != dependencies["sources"]
+                or sorted(item[3] for item in snapshot["selected"])
+                != dependencies["reviews"]
+            ):
+                raise ValueError("shared model receipt binding mismatch")
+        else:
+            row = db.execute(
+                "SELECT author_principal,parent_operation FROM shared_operations WHERE operation_id=?",
+                (operation,),
+            ).fetchone()
+            sources = sorted(
+                row[0]
+                for row in db.execute(
+                    "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                    (operation,),
+                )
+            )
+            audience = sorted(
+                row[0]
+                for row in db.execute(
+                    "SELECT principal_id FROM protected_shared_audiences WHERE operation_id=?",
+                    (operation,),
+                )
+            )
+            if (
+                row[0] != dependencies["principal"]
+                or sources != dependencies["sources"]
+                or audience != dependencies["audience"]
+                or (row[1] is not None and row[1] not in dependencies["reviews"])
+            ):
+                raise ValueError("shared model candidate binding mismatch")
 
 
 def erase_shared_source(db: sqlite3.Connection, event_id: str) -> None:
@@ -189,16 +237,30 @@ def revoke_shared_authorization(db: sqlite3.Connection, operation_id: str) -> No
     _erase_invalidated_shared(db)
 
 
-def erase_model_shared_candidates(db: sqlite3.Connection) -> None:
-    """A changed review or consent invalidates model-derived dependent text."""
-    db.execute(
-        """UPDATE shared_operations SET status='invalidated',reason='review_revoked'
-        WHERE operation_id LIKE 'sharedgen:%' AND status<>'invalidated'"""
-    )
+def erase_model_shared_candidates(
+    db: sqlite3.Connection, consent_id: str, scope
+) -> None:
+    """Only exact consent dependencies and unconsented inputs in that grant's scope."""
+    invalidate_dependencies(db, consent_id=consent_id, scope=scope)
+    # Legacy candidates retain authoritative source/audience lineage, though not
+    # the model's reviewed input. Match the revoked grant's exact scope only.
+    if scope is not None and scope[3] == "shared_abstraction":
+        db.execute(
+            """UPDATE shared_operations SET status='invalidated',reason='review_revoked'
+            WHERE item_id IN (SELECT o.item_id FROM shared_operations o
+                JOIN protected_shared_sources s USING(operation_id)
+                JOIN protected_shared_audiences a USING(operation_id)
+                JOIN protected_shared_manifests m USING(operation_id)
+                WHERE o.operation_id LIKE 'sharedgen:%'
+                AND json_type(m.binding,'$.model_dependencies') IS NULL
+                AND s.source_principal=? AND s.event_id=? AND a.principal_id=?)""",
+            scope[:3],
+        )
     _erase_invalidated_shared(db)
 
 
 def _erase_invalidated_shared(db: sqlite3.Connection) -> None:
+    invalidate_dependencies(db)
     db.execute(
         "DELETE FROM protected_shared_manifests WHERE operation_id IN "
         "(SELECT operation_id FROM shared_operations WHERE status='invalidated')"

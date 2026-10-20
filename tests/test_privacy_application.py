@@ -529,9 +529,9 @@ def test_current_revocation_no_application_consent_cache_and_released_writer(
     adapters = []
 
     class TrackingAdapter(EventStoreRestoreAdapter):
-        def apply_revocation(self, consent_id, revoked_at):
+        def apply_revocation(self, consent_id, revoked_at, scope=None):
             assert (consent_id, revoked_at) == (consent.consent_id, NOW)
-            return super().apply_revocation(consent_id, revoked_at)
+            return super().apply_revocation(consent_id, revoked_at, scope)
 
     def factory(path):
         adapter = TrackingAdapter(path)
@@ -601,8 +601,8 @@ def test_real_quarantine_failures_never_become_ready_or_apply_live_ledger(
                 )
             return report
 
-        def apply_revocation(self, consent_id, revoked_at):
-            super().apply_revocation(consent_id, revoked_at)
+        def apply_revocation(self, consent_id, revoked_at, scope=None):
+            super().apply_revocation(consent_id, revoked_at, scope)
             return False
 
         def rebuild_dependencies(self):

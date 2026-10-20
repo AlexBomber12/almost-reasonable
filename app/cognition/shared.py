@@ -18,7 +18,6 @@ from app.core.events import TrustedPrincipalContext
 from app.core.shared_graph import (
     validate_shared_graph,
     revoke_shared_authorization,
-    erase_model_shared_candidates,
 )
 from app.core.store import EventStore
 from app.privacy.application import PrivacyReadGate
@@ -185,6 +184,7 @@ class SharedIntelligence:
         candidate: ReviewedSharedCandidate,
         *,
         persistence_guard: Callable[[], bool] | None = None,
+        model_dependencies: dict | None = None,
     ) -> str:
         if type(candidate) is not ReviewedSharedCandidate:
             raise ValueError("reviewed candidate required")
@@ -197,7 +197,10 @@ class SharedIntelligence:
             candidate.counter_event_ids,
         )
         return self._screen(
-            approval, reviewed=True, persistence_guard=persistence_guard
+            approval,
+            reviewed=True,
+            persistence_guard=persistence_guard,
+            model_dependencies=model_dependencies,
         )
 
     def _screen(
@@ -206,6 +209,7 @@ class SharedIntelligence:
         *,
         reviewed: bool,
         persistence_guard: Callable[[], bool] | None = None,
+        model_dependencies: dict | None = None,
     ) -> str:
         self._shape(approval)
         # Screening is a short deterministic offline read fence. Persistence uses
@@ -254,6 +258,14 @@ class SharedIntelligence:
                     or (complete_allowed and payload.value in SYNTHETIC_ABSTRACT_VALUES)
                     else "Screened abstract candidate withheld."
                 )
+                dependencies = model_dependencies
+                if dependencies is None:
+                    previous = db.execute(
+                        "SELECT binding FROM protected_shared_manifests WHERE operation_id=?",
+                        (approval.proposal.operation_id,),
+                    ).fetchone()
+                    if previous is not None:
+                        dependencies = json.loads(previous[0]).get("model_dependencies")
                 binding = json.dumps(
                     dict(
                         item_id=approval.item_id,
@@ -271,6 +283,11 @@ class SharedIntelligence:
                         confidence=payload.confidence,
                         kind=payload.memory_kind.value,
                         **({"reviewed": True} if reviewed else {}),
+                        **(
+                            {"model_dependencies": dependencies}
+                            if dependencies is not None
+                            else {}
+                        ),
                     ),
                     sort_keys=True,
                     separators=(",", ":"),
@@ -518,10 +535,6 @@ class SharedIntelligence:
                     ),
                 )
                 revoke_shared_authorization(db, operation_id)
-                erase_model_shared_candidates(db)
-                db.execute(
-                    "DELETE FROM private_extraction_receipts WHERE operation_id LIKE 'sharedgen:%'"
-                )
                 validate_shared_graph(db)
                 return "revoked"
 

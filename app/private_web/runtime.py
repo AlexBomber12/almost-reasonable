@@ -683,7 +683,9 @@ class _DurableConversationRuntime(ConversationService):
             result = self._gate.authorized(commit)
             if type(result) is ReviewedSharedCandidate:
                 reason = self._shared.quarantine(
-                    result, persistence_guard=self._shared_proposal_controls
+                    result,
+                    persistence_guard=self._shared_proposal_controls,
+                    model_dependencies=audit.snapshot.dependencies,
                 )
                 status = (
                     "accepted" if reason == "shared_commit_disabled" else "rejected"

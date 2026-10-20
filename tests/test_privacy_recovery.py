@@ -113,7 +113,7 @@ class RestoreAdapter:
             (),
         )
 
-    def apply_revocation(self, consent_id, revoked_at):
+    def apply_revocation(self, consent_id, revoked_at, scope=None):
         self.revocations.append((consent_id, revoked_at))
         return not self.fail
 
@@ -4019,12 +4019,12 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
                 return object()
             return super().apply_deletion(record)
 
-        def apply_revocation(self, consent_id, revoked_at):
+        def apply_revocation(self, consent_id, revoked_at, scope=None):
             if method == "apply_revocation":
                 if behavior == "raise":
                     raise RuntimeError("private fault")
                 return "false" if behavior == "string_false" else False
-            return super().apply_revocation(consent_id, revoked_at)
+            return super().apply_revocation(consent_id, revoked_at, scope)
 
         def rebuild_dependencies(self):
             if method == "rebuild_dependencies":
@@ -4041,7 +4041,9 @@ def test_restore_adapter_fault_matrix(tmp_path, method, behavior, reason):
             return super().release_writers()
 
     result = QuarantinedRestore(ledger, 4, FaultAdapter).restore(
-        backup, tmp_path / f"quarantine-{method}-{behavior}.sqlite3", NOW
+        backup,
+        tmp_path / f"quarantine-{method}-{behavior}.sqlite3",
+        NOW + timedelta(minutes=2),
     )
     assert (result.disposition, result.reason) == (RestoreDisposition.BLOCKED, reason)
     assert ledger.deletion("delete-operation-001").disposition.value == "pending"

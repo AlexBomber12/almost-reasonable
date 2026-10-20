@@ -16,6 +16,7 @@ from app.cognition.worker_shared import (
 )
 from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore
+from app.core.model_shared_dependencies import validate_dependencies
 
 from .extraction_audit import ExtractionAuditStore
 
@@ -26,6 +27,7 @@ class SharedSnapshot:
     visible: tuple[tuple[str, int, str], ...]
     sources: tuple[str, ...]
     digest: str
+    dependencies: dict
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,12 +142,23 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                     bound_sources.add(event_id)
                     binding.append([event_id, source[0]])
                 binding.append(list(row[:6]))
-            for audience in self._audience:
-                for event_id in sorted(bound_sources):
+            consents = []
+            for event_id in sorted(bound_sources):
+                for audience in self._audience:
                     consent = self._shared._gate._ledger.active_shared_consent(
                         principal_id, event_id, audience, self._clock()
                     )
                     binding.append([event_id, audience, consent])
+                    consents.append([event_id, audience, consent])
+            dependencies = dict(
+                version="shared-model-dependencies-v1",
+                principal=principal_id,
+                sources=sorted(bound_sources),
+                audience=list(self._audience),
+                consents=consents,
+                reviews=sorted(row[3] for row in selected),
+            )
+            validate_dependencies(db, dependencies)
             request = SharedProposalRequest(content, tuple(items))
             request.serialize()
             digest = hashlib.sha256(
@@ -156,7 +169,7 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                 ).encode()
             ).hexdigest()
             return SharedSnapshot(
-                selected, visible, tuple(sorted(bound_sources)), digest
+                selected, visible, tuple(sorted(bound_sources)), digest, dependencies
             ), request
 
     def valid(self, principal, source_event_id, content, snapshot):
@@ -186,7 +199,7 @@ class SharedProposalAuditStore(ExtractionAuditStore):
             if (
                 type(data) is not dict
                 or set(data) != {"version", "snapshot", "proposal"}
-                or data["version"] != "shared-proposal-receipt-v1"
+                or data["version"] != "shared-proposal-receipt-v2"
             ):
                 raise ValueError
             raw = data["snapshot"]
@@ -195,6 +208,7 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                 "visible",
                 "sources",
                 "digest",
+                "dependencies",
             }:
                 raise ValueError
             snapshot = SharedSnapshot(
@@ -202,6 +216,7 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                 tuple(tuple(item) for item in raw["visible"]),
                 tuple(raw["sources"]),
                 raw["digest"],
+                raw["dependencies"],
             )
             if (
                 len(snapshot.selected) > MAX_ITEMS
@@ -226,6 +241,16 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                     or type(item[2]) is not str
                     for item in snapshot.visible
                 )
+            ):
+                raise ValueError
+            with closing(self._events._open()) as db:
+                validate_dependencies(db, snapshot.dependencies)
+            if (
+                snapshot.dependencies["sources"] != list(snapshot.sources)
+                or snapshot.dependencies["audience"] != list(self._audience)
+                or snapshot.dependencies["principal"] != principal_id
+                or snapshot.dependencies["reviews"]
+                != sorted(row[3] for row in snapshot.selected)
             ):
                 raise ValueError
             suggestion = (
@@ -280,12 +305,13 @@ class SharedProposalAuditStore(ExtractionAuditStore):
             )
         receipt = json.dumps(
             {
-                "version": "shared-proposal-receipt-v1",
+                "version": "shared-proposal-receipt-v2",
                 "snapshot": {
                     "selected": snapshot.selected,
                     "visible": snapshot.visible,
                     "sources": snapshot.sources,
                     "digest": snapshot.digest,
+                    "dependencies": snapshot.dependencies,
                 },
                 "proposal": None,
             },

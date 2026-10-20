@@ -84,9 +84,22 @@ head, the configured audience, and current consent state in an erasable receipt.
 A changed snapshot blocks persistence. Intent is recorded before provider contact;
 an uncertain result is never blindly retried. A received result can be reconciled
 after restart while its original binding is valid. Source deletion erases bound
-receipts and candidate payloads. Consent or review revocation conservatively
-invalidates all model-derived candidates and erases their receipts. Old-backup
-quarantine drops the receipts.
+receipts and candidate payloads. Version 2 receipts record protected, erasable
+dependencies on every source, configured audience, exact active consent (or its
+absence), and the reviewed input shown to the worker. These bindings remain in
+the protected candidate manifest after the receipt is consumed. Consent
+revocation follows the grant's authoritative identity and exact scope; review
+revocation follows the actual reviewed input, including suggestions for a new
+item. Cascades invalidate complete item histories and dependent replies before
+removing payloads and bindings. Independent candidates and receipts survive
+reconciliation and repeated revocations. Future revocations take effect at their
+recorded time during live reconciliation.
+
+Old-backup quarantine still withholds all reviewed candidate authority, since the
+external ledger does not journal local review revocations. It also removes their
+dependent receipts. Independent source-only version 2 receipts retain their
+bindings; legacy version 1 receipts lack an exact audience binding and are
+unavailable for replay and removed during quarantine.
 
 The suggested text enters the existing `SharedIntelligence.quarantine` path. It
 remains invisible to other participants until independent local review and exact
