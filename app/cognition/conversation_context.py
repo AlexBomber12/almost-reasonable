@@ -278,6 +278,7 @@ class MemoryConversationAssembler:
         reply_permitted=lambda _reply: True,
         include_memories=True,
         include_narrative=False,
+        reserve_narrative_slot=False,
     ):
         events = self._store.retrieve_private_events_in_commit_order(
             principal,
@@ -397,6 +398,7 @@ class MemoryConversationAssembler:
                 )
             )
         if include_narrative:
+            narrative_limit = 15 if reserve_narrative_slot else 16
             episodes = self._narrative.current(principal, _connection=db)
             words = set(MemoryContextSelector._words(topic))
             ranked = sorted(
@@ -425,7 +427,8 @@ class MemoryConversationAssembler:
                     ),
                 )
                 if (
-                    len(sources | set(episode.sources)) <= 100
+                    len(proposed.narrative_operation_ids) <= narrative_limit
+                    and len(sources | set(episode.sources)) <= 100
                     and len(proposed.serialize().encode("utf-8"))
                     <= self._limits.max_utf8_bytes
                 ):
@@ -519,7 +522,8 @@ class MemoryConversationAssembler:
                 )
                 or len(inherited_shared | extra_shared) > 16
                 or len(inherited_generic | extra_generic) > 16
-                or len(inherited_narrative | extra_narrative) > 16
+                or len(inherited_narrative | extra_narrative)
+                > (15 if reserve_narrative_slot else 16)
                 or len(proposed._serialized().encode("utf-8"))
                 > self._limits.max_utf8_bytes
             ):

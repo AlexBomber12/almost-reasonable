@@ -1299,6 +1299,93 @@ def test_narrative_storage_bounds_are_enforced(tmp_path):
         )
 
 
+def test_cued_revision_reserves_reply_dependency_slot_at_episode_limit(
+    tmp_path, monkeypatch
+):
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Исходная вымышленная сцена")
+    episodes = NarrativeStore(events)
+    for index in range(16):
+        episodes.commit(
+            who,
+            operation_id=f"narrative:seed:{index}",
+            source_event_id=source,
+            text=f"Я видел вымышленный маяк {index}.",
+            item_id=f"episode:seed:{index}",
+            expected_revision=0,
+            expected_heads=tuple(
+                sorted(
+                    (episode.item_id, episode.revision)
+                    for episode in episodes.current(who)
+                )
+            ),
+            exposed_sources=(source,),
+            exposed_episodes=(),
+            created_at=NOW,
+        )
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    seen = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        if isinstance(request, NarrativeModelRequest):
+            assert len(request.episodes) == 15
+            return ClientResult(
+                operation_id,
+                correlation_id,
+                "completed",
+                1,
+                None,
+                narrative=NarrativeProposal(
+                    "revise",
+                    request.episodes[0].handle,
+                    "Я видел новый вымышленный берег.",
+                ),
+            )
+        seen.append(json.loads(request.serialize())["fictional_episodes"])
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            validation=ProposalValidation(
+                ReplyProposal("Я видел новый вымышленный берег."), None
+            ),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc.db")),
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    result = runtime.submit(who, "revision", "Продолжим историю")
+    assert result.model_state.value == "completed"
+    assert len(seen[0]) == 15
+    assert any(
+        item["text"] == "Я видел новый вымышленный берег." and item["revision"] == 2
+        for item in seen[0]
+    )
+    revised = [episode for episode in episodes.current(who) if episode.revision == 2]
+    assert len(revised) == 1
+    reply = AgentOutputStore(events).read_reply(
+        who, "reply:" + revised[0].operation_id.removeprefix("narrative:")
+    )
+    assert len(reply.operation.narrative_operation_ids) == 16
+    assert revised[0].operation_id in reply.operation.narrative_operation_ids
+
+
 def test_invalidated_head_cannot_be_resurrected_or_exceed_storage_bound(tmp_path):
     from app.cognition.narrative_store import validate_narrative_graph
 

@@ -417,7 +417,14 @@ class _DurableConversationRuntime(ConversationService):
                     return previous, None
                 if self._memory_bridge is not None or self._worker is not None:
                     return self._reserve_memory(
-                        principal, event_id, correlation, operation_id
+                        principal,
+                        event_id,
+                        correlation,
+                        operation_id,
+                        reserve_narrative_slot=(
+                            getattr(self, "_narrative_audit", None) is not None
+                            and _narrative_requested(content)
+                        ),
                     )
                 events = self._event_store.retrieve_private_events_in_commit_order(
                     principal, event_id
@@ -608,7 +615,15 @@ class _DurableConversationRuntime(ConversationService):
             lambda: self._response(admission.message_status, route, operation_id)
         )
 
-    def _reserve_memory(self, principal, event_id, correlation, operation_id):
+    def _reserve_memory(
+        self,
+        principal,
+        event_id,
+        correlation,
+        operation_id,
+        *,
+        reserve_narrative_slot=False,
+    ):
         db = self._event_store._open()
         try:
             with db:
@@ -636,6 +651,7 @@ class _DurableConversationRuntime(ConversationService):
                     include_memories=getattr(self, "_narrative_audit", None) is None,
                     include_narrative=getattr(self, "_narrative_audit", None)
                     is not None,
+                    reserve_narrative_slot=reserve_narrative_slot,
                 )
                 generic_operations = request.generic_operation_ids
                 shared_operations = request.inherited_shared_operation_ids
