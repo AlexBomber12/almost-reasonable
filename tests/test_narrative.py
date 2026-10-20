@@ -2178,17 +2178,22 @@ def test_narrative_worker_rechecks_permission_before_returning_result(tmp_path):
         server.close()
 
 
+@pytest.mark.parametrize(
+    "question", ["What is the history of Rome?", "Расскажи историю Рима"]
+)
 def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, question
 ):
     from app.core.agent_proposals import ProposalValidation, ReplyProposal
     from app.core.openai_worker_client import ClientResult
     from app.private_web.runtime import _narrative_requested
 
     assert not _narrative_requested("What is the history of Rome?")
+    assert not _narrative_requested("Расскажи историю Рима")
     assert not _narrative_requested("A bookstore has maps")
     assert _narrative_requested("Tell me a story")
     assert _narrative_requested("Расскажи историю")
+    assert _narrative_requested("Продолжим историю")
     assert _narrative_requested("a fictional episode")
 
     events = EventStore(tmp_path / "events.db")
@@ -2219,9 +2224,7 @@ def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
         narrative_permission_current=lambda: True,
     )
     assert (
-        runtime.submit(
-            principal("a"), "rome", "What is the history of Rome?"
-        ).model_state.value
+        runtime.submit(principal("a"), "rome", question).model_state.value
         == "completed"
     )
     assert len(calls) == 1

@@ -102,12 +102,16 @@ def _narrative_active_key(store, operation_id):
 
 
 def _narrative_requested(content: str) -> bool:
-    return (
+    folded = content.casefold()
+    return bool(
         re.search(
-            r"(?<!\w)(?:истори[а-яё]*|вымышлен[а-яё]*|сюжет[а-яё]*|эпизод[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives|episode|episodes)(?!\w)",
-            content.casefold(),
+            r"(?<!\w)(?:вымышлен[а-яё]*|сюжет[а-яё]*|эпизод[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives|episode|episodes)(?!\w)",
+            folded,
         )
-        is not None
+        or re.fullmatch(
+            r"\s*(?:расскажи|продолжи|продолжим)\s+истори[а-яё]*\s*[.!?…]*",
+            folded,
+        )
     )
 
 
