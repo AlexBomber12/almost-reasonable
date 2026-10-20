@@ -11,6 +11,12 @@ import math
 import re
 
 from app.threads.domain import require_reference
+from app.behavior.deliberation import (
+    BehaviorProposalValidation,
+    parse_behavior_proposal,
+)
+from app.core.agent_proposals import AgentDecision, ProposalInvalidReason
+from app.behavior.mission import MissionPurpose
 
 VERSION = "public-behavior-v1"
 MAX_FRAME = 32_768
@@ -29,6 +35,7 @@ class PublicBehaviorRequest:
     reservation: dict | None = None
     catalog: tuple[tuple[str, str], ...] = ()
     evidence: tuple[str, ...] = ()
+    mission_evolution: tuple[str, ...] = ()
 
     def encode(self) -> bytes:
         require_reference("operation ID", self.operation_id)
@@ -68,6 +75,13 @@ class PublicBehaviorRequest:
             )
         ):
             raise ValueError("invalid public research context")
+        if self.mission_evolution not in ((), ("enabled",)) and not (
+            type(self.mission_evolution) is tuple
+            and len(self.mission_evolution) == 2
+            and self.mission_evolution[0] == "pending"
+            and self.mission_evolution[1] in MissionPurpose._value2member_map_
+        ):
+            raise ValueError("invalid mission evolution context")
         if (
             type(self.deadline_seconds) not in (float, int)
             or not math.isfinite(self.deadline_seconds)
@@ -99,6 +113,8 @@ class PublicBehaviorRequest:
             }:
                 raise ValueError("invalid application reservation evidence")
             value["reservation"] = self.reservation
+        if self.mission_evolution:
+            value["mission_evolution"] = self.mission_evolution
         data = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
         if len(data) > MAX_FRAME:
             raise ValueError("public request too large")
@@ -112,7 +128,7 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
         value = json.loads(data, object_pairs_hook=_unique_fields)
         if (
             type(value) is not dict
-            or set(value)
+            or set(value) - {"mission_evolution"}
             not in (
                 {
                     "version",
@@ -158,6 +174,7 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
                 tuple(item) if type(item) is list else item for item in value["catalog"]
             ),
             tuple(value["evidence"]),
+            tuple(value.get("mission_evolution", ())),
         )
         request.encode()
         return request
@@ -179,3 +196,36 @@ def public_context_digest(context: tuple[str, ...]) -> str:
 
     encoded = json.dumps(context, ensure_ascii=False, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class PublicMissionChoice:
+    action: str
+    purpose: MissionPurpose | None
+    decision: AgentDecision = AgentDecision.REVISE_MISSION
+
+
+def parse_public_proposal(value: object, *, evolution: bool = False):
+    """Public-only closed mission choice, without model-selected authority fields."""
+    if type(value) is dict and value.get("decision") == "mission":
+        if not evolution or set(value) != {"decision", "action", "purpose"}:
+            return BehaviorProposalValidation(
+                None, ProposalInvalidReason.UNKNOWN_FIELDS
+            )
+        action, raw_purpose = value["action"], value["purpose"]
+        if (
+            action not in ("propose", "confirm", "reject")
+            or (
+                action == "propose"
+                and raw_purpose not in MissionPurpose._value2member_map_
+            )
+            or (action != "propose" and raw_purpose is not None)
+        ):
+            return BehaviorProposalValidation(None, ProposalInvalidReason.INVALID_FIELD)
+        return BehaviorProposalValidation(
+            PublicMissionChoice(
+                action, MissionPurpose(raw_purpose) if action == "propose" else None
+            ),
+            None,
+        )
+    return parse_behavior_proposal(value)

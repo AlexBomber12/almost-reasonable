@@ -8,8 +8,11 @@ import socket
 import struct
 import time
 
-from app.behavior.deliberation import parse_behavior_proposal
-from app.core.public_behavior import PublicBehaviorRequest, _unique_fields
+from app.core.public_behavior import (
+    PublicBehaviorRequest,
+    _unique_fields,
+    parse_public_proposal,
+)
 from app.core.core_self import CORE_SELF_VERSION
 from app.core.provider_contract import CostEstimateStatus, PROVIDER_NAME
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES, ProviderAttemptRecord
@@ -29,6 +32,7 @@ class PublicBehaviorClient:
         self.reservation_evidence = None
         self.provider_store = None
         self.public_context = None
+        self.mission_evolution_context = None
 
     def complete(self, request, timeout_seconds):
         operation = request["correlation_id"]
@@ -43,6 +47,10 @@ class PublicBehaviorClient:
         if self.public_context is not None:
             catalog, evidence = self.public_context(operation)
             public = replace(public, catalog=catalog, evidence=evidence)
+        if self.mission_evolution_context is not None:
+            public = replace(
+                public, mission_evolution=self.mission_evolution_context(operation)
+            )
         if self.reservation_evidence is not None:
             public = replace(public, reservation=self.reservation_evidence(public))
         payload = public.encode()
@@ -167,6 +175,8 @@ class PublicBehaviorClient:
             raise ValueError("invalid public worker telemetry") from error
         if outcome != "completed":
             raise ValueError("public worker inference unavailable")
-        if not parse_behavior_proposal(value["proposal"]).valid:
+        if not parse_public_proposal(
+            value["proposal"], evolution=bool(public.mission_evolution)
+        ).valid:
             raise ValueError("invalid public worker proposal")
         return value["proposal"]

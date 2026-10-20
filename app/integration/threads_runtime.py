@@ -27,7 +27,9 @@ from app.core.agent_proposals import (
 )
 from app.core.core_self import initial_core_self
 from app.core.public_behavior import MAX_CONTEXT, public_context_digest
+from app.core.public_behavior import PublicMissionChoice, parse_public_proposal
 from app.core.public_behavior_mission import PublicMissionContext
+from app.core.public_mission_evolution import PublicMissionEvolution
 from app.core.public_research_client import PublicResearchClient
 from app.core.public_research_profile import PUBLIC_PURPOSE, load_research_profile
 from app.core.provider_spend import ProviderStateStore
@@ -194,6 +196,7 @@ class ThreadsRuntime(ThreadsStage0):
         research_profile_path=None,
         research_scope=None,
         research_enabled=False,
+        mission_evolution_enabled=False,
         enabled=False,
         live_enabled=False,
         checkpoint=lambda _point: None,
@@ -212,6 +215,10 @@ class ThreadsRuntime(ThreadsStage0):
             or transport.account_ref != policy.account_ref
         ):
             raise ValueError("exact public runtime components required")
+        if type(mission_evolution_enabled) is not bool or (
+            mission_evolution_enabled and mission is None
+        ):
+            raise ValueError("invalid public mission evolution configuration")
         self.enabled, self.live_enabled = enabled, live_enabled
         self.account, self.model, self.simulator = policy.account_ref, model, transport
         self.policy, self.owner, self.provider, self.ledger = (
@@ -241,6 +248,7 @@ class ThreadsRuntime(ThreadsStage0):
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
         self.mission = mission
+        self.mission_evolution_enabled = mission_evolution_enabled
         journal_existed = Path(journal_path).exists()
         self.journal = Stage0Journal(
             journal_path, self.account, mission_required=mission is not None
@@ -279,7 +287,14 @@ class ThreadsRuntime(ThreadsStage0):
             )
         if mission is not None and self.journal.needs_mission_initialization:
             self.journal.mark_mission_initialized()
-        self.engine = DeliberationEngine(model, clock.now)
+        self.mission_evolution = None
+        self.engine = DeliberationEngine(
+            model,
+            clock.now,
+            parser=lambda value: parse_public_proposal(
+                value, evolution=mission_evolution_enabled
+            ),
+        )
         self.authorization = PublicAuthorization(self)
         self.service = ThreadsService(
             ThreadsStore(threads_path),
@@ -289,6 +304,14 @@ class ThreadsRuntime(ThreadsStage0):
             authorization_provider=self.authorization,
             poll_guard=self.guard,
             live_enabled=True,
+        )
+        self.mission_evolution = (
+            PublicMissionEvolution(self) if mission_evolution_enabled else None
+        )
+        self.model.mission_evolution_context = (
+            self.inference_mission_evolution_context
+            if mission_evolution_enabled
+            else None
         )
         self.scheduler = DurableScheduler(
             wakeup_policy,
@@ -361,9 +384,19 @@ class ThreadsRuntime(ThreadsStage0):
             or profile.digest != payload.get("offered_profile_digest")
         ):
             return (), ()
-        return self._public_context(profile)
+        catalog, evidence, source = self._public_context_with_source(profile)
+        if self.mission_evolution is not None and (
+            source != payload.get("mission_evidence_operation")
+            or public_context_digest(evidence) != payload.get("mission_evidence_digest")
+        ):
+            raise ValueError("public mission evidence changed during inference")
+        return catalog, evidence
 
     def _public_context(self, profile):
+        catalog, evidence, _ = self._public_context_with_source(profile)
+        return catalog, evidence
+
+    def _public_context_with_source(self, profile):
         choices = self.available_topics(profile)
         catalog = (
             ()
@@ -374,11 +407,11 @@ class ThreadsRuntime(ThreadsStage0):
                 if topic.topic_id in choices
             )
         )
-        evidence = ()
+        evidence, source = (), None
         if profile is not None:
             with self.journal.transaction() as db:
                 rows = db.execute(
-                    "SELECT r.evidence,i.payload FROM public_research_ops r "
+                    "SELECT r.operation,r.evidence,i.payload FROM public_research_ops r "
                     "JOIN intents i ON i.operation=r.operation WHERE r.phase='completed' "
                     "AND r.profile_digest=? ORDER BY i.rowid DESC LIMIT 8",
                     (profile.digest,),
@@ -391,11 +424,11 @@ class ThreadsRuntime(ThreadsStage0):
                         self.source_valid(payload)
                         and self.ledger.control_generation() == payload["generation"]
                     ):
-                        evidence = (row["evidence"],)
+                        evidence, source = (row["evidence"],), row["operation"]
                         break
                 except ValueError:
                     continue
-        return catalog, evidence
+        return catalog, evidence, source
 
     def available_topics(self, profile):
         if profile is None:
@@ -427,8 +460,21 @@ class ThreadsRuntime(ThreadsStage0):
             and tuple(payload["mission_text"]) == request.mission
             and self.inference_public_context(request.operation_id)
             == (request.catalog, request.evidence)
+            and self.inference_mission_evolution_context(request.operation_id)
+            == request.mission_evolution
             and 0 < request.deadline_seconds <= payload["timeout"]
         )
+
+    def inference_mission_evolution_context(self, operation):
+        if self.mission_evolution is None:
+            return ()
+        payload = self.journal.read(operation)
+        if payload["phase"] != "started":
+            return ()
+        value = tuple(payload["mission_evolution"])
+        if value != self.mission_evolution.model_context():
+            raise ValueError("public mission proposal changed during inference")
+        return value
 
     def reservation_evidence(self, request):
         """Assert only the started operation fields to the UID authenticated worker."""
@@ -471,7 +517,19 @@ class ThreadsRuntime(ThreadsStage0):
             text, binding = self.mission.snapshot()
             mission_text = (text,)
             origin = {**origin, "mission": binding}
+        evolution_context = (
+            ()
+            if self.mission_evolution is None
+            else self.mission_evolution.model_context()
+        )
         offered_profile = self.current_research_profile()
+        mission_evidence_operation = None
+        mission_evidence_digest = public_context_digest(())
+        if self.mission_evolution is not None:
+            _, offered_evidence, mission_evidence_operation = (
+                self._public_context_with_source(offered_profile)
+            )
+            mission_evidence_digest = public_context_digest(offered_evidence)
         trigger = "autonomous_wakeup" if origin["kind"] == "wake" else "public_message"
         origin = {
             **origin,
@@ -481,8 +539,13 @@ class ThreadsRuntime(ThreadsStage0):
             "trigger": trigger,
             "context_digest": public_context_digest(context),
             "mission_text": mission_text,
+            "mission_evolution": evolution_context,
             "timeout": timeout,
         }
+        if self.mission_evolution is not None:
+            origin["mission_invariants"] = self.mission_evolution.invariants().to_dict()
+            origin["mission_evidence_operation"] = mission_evidence_operation
+            origin["mission_evidence_digest"] = mission_evidence_digest
         if not self.journal.start(operation, origin):
             return
         self.checkpoint("after_started")
@@ -559,6 +622,20 @@ class ThreadsRuntime(ThreadsStage0):
                     topic=topic.topic_id,
                     profile_digest=profile.digest,
                 )
+        elif (
+            type(proposal) is PublicMissionChoice and self.mission_evolution is not None
+        ):
+            pending = self.mission_evolution.pending()
+            if (proposal.action == "propose") != (pending is None):
+                rejected = True
+            else:
+                payload.update(
+                    decision=AgentDecision.REVISE_MISSION.value,
+                    mission_action=proposal.action,
+                    mission_purpose=None
+                    if proposal.purpose is None
+                    else proposal.purpose.value,
+                )
         elif type(proposal) in (PublicationProposal, ReplyProposal):
             content = (
                 proposal.draft
@@ -615,6 +692,17 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise PolicyDeniedError("public source changed")
         decision = AgentDecision(payload["decision"])
+        if decision is AgentDecision.REVISE_MISSION:
+            if self.mission_evolution is None:
+                raise PolicyDeniedError("public mission evolution disabled")
+            try:
+                self.mission_evolution.apply(operation, payload)
+            except ValueError as error:
+                raise PolicyDeniedError(
+                    "public mission transition unavailable"
+                ) from error
+            self._record_mission_outcome(operation, payload)
+            return
         if decision is AgentDecision.RESEARCH:
             self._research(operation, payload)
             self.journal.linked(operation)
@@ -686,6 +774,36 @@ class ThreadsRuntime(ThreadsStage0):
                     control_expires_at=None,
                 )
         self.journal.linked(operation)
+
+    def _record_mission_outcome(self, operation, payload):
+        if payload[
+            "kind"
+        ] != "wake" and not self.service.store.conversation_outcome_recorded(operation):
+            self.service.store.record_conversation_outcome(
+                outcome_id=operation,
+                correlation_id=payload["correlation"],
+                account_ref=self.account,
+                stream=InboundKind(payload["kind"]),
+                inbound_event_id=payload["event"],
+                outcome=ConversationOutcome.NO_ACTION,
+                reason="other",
+                resume_condition=None,
+                now=self.parse_time(payload["decided_at"]),
+                control_expires_at=None,
+            )
+
+    def recover(self):
+        blocked = super().recover()
+        if self.mission_evolution is not None:
+            with self.journal.transaction() as db:
+                rows = db.execute(
+                    "SELECT operation,payload FROM intents WHERE phase='linked'"
+                ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"])
+                if payload.get("decision") == AgentDecision.REVISE_MISSION.value:
+                    self._record_mission_outcome(row["operation"], payload)
+        return blocked
 
     def _research(self, operation, payload):
         with self.journal.transaction() as db:
