@@ -182,8 +182,12 @@ def test_narrative_receipt_commit_requires_current_reply_and_revision(case, expe
         _outputs=SimpleNamespace(
             read_reply=lambda *_args: None if case == "reply_missing" else reply
         ),
-        _narrative_current=lambda *_args: case != "authority_changed",
-        _narrative_store=SimpleNamespace(current=lambda *_args: (), commit=write),
+        _narrative_current=lambda *_args, **_kwargs: case != "authority_changed",
+        _narrative_store=SimpleNamespace(
+            current=lambda *_args: (),
+            committed=lambda *_args, **_kwargs: False,
+            commit=write,
+        ),
         _gate=SimpleNamespace(authorized=lambda fn: fn()),
         _clock=lambda: datetime(2026, 10, 20, tzinfo=UTC),
         _checkpoint=lambda *_args: None,

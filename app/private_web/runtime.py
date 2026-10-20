@@ -885,8 +885,27 @@ class _DurableConversationRuntime(ConversationService):
             return
         if audit is not None and audit.status == "received":
             self._commit_narrative(principal, event_id, operation_id, audit)
+            audit = self._narrative_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+        if audit is not None and audit.status not in {"reserved", "received"}:
 
-    def _narrative_current(self, principal, event_id, reply_operation, audit):
+            def resolve_interrupted_reply():
+                reply = self._outputs.read_reply(principal, reply_operation_id)
+                if (
+                    reply is not None
+                    and reply.result_state is ResultState.PENDING
+                    and not self._provider.attempt_exists("ipc:" + reply_operation_id)
+                ):
+                    self._outputs.resolve_without_reply(
+                        principal, reply_operation_id, "unavailable"
+                    )
+
+            self._gate.authorized(resolve_interrupted_reply)
+
+    def _narrative_current(
+        self, principal, event_id, reply_operation, audit, *, committed=False
+    ):
         caps = self._capabilities()
         if (
             caps.emergency_stop_active
@@ -912,17 +931,30 @@ class _DurableConversationRuntime(ConversationService):
                 for episode in self._narrative_store.current(principal)
             )
         )
-        return heads == audit.heads and event_id in audit.sources
+        return (heads == audit.heads or committed) and event_id in audit.sources
 
     def _commit_narrative(self, principal, event_id, operation_id, audit):
         reply_operation_id = "reply:" + operation_id.removeprefix("narrative:")
 
         def commit():
             reply = self._outputs.read_reply(principal, reply_operation_id)
-            if reply is None or not self._narrative_current(
-                principal, event_id, reply.operation, audit
+            if reply is None:
+                return "unavailable"
+            already = self._narrative_store.committed(
+                principal,
+                operation_id=operation_id,
+                source_event_id=event_id,
+                proposal=audit.proposal,
+                selected=audit.selected,
+                heads=audit.heads,
+                sources=audit.sources,
+            )
+            if not self._narrative_current(
+                principal, event_id, reply.operation, audit, committed=already
             ):
                 return "unavailable"
+            if already:
+                return "accepted"
             proposal = audit.proposal
             if proposal.decision == "no_change":
                 return "no_change"
@@ -1974,6 +2006,10 @@ class _DurableConversationRuntime(ConversationService):
                     and reply.result_state is ResultState.PERSISTED
                     and resolution == ("completed", f"release:{operation_id}")
                     and self._current_request.get()()
+                    and (
+                        getattr(self, "_narrative_audit", None) is None
+                        or self._narrative_permission()
+                    )
                     and self._shared_consent_live(reply.operation, principal)
                     and self._historical_research_permitted(principal, reply)
                 ):

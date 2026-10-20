@@ -1485,6 +1485,222 @@ def test_narrative_receipt_rejects_duplicate_or_late_provider_result(tmp_path):
         ).fetchone() == (0,)
 
 
+def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
+    tmp_path, monkeypatch
+):
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(operation_id)
+        if isinstance(request, NarrativeModelRequest):
+            return ClientResult(
+                operation_id,
+                correlation_id,
+                "completed",
+                1,
+                None,
+                narrative=NarrativeProposal(
+                    "create", None, "Я видел вымышленный маяк."
+                ),
+            )
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            validation=ProposalValidation(ReplyProposal("Ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+
+    def crash(point):
+        if point == "after_memory_store_commit":
+            raise RuntimeError("synthetic crash after episode commit")
+
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+        checkpoint=crash,
+    )
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        runtime.submit(principal("a"), "first", "Расскажи историю")
+    assert len(NarrativeStore(events).current(principal("a"))) == 1
+    with provider._event_store._open() as db:
+        assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
+            "received",
+        )
+
+    reopened = EventStore(events.database_path)
+    fresh_gate = PrivacyReadGate(ledger, reopened)
+    assert fresh_gate.reconcile()
+    recovered = WorkerConversationRuntime(
+        reopened,
+        fresh_gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    result = recovered.submit(principal("a"), "first", "Расскажи историю")
+    assert result.model_state.value == "unavailable"
+    assert len(calls) == 1
+    assert len(NarrativeStore(events).current(principal("a"))) == 1
+    with provider._event_store._open() as db:
+        assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
+            "accepted",
+        )
+
+
+def test_revoked_narrative_permission_withholds_released_history(tmp_path, monkeypatch):
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    who = principal("a")
+    source = append_event(events, who, "source", "Синтетическое начало")
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:source",
+        source_event_id=source,
+        text="Я видел вымышленный маяк.",
+        item_id="episode:source",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(source,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    permission = {"current": True}
+
+    def reply(_client, request, *, correlation_id, operation_id):
+        assert not isinstance(request, NarrativeModelRequest)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            validation=ProposalValidation(ReplyProposal("Синтетический ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", reply)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(tmp_path / "missing.sock", expected_worker_uid=os.getuid()),
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc.db")),
+        narrative_enabled=True,
+        narrative_permission_current=lambda: permission["current"],
+    )
+    assert (
+        runtime.submit(who, "second", "Продолжим беседу").model_state.value
+        == "completed"
+    )
+    assert any(item.role == "agent" for item in runtime.history(who))
+    permission["current"] = False
+    assert all(item.role != "agent" for item in runtime.history(who))
+
+
+def test_post_commit_recognition_requires_exact_episode_and_source_binding(tmp_path):
+    events = EventStore(tmp_path / "events.db")
+    a, b = principal("a"), principal("b")
+    first = append_event(events, a, "first", "Синтетическая история")
+    second = append_event(events, a, "second", "Синтетическое продолжение")
+    store = NarrativeStore(events)
+    store.commit(
+        a,
+        operation_id="narrative:one",
+        source_event_id=first,
+        text="Я видел маяк.",
+        item_id="episode:one",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(first,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    create = dict(
+        operation_id="narrative:one",
+        source_event_id=first,
+        proposal=NarrativeProposal("create", None, "Я видел маяк."),
+        selected=(),
+        heads=(),
+        sources=(first,),
+    )
+    assert store.committed(a, **create)
+    assert not store.committed(a, **{**create, "proposal": None})
+    assert not store.committed(
+        a, **{**create, "proposal": NarrativeProposal("no_change", None, None)}
+    )
+    assert not store.committed(b, **create)
+    assert not store.committed(a, **{**create, "operation_id": "narrative:absent"})
+    assert not store.committed(
+        a, **{**create, "proposal": NarrativeProposal("create", None, "Другой текст")}
+    )
+    assert not store.committed(a, **{**create, "sources": (second,)})
+    assert not store.committed(a, **{**create, "source_event_id": second})
+    assert not store.committed(
+        a, **{**create, "selected": (("h0123456789abcdef", "narrative:one"),)}
+    )
+    assert not store.committed(a, **{**create, "heads": (("episode:one", 1),)})
+
+    store.commit(
+        a,
+        operation_id="narrative:two",
+        source_event_id=second,
+        text="Я видел берег.",
+        item_id="episode:one",
+        expected_revision=1,
+        expected_heads=(("episode:one", 1),),
+        exposed_sources=(second,),
+        exposed_episodes=("narrative:one",),
+        created_at=NOW,
+    )
+    revise = dict(
+        operation_id="narrative:two",
+        source_event_id=second,
+        proposal=NarrativeProposal("revise", "h0123456789abcdef", "Я видел берег."),
+        selected=(("h0123456789abcdef", "narrative:one"),),
+        heads=(("episode:one", 1),),
+        sources=tuple(sorted((first, second))),
+    )
+    assert store.committed(a, **revise)
+    assert not store.committed(
+        a,
+        **{
+            **revise,
+            "proposal": NarrativeProposal(
+                "revise", "hffffffffffffffff", "Я видел берег."
+            ),
+        },
+    )
+    assert not store.committed(a, **{**revise, "heads": ()})
+    with sqlite3.connect(events.database_path) as db:
+        db.execute(
+            "UPDATE narrative_operations SET status='invalidated' WHERE operation_id='narrative:two'"
+        )
+    assert not store.committed(a, **revise)
+
+
 def test_received_narrative_status_without_payload_cannot_replay(tmp_path):
     _events, provider, audit, who, source, content, _reply, _context, operation, _ = (
         _reserved_audit(tmp_path)

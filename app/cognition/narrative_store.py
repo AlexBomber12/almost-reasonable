@@ -100,6 +100,76 @@ class NarrativeStore:
             if _connection is None:
                 db.close()
 
+    def committed(
+        self,
+        context: TrustedPrincipalContext,
+        *,
+        operation_id: str,
+        source_event_id: str,
+        proposal,
+        selected: tuple[tuple[str, str], ...],
+        heads: tuple[tuple[str, int], ...],
+        sources: tuple[str, ...],
+    ) -> bool:
+        """Recognize only the exact durable operation after a post-commit crash."""
+        EventStore._validate_context(context)
+        if proposal is None or proposal.decision not in {"create", "revise"}:
+            return False
+        principal = context.principal_id.value
+        db = self._events._open()
+        try:
+            self._events._verify_current_schema(db)
+            row = db.execute(
+                """SELECT o.item_id,o.revision,o.expected_revision,o.status,p.episode
+                   FROM narrative_operations o JOIN narrative_payloads p
+                     ON p.principal_id=o.principal_id AND p.operation_id=o.operation_id
+                   WHERE o.principal_id=? AND o.operation_id=?""",
+                (principal, operation_id),
+            ).fetchone()
+            if (
+                row is None
+                or row[3] != "active"
+                or row[4] != proposal.episode
+                or _eligible(db, principal, operation_id) != sources
+                or source_event_id not in sources
+            ):
+                return False
+            contexts = tuple(
+                item[0]
+                for item in db.execute(
+                    """SELECT context_operation_id FROM narrative_context
+                       WHERE principal_id=? AND operation_id=?
+                       ORDER BY context_operation_id""",
+                    (principal, operation_id),
+                )
+            )
+            if contexts != tuple(sorted(operation for _handle, operation in selected)):
+                return False
+            if proposal.decision == "create":
+                expected_item = "episode:" + operation_id.removeprefix("narrative:")
+                expected_revision = 0
+                if any(item == expected_item for item, _revision in heads):
+                    return False
+            else:
+                target = dict(selected).get(proposal.handle)
+                if target is None:
+                    return False
+                previous = db.execute(
+                    """SELECT item_id,revision FROM narrative_operations
+                       WHERE principal_id=? AND operation_id=?""",
+                    (principal, target),
+                ).fetchone()
+                if previous is None or previous not in heads:
+                    return False
+                expected_item, expected_revision = previous
+            return row[:3] == (
+                expected_item,
+                expected_revision + 1,
+                expected_revision,
+            )
+        finally:
+            db.close()
+
     def commit(
         self,
         context: TrustedPrincipalContext,
