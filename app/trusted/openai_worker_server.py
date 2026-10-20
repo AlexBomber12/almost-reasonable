@@ -24,6 +24,7 @@ from app.core.model_contract import ModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest
 from app.cognition.worker_evolution import EvolutionModelRequest
 from app.cognition.worker_typed import TypedModelRequest
+from app.cognition.worker_narrative import NarrativeModelRequest
 from app.cognition.worker_shared import SharedProposalRequest
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_protocol import (
@@ -101,6 +102,8 @@ class OpenAIWorkerServer:
         evolution_commit_guard: Callable[[], bool] | None = None,
         typed_enabled: bool = False,
         typed_commit_guard: Callable[[], bool] | None = None,
+        narrative_enabled: bool = False,
+        narrative_commit_guard: Callable[[], bool] | None = None,
         shared_enabled: bool = False,
         shared_commit_guard: Callable[[], bool] | None = None,
     ):
@@ -124,6 +127,10 @@ class OpenAIWorkerServer:
             typed_commit_guard is not None and not callable(typed_commit_guard)
         ):
             raise TypeError("invalid typed guard")
+        if type(narrative_enabled) is not bool or (
+            narrative_commit_guard is not None and not callable(narrative_commit_guard)
+        ):
+            raise TypeError("invalid narrative guard")
         if type(shared_enabled) is not bool or (
             shared_commit_guard is not None and not callable(shared_commit_guard)
         ):
@@ -139,6 +146,8 @@ class OpenAIWorkerServer:
         self._evolution_commit_guard = evolution_commit_guard
         self._typed_enabled = typed_enabled
         self._typed_commit_guard = typed_commit_guard
+        self._narrative_enabled = narrative_enabled
+        self._narrative_commit_guard = narrative_commit_guard
         self._shared_enabled = shared_enabled
         self._shared_commit_guard = shared_commit_guard
         self._listener: socket.socket | None = None
@@ -238,6 +247,7 @@ class OpenAIWorkerServer:
                 extraction = type(request.model_request) is ExtractionModelRequest
                 evolution = type(request.model_request) is EvolutionModelRequest
                 typed = type(request.model_request) is TypedModelRequest
+                narrative = type(request.model_request) is NarrativeModelRequest
                 shared = type(request.model_request) is SharedProposalRequest
                 guarded = (
                     WorkerResponse(
@@ -246,6 +256,7 @@ class OpenAIWorkerServer:
                     if (extraction and not self._extraction_enabled)
                     or (evolution and not self._evolution_enabled)
                     or (typed and not self._typed_enabled)
+                    or (narrative and not self._narrative_enabled)
                     or (shared and not self._shared_enabled)
                     else None
                     if self._request_guard is None
@@ -259,6 +270,7 @@ class OpenAIWorkerServer:
                         extraction_operation=extraction,
                         evolution_operation=evolution,
                         typed_operation=typed,
+                        narrative_operation=narrative,
                         shared_operation=shared,
                     )
                 else:
@@ -274,6 +286,7 @@ class OpenAIWorkerServer:
                             extraction_operation=extraction,
                             evolution_operation=evolution,
                             typed_operation=typed,
+                            narrative_operation=narrative,
                             shared_operation=shared,
                         )
                     else:
@@ -287,6 +300,8 @@ class OpenAIWorkerServer:
                                 if evolution
                                 else self._gateway.submit_typed
                                 if typed
+                                else self._gateway.submit_narrative
+                                if narrative
                                 else self._gateway.submit_shared
                                 if shared
                                 else self._gateway.submit_context
@@ -303,6 +318,7 @@ class OpenAIWorkerServer:
                             extraction=extraction,
                             evolution=evolution,
                             typed=typed,
+                            narrative=narrative,
                             shared=shared,
                         )
                         if (
@@ -340,6 +356,18 @@ class OpenAIWorkerServer:
                                 _INVALID_REQUEST_RU,
                                 None,
                                 typed_operation=True,
+                            )
+                        if (
+                            narrative
+                            and self._narrative_commit_guard is not None
+                            and not self._narrative_commit_guard()
+                        ):
+                            response = WorkerResponse(
+                                "authorization_rejected",
+                                result.attempts,
+                                _INVALID_REQUEST_RU,
+                                None,
+                                narrative_operation=True,
                             )
                         if (
                             shared
@@ -493,6 +521,7 @@ def _gateway_response(
     extraction: bool = False,
     evolution: bool = False,
     typed: bool = False,
+    narrative: bool = False,
     shared: bool = False,
 ) -> WorkerResponse:
     validation = (
@@ -513,6 +542,8 @@ def _gateway_response(
         typed,
         result.shared,
         shared,
+        result.narrative,
+        narrative,
     )
 
 

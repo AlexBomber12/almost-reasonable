@@ -17,7 +17,12 @@ from app.core.agent_proposals import (
     parse_agent_proposal,
 )
 from app.core.context import ContextRole, ContextTrust, ConversationSegment
-from app.cognition.conversation_context import MemoryModelRequest, ModelMemory
+from app.cognition.conversation_context import (
+    MemoryModelRequest,
+    ModelMemory,
+    FictionEpisode,
+    NARRATIVE_CONTEXT_CONTRACT_VERSION,
+)
 from app.cognition.worker_extraction import (
     CONTRACT_VERSION as EXTRACTION_CONTRACT_VERSION,
     ExtractionModelRequest,
@@ -38,6 +43,13 @@ from app.cognition.worker_typed import (
     TypedModelRequest,
     TypedProposal,
     parse_typed_proposal,
+)
+from app.cognition.worker_narrative import (
+    CONTRACT_VERSION as NARRATIVE_CONTRACT_VERSION,
+    NarrativeModelRequest,
+    NarrativeProjection,
+    NarrativeProposal,
+    parse_narrative_proposal,
 )
 from app.cognition.worker_shared import (
     CONTRACT_VERSION as SHARED_CONTRACT_VERSION,
@@ -69,6 +81,8 @@ TRANSCRIPT_PROTOCOL_VERSION = "openai-worker-transcript-v3"
 EXTRACTION_PROTOCOL_VERSION = "openai-worker-memory-extraction-v1"
 EVOLUTION_PROTOCOL_VERSION = "openai-worker-memory-evolution-v1"
 TYPED_PROTOCOL_VERSION = "openai-worker-typed-memory-v1"
+NARRATIVE_PROTOCOL_VERSION = "openai-worker-narrative-v1"
+NARRATIVE_CONTEXT_PROTOCOL_VERSION = "openai-worker-narrative-context-v1"
 SHARED_PROTOCOL_VERSION = "openai-worker-shared-proposal-v1"
 MAX_EVOLUTION_IPC_BYTES = MAX_EVOLUTION_PROJECTION_BYTES + 1024
 OPERATION_INFER = "infer"
@@ -136,6 +150,7 @@ class InferenceRequest:
         | ExtractionModelRequest
         | EvolutionModelRequest
         | TypedModelRequest
+        | NarrativeModelRequest
         | SharedProposalRequest
     ) = field(repr=False)
 
@@ -154,6 +169,8 @@ class WorkerResponse:
     typed_operation: bool = False
     shared: SharedSuggestion | None = field(default=None, repr=False)
     shared_operation: bool = False
+    narrative: NarrativeProposal | None = field(default=None, repr=False)
+    narrative_operation: bool = False
 
 
 def encode_request(request: InferenceRequest) -> bytes:
@@ -174,7 +191,10 @@ def encode_request(request: InferenceRequest) -> bytes:
     elif type(model) in {MemoryModelRequest, SharedModelRequest}:
         model_json = model.serialize()
         version = (
-            TRANSCRIPT_PROTOCOL_VERSION
+            NARRATIVE_CONTEXT_PROTOCOL_VERSION
+            if json.loads(model_json)["contract_version"]
+            == NARRATIVE_CONTEXT_CONTRACT_VERSION
+            else TRANSCRIPT_PROTOCOL_VERSION
             if json.loads(model_json)["contract_version"]
             == "model-contract-conversation-transcript-v4"
             else CONTEXT_PROTOCOL_VERSION
@@ -188,6 +208,9 @@ def encode_request(request: InferenceRequest) -> bytes:
     elif type(model) is TypedModelRequest:
         model_json = model.serialize()
         version = TYPED_PROTOCOL_VERSION
+    elif type(model) is NarrativeModelRequest:
+        model_json = model.serialize()
+        version = NARRATIVE_PROTOCOL_VERSION
     elif type(model) is SharedProposalRequest:
         model_json = model.serialize()
         version = SHARED_PROTOCOL_VERSION
@@ -200,7 +223,12 @@ def encode_request(request: InferenceRequest) -> bytes:
         else OPERATION_SHARED
         if version == SHARED_PROTOCOL_VERSION
         else OPERATION_EVOLVE
-        if version in {EVOLUTION_PROTOCOL_VERSION, TYPED_PROTOCOL_VERSION}
+        if version
+        in {
+            EVOLUTION_PROTOCOL_VERSION,
+            TYPED_PROTOCOL_VERSION,
+            NARRATIVE_PROTOCOL_VERSION,
+        }
         else OPERATION_INFER,
         "operation_id": request.operation_id,
         "correlation_id": request.correlation_id,
@@ -230,12 +258,18 @@ def decode_request(payload: bytes) -> InferenceRequest:
         EXTRACTION_PROTOCOL_VERSION,
         EVOLUTION_PROTOCOL_VERSION,
         TYPED_PROTOCOL_VERSION,
+        NARRATIVE_PROTOCOL_VERSION,
+        NARRATIVE_CONTEXT_PROTOCOL_VERSION,
         SHARED_PROTOCOL_VERSION,
     }:
         raise WorkerProtocolError("unsupported protocol version")
     if (
         value["protocol_version"]
-        in {EVOLUTION_PROTOCOL_VERSION, TYPED_PROTOCOL_VERSION}
+        in {
+            EVOLUTION_PROTOCOL_VERSION,
+            TYPED_PROTOCOL_VERSION,
+            NARRATIVE_PROTOCOL_VERSION,
+        }
         and len(payload) > MAX_EVOLUTION_IPC_BYTES
     ):
         raise WorkerProtocolError("evolution frame is too large")
@@ -246,7 +280,11 @@ def decode_request(payload: bytes) -> InferenceRequest:
         if value["protocol_version"] == SHARED_PROTOCOL_VERSION
         else OPERATION_EVOLVE
         if value["protocol_version"]
-        in {EVOLUTION_PROTOCOL_VERSION, TYPED_PROTOCOL_VERSION}
+        in {
+            EVOLUTION_PROTOCOL_VERSION,
+            TYPED_PROTOCOL_VERSION,
+            NARRATIVE_PROTOCOL_VERSION,
+        }
         else OPERATION_INFER
     ):
         raise WorkerProtocolError("unsupported operation")
@@ -255,7 +293,58 @@ def decode_request(payload: bytes) -> InferenceRequest:
         if len(operation_id) > MAX_WORKER_OPERATION_ID_LENGTH:
             raise ValueError("invalid operation id")
         correlation_id = require_identifier("correlation id", value["correlation_id"])
-        if value["protocol_version"] == SHARED_PROTOCOL_VERSION:
+        if value["protocol_version"] == NARRATIVE_PROTOCOL_VERSION:
+            model_value = value["model_request"]
+            _require_exact_dict(
+                model_value, {"contract_version", "task", "conversation", "episodes"}
+            )
+            if (
+                model_value["contract_version"] != NARRATIVE_CONTRACT_VERSION
+                or model_value["task"] != "propose_private_narrative"
+                or type(model_value["conversation"]) is not list
+                or type(model_value["episodes"]) is not list
+            ):
+                raise WorkerProtocolError("invalid narrative request")
+            conversation = []
+            for record in model_value["conversation"]:
+                _require_exact_dict(
+                    record, {"role", "trust", "content", "can_instruct"}
+                )
+                if record["can_instruct"] is not False:
+                    raise WorkerProtocolError("invalid narrative context")
+                conversation.append(
+                    ConversationSegment(
+                        ContextRole(record["role"]),
+                        ContextTrust(record["trust"]),
+                        record["content"],
+                    )
+                )
+            episodes = []
+            for record in model_value["episodes"]:
+                _require_exact_dict(
+                    record,
+                    {
+                        "handle",
+                        "text",
+                        "classification",
+                        "trust",
+                        "can_instruct",
+                        "verified_action",
+                        "evidence",
+                    },
+                )
+                if (
+                    record["classification"] != "fictional_autobiography"
+                    or record["trust"] != "untrusted_fiction_data"
+                    or record["can_instruct"] is not False
+                    or record["verified_action"] is not False
+                    or record["evidence"] is not False
+                ):
+                    raise WorkerProtocolError("invalid narrative episode")
+                episodes.append(NarrativeProjection(record["handle"], record["text"]))
+            model_request = NarrativeModelRequest(tuple(conversation), tuple(episodes))
+            model_request.serialize()
+        elif value["protocol_version"] == SHARED_PROTOCOL_VERSION:
             model_value = value["model_request"]
             _require_exact_dict(
                 model_value,
@@ -431,7 +520,11 @@ def _parse_context_request(
 ) -> MemoryModelRequest | SharedModelRequest:
     if type(value) is not dict:
         raise WorkerProtocolError("invalid context request")
-    transcript = protocol_version == TRANSCRIPT_PROTOCOL_VERSION
+    narrative = protocol_version == NARRATIVE_CONTEXT_PROTOCOL_VERSION
+    transcript = protocol_version in {
+        TRANSCRIPT_PROTOCOL_VERSION,
+        NARRATIVE_CONTEXT_PROTOCOL_VERSION,
+    }
     shared = "shared_intellectual_state" in value or "shared_omitted" in value
     if not transcript:
         shared = (
@@ -451,10 +544,14 @@ def _parse_context_request(
         value,
         base_fields | {"shared_intellectual_state", "shared_omitted"}
         if shared
+        else base_fields | {"fictional_episodes"}
+        if narrative
         else base_fields,
     )
     expected = (
-        "model-contract-conversation-transcript-v4"
+        NARRATIVE_CONTEXT_CONTRACT_VERSION
+        if narrative
+        else "model-contract-conversation-transcript-v4"
         if transcript
         else "model-contract-shared-intelligence-v3"
         if shared
@@ -472,10 +569,41 @@ def _parse_context_request(
     memories = value["memories"]
     if type(memories) is not list:
         raise WorkerProtocolError("invalid memories")
+    episodes = ()
+    if narrative:
+        records = value["fictional_episodes"]
+        if type(records) is not list or len(records) > 16:
+            raise WorkerProtocolError("invalid fictional episodes")
+        parsed = []
+        for record in records:
+            _require_exact_dict(
+                record,
+                {
+                    "text",
+                    "revision",
+                    "classification",
+                    "trust",
+                    "can_instruct",
+                    "verified_action",
+                    "evidence",
+                },
+            )
+            if (
+                record["classification"] != "fictional_autobiography"
+                or record["trust"] != "untrusted_fiction_data"
+                or record["can_instruct"] is not False
+                or record["verified_action"] is not False
+                or record["evidence"] is not False
+            ):
+                raise WorkerProtocolError("invalid fictional episode")
+            parsed.append(FictionEpisode(record["text"], record["revision"]))
+        episodes = tuple(parsed)
     private = MemoryModelRequest(
         conversation,
         tuple(_parse_memory(item) for item in memories),
         value["memories_omitted"],
+        episodes=episodes,
+        narrative_mode=narrative,
     )
     if shared:
         records = value["shared_intellectual_state"]
@@ -564,7 +692,9 @@ def encode_response(response: WorkerResponse) -> bytes:
         raise TypeError("response must be a WorkerResponse")
     _validate_response_fields(response)
     payload = {
-        "protocol_version": SHARED_PROTOCOL_VERSION
+        "protocol_version": NARRATIVE_PROTOCOL_VERSION
+        if response.narrative_operation
+        else SHARED_PROTOCOL_VERSION
         if response.shared_operation
         else TYPED_PROTOCOL_VERSION
         if response.typed_operation
@@ -581,8 +711,11 @@ def encode_response(response: WorkerResponse) -> bytes:
         or response.evolution_operation
         or response.typed_operation
         or response.shared_operation
+        or response.narrative_operation
         else "agent_proposal": (
-            suggestion_data(response.shared)
+            narrative_data(response.narrative)
+            if response.narrative is not None
+            else suggestion_data(response.shared)
             if response.shared is not None
             else vars_typed(response.typed)
             if response.typed is not None
@@ -595,6 +728,7 @@ def encode_response(response: WorkerResponse) -> bytes:
             or response.evolution_operation
             or response.typed_operation
             or response.shared_operation
+            or response.narrative_operation
             else _proposal_data(response.validation)
         ),
     }
@@ -617,6 +751,10 @@ def decode_response(payload: bytes) -> WorkerResponse:
     shared_version = (
         type(value) is dict and value.get("protocol_version") == SHARED_PROTOCOL_VERSION
     )
+    narrative_version = (
+        type(value) is dict
+        and value.get("protocol_version") == NARRATIVE_PROTOCOL_VERSION
+    )
     _require_exact_dict(
         value,
         {
@@ -629,6 +767,7 @@ def decode_response(payload: bytes) -> WorkerResponse:
             or evolution_version
             or typed_version
             or shared_version
+            or narrative_version
             else "agent_proposal",
         },
     )
@@ -638,8 +777,26 @@ def decode_response(payload: bytes) -> WorkerResponse:
         EVOLUTION_PROTOCOL_VERSION,
         TYPED_PROTOCOL_VERSION,
         SHARED_PROTOCOL_VERSION,
+        NARRATIVE_PROTOCOL_VERSION,
     }:
         raise WorkerProtocolError("unsupported protocol version")
+    if narrative_version:
+        raw = value["memory_proposal"]
+        try:
+            proposal = (
+                None if raw is None else parse_narrative_proposal(json.dumps(raw))
+            )
+            response = WorkerResponse(
+                value["outcome"],
+                value["attempts"],
+                value["safe_russian_message"],
+                narrative=proposal,
+                narrative_operation=True,
+            )
+            _validate_response_fields(response)
+        except (TypeError, ValueError):
+            raise WorkerProtocolError("invalid narrative worker response") from None
+        return response
     if shared_version:
         raw = value["memory_proposal"]
         try:
@@ -889,6 +1046,22 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         parse_typed_proposal(json.dumps(vars_typed(response.typed)))
     if response.shared is not None:
         parse_shared_suggestion(json.dumps(suggestion_data(response.shared)))
+    if response.narrative is not None:
+        parse_narrative_proposal(json.dumps(narrative_data(response.narrative)))
+    if response.narrative_operation and (
+        response.validation is not None
+        or response.extraction is not None
+        or response.evolution is not None
+        or response.typed is not None
+        or response.shared is not None
+        or response.extraction_operation
+        or response.evolution_operation
+        or response.typed_operation
+        or response.shared_operation
+    ):
+        raise ValueError("invalid narrative response")
+    if not response.narrative_operation and response.narrative is not None:
+        raise ValueError("invalid narrative response")
     if response.shared_operation and (
         response.validation is not None
         or response.extraction is not None
@@ -897,6 +1070,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         or response.extraction_operation
         or response.evolution_operation
         or response.typed_operation
+        or response.narrative_operation
     ):
         raise ValueError("invalid shared response")
     if not response.shared_operation and response.shared is not None:
@@ -908,6 +1082,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         or response.extraction_operation
         or response.evolution_operation
         or response.shared_operation
+        or response.narrative_operation
     ):
         raise ValueError("invalid typed response")
     if not response.typed_operation and response.typed is not None:
@@ -918,6 +1093,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         or response.extraction_operation
         or response.typed_operation
         or response.shared_operation
+        or response.narrative_operation
     ):
         raise ValueError("invalid evolution response")
     if not response.evolution_operation and response.evolution is not None:
@@ -932,6 +1108,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
         or (response.evolution is not None)
         or (response.typed is not None)
         or (response.shared is not None)
+        or (response.narrative is not None)
     ) or sum(
         item is not None
         for item in (
@@ -940,6 +1117,7 @@ def _validate_response_fields(response: WorkerResponse) -> None:
             response.evolution,
             response.typed,
             response.shared,
+            response.narrative,
         )
     ) > 1:
         raise ValueError("completed response and proposal are inconsistent")
@@ -971,6 +1149,14 @@ def vars_typed(proposal: TypedProposal) -> dict[str, object]:
         "kind": proposal.kind,
         "fields": proposal.fields,
         "source_role": proposal.source_role,
+    }
+
+
+def narrative_data(proposal: NarrativeProposal) -> dict[str, object]:
+    return {
+        "decision": proposal.decision,
+        "handle": proposal.handle,
+        "episode": proposal.episode,
     }
 
 

@@ -720,7 +720,7 @@ def test_authenticated_wsgi_process_worker_restart_replay_delete_and_quarantine(
         == "research_denied"
     )
     snapshot = tmp_path / "old.db"
-    create_sqlite_backup(events.database_path, snapshot, 11, NOW)
+    create_sqlite_backup(events.database_path, snapshot, 12, NOW)
     # Reopen every application store; trusted bootstrap explicitly reauthorizes
     # the same input for result retrieval, without recreating worker authority.
     events2 = EventStore(events.database_path)
@@ -755,7 +755,7 @@ def test_authenticated_wsgi_process_worker_restart_replay_delete_and_quarantine(
     assert a.submit("research", "Приватный вопрос CANARY-A-11")[0].startswith("500")
     quarantine = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
         .restore(snapshot, quarantine, NOW)
         .activation_eligible
     )
@@ -1076,13 +1076,13 @@ def test_material_prior_source_deletion_erases_research_reply_and_old_backup(
     thread.join(5)
     assert result.response_content
     backup = tmp_path / "old.db"
-    create_sqlite_backup(store.database_path, backup, 11, NOW)
+    create_sqlite_backup(store.database_path, backup, 12, NOW)
     assert delete_source(setup, source).disposition.value == "applied"
     assert gate.reconcile()
     assert [item.role for item in runtime.history(principal("a"))] == ["participant"]
     target = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
         .restore(backup, target, NOW)
         .activation_eligible
     )
@@ -1648,7 +1648,7 @@ def test_shared_research_result_erasure_replays_foreign_dependency_in_old_backup
     assert "CANARY-SHARED-B-11" not in fake.calls[0].request.input_text
     assert "CANARY-SHARED-B-11" not in str(transport.calls)
     backup = tmp_path / "old-shared.db"
-    create_sqlite_backup(store.database_path, backup, 11, NOW)
+    create_sqlite_backup(store.database_path, backup, 12, NOW)
     deletion = DeletionCoordinator(ledger, EventStoreErasureAdapter(store)).delete(
         context("participant-b"),
         request(principal_id="participant-b", content_reference=source),
@@ -1657,7 +1657,7 @@ def test_shared_research_result_erasure_replays_foreign_dependency_in_old_backup
     assert [item.role for item in research.history(principal("a"))] == ["participant"]
     target = tmp_path / "shared-quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
         .restore(backup, target, NOW)
         .activation_eligible
     )

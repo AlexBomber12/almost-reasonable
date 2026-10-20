@@ -298,14 +298,14 @@ def test_rejection_revocation_and_restore_quarantine(shared, tmp_path):
             ("reviewed-active",),
         ).fetchone()[0]
     backup = tmp_path / "before-review-revocation.db"
-    create_sqlite_backup(events.database_path, backup, 11, NOW)
+    create_sqlite_backup(events.database_path, backup, 12, NOW)
     assert app.revoke_review("reviewed-active", "revoke-active") == "revoked"
     assert app.revoke_review("reviewed-active", "revoke-active") == "revoked"
     with pytest.raises(ValueError, match="conflict"):
         app.revoke_review("reviewed-active", "revoke-other")
     assert app.context(principal("b")) == ()
     assert AgentOutputStore(events).read_reply(principal("b"), reply_id) is None
-    restored = QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter).restore(
+    restored = QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter).restore(
         backup, tmp_path / "restored.db", NOW
     )
     assert restored.activation_eligible
@@ -626,10 +626,10 @@ def test_old_quarantine_cannot_be_reapproved_after_restore(shared, tmp_path):
     app = SharedIntelligence(events, gate, clock=lambda: NOW)
     app.quarantine(item)
     backup = tmp_path / "quarantined-before-review.db"
-    create_sqlite_backup(events.database_path, backup, 11, NOW)
+    create_sqlite_backup(events.database_path, backup, 12, NOW)
     restored_path = tmp_path / "restored-quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
         .restore(backup, restored_path, NOW)
         .activation_eligible
     )
@@ -878,7 +878,7 @@ def test_v10_to_v11_migration_is_atomic_and_historical_backup_stays_readable(
         validate_shared_graph(db)
         assert db.execute("SELECT COUNT(*) FROM shared_payloads").fetchone() == (0,)
     upgraded = EventStore(events.database_path)
-    assert upgraded.diagnostics().schema_version == 11
+    assert upgraded.diagnostics().schema_version == 12
 
 
 def test_authenticated_a_b_reviewed_projection_reaches_fake_sdk(tmp_path):

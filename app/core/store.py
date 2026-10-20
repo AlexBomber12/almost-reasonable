@@ -30,7 +30,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -82,6 +82,7 @@ class FaultPoint(StrEnum):
     BEFORE_V9_MIGRATION_COMMIT = "before_v9_migration_commit"
     BEFORE_V10_MIGRATION_COMMIT = "before_v10_migration_commit"
     BEFORE_V11_MIGRATION_COMMIT = "before_v11_migration_commit"
+    BEFORE_V12_MIGRATION_COMMIT = "before_v12_migration_commit"
     AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
     AFTER_REPLY_COMMIT = "after_reply_commit"
     AFTER_PAYLOAD_INSERT = "after_payload_insert"
@@ -755,6 +756,75 @@ _SCHEMA_V10 = (
 )
 
 
+_SCHEMA_V12 = (
+    """ALTER TABLE agent_reply_operations ADD COLUMN narrative_count INTEGER NOT NULL
+        DEFAULT 0 CHECK(narrative_count BETWEEN 0 AND 16)""",
+    """CREATE TABLE narrative_items (
+        principal_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        current_revision INTEGER NOT NULL CHECK(current_revision BETWEEN 1 AND 16),
+        PRIMARY KEY(principal_id,item_id)
+    )""",
+    """CREATE TABLE narrative_operations (
+        principal_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        item_id TEXT NOT NULL,
+        revision INTEGER NOT NULL CHECK(revision BETWEEN 1 AND 16),
+        expected_revision INTEGER NOT NULL CHECK(expected_revision BETWEEN 0 AND 15),
+        status TEXT NOT NULL CHECK(status IN ('active','invalidated')),
+        source_count INTEGER NOT NULL CHECK(source_count BETWEEN 1 AND 100),
+        context_count INTEGER NOT NULL CHECK(context_count BETWEEN 0 AND 16),
+        created_at TEXT NOT NULL,
+        PRIMARY KEY(principal_id,operation_id),
+        UNIQUE(principal_id,item_id,revision),
+        FOREIGN KEY(principal_id,item_id) REFERENCES narrative_items(principal_id,item_id)
+    )""",
+    """CREATE TABLE narrative_payloads (
+        principal_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        episode TEXT NOT NULL CHECK(typeof(episode)='text' AND
+            length(CAST(episode AS BLOB)) BETWEEN 1 AND 4096),
+        PRIMARY KEY(principal_id,operation_id),
+        FOREIGN KEY(principal_id,operation_id)
+            REFERENCES narrative_operations(principal_id,operation_id)
+    )""",
+    """CREATE TABLE narrative_sources (
+        principal_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        retention_status TEXT NOT NULL CHECK(retention_status IN ('active','invalidated')),
+        PRIMARY KEY(principal_id,operation_id,event_id),
+        FOREIGN KEY(principal_id,operation_id)
+            REFERENCES narrative_operations(principal_id,operation_id)
+    )""",
+    """CREATE TABLE narrative_context (
+        principal_id TEXT NOT NULL,
+        operation_id TEXT NOT NULL,
+        context_operation_id TEXT NOT NULL,
+        PRIMARY KEY(principal_id,operation_id,context_operation_id),
+        FOREIGN KEY(principal_id,operation_id)
+            REFERENCES narrative_operations(principal_id,operation_id),
+        FOREIGN KEY(principal_id,context_operation_id)
+            REFERENCES narrative_operations(principal_id,operation_id)
+    )""",
+    """CREATE TABLE protected_reply_narrative (
+        reply_operation_id TEXT NOT NULL REFERENCES agent_reply_operations(operation_id),
+        principal_id TEXT NOT NULL,
+        narrative_operation_id TEXT NOT NULL,
+        PRIMARY KEY(reply_operation_id,principal_id,narrative_operation_id),
+        FOREIGN KEY(principal_id,narrative_operation_id)
+            REFERENCES narrative_operations(principal_id,operation_id)
+    )""",
+    """CREATE TABLE private_narrative_receipts (
+        operation_id TEXT PRIMARY KEY,
+        source_event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        principal_id TEXT NOT NULL,
+        receipt TEXT NOT NULL
+    )""",
+    "CREATE INDEX narrative_sources_event ON narrative_sources(event_id)",
+)
+
+
 def schema_objects(connection: sqlite3.Connection) -> dict[tuple[str, str, str], str]:
     """Exact application objects, including explicit indexes and triggers."""
     return {
@@ -781,6 +851,7 @@ def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
                 _SCHEMA_V9,
                 _SCHEMA_V10,
                 _SCHEMA_V11,
+                _SCHEMA_V12,
             ),
             start=1,
         ):
@@ -911,7 +982,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {*range(11), SCHEMA_VERSION}:
+            if version not in {*range(12), SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -920,7 +991,7 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {*range(11), SCHEMA_VERSION}:
+                if version not in {*range(12), SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if (
                     connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -942,6 +1013,7 @@ class EventStore:
                         *_SCHEMA_V9,
                         *_SCHEMA_V10,
                         *_SCHEMA_V11,
+                        *_SCHEMA_V12,
                     ):
                         connection.execute(statement)
                     connection.execute(
@@ -961,6 +1033,7 @@ class EventStore:
                         (9, _SCHEMA_V9, FaultPoint.BEFORE_V9_MIGRATION_COMMIT),
                         (10, _SCHEMA_V10, FaultPoint.BEFORE_V10_MIGRATION_COMMIT),
                         (11, _SCHEMA_V11, FaultPoint.BEFORE_V11_MIGRATION_COMMIT),
+                        (12, _SCHEMA_V12, FaultPoint.BEFORE_V12_MIGRATION_COMMIT),
                     )
                     for target, statements, fault_point in migrations:
                         if target > version:

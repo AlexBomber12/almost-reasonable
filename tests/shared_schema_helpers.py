@@ -4,12 +4,28 @@ from app.core.store import _SCHEMA_V2, _SCHEMA_V5
 
 
 def remove_v11(db):
+    remove_v12(db)
     for table in (
         "protected_reviewed_consents",
         "reviewed_shared_revocations",
         "reviewed_shared_decisions",
     ):
         db.execute(f"DROP TABLE {table}")
+
+
+def remove_v12(db):
+    db.execute("DROP INDEX narrative_sources_event")
+    for table in (
+        "private_narrative_receipts",
+        "protected_reply_narrative",
+        "narrative_context",
+        "narrative_sources",
+        "narrative_payloads",
+        "narrative_operations",
+        "narrative_items",
+    ):
+        db.execute(f"DROP TABLE {table}")
+    db.execute("ALTER TABLE agent_reply_operations DROP COLUMN narrative_count")
 
 
 def remove_v10(db):

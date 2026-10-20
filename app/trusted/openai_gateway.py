@@ -24,6 +24,11 @@ from app.cognition.worker_typed import (
     TypedProposal,
     parse_typed_proposal,
 )
+from app.cognition.worker_narrative import (
+    NarrativeModelRequest,
+    NarrativeProposal,
+    parse_narrative_proposal,
+)
 from app.cognition.worker_shared import (
     SharedProposalRequest,
     SharedSuggestion,
@@ -41,6 +46,7 @@ from app.core.provider_contract import (
     build_worker_extraction_request,
     build_worker_evolution_request,
     build_worker_typed_request,
+    build_worker_narrative_request,
     build_worker_shared_request,
     estimate_cost,
     require_identifier,
@@ -106,6 +112,7 @@ class GatewayResult:
     evolution: EvolutionProposal | None = field(default=None, repr=False)
     typed: TypedProposal | None = field(default=None, repr=False)
     shared: SharedSuggestion | None = field(default=None, repr=False)
+    narrative: NarrativeProposal | None = field(default=None, repr=False)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +123,7 @@ class _ParsedResponse:
     evolution: EvolutionProposal | None = None
     typed: TypedProposal | None = None
     shared: SharedSuggestion | None = None
+    narrative: NarrativeProposal | None = None
 
 
 class TrustedOpenAIGateway:
@@ -201,6 +209,15 @@ class TrustedOpenAIGateway:
             request, correlation_id=correlation_id, operation_id=operation_id
         )
 
+    def submit_narrative(
+        self, request: NarrativeModelRequest, *, correlation_id: str, operation_id: str
+    ) -> GatewayResult:
+        if type(request) is not NarrativeModelRequest:
+            raise TypeError("request must be a narrative request")
+        return self._submit(
+            request, correlation_id=correlation_id, operation_id=operation_id
+        )
+
     def submit_shared(
         self, request: SharedProposalRequest, *, correlation_id: str, operation_id: str
     ) -> GatewayResult:
@@ -226,6 +243,8 @@ class TrustedOpenAIGateway:
             if type(request) is EvolutionModelRequest
             else build_worker_typed_request(request, self._config)
             if type(request) is TypedModelRequest
+            else build_worker_narrative_request(request, self._config)
+            if type(request) is NarrativeModelRequest
             else build_worker_shared_request(request, self._config)
             if type(request) is SharedProposalRequest
             else build_worker_context_request(request, self._config)
@@ -338,6 +357,7 @@ class TrustedOpenAIGateway:
                     extraction=type(request) is ExtractionModelRequest,
                     evolution=type(request) is EvolutionModelRequest,
                     typed=type(request) is TypedModelRequest,
+                    narrative=type(request) is NarrativeModelRequest,
                     shared=type(request) is SharedProposalRequest,
                 )
             )
@@ -369,6 +389,7 @@ class TrustedOpenAIGateway:
                 evolution=parsed.evolution,
                 typed=parsed.typed,
                 shared=parsed.shared,
+                narrative=parsed.narrative,
             )
 
     def _preflight(
@@ -421,6 +442,8 @@ class TrustedOpenAIGateway:
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
+                else "private-narrative-v1"
+                if type(request) is NarrativeModelRequest
                 else "shared-proposal-v1"
                 if type(request) is SharedProposalRequest
                 else "private-extraction-v1"
@@ -434,6 +457,8 @@ class TrustedOpenAIGateway:
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
+                else "private-narrative-v1"
+                if type(request) is NarrativeModelRequest
                 else "shared-proposal-v1"
                 if type(request) is SharedProposalRequest
                 else "private-extraction-v1"
@@ -544,6 +569,7 @@ class TrustedOpenAIGateway:
         evolution: EvolutionProposal | None = None,
         typed: TypedProposal | None = None,
         shared: SharedSuggestion | None = None,
+        narrative: NarrativeProposal | None = None,
     ) -> GatewayResult:
         if outcome is GatewayOutcome.COMPLETED:
             message = None
@@ -566,6 +592,7 @@ class TrustedOpenAIGateway:
             evolution,
             typed,
             shared,
+            narrative,
         )
 
 
@@ -619,6 +646,7 @@ def _parse_response(
     evolution: bool = False,
     typed: bool = False,
     shared: bool = False,
+    narrative: bool = False,
 ) -> _ParsedResponse:
     if type(response) is not ProviderResponse:
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
@@ -676,6 +704,14 @@ def _parse_response(
         except ValueError:
             return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
+    if narrative:
+        try:
+            parsed_narrative = parse_narrative_proposal(text)
+        except ValueError:
+            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+        return _ParsedResponse(
+            GatewayOutcome.COMPLETED, None, narrative=parsed_narrative
+        )
     if shared:
         try:
             parsed_shared = parse_shared_suggestion(text)
