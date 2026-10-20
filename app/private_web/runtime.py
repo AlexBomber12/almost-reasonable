@@ -8,6 +8,7 @@ from datetime import datetime
 import hashlib
 import os
 import re
+from threading import Lock
 
 from app.cognition.conversation_context import (
     MemoryConversationAssembler,
@@ -92,6 +93,12 @@ _WORKER_FAILURE_RU = "Сервис модели временно недосту�
 _WORKER_STOPPED_RU = "Новые запросы к модели временно остановлены."
 _WORKER_SPEND_RU = "Запросы к модели приостановлены из-за лимита расходов."
 _WORKER_REJECTED_RU = "Ответ модели отклонён проверкой безопасности."
+_NARRATIVE_ACTIVE_LOCK = Lock()
+_NARRATIVE_ACTIVE: set[tuple[int, str, str]] = set()
+
+
+def _narrative_active_key(store, operation_id):
+    return (os.getpid(), str(store.database_path.resolve()), operation_id)
 
 
 def _narrative_requested(content: str) -> bool:
@@ -883,6 +890,16 @@ class _DurableConversationRuntime(ConversationService):
             )
         except ValueError:
             return
+        if audit is not None:
+            key = _narrative_active_key(self._event_store, operation_id)
+            with _NARRATIVE_ACTIVE_LOCK:
+                if key in _NARRATIVE_ACTIVE:
+                    return
+        if audit is not None and audit.status == "reserved":
+            self._narrative_audit.finish(operation_id, "unavailable")
+            audit = self._narrative_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
         if audit is not None and audit.status == "received":
             self._commit_narrative(principal, event_id, operation_id, audit)
             audit = self._narrative_audit.read(
@@ -997,6 +1014,36 @@ class _DurableConversationRuntime(ConversationService):
         self._narrative_audit.finish(operation_id, status)
 
     def _evolve_narrative(
+        self,
+        principal,
+        event_id,
+        content,
+        correlation,
+        reply_operation_id,
+        reply_operation,
+        context,
+    ):
+        operation_id = "narrative:" + reply_operation_id.removeprefix("reply:")
+        key = _narrative_active_key(self._event_store, operation_id)
+        with _NARRATIVE_ACTIVE_LOCK:
+            if key in _NARRATIVE_ACTIVE:
+                return
+            _NARRATIVE_ACTIVE.add(key)
+        try:
+            return self._evolve_narrative_once(
+                principal,
+                event_id,
+                content,
+                correlation,
+                reply_operation_id,
+                reply_operation,
+                context,
+            )
+        finally:
+            with _NARRATIVE_ACTIVE_LOCK:
+                _NARRATIVE_ACTIVE.remove(key)
+
+    def _evolve_narrative_once(
         self,
         principal,
         event_id,

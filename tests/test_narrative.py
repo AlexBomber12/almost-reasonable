@@ -5,7 +5,7 @@ from datetime import UTC, datetime
 import json
 import os
 import sqlite3
-from threading import Thread
+from threading import Event as ThreadEvent, Thread
 
 import pytest
 
@@ -1847,6 +1847,136 @@ def test_worker_rejects_narrative_reply_context_when_mode_is_disabled(tmp_path):
     finally:
         thread.join(10)
         server.close()
+
+
+def test_reserved_narrative_receipt_after_crash_resolves_without_replay(
+    tmp_path, monkeypatch
+):
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    original_reserve = ProviderStateStore.reserve_attempt
+    crashed = {"done": False}
+
+    def crash_after_receipt(state, operation_id, correlation_id, created_at):
+        if operation_id.startswith("ipc:narrative:") and not crashed["done"]:
+            crashed["done"] = True
+            raise RuntimeError("synthetic crash after reservation")
+        return original_reserve(state, operation_id, correlation_id, created_at)
+
+    monkeypatch.setattr(ProviderStateStore, "reserve_attempt", crash_after_receipt)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        runtime.submit(principal("a"), "first", "Расскажи историю")
+    with provider._event_store._open() as db:
+        assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
+            "reserved",
+        )
+    reopened = EventStore(events.database_path)
+    fresh_gate = PrivacyReadGate(ledger, reopened)
+    assert fresh_gate.reconcile()
+    recovered = WorkerConversationRuntime(
+        reopened,
+        fresh_gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    assert (
+        recovered.submit(principal("a"), "first", "Расскажи историю").model_state.value
+        == "unavailable"
+    )
+    with provider._event_store._open() as db:
+        assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
+            "unavailable",
+        )
+
+
+def test_concurrent_duplicate_does_not_resolve_active_narrative_reply(
+    tmp_path, monkeypatch
+):
+    from app.core.agent_proposals import ProposalValidation, ReplyProposal
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        if isinstance(request, NarrativeModelRequest):
+            return ClientResult(
+                operation_id,
+                correlation_id,
+                "completed",
+                1,
+                None,
+                narrative=NarrativeProposal("no_change", None, None),
+            )
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            validation=ProposalValidation(ReplyProposal("Синтетический ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+    arrived, release = ThreadEvent(), ThreadEvent()
+    original_finish = NarrativeAuditStore.finish
+
+    def pause_after_finish(audit, operation_id, status):
+        original_finish(audit, operation_id, status)
+        if status == "no_change":
+            arrived.set()
+            assert release.wait(5)
+
+    monkeypatch.setattr(NarrativeAuditStore, "finish", pause_after_finish)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=ProviderStateStore(EventStore(tmp_path / "ipc.db")),
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    first = []
+    worker = Thread(
+        target=lambda: first.append(
+            runtime.submit(principal("a"), "one", "Расскажи историю")
+        )
+    )
+    worker.start()
+    try:
+        assert arrived.wait(5)
+        duplicate = runtime.submit(principal("a"), "one", "Расскажи историю")
+        assert duplicate.model_state.value == "pending"
+    finally:
+        release.set()
+        worker.join(10)
+    assert len(first) == 1
+    assert first[0].model_state.value == "completed"
+    assert (
+        runtime.submit(principal("a"), "one", "Расскажи историю").model_state.value
+        == "completed"
+    )
 
 
 def test_received_narrative_status_without_payload_cannot_replay(tmp_path):

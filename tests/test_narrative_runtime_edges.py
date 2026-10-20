@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime
 from types import SimpleNamespace
+from threading import Event, Thread
 
 import pytest
 
@@ -127,7 +128,7 @@ def test_narrative_operation_stops_at_each_authority_boundary(
     case, expected_status, worker_calls, commits
 ):
     fake, state = _runtime_double(case)
-    WorkerConversationRuntime._evolve_narrative(
+    WorkerConversationRuntime._evolve_narrative_once(
         fake,
         principal("a"),
         "source",
@@ -204,9 +205,12 @@ def test_narrative_receipt_commit_requires_current_reply_and_revision(case, expe
     assert state["writes"] == (1 if case == "stale_write" else 0)
 
 
-def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_received():
+def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_received(
+    tmp_path,
+):
     state = []
     fake = SimpleNamespace(
+        _event_store=SimpleNamespace(database_path=tmp_path / "events.db"),
         _narrative_audit=SimpleNamespace(
             read=lambda *_args: (_ for _ in ()).throw(ValueError("conflict"))
         ),
@@ -221,6 +225,41 @@ def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_receiv
         fake, principal("a"), "source", "История", "reply:source"
     )
     assert len(state) == 1
+
+
+def test_active_narrative_operation_is_not_entered_twice(tmp_path):
+    entered, release = Event(), Event()
+    calls = []
+
+    def once(*_args):
+        calls.append("entered")
+        entered.set()
+        assert release.wait(5)
+
+    fake = SimpleNamespace(
+        _event_store=SimpleNamespace(database_path=tmp_path / "events.db"),
+        _evolve_narrative_once=once,
+    )
+    args = (
+        principal("a"),
+        "source",
+        "История",
+        "corr",
+        "reply:source",
+        object(),
+        object(),
+    )
+    worker = Thread(
+        target=lambda: WorkerConversationRuntime._evolve_narrative(fake, *args)
+    )
+    worker.start()
+    try:
+        assert entered.wait(5)
+        assert WorkerConversationRuntime._evolve_narrative(fake, *args) is None
+    finally:
+        release.set()
+        worker.join(10)
+    assert calls == ["entered"]
 
 
 @pytest.mark.parametrize(
