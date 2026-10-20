@@ -11,10 +11,11 @@ from dataclasses import dataclass
 from datetime import datetime
 import hashlib
 import json
+import os
 from types import SimpleNamespace
 
 from app.core.events import TrustedPrincipalContext
-from app.core.shared_graph import validate_shared_graph
+from app.core.shared_graph import validate_shared_graph, revoke_shared_authorization
 from app.core.store import EventStore
 from app.privacy.application import PrivacyReadGate
 
@@ -50,6 +51,16 @@ class SyntheticSharedApproval:
 
 
 @dataclass(frozen=True, slots=True)
+class ReviewedSharedCandidate:
+    principal: TrustedPrincipalContext
+    proposal: AbstractToSharedProposal
+    item_id: str
+    expected_revision: int
+    audience: tuple[str, ...]
+    counter_event_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class SharedRecord:
     """Protected selection identity stays outside its model projection."""
 
@@ -57,6 +68,7 @@ class SharedRecord:
     memory: ModelMemory
     revision: int
     kind: str
+    historical_reviewed_operation_ids: tuple[str, ...] = ()
 
     def __post_init__(self):
         EventStore._require_token("shared selection identity", self.operation_id)
@@ -72,8 +84,16 @@ class SharedRecord:
             }
             or type(self.revision) is not int
             or not 1 <= self.revision <= 32
+            or type(self.historical_reviewed_operation_ids) is not tuple
+            or any(
+                type(item) is not str for item in self.historical_reviewed_operation_ids
+            )
+            or tuple(sorted(set(self.historical_reviewed_operation_ids)))
+            != self.historical_reviewed_operation_ids
         ):
             raise ValueError("invalid closed shared record")
+        for item in self.historical_reviewed_operation_ids:
+            EventStore._require_token("reviewed historical identity", item)
 
     @property
     def verification(self):
@@ -97,6 +117,10 @@ class SharedRecord:
 
 
 class SharedIntelligence:
+    @staticmethod
+    def _review_identity() -> str:
+        return f"os-uid:{os.geteuid()}"
+
     def __init__(
         self,
         events: EventStore,
@@ -150,6 +174,22 @@ class SharedIntelligence:
             raise ValueError("invalid shared evidence classification")
 
     def screen(self, approval: SyntheticSharedApproval) -> str:
+        return self._screen(approval, reviewed=False)
+
+    def quarantine(self, candidate: ReviewedSharedCandidate) -> str:
+        if type(candidate) is not ReviewedSharedCandidate:
+            raise ValueError("reviewed candidate required")
+        approval = SyntheticSharedApproval(
+            candidate.principal,
+            candidate.proposal,
+            candidate.item_id,
+            candidate.expected_revision,
+            candidate.audience,
+            candidate.counter_event_ids,
+        )
+        return self._screen(approval, reviewed=True)
+
+    def _screen(self, approval: SyntheticSharedApproval, *, reviewed: bool) -> str:
         self._shape(approval)
         # Screening is a short deterministic offline read fence. Persistence uses
         # a separate transaction and rechecks source availability after screening.
@@ -191,7 +231,8 @@ class SharedIntelligence:
                 )
                 retained_value = (
                     payload.value
-                    if complete_allowed and payload.value in SYNTHETIC_ABSTRACT_VALUES
+                    if reviewed
+                    or (complete_allowed and payload.value in SYNTHETIC_ABSTRACT_VALUES)
                     else "Screened abstract candidate withheld."
                 )
                 binding = json.dumps(
@@ -210,6 +251,7 @@ class SharedIntelligence:
                         ).hexdigest(),
                         confidence=payload.confidence,
                         kind=payload.memory_kind.value,
+                        **({"reviewed": True} if reviewed else {}),
                     ),
                     sort_keys=True,
                     separators=(",", ":"),
@@ -301,6 +343,166 @@ class SharedIntelligence:
                 return screened_reason
 
         return self._gate.authorized(persist)
+
+    def review(
+        self,
+        candidate: ReviewedSharedCandidate,
+        *,
+        decision_id: str,
+        review_version: str,
+        approve: bool,
+    ) -> str:
+        """An explicit local operator decision over one durable candidate identity."""
+        EventStore._require_token("review decision", decision_id)
+        EventStore._require_token("review version", review_version)
+        if type(approve) is not bool:
+            raise ValueError("invalid review decision")
+        reason = self.quarantine(candidate)
+        self._checkpoint("after_shared_screen")
+        if approve and reason not in {
+            AbstractReason.SHARED_COMMIT_DISABLED.value,
+            "approved",
+        }:
+            raise ValueError("shared privacy screen did not allow promotion")
+
+        def decide():
+            with closing(self._events._open()) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                self._events._verify_current_schema(db)
+                validate_shared_graph(db)
+                operation_id = candidate.proposal.operation_id
+                review_identity = self._review_identity()
+                prior = db.execute(
+                    "SELECT operation_id,decision_id,review_identity,review_version,decision FROM reviewed_shared_decisions "
+                    "WHERE operation_id=? OR decision_id=?",
+                    (operation_id, decision_id),
+                ).fetchone()
+                decision = "approved" if approve else "rejected"
+                if prior is not None:
+                    if prior != (
+                        operation_id,
+                        decision_id,
+                        review_identity,
+                        review_version,
+                        decision,
+                    ):
+                        raise ValueError("review decision identity conflict")
+                    return operation_id if approve else "rejected"
+                decision_time = self._clock()
+                decision_stamp = EventStore._serialize_time(decision_time)
+                row = db.execute(
+                    "SELECT status,screen_version,screen_result,mission_evidence "
+                    "FROM shared_operations WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                manifest = db.execute(
+                    "SELECT binding FROM protected_shared_manifests WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if (
+                    row is None
+                    or row[0] != "quarantined"
+                    or row[1] != PRIVACY_SCREEN_VERSION
+                    or row[3] != 0
+                    or manifest is None
+                    or json.loads(manifest[0]).get("reviewed") is not True
+                ):
+                    raise ValueError("reviewed quarantine unavailable")
+                db.execute(
+                    "INSERT INTO reviewed_shared_decisions VALUES (?,?,?,?,?,?)",
+                    (
+                        operation_id,
+                        decision_id,
+                        review_identity,
+                        review_version,
+                        decision,
+                        decision_stamp,
+                    ),
+                )
+                if approve:
+                    if row[2] != AbstractReason.SHARED_COMMIT_DISABLED.value:
+                        raise ValueError(
+                            "shared privacy screen did not allow promotion"
+                        )
+                    head = db.execute(
+                        "SELECT COALESCE(MAX(revision),0) FROM shared_operations "
+                        "WHERE item_id=? AND status='active'",
+                        (candidate.item_id,),
+                    ).fetchone()[0]
+                    if head != candidate.expected_revision:
+                        raise ValueError("shared revision conflict")
+                    sources = db.execute(
+                        "SELECT event_id,source_principal FROM protected_shared_sources "
+                        "WHERE operation_id=? ORDER BY event_id",
+                        (operation_id,),
+                    ).fetchall()
+                    consents = []
+                    for event_id, source_principal in sources:
+                        for audience in candidate.audience:
+                            consent_id = self._gate._ledger.active_shared_consent(
+                                source_principal, event_id, audience, decision_time
+                            )
+                            if consent_id is None:
+                                raise ValueError("source consent unavailable")
+                            consents.append(
+                                (operation_id, consent_id, event_id, audience)
+                            )
+                    db.execute(
+                        "UPDATE shared_operations SET status='active',reason='approved' "
+                        "WHERE operation_id=?",
+                        (operation_id,),
+                    )
+                    db.executemany(
+                        "INSERT INTO protected_reviewed_consents VALUES (?,?,?,?)",
+                        consents,
+                    )
+                validate_shared_graph(db)
+                self._checkpoint("before_shared_commit")
+                return operation_id if approve else "rejected"
+
+        result = self._gate.authorized(decide)
+        self._checkpoint("after_shared_commit")
+        return result
+
+    def revoke_review(self, operation_id: str, revocation_id: str) -> str:
+        EventStore._require_token("shared operation", operation_id)
+        EventStore._require_token("review revocation", revocation_id)
+
+        def revoke():
+            with closing(self._events._open()) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                self._events._verify_current_schema(db)
+                validate_shared_graph(db)
+                existing = db.execute(
+                    "SELECT operation_id,revocation_id FROM reviewed_shared_revocations "
+                    "WHERE operation_id=? OR revocation_id=?",
+                    (operation_id, revocation_id),
+                ).fetchone()
+                if existing is not None:
+                    if existing != (operation_id, revocation_id):
+                        raise ValueError("review revocation identity conflict")
+                    return "revoked"
+                row = db.execute(
+                    "SELECT o.status,d.decision FROM shared_operations o "
+                    "JOIN reviewed_shared_decisions d USING(operation_id) "
+                    "WHERE operation_id=?",
+                    (operation_id,),
+                ).fetchone()
+                if row != ("active", "approved"):
+                    raise ValueError("active reviewed authorization required")
+                db.execute(
+                    "INSERT INTO reviewed_shared_revocations VALUES (?,?,?)",
+                    (
+                        operation_id,
+                        revocation_id,
+                        EventStore._serialize_time(self._clock()),
+                    ),
+                )
+                revoke_shared_authorization(db, operation_id)
+                validate_shared_graph(db)
+                return "revoked"
+
+        return self._gate.authorized(revoke)
 
     def _binding_sources(self, db, a):
         if (
@@ -401,18 +603,28 @@ class SharedIntelligence:
 
         return self._gate.authorized(read)
 
+    def operations_consent_live(self, operation_ids, principal) -> bool:
+        """Recheck exact reviewed grants before a dependent reply is persisted or read."""
+        EventStore._validate_context(principal)
+        with closing(self._events._open()) as db, db:
+            db.execute("BEGIN")
+            self._events._verify_current_schema(db)
+            validate_shared_graph(db)
+            now = self._clock()
+            return all(
+                self._reviewed_consent_live(
+                    db, operation_id, principal.principal_id.value, now
+                )
+                for operation_id in operation_ids
+            )
+
     def select(self, db, principal):
         EventStore._validate_context(principal)
         validate_shared_graph(db)
         rows = db.execute(
             """SELECT o.operation_id, o.kind, p.value, p.confidence,
             (SELECT COUNT(*) FROM protected_shared_sources s WHERE s.operation_id=o.operation_id AND classification='counter'),
-            o.source_count, o.revision,
-            (SELECT json_group_array(past.value) FROM shared_operations h
-                JOIN shared_payloads past ON past.operation_id=h.operation_id
-                WHERE h.item_id=o.item_id AND h.status='active' AND h.revision<o.revision
-                    AND past.value<>p.value AND EXISTS (SELECT 1 FROM protected_shared_audiences ha
-                        WHERE ha.operation_id=h.operation_id AND ha.principal_id=a.principal_id))
+            o.source_count, o.revision, o.item_id
             FROM shared_operations o JOIN shared_payloads p USING(operation_id)
             JOIN protected_shared_audiences a USING(operation_id)
             WHERE a.principal_id=? AND a.purpose='conversation' AND o.status='active'
@@ -420,29 +632,89 @@ class SharedIntelligence:
             ORDER BY o.item_id, o.revision""",
             (principal.principal_id.value,),
         ).fetchall()
-        return tuple(
-            SharedRecord(
-                op,
-                ModelMemory(
-                    "belief_or_hypothesis" if kind == "unresolved_question" else kind,
-                    value,
-                    "active",
-                    confidence,
-                    "uncertain",
-                    None,
-                    "Compare competing evidence; retain uncertainty.",
-                    count - counter,
-                    counter,
-                    None,
-                    tuple(json.loads(alternatives)),
-                    None,
-                    (),
-                    None,
-                    "unverified",
-                    "model_inference",
-                ),
-                revision,
-                kind,
+        audience = principal.principal_id.value
+        now = self._clock()
+        records = []
+        for op, kind, value, confidence, counter, count, revision, item_id in rows:
+            if not self._reviewed_consent_live(db, op, audience, now):
+                continue
+            history = db.execute(
+                """SELECT h.operation_id,past.value,
+                    (r.operation_id IS NOT NULL) FROM shared_operations h
+                JOIN shared_payloads past ON past.operation_id=h.operation_id
+                JOIN protected_shared_audiences ha ON ha.operation_id=h.operation_id
+                LEFT JOIN reviewed_shared_decisions r ON r.operation_id=h.operation_id
+                WHERE h.item_id=? AND h.status='active' AND h.revision<?
+                    AND past.value<>? AND ha.principal_id=?
+                ORDER BY h.revision""",
+                (item_id, revision, value, audience),
+            ).fetchall()
+            eligible_history = tuple(
+                (past_op, past_value, reviewed)
+                for past_op, past_value, reviewed in history
+                if self._reviewed_consent_live(db, past_op, audience, now)
             )
-            for op, kind, value, confidence, counter, count, revision, alternatives in rows
-        )
+            alternatives = tuple(value for _, value, _ in eligible_history)
+            historical_reviewed = tuple(
+                sorted(op for op, _, reviewed in eligible_history if reviewed)
+            )
+            records.append(
+                SharedRecord(
+                    op,
+                    ModelMemory(
+                        "belief_or_hypothesis"
+                        if kind == "unresolved_question"
+                        else kind,
+                        value,
+                        "active",
+                        confidence,
+                        "uncertain",
+                        None,
+                        "Compare competing evidence; retain uncertainty.",
+                        count - counter,
+                        counter,
+                        None,
+                        alternatives,
+                        None,
+                        (),
+                        None,
+                        "unverified",
+                        "model_inference",
+                    ),
+                    revision,
+                    kind,
+                    historical_reviewed,
+                )
+            )
+        return tuple(records)
+
+    def _reviewed_consent_live(
+        self, db, operation_id: str, audience: str, at=None
+    ) -> bool:
+        if (
+            db.execute(
+                "SELECT 1 FROM reviewed_shared_decisions WHERE operation_id=?",
+                (operation_id,),
+            ).fetchone()
+            is None
+        ):
+            return True
+        for event_id, source_principal, consent_id in db.execute(
+            """SELECT c.event_id,s.source_principal,c.consent_id
+            FROM protected_reviewed_consents c
+            JOIN protected_shared_sources s ON s.operation_id=c.operation_id
+                AND s.event_id=c.event_id
+            WHERE c.operation_id=? AND c.audience=?""",
+            (operation_id, audience),
+        ):
+            if (
+                self._gate._ledger.active_shared_consent(
+                    source_principal,
+                    event_id,
+                    audience,
+                    self._clock() if at is None else at,
+                )
+                != consent_id
+            ):
+                return False
+        return True

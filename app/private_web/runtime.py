@@ -194,6 +194,9 @@ class _DurableConversationRuntime(ConversationService):
                 "shared intelligence must bind the same synthetic application"
             )
         self._shared = shared_intelligence
+        self._shared_guard = shared_intelligence or SharedIntelligence(
+            event_store, privacy_gate, clock=clock
+        )
         self._limits = context_limits
         self._worker = transport if type(transport) is OpenAIWorkerClient else None
         self._transport = transport
@@ -486,6 +489,7 @@ class _DurableConversationRuntime(ConversationService):
                     event_id,
                     db,
                     reply_permitted=lambda reply: self._current_request.get()()
+                    and self._shared_consent_live(reply.operation, principal)
                     and self._research_evidence(reply.operation.operation_id) is None
                     and self._historical_research_permitted(principal, reply),
                 )
@@ -543,8 +547,8 @@ class _DurableConversationRuntime(ConversationService):
                     or not self._current_request.get()()
                 ):
                     return "authorization_rejected"
-                if self._outputs.read_reply(principal, operation_id) is None:
-                    raise PrivacyReadBlocked("reply_sources_unavailable")
+                if not self._inference_consent_live(principal, operation_id):
+                    return "consent_unavailable"
                 return self._provider.reserve_attempt(
                     marker, "worker-ipc", self._clock()
                 )
@@ -560,6 +564,11 @@ class _DurableConversationRuntime(ConversationService):
             return self._worker.infer(
                 request, correlation_id=correlation, operation_id=operation_id
             )
+        self._checkpoint("before_stage0_admission")
+        if not self._gate.authorized(
+            lambda: self._inference_consent_live(principal, operation_id)
+        ):
+            return self._worker_result("consent_unavailable")
         if self._memory_bridge is None:
             return self._gateway.submit(
                 build_model_request(context),
@@ -1187,6 +1196,8 @@ class _DurableConversationRuntime(ConversationService):
                 is None
             ):
                 raise PrivacyReadBlocked("reply_sources_unavailable")
+            if not self._shared_consent_live(operation, route.principal):
+                return "research_unavailable"
             caps = self._capabilities()
             if caps.emergency_stop_active:
                 return "research_stopped"
@@ -1311,6 +1322,10 @@ class _DurableConversationRuntime(ConversationService):
                 if self._worker is not None
                 else "skipped"
             )
+        elif result.outcome == "consent_unavailable":
+            outcome = "unavailable"
+        elif not self._shared_consent_live(operation, route.principal):
+            outcome = "unavailable"
         elif self._worker is not None and not self._current_request.get()():
             return
         elif self._worker is not None and result.outcome == CLIENT_OUTCOME_UNCERTAIN:
@@ -1383,6 +1398,8 @@ class _DurableConversationRuntime(ConversationService):
         )
         if reply is None:
             raise PrivacyReadBlocked("reply_sources_unavailable")
+        if not self._shared_consent_live(reply.operation, route.principal):
+            return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
         evidence = self._research_evidence(operation_id)
         if evidence is not None:
             if isinstance(evidence, str) or reply.result_state is ResultState.PENDING:
@@ -1493,6 +1510,7 @@ class _DurableConversationRuntime(ConversationService):
                     and reply.result_state is ResultState.PERSISTED
                     and resolution == ("completed", f"release:{operation_id}")
                     and self._current_request.get()()
+                    and self._shared_consent_live(reply.operation, principal)
                     and self._historical_research_permitted(principal, reply)
                 ):
                     items.append(
@@ -1503,6 +1521,21 @@ class _DurableConversationRuntime(ConversationService):
             return tuple(items)
 
         return self._gate.authorized(read)
+
+    def _shared_consent_live(self, operation, principal):
+        return (
+            not operation.shared_operation_ids
+            or self._shared_guard.operations_consent_live(
+                operation.shared_operation_ids, principal
+            )
+        )
+
+    def _inference_consent_live(self, principal, operation_id):
+        """Call only within the privacy fence, immediately before inference admission."""
+        reply = self._outputs.read_reply(principal, operation_id)
+        if reply is None:
+            raise PrivacyReadBlocked("reply_sources_unavailable")
+        return self._shared_consent_live(reply.operation, principal)
 
     def _historical_research_permitted(self, principal, reply):
         evidence = self._research_evidence(reply.operation.operation_id)

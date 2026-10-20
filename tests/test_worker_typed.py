@@ -986,14 +986,14 @@ def test_old_backup_quarantine_does_not_restore_typed_receipt(tmp_path):
     second = append_event(events, who, "pending", "I now read more")
     audit.reserve("typed:pending", who, second, "I now read more")
     backup = tmp_path / "old-backup.db"
-    create_sqlite_backup(events.database_path, backup, 10, NOW)
+    create_sqlite_backup(events.database_path, backup, 11, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.db")
     deletion = DeletionCoordinator(ledger, EventStoreErasureAdapter(events)).delete(
         deletion_context(), deletion_request(content_reference=first)
     )
     assert deletion.disposition.value == "applied"
     quarantine = tmp_path / "quarantine.db"
-    restored = QuarantinedRestore(ledger, 10, EventStoreRestoreAdapter).restore(
+    restored = QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert restored.activation_eligible
@@ -1050,7 +1050,7 @@ def test_v9_typed_provenance_migration_is_atomic(tmp_path):
         assert schema_objects(db) == before
         assert db.execute("PRAGMA user_version").fetchone() == (9,)
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 10
+    assert upgraded.diagnostics().schema_version == 11
     assert (
         SelfStateStore(upgraded).retrieve_private_candidates(who)[0].topic
         == "Historical art"

@@ -7,7 +7,7 @@ participant rendering. No database activation or route wiring is provided.
 
 from collections.abc import Callable
 from contextlib import closing
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 import json
 import sqlite3
@@ -20,7 +20,12 @@ from app.core.self_state import StateType
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, SCHEMA_VERSION
 from app.core.generic_graph import validate_generic_graph, erase_generic_source
-from app.core.shared_graph import validate_shared_graph, erase_shared_source
+from app.core.shared_graph import (
+    validate_shared_graph,
+    erase_shared_source,
+    erase_shared_review,
+    revoke_shared_authorization,
+)
 
 from .deletion import DeletionCoordinator
 from .ledger import PrivacyLedger
@@ -182,18 +187,18 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7, 8, 9, 10}:
+    if schema_version in {6, 7, 8, 9, 10, 11}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version in {7, 8, 9, 10}:
+    if schema_version in {7, 8, 9, 10, 11}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ApplicationPrivacyError("invalid_generic_graph") from error
     if (
-        schema_version in {9, 10}
+        schema_version in {9, 10, 11}
         and db.execute(
             """SELECT 1 FROM private_extraction_receipts r
         JOIN event_envelopes e ON e.event_id=r.source_event_id
@@ -212,7 +217,7 @@ def _validate_graph(
         is not None
     ):
         raise ApplicationPrivacyError("invalid_extraction_receipt")
-    if schema_version == 10:
+    if schema_version in {10, 11}:
         _validate_typed_receipts(db)
     for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
@@ -376,11 +381,11 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version in {7, 8, 9, 10}:
+        if schema_version in {7, 8, 9, 10, 11}:
             erase_generic_source(db, request.content_reference)
-        if schema_version in {6, 7, 8, 9, 10}:
+        if schema_version in {6, 7, 8, 9, 10, 11}:
             erase_shared_source(db, request.content_reference)
-        if schema_version in {9, 10}:
+        if schema_version in {9, 10, 11}:
             db.execute(
                 """DELETE FROM private_extraction_receipts
                 WHERE source_event_id=? OR EXISTS (
@@ -413,6 +418,17 @@ class EventStoreErasureAdapter:
                 return _erase(db, deletion)
         except ApplicationPrivacyError as error:
             return ErasureReport(False, False, frozenset(), (str(error),))
+
+    def apply_revocation(self, consent_id: str, revoked_at: datetime) -> bool:
+        require_token(consent_id, "consent id")
+        require_utc(revoked_at, "revocation timestamp")
+        with closing(self.store._open()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            self.store._verify_current_schema(db)
+            validate_shared_graph(db)
+            erase_shared_review(db, consent_id)
+            validate_shared_graph(db)
+        return True
 
 
 class EventStoreRestoreAdapter:
@@ -448,16 +464,31 @@ class EventStoreRestoreAdapter:
         with closing(self._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                _validate_graph(db, db.execute("PRAGMA user_version").fetchone()[0])
-        # v4 has no persisted consent grants, disclosure authorization or consent
-        # cache. External PrivacyLedger remains the sole current-use authority.
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                _validate_graph(db, version)
+                if version >= 11:
+                    erase_shared_review(db, consent_id)
+                    _validate_graph(db, version)
         return True
 
     def rebuild_dependencies(self) -> bool:
         with closing(self._open()) as db:
             with db:
                 db.execute("BEGIN IMMEDIATE")
-                _validate_graph(db, db.execute("PRAGMA user_version").fetchone()[0])
+                version = db.execute("PRAGMA user_version").fetchone()[0]
+                _validate_graph(db, version)
+                if version >= 11:
+                    # The external privacy ledger has no review-decision journal.
+                    # A restored snapshot cannot establish that a later local
+                    # revocation did not occur, so all reviewed grants fail closed.
+                    for (operation_id,) in db.execute(
+                        "SELECT o.operation_id FROM shared_operations o "
+                        "JOIN protected_shared_manifests m USING(operation_id) "
+                        "WHERE o.status<>'invalidated' "
+                        "AND json_extract(m.binding,'$.reviewed')=1"
+                    ).fetchall():
+                        revoke_shared_authorization(db, operation_id)
+                    _validate_graph(db, version)
         # All supported indexes are SQLite indexes, maintained atomically above.
         return True
 
@@ -483,12 +514,20 @@ class PrivacyReadGate:
     Callers must never expose raw stores or an eligible quarantine to participants.
     """
 
-    def __init__(self, ledger: PrivacyLedger, store: EventStore):
+    def __init__(
+        self,
+        ledger: PrivacyLedger,
+        store: EventStore,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ):
         self._ledger = ledger
         self._store = store
+        self._clock = clock or (lambda: datetime.now(UTC))
         self._lock = RLock()
         self._generation: int | None = None
         self._identity: tuple[int, int] | None = None
+        self._next_revocation_at: datetime | None = None
 
     def _database_identity(self) -> tuple[int, int]:
         status = self._store.database_path.stat()
@@ -498,11 +537,22 @@ class PrivacyReadGate:
         with self._lock:
             self._generation = None
             self._identity = None
+            self._next_revocation_at = None
             adapter = EventStoreErasureAdapter(self._store)
             try:
                 identity = self._database_identity()
                 DeletionCoordinator(self._ledger, adapter).reconcile_pending()
                 snapshot = self._ledger.reconciliation_snapshot()
+                now = self._clock()
+                require_utc(now, "reconciliation timestamp")
+                self._next_revocation_at = min(
+                    (at for _, at in snapshot.revocations if at > now), default=None
+                )
+                for consent_id, revoked_at in snapshot.revocations:
+                    if revoked_at > now:
+                        continue
+                    if not adapter.apply_revocation(consent_id, revoked_at):
+                        return False
                 for record in snapshot.deletions:
                     if (
                         record.disposition is not DeletionDisposition.APPLIED
@@ -541,11 +591,20 @@ class PrivacyReadGate:
                     or row != (self._generation,)
                     or pending is not None
                     or self._database_identity() != self._identity
+                    or (
+                        self._next_revocation_at is not None
+                        and self._clock() >= self._next_revocation_at
+                    )
                 ):
                     raise PrivacyReadBlocked("privacy_reconciliation_required")
                 result = callback()
                 if self._database_identity() != self._identity:
                     raise PrivacyReadBlocked("application_database_changed")
+                if (
+                    self._next_revocation_at is not None
+                    and self._clock() >= self._next_revocation_at
+                ):
+                    raise PrivacyReadBlocked("privacy_reconciliation_required")
                 return result
 
     def authorized(self, callback: Callable[[], _T]) -> _T:

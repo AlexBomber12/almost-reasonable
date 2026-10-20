@@ -75,3 +75,29 @@ SCHEMA_V6 = (
         PRIMARY KEY(proposal_id, phase)
     )""",
 )
+
+
+# Review identities contain no candidate content or content-derived fingerprint.
+# Exact candidate and lineage bindings remain in erasable protected_shared_manifests.
+SCHEMA_V11 = (
+    """CREATE TABLE reviewed_shared_decisions (
+        operation_id TEXT PRIMARY KEY REFERENCES shared_operations(operation_id),
+        decision_id TEXT NOT NULL UNIQUE,
+        review_identity TEXT NOT NULL,
+        review_version TEXT NOT NULL,
+        decision TEXT NOT NULL CHECK(decision IN ('approved','rejected','revoked')),
+        decided_at TEXT NOT NULL
+    )""",
+    """CREATE TABLE protected_reviewed_consents (
+        operation_id TEXT NOT NULL REFERENCES reviewed_shared_decisions(operation_id),
+        consent_id TEXT NOT NULL,
+        event_id TEXT NOT NULL REFERENCES event_envelopes(event_id),
+        audience TEXT NOT NULL,
+        PRIMARY KEY(operation_id,event_id,audience)
+    )""",
+    """CREATE TABLE reviewed_shared_revocations (
+        operation_id TEXT PRIMARY KEY REFERENCES reviewed_shared_decisions(operation_id),
+        revocation_id TEXT NOT NULL UNIQUE,
+        revoked_at TEXT NOT NULL
+    )""",
+)

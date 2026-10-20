@@ -69,23 +69,28 @@ def assemble_shared(private, sources, shared, principal, db, budget):
     for record in shared.select(db, principal):
         if record.operation_id in selected:
             continue
+        exposed_operations = {
+            record.operation_id,
+            *record.historical_reviewed_operation_ids,
+        }
         evidence = {
             row[0]
+            for shared_operation in exposed_operations
             for row in db.execute(
                 "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
-                (record.operation_id,),
+                (shared_operation,),
             )
         }
         trial = SharedModelRequest(private, (*request.shared, record), omitted)
         if (
             len(dependencies | evidence) > 100
-            or len(trial.shared) + len(private.inherited_shared_operation_ids) > 16
+            or len(set(selected) | exposed_operations) > 16
             or len(trial._serialized().encode("utf-8"))
             > min(budget, MAX_MODEL_REQUEST_UTF8_BYTES)
         ):
             omitted = True
             continue
         dependencies.update(evidence)
-        selected.append(record.operation_id)
+        selected.extend(sorted(exposed_operations - set(selected)))
         request = trial
     return SharedModelRequest(private, request.shared, omitted), tuple(sorted(selected))

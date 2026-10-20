@@ -197,7 +197,7 @@ def test_durable_receipt_reconciles_reserved_intent_and_source_deletion_erases_i
     assert replay.status == "received" and not replay.created
     assert replay.proposal == proposal
     backup = tmp_path / "pending-receipt-backup.db"
-    create_sqlite_backup(events.database_path, backup, 10, NOW)
+    create_sqlite_backup(events.database_path, backup, 11, NOW)
     ledger = PrivacyLedger(tmp_path / "ledger.db")
     assert (
         DeletionCoordinator(ledger, EventStoreErasureAdapter(events))
@@ -219,7 +219,7 @@ def test_durable_receipt_reconciles_reserved_intent_and_source_deletion_erases_i
     )
     quarantine = tmp_path / "pending-receipt-quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 10, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 11, EventStoreRestoreAdapter)
         .restore(backup, quarantine, NOW)
         .activation_eligible
     )
