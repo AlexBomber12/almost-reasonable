@@ -190,11 +190,12 @@ def test_public_instruction_cannot_confirm_without_independent_research(tmp_path
         clock.advance(timedelta(minutes=1))
         assert decide_inbound(app, worker) == ()
         with app.journal.transaction() as db:
-            operation = db.execute(
-                "SELECT operation FROM intents WHERE phase='intent'"
-            ).fetchone()[0]
-        with pytest.raises(PolicyDeniedError, match="mission transition"):
-            app._handoff(operation, app.journal.read(operation))
+            assert (
+                db.execute(
+                    "SELECT phase FROM intents ORDER BY rowid DESC LIMIT 1"
+                ).fetchone()[0]
+                == "rejected"
+            )
         assert app.mission.snapshot()[1]["version"] == "mission-v1"
     finally:
         worker.close()
@@ -648,8 +649,7 @@ def test_invalid_research_provenance_holds_confirmation(tmp_path, monkeypatch):
         decide_wakeup(app, worker, clock)
         assert app.mission_evolution.pending() is not None
         operation = app.wakeup_operation("wake-2")
-        with pytest.raises(PolicyDeniedError, match="mission transition"):
-            app._handoff(operation, app.journal.read(operation))
+        assert app.journal.read(operation)["phase"] == "rejected"
     finally:
         worker.close()
 
@@ -822,6 +822,38 @@ def test_full_mission_history_withholds_new_proposals(tmp_path, monkeypatch):
         worker.close()
 
 
+def test_failed_final_research_rejects_resolution_intent(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            app.research_client,
+            "execute",
+            lambda _request: {"outcome": "authorization_denied", "attempts": 0},
+        )
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "reject",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
+        assert app.mission_evolution.pending() is not None
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
 def test_research_arriving_after_decision_cannot_confirm(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
@@ -905,6 +937,52 @@ def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch
             app.mission_evolution._confirmation_sources(
                 payload | {"decided_at": clock.now().isoformat()}, proposal
             )
+    finally:
+        worker.close()
+
+
+def test_latest_qualifying_research_completion_is_offered(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        proposal_at = app.mission_evolution.pending().proposal.decided_at
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            valid = db.execute(
+                "SELECT r.operation,i.payload FROM public_research_ops r "
+                "JOIN intents i ON i.operation=r.operation"
+            ).fetchone()
+        older_operation = "older-completion"
+        _staged_intent(app, older_operation, json.loads(valid["payload"]))
+        with app.journal.transaction() as db:
+            db.execute(
+                "INSERT INTO public_research_ops VALUES(?,?,?,?,?,?)",
+                (
+                    older_operation,
+                    "older-research",
+                    "ocean",
+                    app.current_research_profile().digest,
+                    "completed",
+                    "older evidence",
+                ),
+            )
+            db.execute(
+                "INSERT INTO public_research_completions VALUES(?,?)",
+                (older_operation, (proposal_at - timedelta(seconds=1)).isoformat()),
+            )
+        _, evidence, source = app._public_context_with_source(
+            app.current_research_profile()
+        )
+        assert source == valid["operation"]
+        assert len(evidence) == 1
     finally:
         worker.close()
 
@@ -1038,9 +1116,8 @@ def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch)
         clock.advance(timedelta(minutes=1))
         decide_wakeup(app, worker, clock)
         assert app.mission_evolution.pending() is not None
-        with pytest.raises(PolicyDeniedError, match="mission transition"):
-            operation = app.wakeup_operation("wake-2")
-            app._handoff(operation, app.journal.read(operation))
+        operation = app.wakeup_operation("wake-2")
+        assert app.journal.read(operation)["phase"] == "rejected"
     finally:
         worker.close()
 

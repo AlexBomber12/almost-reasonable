@@ -1,7 +1,7 @@
 """Default-disabled public behavior to Stage 3 Threads coordinator."""
 
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import datetime, timedelta
 import hashlib
 import json
 import os
@@ -431,14 +431,33 @@ class ThreadsRuntime(ThreadsStage0):
         )
         evidence, source = (), None
         if profile is not None:
+            pending = (
+                None
+                if self.mission_evolution is None
+                else self.mission_evolution.pending()
+            )
             with self.journal.transaction() as db:
                 rows = db.execute(
-                    "SELECT r.operation,r.evidence,i.payload FROM public_research_ops r "
-                    "JOIN intents i ON i.operation=r.operation WHERE r.phase='completed' "
-                    "AND r.profile_digest=? ORDER BY i.rowid DESC LIMIT 8",
+                    "SELECT r.operation,r.evidence,i.payload,c.completed_at,i.rowid AS intent_rowid "
+                    "FROM public_research_ops r "
+                    "JOIN intents i ON i.operation=r.operation "
+                    "JOIN public_research_completions c ON c.operation=r.operation "
+                    "WHERE r.phase='completed' AND r.profile_digest=?",
                     (profile.digest,),
                 ).fetchall()
-            for row in rows:
+            for row in sorted(
+                rows,
+                key=lambda item: (
+                    datetime.fromisoformat(item["completed_at"]),
+                    item["intent_rowid"],
+                ),
+                reverse=True,
+            ):
+                if pending is not None and (
+                    datetime.fromisoformat(row["completed_at"])
+                    <= pending.proposal.decided_at
+                ):
+                    continue
                 payload = json.loads(row["payload"])
                 try:
                     self.require_mission(payload)
@@ -652,15 +671,19 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             pending = self.mission_evolution.pending()
             if (
-                proposal.action == "propose"
-                and (mission_pending_id is not None or pending is not None)
-            ) or (
-                proposal.action != "propose"
-                and (
-                    mission_pending_id is None
-                    or pending is None
-                    or pending.proposal.proposal_id != mission_pending_id
+                (
+                    proposal.action == "propose"
+                    and (mission_pending_id is not None or pending is not None)
                 )
+                or (
+                    proposal.action != "propose"
+                    and (
+                        mission_pending_id is None
+                        or pending is None
+                        or pending.proposal.proposal_id != mission_pending_id
+                    )
+                )
+                or (proposal.action != "propose" and mission_evidence_operation is None)
             ):
                 rejected = True
             else:
