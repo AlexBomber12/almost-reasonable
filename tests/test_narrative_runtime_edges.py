@@ -230,6 +230,9 @@ def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_receiv
         ),
         _commit_narrative=lambda *args: state.append(args),
     )
+    fake._reconcile_narrative_once = lambda *args: (
+        WorkerConversationRuntime._reconcile_narrative_once(fake, *args)
+    )
     WorkerConversationRuntime._reconcile_narrative(
         fake, principal("a"), "source", "История", "reply:source"
     )
@@ -258,6 +261,9 @@ def test_received_narrative_waits_for_existing_reply_attempt(tmp_path):
             read_reply=lambda *_args: SimpleNamespace(result_state=ResultState.PENDING)
         ),
         _provider=SimpleNamespace(attempt_exists=lambda *_args: True),
+    )
+    fake._reconcile_narrative_once = lambda *args: (
+        WorkerConversationRuntime._reconcile_narrative_once(fake, *args)
     )
     WorkerConversationRuntime._reconcile_narrative(
         fake, principal("a"), "source", "История", "reply:source"

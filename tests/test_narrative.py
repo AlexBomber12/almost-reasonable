@@ -1936,6 +1936,113 @@ def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
         )
 
 
+def test_concurrent_received_narrative_reconciliation_is_idempotent(
+    tmp_path, monkeypatch
+):
+    from app.core.openai_worker_client import ClientResult
+
+    events = EventStore(tmp_path / "events.db")
+    ledger = PrivacyLedger(tmp_path / "ledger.db")
+    gate = PrivacyReadGate(ledger, events)
+    assert gate.reconcile()
+    provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
+    client = OpenAIWorkerClient(
+        tmp_path / "missing.sock", expected_worker_uid=os.getuid()
+    )
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(operation_id)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            narrative=(
+                NarrativeProposal("create", None, "Вымышленный маяк.")
+                if isinstance(request, NarrativeModelRequest)
+                else None
+            ),
+            validation=(
+                None
+                if isinstance(request, NarrativeModelRequest)
+                else ProposalValidation(ReplyProposal("Ответ."), None)
+            ),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+
+    def crash(point):
+        if point == "after_reply_commit":
+            raise RuntimeError("synthetic crash")
+
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+        checkpoint=crash,
+    )
+    with pytest.raises(RuntimeError, match="synthetic crash"):
+        runtime.submit(principal("a"), "first", "Расскажи историю")
+
+    recovered = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        narrative_enabled=True,
+        narrative_permission_current=lambda: True,
+    )
+    entered_finish, release_finish = ThreadEvent(), ThreadEvent()
+    original_finish = NarrativeAuditStore.finish
+
+    def pause_first_finish(audit, operation_id, status):
+        if status == "accepted" and not entered_finish.is_set():
+            entered_finish.set()
+            assert release_finish.wait(5)
+        return original_finish(audit, operation_id, status)
+
+    monkeypatch.setattr(NarrativeAuditStore, "finish", pause_first_finish)
+    results, errors = [], []
+
+    def retry():
+        try:
+            results.append(
+                recovered.submit(principal("a"), "first", "Расскажи историю")
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    first = Thread(target=retry)
+    second = Thread(target=retry)
+    first.start()
+    try:
+        assert entered_finish.wait(5)
+        second.start()
+        # Without a reconciliation-wide guard, the second retry finishes the
+        # received audit while the first still holds its stale received copy.
+        second.join(5)
+        assert not second.is_alive()
+    finally:
+        release_finish.set()
+        first.join(10)
+        if second.ident is not None:
+            second.join(10)
+    assert errors == []
+    assert len(results) == 2
+    assert {result.model_state.value for result in results} == {"completed", "pending"}
+    assert (
+        recovered.submit(principal("a"), "first", "Расскажи историю").model_state.value
+        == "completed"
+    )
+    assert len(calls) == 2
+    assert len(NarrativeStore(events).current(principal("a"))) == 1
+
+
 @pytest.mark.parametrize(
     "crash_point,expected_state,expected_episodes,expected_calls",
     [

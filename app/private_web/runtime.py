@@ -996,12 +996,24 @@ class _DurableConversationRuntime(ConversationService):
         with _NARRATIVE_ACTIVE_LOCK:
             if key in _NARRATIVE_ACTIVE:
                 return
-            try:
-                audit = self._narrative_audit.read(
-                    operation_id, principal.principal_id.value, event_id, content
-                )
-            except ValueError:
-                return
+            _NARRATIVE_ACTIVE.add(key)
+        try:
+            self._reconcile_narrative_once(
+                principal, event_id, content, reply_operation_id, operation_id
+            )
+        finally:
+            with _NARRATIVE_ACTIVE_LOCK:
+                _NARRATIVE_ACTIVE.remove(key)
+
+    def _reconcile_narrative_once(
+        self, principal, event_id, content, reply_operation_id, operation_id
+    ):
+        try:
+            audit = self._narrative_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+        except ValueError:
+            return
         if audit is None and _narrative_requested(content):
 
             def resolve_missing_audit():
