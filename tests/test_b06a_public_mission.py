@@ -232,6 +232,37 @@ def test_replay_and_duplicate_proposal_are_held(tmp_path):
         worker.close()
 
 
+def test_proposal_stores_the_validated_invariant_snapshot(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        run_once(app, worker)
+        baseline = app.mission_evolution.invariants()
+        changed = replace(baseline, tool_permissions_version="e" * 64)
+        payload = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "decision": "revise_mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+            "event": "wake-1",
+            "correlation": "snapshot-test",
+        }
+        _staged_intent(app, "snapshot-test", payload)
+        calls = []
+
+        def changing_invariants():
+            calls.append(None)
+            return baseline if len(calls) == 1 else changed
+
+        monkeypatch.setattr(app.mission_evolution, "invariants", changing_invariants)
+        app.mission_evolution.apply("snapshot-test", payload)
+        assert len(calls) == 1
+        assert app.mission_evolution.pending().proposal.invariants == baseline
+    finally:
+        worker.close()
+
+
 def test_permission_change_holds_confirmation(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
@@ -756,6 +787,37 @@ def test_exhausted_research_catalog_withholds_new_mission_proposals(
         app.run((WakeupEvent("wake-2", clock.now(), "public reflection"),))
         assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
         assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
+def test_full_mission_history_withholds_new_proposals(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        monkeypatch.setattr(
+            "app.core.public_mission_evolution.MAX_MISSION_HISTORY_RECORDS", 1
+        )
+        assert app.mission_evolution.model_context() == ("pending", "research")
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "reject",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.mission_evolution.pending() is None
+        monkeypatch.setattr(app, "available_topics", lambda _profile: ("ocean",))
+        assert app.mission_evolution.model_context() == ()
     finally:
         worker.close()
 

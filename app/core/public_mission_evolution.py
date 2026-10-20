@@ -17,6 +17,7 @@ from app.behavior.mission import (
     MissionPurpose,
     MissionStateMachine,
     MissionStatus,
+    MAX_MISSION_HISTORY_RECORDS,
     _MISSION_PURPOSE_TEXT,
     _document_from_dict,
     _document_to_dict,
@@ -98,7 +99,15 @@ class PublicMissionEvolution:
         return self.decision_context()[0]
 
     def decision_context(self):
-        record = self.pending()
+        document = self.document()
+        record = next(
+            (
+                item
+                for item in document.proposals
+                if item.status is MissionStatus.PENDING
+            ),
+            None,
+        )
         if record is not None:
             return (
                 "pending",
@@ -106,7 +115,11 @@ class PublicMissionEvolution:
             ), record.proposal.proposal_id
         profile = self.app.current_research_profile()
         return (
-            ("enabled",) if profile and self.app.available_topics(profile) else ()
+            ("enabled",)
+            if len(document.proposals) < MAX_MISSION_HISTORY_RECORDS
+            and profile
+            and self.app.available_topics(profile)
+            else ()
         ), None
 
     def source_id(self, content):
@@ -228,9 +241,10 @@ class PublicMissionEvolution:
                 raise ValueError("independent later mission decision required")
             if action not in ("propose", "confirm", "reject"):
                 raise ValueError("invalid public mission action")
-            if self.invariants().to_dict() != payload["mission_invariants"] or (
+            invariants = self.invariants()
+            if invariants.to_dict() != payload["mission_invariants"] or (
                 payload["mission_action"] != "propose"
-                and self.invariants() != pending.proposal.invariants
+                and invariants != pending.proposal.invariants
             ):
                 raise ValueError("public mission controls changed")
             if action == "propose":
@@ -248,7 +262,7 @@ class PublicMissionEvolution:
                         payload["correlation"],
                         "public-behavior-worker-v1",
                         "threads-public-prompt-v1",
-                        self.invariants(),
+                        invariants,
                         purpose,
                         self._initiating_source(operation, payload),
                     )
@@ -267,7 +281,7 @@ class PublicMissionEvolution:
                         ("public deliberation",),
                         ("none recorded",),
                         tuple(source.evidence_id for source in sources),
-                        self.invariants(),
+                        invariants,
                         sources,
                     )
                 )
