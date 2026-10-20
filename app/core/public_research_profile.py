@@ -18,6 +18,7 @@ from app.trusted.public_research import PublicResearchRequest, encode_public_req
 from app.research.provider import default_hosted_search_config
 
 VERSION = "public-research-profile-v1"
+PUBLIC_PURPOSE = "public-deliberation-catalog-research-v1"
 _TOKEN = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 
@@ -53,6 +54,8 @@ class ResearchProfile:
     digest: str
     principal_id: str | None = None
     authenticated_source_ref: str | None = None
+    purpose: str = PURPOSE
+    account_ref: str | None = None
 
     def topic(self, choice: str) -> CatalogTopic | None:
         if type(choice) is not str:
@@ -129,14 +132,17 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         "topics",
     }
     private = {"principal_id", "authenticated_source_ref"}
-    if type(data) is not dict or set(data) != common | (
-        private if role == "application" else set()
-    ):
+    if type(data) is not dict:
+        raise ValueError("invalid profile fields")
+    purpose = data.get("purpose")
+    if purpose not in (PURPOSE, PUBLIC_PURPOSE) or set(data) != common | (
+        private if purpose == PURPOSE and role == "application" else set()
+    ) | ({"account_ref"} if purpose == PUBLIC_PURPOSE else set()):
         raise ValueError("invalid profile fields")
     if (
         data["version"] != VERSION
         or data["role"] != role
-        or data["purpose"] != PURPOSE
+        or data["purpose"] != purpose
         or data["configuration"] != CONFIG
         or type(data["provider_configuration"]) is not dict
         or json.dumps(data["provider_configuration"], sort_keys=True)
@@ -183,6 +189,8 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
             "profile-validation", value["question"], data["authorization"]
         )
         encode_public_request(request)
+        if purpose == PUBLIC_PURPOSE and len(value["question"].encode("utf-8")) > 512:
+            raise ValueError("public catalog question exceeds deliberation bound")
         topics.append(CatalogTopic(value["id"], value["question"], value["limit"]))
     if len({topic.topic_id for topic in topics}) != len(topics) or len(
         {topic.question for topic in topics}
@@ -190,8 +198,12 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         raise ValueError("duplicate catalog choice")
     if {topic.topic_id for topic in topics} & {topic.question for topic in topics}:
         raise ValueError("ambiguous catalog choice")
-    principal = source = None
-    if role == "application":
+    principal = source = account_ref = None
+    if purpose == PUBLIC_PURPOSE:
+        account_ref = data["account_ref"]
+        if type(account_ref) is not str or _IDENTIFIER.fullmatch(account_ref) is None:
+            raise ValueError("invalid public profile account")
+    elif role == "application":
         principal, source = data["principal_id"], data["authenticated_source_ref"]
         if (
             type(principal) is not str
@@ -221,4 +233,6 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         digest,
         principal,
         source,
+        purpose,
+        account_ref,
     )

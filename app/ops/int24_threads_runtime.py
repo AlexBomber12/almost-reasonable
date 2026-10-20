@@ -14,6 +14,7 @@ from app.behavior.scheduler import WakeupEvent, WakeupPolicy
 from app.behavior.worker_client import PublicBehaviorClient
 from app.core.provider_spend import ProviderStateStore
 from app.core.public_behavior_mission import PublicMissionContext
+from app.core.public_research_client import PublicResearchClient
 from app.core.store import EventStore
 from app.integration.threads_runtime import LocalOperator, ThreadsRuntime
 from app.owner_control.store import OwnerStore
@@ -91,6 +92,15 @@ def _runtime(config):
         )
         if config.get("public_mission_path")
         else None,
+        research_client=PublicResearchClient(
+            Path(config["public_research_socket"]),
+            expected_worker_uid=config["public_research_worker_uid"],
+        )
+        if config.get("enable_public_research")
+        else None,
+        research_profile_path=config.get("public_research_profile"),
+        research_scope=config.get("public_research_scope"),
+        research_enabled=config.get("enable_public_research", False),
         enabled=True,
         live_enabled=True,
     )

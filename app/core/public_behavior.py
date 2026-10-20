@@ -8,12 +8,14 @@ from dataclasses import dataclass
 import hashlib
 import json
 import math
+import re
 
 from app.threads.domain import require_reference
 
 VERSION = "public-behavior-v1"
 MAX_FRAME = 32_768
 MAX_CONTEXT = 2_048
+_TOPIC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 
 
 @dataclass(frozen=True, slots=True)
@@ -25,6 +27,8 @@ class PublicBehaviorRequest:
     mission: tuple[str, ...]
     deadline_seconds: float
     reservation: dict | None = None
+    catalog: tuple[tuple[str, str], ...] = ()
+    evidence: tuple[str, ...] = ()
 
     def encode(self) -> bytes:
         require_reference("operation ID", self.operation_id)
@@ -43,6 +47,28 @@ class PublicBehaviorRequest:
         ):
             raise ValueError("invalid public context")
         if (
+            type(self.catalog) is not tuple
+            or len(self.catalog) > 16
+            or any(
+                type(item) is not tuple
+                or len(item) != 2
+                or type(item[0]) is not str
+                or _TOPIC_ID.fullmatch(item[0]) is None
+                or type(item[1]) is not str
+                or not item[1]
+                or len(item[1].encode()) > 512
+                for item in self.catalog
+            )
+            or len({item[0] for item in self.catalog}) != len(self.catalog)
+            or type(self.evidence) is not tuple
+            or len(self.evidence) > 1
+            or any(
+                type(item) is not str or len(item.encode()) > MAX_CONTEXT
+                for item in self.evidence
+            )
+        ):
+            raise ValueError("invalid public research context")
+        if (
             type(self.deadline_seconds) not in (float, int)
             or not math.isfinite(self.deadline_seconds)
             or not 0 < self.deadline_seconds <= 10
@@ -56,6 +82,8 @@ class PublicBehaviorRequest:
             "context": self.context,
             "mission": self.mission,
             "deadline_seconds": self.deadline_seconds,
+            "catalog": self.catalog,
+            "evidence": self.evidence,
         }
         if self.reservation is not None:
             if type(self.reservation) is not dict or set(self.reservation) != {
@@ -94,6 +122,8 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
                     "context",
                     "mission",
                     "deadline_seconds",
+                    "catalog",
+                    "evidence",
                 },
                 {
                     "version",
@@ -103,13 +133,18 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
                     "context",
                     "mission",
                     "deadline_seconds",
+                    "catalog",
+                    "evidence",
                     "reservation",
                 },
             )
             or value["version"] != VERSION
         ):
             raise ValueError("invalid public request")
-        if type(value["context"]) is not list or type(value["mission"]) is not list:
+        if any(
+            type(value[key]) is not list
+            for key in ("context", "mission", "catalog", "evidence")
+        ):
             raise ValueError("invalid public request")
         request = PublicBehaviorRequest(
             value["operation_id"],
@@ -119,6 +154,10 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
             tuple(value["mission"]),
             value["deadline_seconds"],
             value.get("reservation"),
+            tuple(
+                tuple(item) if type(item) is list else item for item in value["catalog"]
+            ),
+            tuple(value["evidence"]),
         )
         request.encode()
         return request

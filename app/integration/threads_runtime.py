@@ -23,10 +23,13 @@ from app.core.agent_proposals import (
     NoActionProposal,
     PublicationProposal,
     ReplyProposal,
+    ResearchProposal,
 )
 from app.core.core_self import initial_core_self
 from app.core.public_behavior import MAX_CONTEXT, public_context_digest
 from app.core.public_behavior_mission import PublicMissionContext
+from app.core.public_research_client import PublicResearchClient
+from app.core.public_research_profile import PUBLIC_PURPOSE, load_research_profile
 from app.core.provider_spend import ProviderStateStore
 from app.integration.threads_stage0 import (
     MAX_INTENTS,
@@ -94,7 +97,7 @@ class PublicAuthorization:
                 (approval_reference, operation_id),
             ).fetchone()
         if row is not None and row["purpose"] == ApprovalPurpose.PUBLICATION.value:
-            self.app.guard()
+            self.app.publication_guard()
         return (
             None
             if row is None
@@ -109,9 +112,9 @@ class PublicAuthorization:
         )
 
     def current_publication_authorization(self, *, item, approval_reference, now):
-        self.app.guard()
+        self.app.publication_guard()
         with self.app.journal.transaction() as db:
-            self.app.guard()
+            self.app.publication_guard()
             generation = self.app.ledger.control_generation()
             intent = db.execute(
                 "SELECT phase,payload FROM intents WHERE operation=?",
@@ -152,7 +155,7 @@ class PublicAuthorization:
                 except ValueError:
                     valid = False
             valid = valid and self.app.ledger.control_generation() == generation
-            self.app.guard()
+            self.app.publication_guard()
             current = (
                 None
                 if approval is None
@@ -187,6 +190,10 @@ class ThreadsRuntime(ThreadsStage0):
         wakeup_policy,
         operator,
         mission=None,
+        research_client=None,
+        research_profile_path=None,
+        research_scope=None,
+        research_enabled=False,
         enabled=False,
         live_enabled=False,
         checkpoint=lambda _point: None,
@@ -216,6 +223,21 @@ class ThreadsRuntime(ThreadsStage0):
         self.clock, self.operator, self.checkpoint = clock, operator, checkpoint
         self.model.reservation_evidence = self.reservation_evidence
         self.model.provider_store = provider
+        if type(research_enabled) is not bool or (
+            research_enabled
+            and (
+                type(research_client) is not PublicResearchClient
+                or research_profile_path is None
+                or not research_scope
+                or mission is None
+            )
+        ):
+            raise ValueError("invalid public research configuration")
+        self.research_enabled = research_enabled
+        self.research_client = research_client
+        self.research_profile_path = research_profile_path
+        self.research_scope = research_scope
+        self.model.public_context = self.public_context
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
         self.mission = mission
@@ -248,6 +270,12 @@ class ThreadsRuntime(ThreadsStage0):
                 "CREATE TABLE IF NOT EXISTS public_audit(sequence INTEGER PRIMARY KEY, "
                 "operation TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, "
                 "at TEXT NOT NULL, reference TEXT NOT NULL)"
+            )
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS public_research_ops(operation TEXT PRIMARY KEY, "
+                "research_id TEXT NOT NULL UNIQUE, topic TEXT NOT NULL, profile_digest TEXT NOT NULL, "
+                "phase TEXT NOT NULL CHECK(phase IN ('started','completed','failed','uncertain','held')), "
+                "evidence TEXT CHECK(evidence IS NULL OR length(evidence)<=2048))"
             )
         if mission is not None and self.journal.needs_mission_initialization:
             self.journal.mark_mission_initialized()
@@ -294,9 +322,83 @@ class ThreadsRuntime(ThreadsStage0):
             or not self.policy.account_authorized
             or not self.policy.privacy_gate_available
             or not self.policy.russian_output_gate_available
-            or not self.policy.publication_capability_enabled
         ):
             raise PolicyDeniedError("public runtime controls deny operation")
+
+    def publication_guard(self):
+        self.guard()
+        if not self.policy.publication_capability_enabled:
+            raise PolicyDeniedError("public publication capability disabled")
+
+    def current_research_profile(self):
+        if not self.research_enabled or self.mission is None:
+            return None
+        try:
+            profile = load_research_profile(
+                self.research_profile_path, role="application"
+            )
+        except (OSError, ValueError, TypeError):
+            return None
+        if (
+            profile.purpose != PUBLIC_PURPOSE
+            or profile.account_ref != self.account
+            or profile.application_scope != self.research_scope
+            or profile.peer_uid != os.geteuid()
+            or not profile.issued_at <= self.clock.now() < profile.expires_at
+        ):
+            return None
+        return profile
+
+    def public_context(self, operation):
+        profile = self.current_research_profile()
+        choices = self.available_topics(profile)
+        catalog = (
+            ()
+            if profile is None
+            else tuple(
+                (topic.topic_id, topic.question)
+                for topic in profile.topics
+                if topic.topic_id in choices
+            )
+        )
+        evidence = ()
+        if profile is not None:
+            with self.journal.transaction() as db:
+                rows = db.execute(
+                    "SELECT r.evidence,i.payload FROM public_research_ops r "
+                    "JOIN intents i ON i.operation=r.operation WHERE r.phase='completed' "
+                    "AND r.profile_digest=? ORDER BY i.rowid DESC LIMIT 8",
+                    (profile.digest,),
+                ).fetchall()
+            for row in rows:
+                payload = json.loads(row["payload"])
+                try:
+                    self.require_mission(payload)
+                    if (
+                        self.source_valid(payload)
+                        and self.ledger.control_generation() == payload["generation"]
+                    ):
+                        evidence = (row["evidence"],)
+                        break
+                except ValueError:
+                    continue
+        return catalog, evidence
+
+    def available_topics(self, profile):
+        if profile is None:
+            return ()
+        with self.journal.transaction() as db:
+            rows = db.execute(
+                "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
+            ).fetchall()
+        counts = dict(rows)
+        if sum(counts.values()) >= profile.aggregate_limit:
+            return ()
+        return tuple(
+            topic.topic_id
+            for topic in profile.topics
+            if counts.get(topic.topic_id, 0) < topic.limit
+        )
 
     def attest_worker_request(self, request):
         try:
@@ -310,6 +412,8 @@ class ThreadsRuntime(ThreadsStage0):
             and payload["trigger"] == request.trigger
             and payload["context_digest"] == public_context_digest(request.context)
             and tuple(payload["mission_text"]) == request.mission
+            and self.public_context(request.operation_id)
+            == (request.catalog, request.evidence)
             and 0 < request.deadline_seconds <= payload["timeout"]
         )
 
@@ -384,7 +488,7 @@ class ThreadsRuntime(ThreadsStage0):
                             PublicationType.REPLY, live_transport_enabled=True
                         )
                     ),
-                    False,
+                    bool(self.available_topics(self.current_research_profile())),
                     not bool(
                         self.policy.publication_blockers(
                             PublicationType.POST, live_transport_enabled=True
@@ -412,6 +516,28 @@ class ThreadsRuntime(ThreadsStage0):
         proposal = result.proposal
         if type(proposal) is NoActionProposal:
             payload.update(decision="no_action", reason=proposal.reason_category.value)
+        elif type(proposal) is ResearchProposal:
+            profile = self.current_research_profile()
+            topic = (
+                None
+                if profile is None
+                else next(
+                    (
+                        item
+                        for item in profile.topics
+                        if item.topic_id == proposal.brief
+                    ),
+                    None,
+                )
+            )
+            if topic is None or topic.topic_id not in self.available_topics(profile):
+                rejected = True
+            else:
+                payload.update(
+                    decision="research",
+                    topic=topic.topic_id,
+                    profile_digest=profile.digest,
+                )
         elif type(proposal) in (PublicationProposal, ReplyProposal):
             content = (
                 proposal.draft
@@ -468,7 +594,12 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise PolicyDeniedError("public source changed")
         decision = AgentDecision(payload["decision"])
+        if decision is AgentDecision.RESEARCH:
+            self._research(operation, payload)
+            self.journal.linked(operation)
+            return
         if decision in (AgentDecision.REPLY, AgentDecision.PROPOSE_PUBLICATION):
+            self.publication_guard()
             if self.mission is not None and not self.mission.publication_allowed():
                 raise PolicyDeniedError("public mission excludes publication")
             try:
@@ -535,6 +666,104 @@ class ThreadsRuntime(ThreadsStage0):
                 )
         self.journal.linked(operation)
 
+    def _research(self, operation, payload):
+        with self.journal.transaction() as db:
+            existing = db.execute(
+                "SELECT phase FROM public_research_ops WHERE operation=?", (operation,)
+            ).fetchone()
+            if existing is not None:
+                if existing[0] == "started":
+                    db.execute(
+                        "UPDATE public_research_ops SET phase='uncertain' WHERE operation=?",
+                        (operation,),
+                    )
+                return
+        profile = self.current_research_profile()
+        if profile is None or profile.digest != payload["profile_digest"]:
+            raise PolicyDeniedError("public research authority changed")
+        if (
+            not self.source_valid(payload)
+            or self.ledger.control_generation() != payload["generation"]
+        ):
+            raise PolicyDeniedError("public research source changed")
+        self.require_mission(payload)
+        research_id = _identity(
+            operation, "research", payload["topic"], profile.profile_id
+        )
+        request = profile.request(research_id, payload["topic"])
+        with self.journal.transaction() as db:
+            existing = db.execute(
+                "SELECT phase FROM public_research_ops WHERE operation=?", (operation,)
+            ).fetchone()
+            if existing is not None:
+                return
+            counts = dict(
+                db.execute(
+                    "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
+                )
+            )
+            topic = profile.topic(payload["topic"])
+            if (
+                topic is None
+                or sum(counts.values()) >= profile.aggregate_limit
+                or counts.get(topic.topic_id, 0) >= topic.limit
+            ):
+                raise PolicyDeniedError("public research capacity exhausted")
+            db.execute(
+                "INSERT INTO public_research_ops VALUES(?,?,?,?,?,NULL)",
+                (operation, research_id, payload["topic"], profile.digest, "started"),
+            )
+        self.checkpoint("after_research_intent")
+        phase, evidence = "uncertain", None
+        try:
+            self.guard()
+            self.require_mission(payload)
+            if (
+                self.current_research_profile() != profile
+                or not self.source_valid(payload)
+                or self.ledger.control_generation() != payload["generation"]
+            ):
+                phase = "held"
+            else:
+                result = self.research_client.execute(request)
+                phase = "uncertain" if result["attempts"] == 1 else "failed"
+                if result["outcome"] == "completed":
+                    report = result["report"]
+                    evidence = json.dumps(
+                        {
+                            "topic": payload["topic"],
+                            "question": request.question,
+                            "main_finding": report["main_finding"],
+                            "sources": report["sources"],
+                            "claim_status": "unverified",
+                            "semantic_support": "not_evaluated",
+                        },
+                        ensure_ascii=False,
+                    )
+                    if len(evidence.encode("utf-8")) > 2048:
+                        evidence = None
+                        phase = "failed"
+                    else:
+                        phase = "completed"
+        except (OSError, ValueError, TimeoutError, PolicyDeniedError):
+            phase = "uncertain"
+        try:
+            self.guard()
+            self.require_mission(payload)
+            if (
+                self.current_research_profile() != profile
+                or not self.source_valid(payload)
+                or self.ledger.control_generation() != payload["generation"]
+            ):
+                phase, evidence = "held", None
+        except (PolicyDeniedError, ValueError):
+            phase, evidence = "held", None
+        with self.journal.transaction() as db:
+            db.execute(
+                "UPDATE public_research_ops SET phase=?, evidence=? WHERE operation=? AND phase='started'",
+                (phase, evidence, operation),
+            )
+
     def readiness(self):
         if not self.enabled or not self.live_enabled:
             return ("runtime_disabled",)
@@ -564,7 +793,7 @@ class ThreadsRuntime(ThreadsStage0):
         return item
 
     def approve(self, operation, *, expires_at):
-        self.guard()
+        self.publication_guard()
         actor = self.operator.authenticate()
         item = self.service.store.get(operation)
         payload = self.journal.read(operation)
@@ -626,7 +855,7 @@ class ThreadsRuntime(ThreadsStage0):
             )
 
     def dispatch(self, operation):
-        self.guard()
+        self.publication_guard()
         self.operator.authenticate()
         item = self.service.store.get(operation)
         if item.approval_reference is None:
@@ -663,7 +892,7 @@ class ThreadsRuntime(ThreadsStage0):
         return self.service.dispatch(operation, approval, now=self.clock.now())
 
     def reconcile(self, operation, correlation_id):
-        self.guard()
+        self.publication_guard()
         self.operator.authenticate()
         return self.service.reconcile(
             operation, correlation_id=correlation_id, now=self.clock.now()
