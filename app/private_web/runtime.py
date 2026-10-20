@@ -499,8 +499,8 @@ class _DurableConversationRuntime(ConversationService):
                     or not self._current_request.get()()
                 ):
                     return "authorization_rejected"
-                if self._outputs.read_reply(principal, operation_id) is None:
-                    raise PrivacyReadBlocked("reply_sources_unavailable")
+                if not self._inference_consent_live(principal, operation_id):
+                    return "consent_unavailable"
                 return self._provider.reserve_attempt(
                     marker, "worker-ipc", self._clock()
                 )
@@ -516,6 +516,11 @@ class _DurableConversationRuntime(ConversationService):
             return self._worker.infer(
                 request, correlation_id=correlation, operation_id=operation_id
             )
+        self._checkpoint("before_stage0_admission")
+        if not self._gate.authorized(
+            lambda: self._inference_consent_live(principal, operation_id)
+        ):
+            return self._worker_result("consent_unavailable")
         if self._memory_bridge is None:
             return self._gateway.submit(
                 build_model_request(context),
@@ -1259,6 +1264,8 @@ class _DurableConversationRuntime(ConversationService):
                 if self._worker is not None
                 else "skipped"
             )
+        elif result.outcome == "consent_unavailable":
+            outcome = "unavailable"
         elif not self._shared_consent_live(operation, route.principal):
             outcome = "unavailable"
         elif self._worker is not None and not self._current_request.get()():
@@ -1462,6 +1469,13 @@ class _DurableConversationRuntime(ConversationService):
                 operation.shared_operation_ids, principal
             )
         )
+
+    def _inference_consent_live(self, principal, operation_id):
+        """Call only within the privacy fence, immediately before inference admission."""
+        reply = self._outputs.read_reply(principal, operation_id)
+        if reply is None:
+            raise PrivacyReadBlocked("reply_sources_unavailable")
+        return self._shared_consent_live(reply.operation, principal)
 
     def _historical_research_permitted(self, principal, reply):
         evidence = self._research_evidence(reply.operation.operation_id)

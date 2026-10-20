@@ -16,7 +16,8 @@ from app.cognition.review_cli import main as review_main
 from app.cognition.contracts import PrivacyScreenDecision, PrivacyScreenResult
 from app.core.agent_output_store import AgentOutputStore
 from app.core.shared_graph import erase_shared_source, validate_shared_graph
-from app.core.openai_worker_client import OpenAIWorkerClient
+from app.core.openai_worker_client import ClientResult, OpenAIWorkerClient
+from app.core.agent_proposals import ProposalValidation, ReplyProposal
 from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore, FaultPoint, schema_objects
 from app.privacy.application import (
@@ -1201,3 +1202,257 @@ def test_reviewed_historical_dependencies_are_closed(shared):
     for invalid in ([], (object(),), ("two", "one"), ("same", "same"), ("",)):
         with pytest.raises(ValueError):
             replace(record, historical_reviewed_operation_ids=invalid)
+
+
+@pytest.mark.parametrize("historical", [False, True])
+@pytest.mark.parametrize("admission_change", ["none", "expired", "superseded"])
+def test_worker_rechecks_bound_shared_consent_before_ipc_reservation(
+    shared, tmp_path, monkeypatch, historical, admission_change
+):
+    events, ledger, gate, a, b = shared
+    reviewed = candidate(a)
+    service, control, grant = consent(ledger, a)
+    assert gate.reconcile()
+    synthetic = replace(
+        approval(
+            b,
+            op="synthetic-worker-head",
+            revision=1,
+            author="b",
+            counter=(b,),
+            value="Consider competing explanations of uncertainty.",
+        ),
+        audience=("participant-b",),
+    )
+    current = [NOW]
+    intelligence = SharedIntelligence(
+        events,
+        gate,
+        approvals=(synthetic,) if historical else (),
+        clock=lambda: current[0],
+    )
+    intelligence.review(
+        reviewed,
+        decision_id="worker-admission-review",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    if historical:
+        intelligence.commit(synthetic)
+    ipc_store = EventStore(tmp_path / "ipc-state.db")
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(request)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            ProposalValidation(ReplyProposal("Синтетический русский ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+
+    def advance(point):
+        if point == "before_worker_admission":
+            if admission_change == "expired":
+                current[0] = grant.expires_at
+            elif admission_change == "superseded":
+                renewed = replace(
+                    grant,
+                    consent_id=grant.consent_id + "-renewed",
+                    operation_id=grant.operation_id + "-renewed",
+                    revision=2,
+                    correlation_id=grant.correlation_id + "-renewed",
+                )
+                assert service.grant(control, renewed).created
+                assert gate.reconcile()
+
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(
+            tmp_path / "unused-worker.sock", expected_worker_uid=os.getuid()
+        ),
+        provider_state=ProviderStateStore(ipc_store),
+        shared_intelligence=intelligence,
+        clock=lambda: current[0],
+        checkpoint=advance,
+    )
+    result = runtime.submit(principal("b"), "worker-admission", "Обсудим идеи")
+    blocked = admission_change != "none"
+    assert result.model_state.value == ("unavailable" if blocked else "completed")
+    assert len(calls) == (0 if blocked else 1)
+    if calls:
+        assert reviewed.proposal.candidate.value in calls[0].serialize()
+    with events._open() as db:
+        reply_id = db.execute(
+            "SELECT operation_id FROM protected_reply_shared WHERE shared_operation=?",
+            (reviewed.proposal.operation_id,),
+        ).fetchone()[0]
+        dependencies = db.execute(
+            "SELECT shared_operation FROM protected_reply_shared WHERE operation_id=?",
+            (reply_id,),
+        ).fetchall()
+        assert {row[0] for row in dependencies} == (
+            {reviewed.proposal.operation_id, synthetic.proposal.operation_id}
+            if historical
+            else {reviewed.proposal.operation_id}
+        )
+        assert db.execute(
+            "SELECT COUNT(*) FROM agent_reply_payloads WHERE operation_id=?",
+            (reply_id,),
+        ).fetchone() == (0 if blocked else 1,)
+        assert db.execute(
+            "SELECT COUNT(*) FROM agent_reply_resolutions "
+            "WHERE operation_id=? AND outcome='completed'",
+            (reply_id,),
+        ).fetchone() == (0 if blocked else 1,)
+    with ipc_store._open() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM provider_attempt_reservations WHERE attempt_id=?",
+            ("ipc:" + reply_id,),
+        ).fetchone() == (0 if blocked else 1,)
+
+
+def test_worker_rechecks_consent_inherited_through_prior_reply(
+    shared, tmp_path, monkeypatch
+):
+    events, ledger, gate, a, _ = shared
+    reviewed = candidate(a)
+    _, _, grant = consent(ledger, a)
+    assert gate.reconcile()
+    current = [NOW]
+    intelligence = SharedIntelligence(events, gate, clock=lambda: current[0])
+    intelligence.review(
+        reviewed,
+        decision_id="inherited-admission-review",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    ipc_store = EventStore(tmp_path / "ipc-state.db")
+    calls = []
+
+    def infer(_client, request, *, correlation_id, operation_id):
+        calls.append(request)
+        return ClientResult(
+            operation_id,
+            correlation_id,
+            "completed",
+            1,
+            None,
+            ProposalValidation(ReplyProposal("Синтетический русский ответ."), None),
+        )
+
+    monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
+    runtime = WorkerConversationRuntime(
+        events,
+        gate,
+        OpenAIWorkerClient(
+            tmp_path / "unused-worker.sock", expected_worker_uid=os.getuid()
+        ),
+        provider_state=ProviderStateStore(ipc_store),
+        shared_intelligence=intelligence,
+        clock=lambda: current[0],
+    )
+    assert (
+        runtime.submit(
+            principal("b"), "first-dependent", "Первый вопрос"
+        ).model_state.value
+        == "completed"
+    )
+    prepared = []
+    prepared_reply_ids = []
+    original_infer = runtime._infer
+
+    def inspect_then_infer(context, correlation, operation_id, principal_context):
+        prepared.append(context)
+        prepared_reply_ids.append(operation_id)
+        return original_infer(context, correlation, operation_id, principal_context)
+
+    runtime._infer = inspect_then_infer
+    runtime._checkpoint = lambda point: (
+        current.__setitem__(0, grant.expires_at)
+        if point == "before_worker_admission"
+        else None
+    )
+    result = runtime.submit(principal("b"), "second-dependent", "Следующий вопрос")
+    assert result.model_state.value == "unavailable"
+    assert len(calls) == 1
+    assert len(prepared) == 1
+    assert prepared[0].private.inherited_shared_operation_ids == (
+        reviewed.proposal.operation_id,
+    )
+    assert prepared[0].shared == ()
+    reply_id = prepared_reply_ids[0]
+    with events._open() as db:
+        assert db.execute(
+            "SELECT shared_operation FROM protected_reply_shared WHERE operation_id=?",
+            (reply_id,),
+        ).fetchall() == [(reviewed.proposal.operation_id,)]
+        assert db.execute(
+            "SELECT COUNT(*) FROM agent_reply_payloads WHERE operation_id=?",
+            (reply_id,),
+        ).fetchone() == (0,)
+        assert db.execute(
+            "SELECT COUNT(*) FROM agent_reply_resolutions WHERE operation_id=? "
+            "AND outcome='completed'",
+            (reply_id,),
+        ).fetchone() == (0,)
+    with ipc_store._open() as db:
+        assert db.execute(
+            "SELECT COUNT(*) FROM provider_attempt_reservations"
+        ).fetchone() == (1,)
+
+
+@pytest.mark.parametrize("expire_at_admission", [False, True])
+def test_stage0_rechecks_bound_shared_consent_before_fake_inference(
+    shared, expire_at_admission
+):
+    events, ledger, gate, a, _ = shared
+    reviewed = candidate(a)
+    _, _, grant = consent(ledger, a)
+    assert gate.reconcile()
+    current = [NOW]
+    intelligence = SharedIntelligence(events, gate, clock=lambda: current[0])
+    intelligence.review(
+        reviewed,
+        decision_id="stage0-admission-review",
+        review_version="local-review-v1",
+        approve=True,
+    )
+    fake = FakeOpenAITransport([response()])
+
+    def advance(point):
+        if point == "before_stage0_admission" and expire_at_admission:
+            current[0] = grant.expires_at
+
+    runtime = Stage0ConversationRuntime(
+        events,
+        gate,
+        fake,
+        shared_intelligence=intelligence,
+        clock=lambda: current[0],
+        checkpoint=advance,
+    )
+    result = runtime.submit(principal("b"), "stage0-admission", "Обсудим идеи")
+    assert result.model_state.value == (
+        "unavailable" if expire_at_admission else "completed"
+    )
+    assert len(fake.calls) == (0 if expire_at_admission else 1)
+    with events._open() as db:
+        reply_id = db.execute(
+            "SELECT operation_id FROM protected_reply_shared WHERE shared_operation=?",
+            (reviewed.proposal.operation_id,),
+        ).fetchone()[0]
+        assert db.execute(
+            "SELECT COUNT(*) FROM agent_reply_payloads WHERE operation_id=?",
+            (reply_id,),
+        ).fetchone() == (0 if expire_at_admission else 1,)
+        assert db.execute(
+            "SELECT COUNT(*) FROM agent_reply_resolutions "
+            "WHERE operation_id=? AND outcome='completed'",
+            (reply_id,),
+        ).fetchone() == (0 if expire_at_admission else 1,)
