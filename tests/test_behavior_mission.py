@@ -221,11 +221,13 @@ def test_abandonment_rejects_wrong_identity_parent_event_and_controls(tmp_path) 
         {"event_id": ""},
         {"correlation_id": "corr-1"},
         {"decided_at": NOW},
-        {"invariants": invariants(deployment_stage="production")},
     ):
         with pytest.raises(ValueError):
             machine.abandon(replace(valid, **change))
     assert machine._repository.load().proposals[0].status is MissionStatus.PENDING
+    changed = replace(valid, invariants=invariants(deployment_stage="production"))
+    assert machine.abandon(changed).status is MissionStatus.ABANDONED
+    assert machine._repository.load().proposals[0].abandonment == changed
 
 
 def test_trusted_root_round_trips_a_dst_fold_by_absolute_instant(tmp_path) -> None:

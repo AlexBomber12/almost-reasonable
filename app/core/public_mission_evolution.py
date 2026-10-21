@@ -178,7 +178,6 @@ class PublicMissionEvolution:
                         "WHERE r.operation=?",
                         (source.evidence_id,),
                     ).fetchone()
-                profile = self.app.current_research_profile()
                 research_payload = None if row is None else json.loads(row[3])
                 if (
                     row is None
@@ -187,8 +186,7 @@ class PublicMissionEvolution:
                     != self.app.ledger.control_generation()
                     or source.source_id
                     != self.source_id(row[1], research_payload["generation"])
-                    or profile is None
-                    or profile.digest != row[2]
+                    or research_payload["profile_digest"] != row[2]
                     or not self.app.source_valid(research_payload)
                 ):
                     return False
@@ -288,7 +286,7 @@ class PublicMissionEvolution:
                 raise ValueError("invalid public mission action")
             invariants = self.invariants()
             if invariants.to_dict() != payload["mission_invariants"] or (
-                payload["mission_action"] != "propose"
+                action in ("confirm", "reject")
                 and invariants != pending.proposal.invariants
             ):
                 raise ValueError("public mission controls changed")

@@ -502,8 +502,6 @@ def _validate_abandonment(
     if _instant(abandonment.decided_at) <= _instant(proposal.decided_at):
         raise ValueError("abandonment must be later than the proposal")
     _validate_invariants(abandonment.invariants)
-    if abandonment.invariants != proposal.invariants:
-        raise ValueError("capability-policy invariants changed")
 
 
 def _validate_invariants(value: CapabilityPolicyInvariants) -> None:

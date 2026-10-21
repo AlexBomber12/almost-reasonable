@@ -602,6 +602,51 @@ def test_confirmed_mission_survives_restart_and_withdrawal_fails_closed(
         worker.close()
 
 
+def test_confirmed_mission_survives_research_profile_expiry_and_renewal(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        confirmed = app.mission.snapshot()
+        clock.advance(timedelta(days=31))
+        assert app.current_research_profile() is None
+        assert app.mission.snapshot() == confirmed
+
+        path = app.research_profile_path
+        renewed = json.loads(path.read_text())
+        renewed.update(
+            profile_id="c" * 64,
+            authorization="d" * 64,
+            reviewed_at=clock.now().isoformat(),
+            issued_at=clock.now().isoformat(),
+            expires_at=(clock.now() + timedelta(days=29)).isoformat(),
+        )
+        path.write_text(json.dumps(renewed))
+        assert app.current_research_profile() is not None
+        assert app.mission.snapshot() == confirmed
+        restarted = restarted_evolution_runtime(app, tmp_path)
+        assert restarted.mission.snapshot() == confirmed
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize(
     "choice",
     [
@@ -1080,6 +1125,47 @@ def test_failed_final_research_can_abandon_without_evidence_or_retry(
         assert app.available_topics(app.current_research_profile()) == ()
         assert len(calls) == 1
         assert app.mission_evolution.model_context() == ()
+    finally:
+        worker.close()
+
+
+def test_fresh_abandonment_after_control_generation_change(tmp_path, monkeypatch):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        monkeypatch.setattr(
+            app.research_client,
+            "execute",
+            lambda _request: {"outcome": "authorization_denied", "attempts": 0},
+        )
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        original_generation = app.ledger.control_generation()
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                app.ledger, "control_generation", lambda: original_generation + 1
+            )
+            decide_wakeup(app, worker, clock)
+            operation = app.wakeup_operation("wake-2")
+            assert app.journal.read(operation)["phase"] == "linked"
+            assert app.mission_evolution.pending() is None
+            abandoned = app.mission_evolution.document().proposals[0]
+            assert abandoned.status is MissionStatus.ABANDONED
+            assert abandoned.abandonment.invariants != abandoned.proposal.invariants
+            assert app.mission.snapshot()[1]["version"] == "mission-v1"
     finally:
         worker.close()
 
