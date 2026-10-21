@@ -19,6 +19,7 @@ from app.behavior.scheduler import WakeupEvent
 from app.behavior.deliberation import DeliberationOutcome, DeliberationResult
 from app.behavior.worker_client import PublicBehaviorClient
 from app.core.public_behavior_mission import PublicMissionContext
+from app.core.public_mission_evolution import PublicMissionEvolution
 from app.core.public_behavior import (
     PublicBehaviorRequest,
     PublicMissionChoice,
@@ -31,6 +32,7 @@ from app.threads.service import PolicyDeniedError
 from app.trusted.public_behavior_worker import PublicSDKAdapter
 from test_int24_runtime import FakeSDK
 from app.threads.domain import InboundKind
+from app.threads.domain import InboundEvent
 from app.threads.domain import ConversationOutcome
 from app.threads.domain import OutboxState
 from test_b05b_public_runtime import _attach_fake_research, _profile
@@ -104,6 +106,34 @@ def test_parented_mission_is_rejected_before_evolution_state_exists(tmp_path):
     )
     _, worker, _, _, _ = setup(tmp_path, decision, mission=mission)
     worker.close()
+
+
+def test_second_root_snapshot_cannot_persist_parented_evolution_state(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        with app.journal.transaction() as db:
+            db.execute("DROP TABLE public_mission_state")
+        root = app.mission.root_mission()
+        monkeypatch.setattr(
+            app.mission,
+            "root_mission",
+            lambda: replace(root, parent_version="earlier-mission"),
+        )
+        with pytest.raises(ValueError, match="trusted root mission"):
+            PublicMissionEvolution(app)
+        with app.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='public_mission_state'"
+                ).fetchone()
+                is None
+            )
+    finally:
+        worker.close()
 
 
 def decide_inbound(app, worker):
@@ -2369,6 +2399,95 @@ def test_controlled_inbound_conversation_before_mission_intent_is_held(
         assert len(changed) == 1
         assert app.journal.read(changed[0])["phase"] == "held"
         assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize(
+    "control",
+    [ConversationOutcome.TERMINATE_CONVERSATION, ConversationOutcome.COOLDOWN],
+)
+def test_later_conversation_control_reconciles_committed_mission(
+    tmp_path, monkeypatch, control
+):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "dialogue",
+        },
+    )
+    try:
+        original_record = app._record_mission_outcome
+        changed = []
+
+        def record_after_later_control(operation, payload):
+            if changed:
+                return original_record(operation, payload)
+            clock.advance(timedelta(seconds=1))
+            stream = InboundKind(payload["kind"])
+            source = app.service.store.inbound_event(
+                app.account, stream, payload["event"]
+            )
+            later = InboundEvent(
+                "later-control-event",
+                "later-control-correlation",
+                app.account,
+                app.simulator.source_ref,
+                stream,
+                source.conversation_id,
+                None,
+                clock.now(),
+                "Публичное завершение.",
+            )
+            app.service.store.commit_poll_page(
+                correlation_id="poll-later-control",
+                account_ref=app.account,
+                stream=stream,
+                verified_source_ref=app.simulator.source_ref,
+                expected_cursor=None,
+                next_cursor=None,
+                events=(later,),
+                now=clock.now(),
+                precommit_check=lambda: None,
+            )
+            app.service.store.record_conversation_outcome(
+                outcome_id="later-conversation-control",
+                correlation_id=later.correlation_id,
+                account_ref=app.account,
+                stream=stream,
+                inbound_event_id=later.event_id,
+                outcome=control,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+                control_expires_at=(
+                    clock.now() + timedelta(minutes=1)
+                    if control is ConversationOutcome.COOLDOWN
+                    else None
+                ),
+            )
+            changed.append(operation)
+            return original_record(operation, payload)
+
+        monkeypatch.setattr(app, "_record_mission_outcome", record_after_later_control)
+        decide_inbound(app, worker)
+        assert len(changed) == 1
+        assert app.journal.read(changed[0])["phase"] == "linked"
+        assert app.service.store.conversation_outcome_recorded(changed[0])
+        assert app.mission_evolution.pending() is not None
+        source = app.service.store.inbound_event(
+            app.account, InboundKind.REPLY, "reply-1"
+        )
+        assert (
+            app.service.store.conversation_control(
+                app.account, InboundKind.REPLY, source.conversation_id, now=clock.now()
+            ).source_outcome_id
+            == "later-conversation-control"
+        )
+        clock.advance(timedelta(minutes=2))
+        assert app.recover() == ()
     finally:
         worker.close()
 

@@ -59,6 +59,8 @@ class PublicMissionEvolution:
     def __init__(self, app):
         self.app = app
         self.root = app.mission.root_mission()
+        if self.root.parent_version is not None:
+            raise ValueError("public mission evolution requires a trusted root mission")
         with app.journal.transaction() as db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS public_mission_state("

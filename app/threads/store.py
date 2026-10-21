@@ -1442,6 +1442,9 @@ class ThreadsStore:
                     "AND control.inbound_kind=threads_inbound_events.kind "
                     "AND control.conversation_id="
                     "threads_inbound_events.conversation_id "
+                    "AND (?!='no_action' OR "
+                    "threads_utc_timestamp(control.started_at)<="
+                    "threads_utc_timestamp(?)) "
                     "AND (control.expires_at IS NULL OR "
                     "threads_utc_timestamp(control.expires_at)>"
                     "threads_utc_timestamp(?)))",
@@ -1456,6 +1459,8 @@ class ThreadsStore:
                         stream.value,
                         inbound_event_id,
                         correlation_id,
+                        outcome.value,
+                        outcome_time,
                         outcome_time,
                     ),
                 ).rowcount
@@ -1480,12 +1485,18 @@ class ThreadsStore:
                     active_control = connection.execute(
                         "SELECT 1 FROM threads_conversation_controls "
                         "WHERE account_ref=? AND inbound_kind=? "
-                        "AND conversation_id=? AND (expires_at IS NULL OR "
+                        "AND conversation_id=? "
+                        "AND (?!='no_action' OR "
+                        "threads_utc_timestamp(started_at)<="
+                        "threads_utc_timestamp(?)) "
+                        "AND (expires_at IS NULL OR "
                         "threads_utc_timestamp(expires_at)>threads_utc_timestamp(?))",
                         (
                             account_ref,
                             stream.value,
                             event_state["conversation_id"],
+                            outcome.value,
+                            outcome_time,
                             outcome_time,
                         ),
                     ).fetchone()
