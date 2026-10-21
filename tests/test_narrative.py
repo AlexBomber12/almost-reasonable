@@ -1289,6 +1289,42 @@ def test_narrative_request_total_byte_bound():
         huge.serialize()
 
 
+def test_narrative_ipc_accepts_a_valid_request_above_the_evolution_limit():
+    from app.core.model_contract import MAX_MODEL_REQUEST_UTF8_BYTES
+
+    request = NarrativeModelRequest(
+        (
+            ConversationSegment(
+                ContextRole.PARTICIPANT,
+                ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,
+                "x" * 18000,
+            ),
+        ),
+        (),
+    )
+    payload = encode_request(InferenceRequest("narrative:" + "a" * 64, "corr", request))
+    assert decode_request(payload).model_request == request
+
+    overhead = len(request.serialize().encode()) - 18000
+    maximal = replace(
+        request,
+        conversation=(
+            replace(
+                request.conversation[0],
+                content="x" * (MAX_MODEL_REQUEST_UTF8_BYTES - overhead),
+            ),
+        ),
+    )
+    maximal_payload = encode_request(
+        InferenceRequest("narrative:" + "a" * 64, "corr", maximal)
+    )
+    assert decode_request(maximal_payload).model_request == maximal
+    oversized = json.loads(maximal_payload)
+    oversized["model_request"]["conversation"][0]["content"] += "x" * 2048
+    with pytest.raises(WorkerProtocolError, match="narrative frame is too large"):
+        decode_request(json.dumps(oversized).encode())
+
+
 def test_worker_revises_only_a_shown_current_episode(tmp_path, monkeypatch):
     worker_dir = tmp_path / "worker"
     worker_dir.mkdir(mode=0o700)
@@ -2419,6 +2455,28 @@ def test_narrative_crash_reconciles_only_when_reply_was_persisted(
     reopened = EventStore(events.database_path)
     fresh_gate = PrivacyReadGate(ledger, reopened)
     assert fresh_gate.reconcile()
+    if crash_point == "after_reply_commit":
+        event_id = reopened.retrieve_private_events_in_commit_order(principal("a"))[
+            0
+        ].event_id
+        before_reply, before_resolution = AgentOutputStore(
+            reopened
+        ).read_reply_and_resolution(
+            principal("a"), WorkerConversationRuntime._operation_id(event_id)
+        )
+        assert before_reply.operation.narrative_operation_ids == ()
+        assert before_resolution is None
+        disabled = WorkerConversationRuntime(
+            reopened,
+            fresh_gate,
+            client,
+            provider_state=provider,
+            narrative_enabled=False,
+            narrative_permission_current=lambda: False,
+        )
+        unavailable = disabled.submit(principal("a"), "first", "Расскажи историю")
+        assert unavailable.model_state.value == "unavailable"
+        assert NarrativeStore(reopened).current(principal("a")) == ()
     recovered = WorkerConversationRuntime(
         reopened,
         fresh_gate,

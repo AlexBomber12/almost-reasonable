@@ -2231,9 +2231,12 @@ class _DurableConversationRuntime(ConversationService):
                         ModelState(self._skip_outcome(caps)),
                     )
                 return SubmittedMessage(message_status, ModelState.SKIPPED)
-            if getattr(self, "_narrative_audit", None) is not None:
+            narrative_audit = getattr(self, "_narrative_audit", None)
+            if narrative_audit is None and self._worker is not None:
+                narrative_audit = NarrativeAuditStore(self._provider, self._event_store)
+            if narrative_audit is not None:
                 narrative_id = "narrative:" + operation_id.removeprefix("reply:")
-                status = self._narrative_audit.status(
+                status = narrative_audit.status(
                     narrative_id,
                     route.principal.principal_id.value,
                     reply.operation.initiating_event_id,

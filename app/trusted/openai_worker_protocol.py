@@ -85,6 +85,7 @@ NARRATIVE_PROTOCOL_VERSION = "openai-worker-narrative-v1"
 NARRATIVE_CONTEXT_PROTOCOL_VERSION = "openai-worker-narrative-context-v1"
 SHARED_PROTOCOL_VERSION = "openai-worker-shared-proposal-v1"
 MAX_EVOLUTION_IPC_BYTES = MAX_EVOLUTION_PROJECTION_BYTES + 1024
+MAX_NARRATIVE_IPC_BYTES = MAX_MODEL_REQUEST_UTF8_BYTES + 1024
 OPERATION_INFER = "infer"
 OPERATION_EXTRACT = "extract_memory"
 OPERATION_EVOLVE = "evolve_memory"
@@ -268,11 +269,15 @@ def decode_request(payload: bytes) -> InferenceRequest:
         in {
             EVOLUTION_PROTOCOL_VERSION,
             TYPED_PROTOCOL_VERSION,
-            NARRATIVE_PROTOCOL_VERSION,
         }
         and len(payload) > MAX_EVOLUTION_IPC_BYTES
     ):
         raise WorkerProtocolError("evolution frame is too large")
+    if (
+        value["protocol_version"] == NARRATIVE_PROTOCOL_VERSION
+        and len(payload) > MAX_NARRATIVE_IPC_BYTES
+    ):
+        raise WorkerProtocolError("narrative frame is too large")
     if value["operation_type"] != (
         OPERATION_EXTRACT
         if value["protocol_version"] == EXTRACTION_PROTOCOL_VERSION
