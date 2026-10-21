@@ -682,6 +682,7 @@ class ThreadsRuntime(ThreadsStage0):
         except ValueError:
             if self.mission_evolution is not None:
                 try:
+                    self.inference_public_context(operation)
                     self.inference_mission_evolution_context(operation)
                 except PublicInferenceContextChanged:
                     self.journal.finish(
@@ -691,6 +692,17 @@ class ThreadsRuntime(ThreadsStage0):
                     )
                     return
             raise
+        if self.mission_evolution is not None:
+            try:
+                self.inference_public_context(operation)
+                self.inference_mission_evolution_context(operation)
+            except PublicInferenceContextChanged:
+                self.journal.finish(
+                    operation,
+                    {**origin, "reason": "public_inference_context_changed"},
+                    held=True,
+                )
+                return
         payload = {
             **origin,
             "generation": generation,
@@ -825,7 +837,8 @@ class ThreadsRuntime(ThreadsStage0):
             admissible=None
             if self.mission_evolution is None
             else lambda db: self.mission_evolution.pending_id_in(db)
-            == mission_pending_id,
+            == mission_pending_id
+            and self.mission_evolution.offered_evidence_in(db, origin),
         )
         self.checkpoint("after_intent")
 

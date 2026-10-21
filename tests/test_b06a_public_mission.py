@@ -1650,6 +1650,123 @@ def test_transient_profile_change_during_inference_holds_confirmation(
         worker.close()
 
 
+@pytest.mark.parametrize("stage", ["attestation", "after_result", "before_finish"])
+def test_pending_evidence_withdrawal_holds_at_each_inference_boundary(
+    tmp_path, monkeypatch, stage
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+
+        def withdraw():
+            with app.journal.transaction() as db:
+                db.execute("UPDATE public_research_ops SET phase='held'")
+
+        if stage == "attestation":
+            original_attest = worker.attest
+
+            def attest(request):
+                withdraw()
+                return original_attest(request)
+
+            monkeypatch.setattr(worker, "attest", attest)
+        elif stage == "after_result":
+            original_deliberate = app.engine.deliberate
+
+            def deliberate(value):
+                result = original_deliberate(value)
+                withdraw()
+                return result
+
+            monkeypatch.setattr(app.engine, "deliberate", deliberate)
+        else:
+            original_finish = app.journal.finish
+
+            def finish(operation, payload, **kwargs):
+                withdraw()
+                return original_finish(operation, payload, **kwargs)
+
+            monkeypatch.setattr(app.journal, "finish", finish)
+
+        decide_wakeup(app, worker, clock)
+        operation = app.wakeup_operation("wake-2")
+        assert app.journal.read(operation)["phase"] == "held"
+        assert app.mission_evolution.pending() is not None
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
+def test_late_pending_authorization_failure_holds_started_operation(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        original_context = app.inference_public_context
+        completed = False
+
+        def deliberate(_value):
+            nonlocal completed
+            completed = True
+            return DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice("abandon", None),
+                None,
+                1,
+                1,
+            )
+
+        def context(operation):
+            value = original_context(operation)
+            if completed:
+                monkeypatch.setattr(
+                    app.mission_evolution,
+                    "pending",
+                    lambda: (_ for _ in ()).throw(ValueError("authority withdrawn")),
+                )
+            return value
+
+        monkeypatch.setattr(app.engine, "deliberate", deliberate)
+        monkeypatch.setattr(app, "inference_public_context", context)
+        app._decide(
+            "late-pending-failure",
+            {
+                "kind": "wake",
+                "event": "wake-late-pending",
+                "correlation": "late-pending-failure",
+            },
+            (),
+        )
+        assert app.journal.read("late-pending-failure")["phase"] == "held"
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
 def test_public_inference_context_excludes_finished_operation(tmp_path):
     app, worker, _, _, _ = configured(
         tmp_path, {"decision": "no_action", "reason_category": "low_value"}

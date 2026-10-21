@@ -108,6 +108,22 @@ class PublicMissionEvolution:
         )
         return None if record is None else record.proposal.proposal_id
 
+    def offered_evidence_in(self, db, payload):
+        operation = payload.get("mission_evidence_operation")
+        if operation is None:
+            return True
+        row = db.execute(
+            "SELECT r.profile_digest,r.evidence FROM public_research_ops r "
+            "JOIN public_research_completions c ON c.operation=r.operation "
+            "WHERE r.operation=? AND r.phase='completed'",
+            (operation,),
+        ).fetchone()
+        return (
+            row is not None
+            and row[0] == payload["offered_profile_digest"]
+            and public_context_digest((row[1],)) == payload["mission_evidence_digest"]
+        )
+
     def hold_if_stale(self, operation, payload):
         """Finish an intent whose exact parent or pending proposal was replaced."""
         with self.app.journal.transaction() as db:
