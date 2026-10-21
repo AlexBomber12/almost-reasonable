@@ -2333,6 +2333,46 @@ def test_offered_research_authorization_change_before_intent_commit_holds_operat
         worker.close()
 
 
+def test_controlled_inbound_conversation_before_mission_intent_is_held(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "dialogue",
+        },
+    )
+    try:
+        original_finish = app.journal.finish
+        changed = []
+
+        def finish_after_conversation_control(operation, payload, **kwargs):
+            if payload.get("decision") == "revise_mission" and kwargs.get("admissible"):
+                app.service.store.record_conversation_outcome(
+                    outcome_id="late-inbound-control",
+                    correlation_id=payload["correlation"],
+                    account_ref=app.account,
+                    stream=InboundKind(payload["kind"]),
+                    inbound_event_id=payload["event"],
+                    outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                    reason="conversation-closed",
+                    resume_condition=None,
+                    now=clock.now(),
+                )
+                changed.append(operation)
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_after_conversation_control)
+        assert decide_inbound(app, worker) == ()
+        assert len(changed) == 1
+        assert app.journal.read(changed[0])["phase"] == "held"
+        assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
 def test_abandonment_race_after_precheck_holds_losing_intent(tmp_path, monkeypatch):
     app, worker, _, _, clock = configured(
         tmp_path,
