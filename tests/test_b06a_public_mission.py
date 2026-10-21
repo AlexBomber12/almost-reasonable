@@ -1193,6 +1193,75 @@ def test_withdrawn_evidence_after_inference_holds_operation(tmp_path, monkeypatc
         worker.close()
 
 
+@pytest.mark.parametrize("profile_change", ["missing", "replaced"])
+def test_transient_profile_change_during_inference_holds_confirmation(
+    tmp_path, monkeypatch, profile_change
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        proposal_id = app.mission_evolution.pending().proposal.proposal_id
+        original_profile = app.current_research_profile()
+
+        def unavailable_during_callback(request):
+            with monkeypatch.context() as patcher:
+                patcher.setattr(
+                    app,
+                    "current_research_profile",
+                    lambda: None
+                    if profile_change == "missing"
+                    else replace(original_profile, digest="0" * 64),
+                )
+                app.model.public_context(request.correlation_id)
+            app.model.mission_evolution_context(request.correlation_id)
+            return DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice("confirm", None),
+                None,
+                1,
+                1,
+            )
+
+        monkeypatch.setattr(app.engine, "deliberate", unavailable_during_callback)
+        clock.advance(timedelta(minutes=1))
+        app._decide(
+            "transient-profile-loss",
+            {
+                "kind": "wake",
+                "event": "wake-profile-loss",
+                "correlation": "transient-profile-loss",
+            },
+            (),
+        )
+        assert app.journal.read("transient-profile-loss")["phase"] == "held"
+        assert app.mission_evolution.pending().proposal.proposal_id == proposal_id
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
+def test_public_inference_context_excludes_finished_operation(tmp_path):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        payload = {"kind": "wake", "event": "finished-event"}
+        assert app.journal.start("finished-context", payload)
+        app.journal.finish("finished-context", payload, held=True)
+        assert app.inference_public_context("finished-context") == ((), ())
+    finally:
+        worker.close()
+
+
 def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,

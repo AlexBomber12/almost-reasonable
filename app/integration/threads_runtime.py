@@ -404,11 +404,13 @@ class ThreadsRuntime(ThreadsStage0):
     def inference_public_context(self, operation):
         payload = self.journal.read(operation)
         profile = self.current_research_profile()
-        if (
-            payload["phase"] != "started"
-            or profile is None
-            or profile.digest != payload.get("offered_profile_digest")
-        ):
+        if payload["phase"] != "started":
+            return (), ()
+        if profile is None or profile.digest != payload.get("offered_profile_digest"):
+            if self.mission_evolution is not None:
+                raise PublicInferenceContextChanged(
+                    "public research profile changed during inference"
+                )
             return (), ()
         try:
             catalog, evidence, source = self._public_context_with_source(profile)
