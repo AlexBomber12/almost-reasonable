@@ -725,7 +725,10 @@ class ThreadsRuntime(ThreadsStage0):
                         or pending.proposal.proposal_id != mission_pending_id
                     )
                 )
-                or (proposal.action != "propose" and mission_evidence_operation is None)
+                or (
+                    proposal.action in ("confirm", "reject")
+                    and mission_evidence_operation is None
+                )
             ):
                 rejected = True
             else:
@@ -798,6 +801,12 @@ class ThreadsRuntime(ThreadsStage0):
         self.guard()
         if payload.get("runtime_version") != PUBLIC_RUNTIME_VERSION:
             raise PolicyDeniedError("foreign public intent")
+        if (
+            self.mission_evolution is not None
+            and payload.get("decision") == AgentDecision.REVISE_MISSION.value
+            and self.mission_evolution.hold_if_stale(operation, payload)
+        ):
+            return
         try:
             self.require_mission(payload)
         except ValueError as error:
@@ -814,6 +823,8 @@ class ThreadsRuntime(ThreadsStage0):
             try:
                 self.mission_evolution.apply(operation, payload)
             except ValueError as error:
+                if self.mission_evolution.hold_if_stale(operation, payload):
+                    return
                 raise PolicyDeniedError(
                     "public mission transition unavailable"
                 ) from error

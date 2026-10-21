@@ -61,7 +61,7 @@ _mission_schema = MISSION_PROPOSAL_FORMAT["schema"]
 _mission_schema["properties"]["decision"]["enum"].append("mission")
 _mission_schema["properties"]["mission_action"] = {
     "type": ["string", "null"],
-    "enum": ["propose", "confirm", "reject", None],
+    "enum": ["propose", "confirm", "reject", "abandon", None],
 }
 _mission_schema["properties"]["mission_purpose"] = {
     "type": ["string", "null"],
@@ -96,8 +96,10 @@ class PublicSDKAdapter:
                         "Return a JSON proposal for reply, propose_publication, no_action, or research. "
                         + (
                             "Mission evolution is available: choose mission with action propose, "
-                            "confirm, or reject. A proposal changes nothing until a later "
+                            "confirm, reject, or abandon. A proposal changes nothing until a later "
                             "independent public decision confirms it. Choose a closed purpose only. "
+                            "Abandon safely closes a pending proposal without changing the mission "
+                            "and needs no research evidence; confirm and reject require later independent evidence. "
                             if request.mission_evolution
                             else ""
                         )

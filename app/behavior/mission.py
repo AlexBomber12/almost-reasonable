@@ -46,6 +46,7 @@ class MissionStatus(StrEnum):
     PENDING = "pending"
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
+    ABANDONED = "abandoned"
     SUPERSEDED = "superseded"
 
 
@@ -147,10 +148,21 @@ class MissionConfirmation:
 
 
 @dataclass(frozen=True, slots=True)
+class MissionAbandonment:
+    proposal_id: str
+    parent_version: str
+    event_id: str
+    correlation_id: str
+    decided_at: datetime
+    invariants: CapabilityPolicyInvariants
+
+
+@dataclass(frozen=True, slots=True)
 class MissionRecord:
     proposal: MissionProposal
     status: MissionStatus
     confirmation: MissionConfirmation | None
+    abandonment: MissionAbandonment | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -300,6 +312,9 @@ class MissionStateMachine:
                 or item.confirmation is not None
                 and _instant(item.confirmation.decided_at)
                 > _instant(confirmation.decided_at)
+                or item.abandonment is not None
+                and _instant(item.abandonment.decided_at)
+                > _instant(confirmation.decided_at)
             )
             for sibling_index, item in enumerate(document.proposals)
         ):
@@ -327,6 +342,33 @@ class MissionStateMachine:
             )
         self._repository.save(
             MissionDocument(current, tuple(proposals), document.invariants)
+        )
+        return resolved
+
+    def abandon(self, abandonment: MissionAbandonment) -> MissionRecord:
+        if not isinstance(abandonment, MissionAbandonment):
+            raise TypeError("abandonment must be a MissionAbandonment")
+        document = self._load_authorized_document()
+        matches = [
+            (index, item)
+            for index, item in enumerate(document.proposals)
+            if item.proposal.proposal_id == abandonment.proposal_id
+        ]
+        if not matches:
+            raise ValueError("unknown proposal")
+        index, existing = matches[0]
+        if existing.status is not MissionStatus.PENDING:
+            raise ValueError("proposal is already resolved")
+        if existing.proposal.current_mission_version != document.current.version:
+            raise ValueError("proposal parent is no longer the current mission")
+        _validate_abandonment(existing.proposal, abandonment)
+        resolved = MissionRecord(
+            existing.proposal, MissionStatus.ABANDONED, None, abandonment
+        )
+        proposals = list(document.proposals)
+        proposals[index] = resolved
+        self._repository.save(
+            MissionDocument(document.current, tuple(proposals), document.invariants)
         )
         return resolved
 
@@ -439,6 +481,28 @@ def _validate_confirmation(
         raise ValueError("confirmation requires independent evidence")
     _validate_invariants(confirmation.invariants)
     if confirmation.invariants != proposal.invariants:
+        raise ValueError("capability-policy invariants changed")
+
+
+def _validate_abandonment(
+    proposal: MissionProposal, abandonment: MissionAbandonment
+) -> None:
+    if abandonment.proposal_id != proposal.proposal_id:
+        raise ValueError("abandonment does not match its proposal")
+    if abandonment.parent_version != proposal.current_mission_version:
+        raise ValueError("abandonment parent changed")
+    for name in ("proposal_id", "parent_version", "event_id", "correlation_id"):
+        if not _valid_identifier(getattr(abandonment, name)):
+            raise ValueError(f"abandonment {name} is invalid")
+    if abandonment.event_id == proposal.initiating_event_id:
+        raise ValueError("abandonment requires a later event")
+    if abandonment.correlation_id == proposal.correlation_id:
+        raise ValueError("abandonment requires a later correlation")
+    _validate_time(abandonment.decided_at)
+    if _instant(abandonment.decided_at) <= _instant(proposal.decided_at):
+        raise ValueError("abandonment must be later than the proposal")
+    _validate_invariants(abandonment.invariants)
+    if abandonment.invariants != proposal.invariants:
         raise ValueError("capability-policy invariants changed")
 
 
@@ -595,8 +659,15 @@ def _confirmation_to_dict(confirmation: MissionConfirmation) -> dict[str, object
     return result
 
 
+def _abandonment_to_dict(abandonment: MissionAbandonment) -> dict[str, object]:
+    result = asdict(abandonment)
+    result["decided_at"] = abandonment.decided_at.isoformat()
+    result["invariants"] = abandonment.invariants.to_dict()
+    return result
+
+
 def _record_to_dict(record: MissionRecord) -> dict[str, object]:
-    return {
+    result = {
         "proposal": _proposal_to_dict(record.proposal),
         "status": record.status.value,
         "confirmation": (
@@ -605,6 +676,9 @@ def _record_to_dict(record: MissionRecord) -> dict[str, object]:
             else None
         ),
     }
+    if record.abandonment is not None:
+        result["abandonment"] = _abandonment_to_dict(record.abandonment)
+    return result
 
 
 def _document_from_dict(
@@ -684,11 +758,27 @@ def _document_from_dict(
             )
             parsed_confirmation = MissionConfirmation(**confirmation_values)
             _validate_confirmation(parsed_proposal, parsed_confirmation)
+        abandonment_raw = item.get("abandonment")
+        parsed_abandonment = None
+        if abandonment_raw is not None:
+            abandonment_values = dict(abandonment_raw)
+            abandonment_values["decided_at"] = datetime.fromisoformat(
+                abandonment_values["decided_at"]
+            )
+            abandonment_values["invariants"] = CapabilityPolicyInvariants(
+                **abandonment_values["invariants"]
+            )
+            parsed_abandonment = MissionAbandonment(**abandonment_values)
+            _validate_abandonment(parsed_proposal, parsed_abandonment)
         status = MissionStatus(item["status"])
         resolved = status in (MissionStatus.CONFIRMED, MissionStatus.REJECTED)
-        if resolved != (parsed_confirmation is not None) or (
-            parsed_confirmation is not None
-            and status.value != parsed_confirmation.outcome.value
+        if (
+            resolved != (parsed_confirmation is not None)
+            or (
+                parsed_confirmation is not None
+                and status.value != parsed_confirmation.outcome.value
+            )
+            or (status is MissionStatus.ABANDONED) != (parsed_abandonment is not None)
         ):
             raise ValueError("mission record status is inconsistent")
         records.append(
@@ -696,6 +786,7 @@ def _document_from_dict(
                 parsed_proposal,
                 status,
                 parsed_confirmation,
+                parsed_abandonment,
             )
         )
     parsed_records = tuple(records)
@@ -820,6 +911,9 @@ def _validate_active_mission(
                 or record.confirmation is not None
                 and _instant(record.confirmation.decided_at)
                 > _instant(parent_replaced_at[record.proposal.current_mission_version])
+                or record.abandonment is not None
+                and _instant(record.abandonment.decided_at)
+                > _instant(parent_replaced_at[record.proposal.current_mission_version])
             )
         )
         for record in records
@@ -871,6 +965,8 @@ def _has_overlapping_invariant_snapshots(
         record.proposal.proposal_id: (
             record.confirmation.decided_at
             if record.confirmation is not None
+            else record.abandonment.decided_at
+            if record.abandonment is not None
             else parent_replaced_at.get(record.proposal.current_mission_version)
             if record.status is MissionStatus.SUPERSEDED
             else None

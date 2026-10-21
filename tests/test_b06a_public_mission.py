@@ -66,6 +66,33 @@ def configured(tmp_path, first, *, parent_version=None):
     )
 
 
+def restarted_evolution_runtime(app, tmp_path):
+    return ThreadsRuntime(
+        tmp_path / "journal.sqlite",
+        tmp_path / "scheduler.sqlite",
+        tmp_path / "threads.sqlite",
+        model=PublicBehaviorClient(tmp_path / "worker.sock", expected_uid=os.getuid()),
+        transport=app.simulator,
+        policy=app.policy,
+        owner=app.owner,
+        provider=app.provider,
+        ledger=app.ledger,
+        clock=app.clock,
+        wakeup_policy=app.scheduler.policy,
+        operator=app.operator,
+        mission=PublicMissionContext(
+            app.mission.path, clock=lambda: NOW + timedelta(days=1)
+        ),
+        mission_evolution_enabled=True,
+        research_client=app.research_client,
+        research_profile_path=app.research_profile_path,
+        research_scope=app.research_scope,
+        research_enabled=True,
+        enabled=True,
+        live_enabled=True,
+    )
+
+
 def test_parented_mission_is_rejected_before_evolution_state_exists(tmp_path):
     decision = {"decision": "no_action", "reason_category": "low_value"}
     with pytest.raises(ValueError, match="requires a trusted root mission"):
@@ -581,6 +608,7 @@ def test_confirmed_mission_survives_restart_and_withdrawal_fails_closed(
         {"decision": "mission", "action": "propose", "purpose": "research"},
         {"decision": "mission", "action": "confirm", "purpose": None},
         {"decision": "mission", "action": "reject", "purpose": None},
+        {"decision": "mission", "action": "abandon", "purpose": None},
     ],
 )
 def test_closed_public_mission_choices(choice):
@@ -596,6 +624,7 @@ def test_closed_public_mission_choices(choice):
     [
         {"decision": "mission", "action": "confirm", "purpose": "research"},
         {"decision": "mission", "action": "propose", "purpose": "free text"},
+        {"decision": "mission", "action": "abandon", "purpose": "research"},
         {"decision": "mission", "action": "change_policy", "purpose": None},
     ],
 )
@@ -676,6 +705,21 @@ def test_unknown_or_copied_research_cannot_authorize_confirmation(tmp_path):
 def _staged_intent(app, operation, payload):
     app.journal.start(operation, payload)
     app.journal.finish(operation, payload)
+
+
+def _staged_abandonment(app, operation, event):
+    payload = {
+        **app.journal.read(app.wakeup_operation("wake-1")),
+        "event": event,
+        "correlation": operation,
+        "decided_at": app.clock.now().isoformat(),
+        "decision": "revise_mission",
+        "mission_action": "abandon",
+        "mission_purpose": None,
+        "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+    }
+    _staged_intent(app, operation, payload)
+    return payload
 
 
 def test_cas_stale_event_and_stop_hold_mission_transition(tmp_path, monkeypatch):
@@ -981,7 +1025,16 @@ def test_full_mission_history_withholds_new_proposals(tmp_path, monkeypatch):
         worker.close()
 
 
-def test_failed_final_research_rejects_resolution_intent(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("research_result", "research_phase"),
+    [
+        ({"outcome": "authorization_denied", "attempts": 0}, "failed"),
+        ({"outcome": "timeout", "attempts": 1}, "uncertain"),
+    ],
+)
+def test_failed_final_research_can_abandon_without_evidence_or_retry(
+    tmp_path, monkeypatch, research_result, research_phase
+):
     app, worker, sdk, _, clock = configured(
         tmp_path,
         {
@@ -992,6 +1045,131 @@ def test_failed_final_research_rejects_resolution_intent(tmp_path, monkeypatch):
     )
     try:
         _attach_fake_research(app, tmp_path, monkeypatch)
+        calls = []
+
+        def fail_research(request):
+            calls.append(request)
+            return research_result
+
+        monkeypatch.setattr(app.research_client, "execute", fail_research)
+        initial_policy = repr(app.policy)
+        initial_publication = app.mission.publication_allowed()
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            assert (
+                db.execute("SELECT phase FROM public_research_ops").fetchone()[0]
+                == research_phase
+            )
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "linked"
+        assert app.mission_evolution.pending() is None
+        assert (
+            app.mission_evolution.document().proposals[0].status
+            is MissionStatus.ABANDONED
+        )
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+        assert app.mission.publication_allowed() is initial_publication
+        assert repr(app.policy) == initial_policy
+        assert app.available_topics(app.current_research_profile()) == ()
+        assert len(calls) == 1
+        assert app.mission_evolution.model_context() == ()
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("crash_stage", ["before_commit", "after_commit"])
+def test_abandonment_reconciles_across_restart_without_retry(
+    tmp_path, monkeypatch, crash_stage
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        research_calls = []
+
+        def fail_research(request):
+            research_calls.append(request)
+            return {"outcome": "authorization_denied", "attempts": 0}
+
+        monkeypatch.setattr(app.research_client, "execute", fail_research)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+
+        def crash(point):
+            if crash_stage == "before_commit" and point == "after_scheduler":
+                raise SystemExit("before mission commit")
+
+        app.checkpoint = crash
+        if crash_stage == "after_commit":
+            monkeypatch.setattr(
+                app,
+                "_record_mission_outcome",
+                lambda _operation, _payload: (_ for _ in ()).throw(
+                    SystemExit("after mission commit")
+                ),
+            )
+        with pytest.raises(SystemExit):
+            decide_wakeup(app, worker, clock)
+        operation = app.wakeup_operation("wake-2")
+        assert app.journal.read(operation)["phase"] == (
+            "intent" if crash_stage == "before_commit" else "linked"
+        )
+        model_calls = len(sdk.calls)
+        restarted = restarted_evolution_runtime(app, tmp_path)
+        assert restarted.recover() == ()
+        assert restarted.recover() == ()
+        assert restarted.journal.read(operation)["phase"] == "linked"
+        assert restarted.mission_evolution.pending() is None
+        assert len(restarted.mission_evolution.document().proposals) == 1
+        assert (
+            restarted.mission_evolution.document().proposals[0].status
+            is MissionStatus.ABANDONED
+        )
+        assert restarted.mission.snapshot()[1]["version"] == "mission-v1"
+        assert len(sdk.calls) == model_calls
+        assert len(research_calls) == 1
+    finally:
+        worker.close()
+
+
+def test_abandonment_only_reopens_proposals_with_real_research_capacity(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        for role in ("application", "worker"):
+            path = tmp_path / f"{role}.json"
+            profile = json.loads(path.read_text())
+            profile["aggregate_limit"] = 2
+            profile["topics"][0]["limit"] = 2
+            path.write_text(json.dumps(profile))
         monkeypatch.setattr(
             app.research_client,
             "execute",
@@ -1001,14 +1179,23 @@ def test_failed_final_research_rejects_resolution_intent(tmp_path, monkeypatch):
         research_after_proposal(app, worker, sdk, clock)
         sdk.proposal = {
             "decision": "mission",
-            "mission_action": "reject",
+            "mission_action": "abandon",
             "mission_purpose": None,
         }
         clock.advance(timedelta(minutes=1))
         decide_wakeup(app, worker, clock)
-        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
-        assert app.mission_evolution.pending() is not None
-        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+        assert app.mission_evolution.model_context() == ("enabled",)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "dialogue",
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock, "wake-3")
+        assert (
+            app.mission_evolution.pending().proposal.purpose is MissionPurpose.DIALOGUE
+        )
+        assert len(app.mission_evolution.document().proposals) == 2
     finally:
         worker.close()
 
@@ -1425,8 +1612,9 @@ def test_confirmed_mission_holds_old_approved_publication(tmp_path, monkeypatch)
         worker.close()
 
 
+@pytest.mark.parametrize("action", ["confirm", "abandon"])
 def test_resolution_cannot_target_proposal_created_during_inference(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, action
 ):
     app, worker, _, _, _ = configured(
         tmp_path, {"decision": "no_action", "reason_category": "low_value"}
@@ -1449,7 +1637,7 @@ def test_resolution_cannot_target_proposal_created_during_inference(
             app.mission_evolution.apply("other-decision", other)
             return DeliberationResult(
                 DeliberationOutcome.PROPOSED,
-                PublicMissionChoice("confirm", None),
+                PublicMissionChoice(action, None),
                 None,
                 1,
                 1,
@@ -1469,7 +1657,7 @@ def test_resolution_cannot_target_proposal_created_during_inference(
         )
         forged = {
             **first,
-            "mission_action": "confirm",
+            "mission_action": action,
             "mission_purpose": None,
             "decided_at": (app.clock.now() + timedelta(minutes=1)).isoformat(),
             "generation": app.ledger.control_generation(),
@@ -1477,6 +1665,67 @@ def test_resolution_cannot_target_proposal_created_during_inference(
         _staged_intent(app, "unseen-confirmation", forged)
         with pytest.raises(ValueError, match="proposal changed"):
             app.mission_evolution.apply("unseen-confirmation", forged)
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("first_action", ["confirm", "abandon"])
+def test_confirmation_and_abandonment_race_has_one_terminal_outcome(
+    tmp_path, monkeypatch, first_action
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        clock.advance(timedelta(minutes=1))
+
+        def choose(request):
+            return DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice(request.correlation_id.split("-")[1], None),
+                None,
+                1,
+                1,
+            )
+
+        monkeypatch.setattr(app.engine, "deliberate", choose)
+        for action in ("confirm", "abandon"):
+            app._decide(
+                f"race-{action}",
+                {
+                    "kind": "wake",
+                    "event": f"event-{action}",
+                    "correlation": f"race-{action}",
+                },
+                (),
+            )
+            assert app.journal.read(f"race-{action}")["phase"] == "intent"
+        second_action = "abandon" if first_action == "confirm" else "confirm"
+        first_operation = f"race-{first_action}"
+        second_operation = f"race-{second_action}"
+        app.mission_evolution.apply(first_operation, app.journal.read(first_operation))
+        app._materialize(second_operation, app.journal.read(second_operation))
+        assert app.journal.read(second_operation)["phase"] == "held"
+        assert app.mission_evolution.pending() is None
+        records = app.mission_evolution.document().proposals
+        assert len(records) == 1
+        assert records[0].status is (
+            MissionStatus.CONFIRMED
+            if first_action == "confirm"
+            else MissionStatus.ABANDONED
+        )
+        with pytest.raises(ValueError, match="not pending|mission changed"):
+            app.mission_evolution.apply(
+                first_operation, app.journal.read(first_operation)
+            )
     finally:
         worker.close()
 
@@ -1528,6 +1777,177 @@ def test_pending_change_before_intent_commit_holds_operation(tmp_path, monkeypat
             app.mission_evolution.pending().proposal.initiating_event_id
             == "other-event"
         )
+    finally:
+        worker.close()
+
+
+def test_abandonment_rejects_wrong_identity_parent_and_duplicate(tmp_path):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        payload = _staged_abandonment(app, "abandon-valid", "event-abandon")
+        wrong = {**payload, "mission_pending_id": "wrong-proposal"}
+        _staged_intent(app, "abandon-wrong", wrong)
+        with pytest.raises(ValueError, match="proposal changed"):
+            app.mission_evolution.apply("abandon-wrong", wrong)
+        stale_parent = {
+            **payload,
+            "mission": {**payload["mission"], "version": "other"},
+        }
+        _staged_intent(app, "abandon-parent", stale_parent)
+        with pytest.raises(ValueError, match="mission changed"):
+            app.mission_evolution.apply("abandon-parent", stale_parent)
+        app.mission_evolution.apply("abandon-valid", payload)
+        duplicate = {
+            **payload,
+            "event": "event-duplicate",
+            "correlation": "abandon-duplicate",
+        }
+        _staged_intent(app, "abandon-duplicate", duplicate)
+        with pytest.raises(ValueError, match="proposal changed"):
+            app.mission_evolution.apply("abandon-duplicate", duplicate)
+        assert len(app.mission_evolution.document().proposals) == 1
+        assert (
+            app.mission_evolution.document().proposals[0].status
+            is MissionStatus.ABANDONED
+        )
+    finally:
+        worker.close()
+
+
+def test_stale_abandonment_cannot_touch_replacement_proposal(tmp_path):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        first = _staged_abandonment(app, "abandon-first", "event-first")
+        stale = _staged_abandonment(app, "abandon-stale", "event-stale")
+        app.mission_evolution.apply("abandon-first", first)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "reflection",
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock)
+        replacement = app.mission_evolution.pending().proposal.proposal_id
+        app._materialize("abandon-stale", stale)
+        assert app.journal.read("abandon-stale")["phase"] == "held"
+        assert app.mission_evolution.pending().proposal.proposal_id == replacement
+        assert len(app.mission_evolution.document().proposals) == 2
+    finally:
+        worker.close()
+
+
+def test_abandonment_race_after_precheck_holds_losing_intent(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        winner = _staged_abandonment(app, "abandon-winner", "event-winner")
+        loser = _staged_abandonment(app, "abandon-loser", "event-loser")
+        original_apply = app.mission_evolution.apply
+
+        def competing_apply(operation, payload):
+            original_apply("abandon-winner", winner)
+            original_apply(operation, payload)
+
+        monkeypatch.setattr(app.mission_evolution, "apply", competing_apply)
+        app._materialize("abandon-loser", loser)
+        assert app.journal.read("abandon-loser")["phase"] == "held"
+        assert app.journal.read("abandon-winner")["phase"] == "linked"
+        assert len(app.mission_evolution.document().proposals) == 1
+        assert (
+            app.mission_evolution.document().proposals[0].status
+            is MissionStatus.ABANDONED
+        )
+    finally:
+        worker.close()
+
+
+def test_stop_and_generation_revoke_abandonment(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        payload = _staged_abandonment(app, "abandon-control", "event-control")
+        app.policy.emergency_stop = True
+        with pytest.raises(PolicyDeniedError):
+            app.mission_evolution.apply("abandon-control", payload)
+        app.policy.emergency_stop = False
+        with monkeypatch.context() as patch:
+            patch.setattr(
+                app.ledger,
+                "control_generation",
+                lambda: payload["generation"] + 1,
+            )
+            with pytest.raises(ValueError, match="source changed"):
+                app.mission_evolution.apply("abandon-control", payload)
+        assert app.mission_evolution.pending() is not None
+        assert (
+            app.mission_evolution.document().proposals[0].status
+            is MissionStatus.PENDING
+        )
+    finally:
+        worker.close()
+
+
+def test_stop_during_abandonment_commit_rolls_back(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        payload = _staged_abandonment(app, "abandon-stop", "event-stop")
+        original = MissionStateMachine.abandon
+
+        def stop_after_save(machine, abandonment):
+            result = original(machine, abandonment)
+            app.policy.emergency_stop = True
+            return result
+
+        with monkeypatch.context() as patch:
+            patch.setattr(MissionStateMachine, "abandon", stop_after_save)
+            with pytest.raises(PolicyDeniedError):
+                app.mission_evolution.apply("abandon-stop", payload)
+        app.policy.emergency_stop = False
+        assert app.mission_evolution.pending() is not None
+        assert app.journal.read("abandon-stop")["phase"] == "intent"
     finally:
         worker.close()
 

@@ -10,6 +10,7 @@ from app.behavior.mission import (
     CapabilityPolicyInvariants,
     ConfirmationOutcome,
     EvidenceProvenance,
+    MissionAbandonment,
     MissionConfirmation,
     MissionDocument,
     MissionEvidenceSource,
@@ -106,6 +107,29 @@ class PublicMissionEvolution:
             None,
         )
         return None if record is None else record.proposal.proposal_id
+
+    def hold_if_stale(self, operation, payload):
+        """Finish an intent whose exact parent or pending proposal was replaced."""
+        with self.app.journal.transaction() as db:
+            document = _Repository(db, self.root).load()
+            pending = next(
+                (
+                    item.proposal.proposal_id
+                    for item in document.proposals
+                    if item.status is MissionStatus.PENDING
+                ),
+                None,
+            )
+            stale = (
+                payload["mission"]["version"] != document.current.version
+                or payload.get("mission_pending_id") != pending
+            )
+            if stale:
+                db.execute(
+                    "UPDATE intents SET phase='held' WHERE operation=? AND phase='intent'",
+                    (operation,),
+                )
+            return stale
 
     def model_context(self):
         return self.decision_context()[0]
@@ -256,11 +280,11 @@ class PublicMissionEvolution:
                 raise ValueError("public mission proposal changed")
             if action == "propose" and pending is not None:
                 raise ValueError("public mission proposal already pending")
-            if action in ("confirm", "reject") and (
+            if action in ("confirm", "reject", "abandon") and (
                 pending is None or pending.proposal.decided_at >= at
             ):
                 raise ValueError("independent later mission decision required")
-            if action not in ("propose", "confirm", "reject"):
+            if action not in ("propose", "confirm", "reject", "abandon"):
                 raise ValueError("invalid public mission action")
             invariants = self.invariants()
             if invariants.to_dict() != payload["mission_invariants"] or (
@@ -286,6 +310,17 @@ class PublicMissionEvolution:
                         invariants,
                         purpose,
                         self._initiating_source(operation, payload),
+                    )
+                )
+            elif action == "abandon":
+                machine.abandon(
+                    MissionAbandonment(
+                        pending.proposal.proposal_id,
+                        document.current.version,
+                        payload["event"],
+                        payload["correlation"],
+                        at,
+                        invariants,
                     )
                 )
             else:
