@@ -390,6 +390,18 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
     for table, maximum in bounds:
         if db.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0] > maximum:
             raise ValueError("invalid narrative graph")
+    if (
+        db.execute(
+            """SELECT 1 FROM narrative_items i JOIN narrative_operations o
+             ON o.principal_id=i.principal_id AND o.item_id=i.item_id
+             AND o.revision=i.current_revision
+           WHERE o.status='active'
+           GROUP BY i.principal_id HAVING COUNT(*)>? LIMIT 1""",
+            (MAX_EPISODES,),
+        ).fetchone()
+        is not None
+    ):
+        raise ValueError("invalid narrative graph")
     items = {
         (principal, item): head
         for principal, item, head in db.execute(

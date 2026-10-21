@@ -457,6 +457,42 @@ def test_narrative_graph_validation_batches_context_queries(tmp_path):
     assert len(statements) < 30
 
 
+def test_narrative_graph_rejects_seventeen_active_heads_for_one_participant(
+    tmp_path, monkeypatch
+):
+    from app.cognition import narrative_store
+
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Синтетический источник")
+    store = NarrativeStore(events)
+    with monkeypatch.context() as patch:
+        patch.setattr(narrative_store, "MAX_EPISODES", 17)
+        for index in range(17):
+            heads = tuple(
+                sorted(
+                    (episode.item_id, episode.revision)
+                    for episode in store.current(who)
+                )
+            )
+            store.commit(
+                who,
+                operation_id=f"narrative:{index}",
+                source_event_id=source,
+                text=f"Сцена {index}.",
+                item_id=f"episode:{index}",
+                expected_revision=0,
+                expected_heads=heads,
+                exposed_sources=(source,),
+                exposed_episodes=(),
+                created_at=NOW,
+            )
+    assert len(store.current(who)) == 17
+    with events._open() as db:
+        with pytest.raises(ValueError, match="invalid narrative graph"):
+            narrative_store.validate_narrative_graph(db)
+
+
 def test_narrative_graph_rejects_cross_item_context_cycle(tmp_path):
     from app.cognition.narrative_store import validate_narrative_graph
 
