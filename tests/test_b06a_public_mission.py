@@ -430,6 +430,7 @@ def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
         _attach_fake_research(app, tmp_path, monkeypatch)
         run_once(app, worker)
         original_invariants = app.mission_evolution.pending().proposal.invariants
+        original_client = app.research_client
         execute = app.research_client.execute
         replacement = PublicResearchClient(
             tmp_path / "replacement-research.sock", expected_worker_uid=os.geteuid()
@@ -438,6 +439,28 @@ def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
         app.research_client = replacement
         assert app.mission_evolution.invariants() != original_invariants
         research_after_proposal(app, worker, sdk, clock)
+        app.research_client = original_client
+        assert app.mission_evolution.invariants() == original_invariants
+        assert app._public_context_with_source(app.current_research_profile())[1:] == (
+            (),
+            None,
+        )
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT operation,evidence FROM public_research_ops"
+            ).fetchone()
+        with pytest.raises(ValueError, match="evidence missing"):
+            app.mission_evolution._confirmation_sources(
+                {
+                    "mission_evidence_operation": row["operation"],
+                    "mission_evidence_digest": public_context_digest(
+                        (row["evidence"],)
+                    ),
+                    "generation": app.ledger.control_generation(),
+                    "decided_at": (clock.now() + timedelta(minutes=1)).isoformat(),
+                },
+                app.mission_evolution.pending().proposal,
+            )
         sdk.proposal = {
             "decision": "mission",
             "mission_action": "confirm",
@@ -447,6 +470,7 @@ def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
         decide_wakeup(app, worker, clock)
         assert app.mission_evolution.pending() is not None
         assert app.mission.snapshot()[1]["version"] == "mission-v1"
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
     finally:
         worker.close()
 

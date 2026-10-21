@@ -378,6 +378,8 @@ class PublicMissionEvolution:
             row is None
             or public_context_digest((row[1],)) != payload["mission_evidence_digest"]
             or research_payload["generation"] != payload["generation"]
+            or research_payload.get("mission_invariants")
+            != proposal.invariants.to_dict()
             or datetime.fromisoformat(row[2]) <= proposal.decided_at
             or datetime.fromisoformat(row[2])
             >= datetime.fromisoformat(payload["decided_at"])

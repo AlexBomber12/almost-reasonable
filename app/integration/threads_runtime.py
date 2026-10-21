@@ -487,6 +487,12 @@ class ThreadsRuntime(ThreadsStage0):
                 ):
                     continue
                 payload = json.loads(row["payload"])
+                if (
+                    pending is not None
+                    and payload.get("mission_invariants")
+                    != pending.proposal.invariants.to_dict()
+                ):
+                    continue
                 try:
                     self.require_mission(payload)
                     if (
