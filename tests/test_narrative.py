@@ -2606,7 +2606,13 @@ def test_narrative_crash_reconciles_only_when_reply_was_persisted(
 
 @pytest.mark.parametrize(
     "reply_outcome",
-    ["completed", "invalid_response", "projection_failure", "commit_conflict"],
+    [
+        "completed",
+        "invalid_response",
+        "projection_failure",
+        "configured_budget",
+        "commit_conflict",
+    ],
 )
 def test_same_turn_narrative_is_visible_and_only_saved_with_reply(
     tmp_path, monkeypatch, reply_outcome
@@ -2633,7 +2639,11 @@ def test_same_turn_narrative_is_visible_and_only_saved_with_reply(
                 1,
                 None,
                 narrative=NarrativeProposal(
-                    "create", None, "Я видел вымышленный маяк."
+                    "create",
+                    None,
+                    "x" * 4096
+                    if reply_outcome == "configured_budget"
+                    else "Я видел вымышленный маяк.",
                 ),
             )
         seen.append(json.loads(request.serialize())["fictional_episodes"])
@@ -2653,7 +2663,7 @@ def test_same_turn_narrative_is_visible_and_only_saved_with_reply(
     monkeypatch.setattr(OpenAIWorkerClient, "infer", infer)
     if reply_outcome == "projection_failure":
 
-        def reject_projection(_context, _audit):
+        def reject_projection(_context, _audit, _max_utf8_bytes):
             raise ValueError("synthetic projection overflow")
 
         monkeypatch.setattr(
@@ -2674,9 +2684,12 @@ def test_same_turn_narrative_is_visible_and_only_saved_with_reply(
         provider_state=provider,
         narrative_enabled=True,
         narrative_permission_current=lambda: True,
+        context_limits=ContextLimits(3000, 99)
+        if reply_outcome == "configured_budget"
+        else ContextLimits(32000, 99),
     )
     result = runtime.submit(principal("a"), "first", "Расскажи историю")
-    if reply_outcome == "projection_failure":
+    if reply_outcome in {"projection_failure", "configured_budget"}:
         assert seen == []
     else:
         assert seen[0][-1]["text"] == "Я видел вымышленный маяк."

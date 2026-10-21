@@ -279,7 +279,7 @@ def test_narrative_projection_refuses_unshown_revision_handle():
     )
     context = SimpleNamespace(episodes=(), projected_narrative_operation_ids=())
     with pytest.raises(ValueError, match="projection unavailable"):
-        WorkerConversationRuntime._project_narrative(context, audit)
+        WorkerConversationRuntime._project_narrative(context, audit, 32_000)
 
 
 def test_active_narrative_operation_is_not_entered_twice(tmp_path):

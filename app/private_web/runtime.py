@@ -567,7 +567,9 @@ class _DurableConversationRuntime(ConversationService):
                         if narrative_audit is not None:
                             try:
                                 context = self._project_narrative(
-                                    context, narrative_audit
+                                    context,
+                                    narrative_audit,
+                                    self._limits.max_utf8_bytes,
                                 )
                             except ValueError:
                                 narrative_blocked = True
@@ -1219,7 +1221,7 @@ class _DurableConversationRuntime(ConversationService):
             db.close()
 
     @staticmethod
-    def _project_narrative(context, audit):
+    def _project_narrative(context, audit, max_utf8_bytes):
         proposal = audit.proposal
         if proposal is None or proposal.decision == "no_change":
             return context
@@ -1235,7 +1237,8 @@ class _DurableConversationRuntime(ConversationService):
         else:
             episodes.append(FictionEpisode(proposal.episode, 1))
         projected = replace(context, episodes=tuple(episodes))
-        projected.serialize()
+        if len(projected.serialize().encode("utf-8")) > max_utf8_bytes:
+            raise ValueError("narrative projection exceeds context budget")
         return projected
 
     def _evolve_narrative(
