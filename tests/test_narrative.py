@@ -422,6 +422,107 @@ def test_narrative_reply_count_validation_uses_bounded_query_count(tmp_path):
     assert len(statements) < 20
 
 
+def test_narrative_graph_validation_batches_context_queries(tmp_path):
+    from app.cognition.narrative_store import validate_narrative_graph
+
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Синтетическая история")
+    store = NarrativeStore(events)
+    for index in range(12):
+        current = store.current(who)
+        store.commit(
+            who,
+            operation_id=f"narrative:{index}",
+            source_event_id=source,
+            text=f"Сцена {index}.",
+            item_id=f"episode:{index}",
+            expected_revision=0,
+            expected_heads=tuple(sorted((episode.item_id, 1) for episode in current)),
+            exposed_sources=(source,),
+            exposed_episodes=tuple(episode.operation_id for episode in current),
+            created_at=NOW,
+        )
+    with events._open() as db:
+        statements = []
+        db.set_trace_callback(statements.append)
+        try:
+            validate_narrative_graph(db)
+        finally:
+            db.set_trace_callback(None)
+    assert len(statements) < 30
+
+
+def test_narrative_graph_rejects_cross_item_context_cycle(tmp_path):
+    from app.cognition.narrative_store import validate_narrative_graph
+
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Синтетическая история")
+    store = NarrativeStore(events)
+    for index in range(2):
+        current = store.current(who)
+        store.commit(
+            who,
+            operation_id=f"narrative:{index}",
+            source_event_id=source,
+            text=f"Сцена {index}.",
+            item_id=f"episode:{index}",
+            expected_revision=0,
+            expected_heads=tuple(sorted((episode.item_id, 1) for episode in current)),
+            exposed_sources=(source,),
+            exposed_episodes=(),
+            created_at=NOW,
+        )
+    with events._open() as db:
+        with db:
+            db.executemany(
+                "INSERT INTO narrative_context VALUES (?,?,?)",
+                (
+                    (who.principal_id.value, "narrative:0", "narrative:1"),
+                    (who.principal_id.value, "narrative:1", "narrative:0"),
+                ),
+            )
+            db.execute("UPDATE narrative_operations SET context_count=1")
+        with pytest.raises(ValueError, match="invalid narrative graph"):
+            validate_narrative_graph(db)
+
+
+@pytest.mark.parametrize("edge", ["source", "context"])
+def test_narrative_graph_rejects_orphan_dependency_edges(tmp_path, edge):
+    from app.cognition.narrative_store import validate_narrative_graph
+
+    events = EventStore(tmp_path / "events.db")
+    who = principal("a")
+    source = append_event(events, who, "source", "Синтетическая история")
+    NarrativeStore(events).commit(
+        who,
+        operation_id="narrative:one",
+        source_event_id=source,
+        text="Сцена.",
+        item_id="episode:one",
+        expected_revision=0,
+        expected_heads=(),
+        exposed_sources=(source,),
+        exposed_episodes=(),
+        created_at=NOW,
+    )
+    with sqlite3.connect(events.database_path) as db:
+        db.execute("PRAGMA foreign_keys=OFF")
+        if edge == "source":
+            db.execute(
+                "INSERT INTO narrative_sources VALUES (?,?,?,?)",
+                (who.principal_id.value, "narrative:orphan", source, "active"),
+            )
+        else:
+            db.execute(
+                "INSERT INTO narrative_context VALUES (?,?,?)",
+                (who.principal_id.value, "narrative:orphan", "narrative:one"),
+            )
+        with pytest.raises(ValueError, match="invalid narrative graph"):
+            validate_narrative_graph(db)
+
+
 def test_narrative_permission_is_separate_and_bounded(tmp_path):
     activation_path, _ = activation_file(tmp_path)
     activation = load_activation(activation_path)
@@ -1392,6 +1493,8 @@ def test_narrative_graph_rejects_damaged_private_dependencies(tmp_path, mutation
             db.execute("UPDATE agent_reply_operations SET narrative_count=0")
         with pytest.raises(ValueError, match="invalid narrative graph"):
             validate_narrative_graph(db)
+    if mutation == "deleted_source":
+        assert store.current(who) == ()
 
 
 def test_narrative_storage_bounds_are_enforced(tmp_path):

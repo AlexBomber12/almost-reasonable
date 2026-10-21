@@ -436,6 +436,44 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
             "SELECT principal_id,operation_id FROM narrative_payloads"
         )
     }
+    sources = {key: set() for key in operations}
+    source_statuses = {key: set() for key in operations}
+    for row in db.execute(
+        """SELECT s.principal_id,s.operation_id,s.event_id,s.retention_status,
+                  e.audience_principal_id,e.event_type,e.channel,
+                  e.provenance_type,e.verification_status,p.retention_status,
+                  p.audience_principal_id,t.source_event_id,t.source_principal_id
+           FROM narrative_sources s LEFT JOIN event_envelopes e ON e.event_id=s.event_id
+           LEFT JOIN private_payloads p ON p.payload_id=e.payload_id
+           LEFT JOIN protected_event_taints t ON t.event_id=e.event_id"""
+    ):
+        principal, operation, event, retention = row[:4]
+        key = (principal, operation)
+        if key not in operations:
+            raise ValueError("invalid narrative graph")
+        sources[key].add(event)
+        source_statuses[key].add(retention)
+        if operations[key][2] == "active" and row[4:] != (
+            principal,
+            "participant_input",
+            "private_chat",
+            "participant_assertion",
+            "unverified",
+            "active",
+            principal,
+            event,
+            principal,
+        ):
+            raise ValueError("invalid narrative graph")
+    contexts = {key: [] for key in operations}
+    for principal, operation, parent in db.execute(
+        "SELECT principal_id,operation_id,context_operation_id FROM narrative_context"
+    ):
+        key = (principal, operation)
+        if key not in operations:
+            raise ValueError("invalid narrative graph")
+        contexts[key].append((principal, parent))
+    children = {key: [] for key in operations}
     for key, (
         item,
         revision,
@@ -443,65 +481,56 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
         source_count,
         context_count,
     ) in operations.items():
-        principal, operation = key
-        sources = db.execute(
-            "SELECT event_id,retention_status FROM narrative_sources WHERE principal_id=? AND operation_id=?",
-            key,
-        ).fetchall()
-        contexts = db.execute(
-            "SELECT context_operation_id FROM narrative_context WHERE principal_id=? AND operation_id=?",
-            key,
-        ).fetchall()
         if (
-            len(sources) != source_count
-            or len(contexts) != context_count
+            len(sources[key]) != source_count
+            or len(contexts[key]) != context_count
             or (key in payloads) != (status == "active")
-            or any(row[1] != status for row in sources)
+            or source_statuses[key] != {status}
         ):
             raise ValueError("invalid narrative graph")
-        if status == "active" and _eligible(db, principal, operation) is None:
-            raise ValueError("invalid narrative graph")
-        source_ids = {row[0] for row in sources}
-        for (context_operation,) in contexts:
-            inherited = operations.get((principal, context_operation))
+        for parent in contexts[key]:
+            inherited = operations.get(parent)
             if inherited is None or inherited[1] >= revision and inherited[0] == item:
                 raise ValueError("invalid narrative graph")
-            parent_sources = {
-                row[0]
-                for row in db.execute(
-                    "SELECT event_id FROM narrative_sources WHERE principal_id=? AND operation_id=?",
-                    (principal, context_operation),
-                )
-            }
-            if not parent_sources <= source_ids:
+            if not sources[parent] <= sources[key]:
                 raise ValueError("invalid narrative graph")
+            children[parent].append(key)
+    remaining = {key: len(contexts[key]) for key in operations}
+    ready = [key for key, count in remaining.items() if count == 0]
+    visited = 0
+    while ready:
+        parent = ready.pop()
+        visited += 1
+        for child in children[parent]:
+            remaining[child] -= 1
+            if remaining[child] == 0:
+                ready.append(child)
+    if visited != len(operations):
+        raise ValueError("invalid narrative graph")
+    replies = {
+        operation: (principal, status)
+        for operation, principal, status in db.execute(
+            """SELECT operation_id,audience_principal_id,retention_status
+               FROM agent_reply_operations WHERE operation_id IN
+               (SELECT reply_operation_id FROM protected_reply_narrative)"""
+        )
+    }
+    reply_sources = {}
+    for reply, event in db.execute(
+        """SELECT operation_id,event_id FROM agent_reply_sources WHERE operation_id IN
+           (SELECT reply_operation_id FROM protected_reply_narrative)"""
+    ):
+        reply_sources.setdefault(reply, set()).add(event)
     for reply, principal, operation in db.execute(
         "SELECT reply_operation_id,principal_id,narrative_operation_id FROM protected_reply_narrative"
     ):
         narrative = operations.get((principal, operation))
-        row = db.execute(
-            "SELECT audience_principal_id,retention_status,narrative_count FROM agent_reply_operations WHERE operation_id=?",
-            (reply,),
-        ).fetchone()
+        row = replies.get(reply)
         if narrative is None or row is None or row[0] != principal:
             raise ValueError("invalid narrative graph")
         if row[1] == "active" and narrative[2] != "active":
             raise ValueError("invalid narrative graph")
-        sources = {
-            event
-            for (event,) in db.execute(
-                "SELECT event_id FROM narrative_sources WHERE principal_id=? AND operation_id=?",
-                (principal, operation),
-            )
-        }
-        reply_sources = {
-            event
-            for (event,) in db.execute(
-                "SELECT event_id FROM agent_reply_sources WHERE operation_id=?",
-                (reply,),
-            )
-        }
-        if not sources <= reply_sources:
+        if not sources[(principal, operation)] <= reply_sources.get(reply, set()):
             raise ValueError("invalid narrative graph")
     if (
         db.execute(
