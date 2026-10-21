@@ -411,6 +411,24 @@ class MemoryConversationAssembler:
                 reverse=True,
             )
             for episode in ranked:
+                creator_reply = "reply:" + episode.operation_id.removeprefix(
+                    "narrative:"
+                )
+                creator_edge = db.execute(
+                    """SELECT 1 FROM protected_reply_narrative
+                       WHERE reply_operation_id=? AND principal_id=?
+                         AND narrative_operation_id=?""",
+                    (
+                        creator_reply,
+                        principal.principal_id.value,
+                        episode.operation_id,
+                    ),
+                ).fetchone()
+                if creator_edge is not None and db.execute(
+                    "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                    (creator_reply,),
+                ).fetchone() != ("completed", f"release:{creator_reply}"):
+                    continue
                 proposed = replace(
                     request,
                     episodes=(

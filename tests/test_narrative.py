@@ -2196,6 +2196,19 @@ def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
         assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
             "received",
         )
+    later = append_event(events, principal("a"), "later", "Продолжим историю")
+    with events._open() as db:
+        held_context, _ = MemoryConversationAssembler(
+            events, ContextLimits(32000, 99)
+        ).build(
+            principal("a"),
+            later,
+            db,
+            include_memories=False,
+            include_narrative=True,
+        )
+    assert held_context.episodes == ()
+    assert held_context.narrative_operation_ids == ()
     reopened = EventStore(events.database_path)
     fresh_gate = PrivacyReadGate(ledger, reopened)
     assert fresh_gate.reconcile()
@@ -2211,6 +2224,17 @@ def test_committed_narrative_receipt_reconciles_after_crash_without_replay(
     assert result.model_state.value == "completed"
     assert len(calls) == 2
     assert len(NarrativeStore(events).current(principal("a"))) == 1
+    with reopened._open() as db:
+        released_context, _ = MemoryConversationAssembler(
+            reopened, ContextLimits(32000, 99)
+        ).build(
+            principal("a"),
+            later,
+            db,
+            include_memories=False,
+            include_narrative=True,
+        )
+    assert len(released_context.episodes) == 1
     with provider._event_store._open() as db:
         assert db.execute("SELECT status FROM private_extraction_audit").fetchone() == (
             "accepted",
