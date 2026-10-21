@@ -842,7 +842,7 @@ class ThreadsRuntime(ThreadsStage0):
                     == origin["mission_invariants"]
                     and self.source_valid(payload)
                     and self.mission_evolution.pending_id_in(db) == mission_pending_id
-                    and self.mission_evolution.offered_evidence_in(db, origin)
+                    and self.mission_evolution.offered_evidence_in(db, payload)
                 )
             except (PolicyDeniedError, ValueError):
                 return False

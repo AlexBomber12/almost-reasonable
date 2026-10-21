@@ -113,15 +113,21 @@ class PublicMissionEvolution:
         if operation is None:
             return True
         row = db.execute(
-            "SELECT r.profile_digest,r.evidence FROM public_research_ops r "
+            "SELECT r.profile_digest,r.evidence,i.payload FROM public_research_ops r "
             "JOIN public_research_completions c ON c.operation=r.operation "
+            "JOIN intents i ON i.operation=r.operation "
             "WHERE r.operation=? AND r.phase='completed'",
             (operation,),
         ).fetchone()
+        if row is None:
+            return False
+        research_payload = json.loads(row[2])
         return (
-            row is not None
-            and row[0] == payload["offered_profile_digest"]
+            row[0] == payload["offered_profile_digest"]
             and public_context_digest((row[1],)) == payload["mission_evidence_digest"]
+            and research_payload["profile_digest"] == row[0]
+            and research_payload["generation"] == payload["generation"]
+            and self.app.source_valid(research_payload)
         )
 
     def hold_if_stale(self, operation, payload):

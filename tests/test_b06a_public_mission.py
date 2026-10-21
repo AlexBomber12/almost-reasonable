@@ -31,6 +31,7 @@ from app.threads.service import PolicyDeniedError
 from app.trusted.public_behavior_worker import PublicSDKAdapter
 from test_int24_runtime import FakeSDK
 from app.threads.domain import InboundKind
+from app.threads.domain import ConversationOutcome
 from app.threads.domain import OutboxState
 from test_b05b_public_runtime import _attach_fake_research, _profile
 from test_int24_runtime import NOW, run_once, setup
@@ -2257,6 +2258,77 @@ def test_control_change_before_intent_commit_holds_operation(
         assert len(changed) == 1
         assert app.journal.read("late-controls")["phase"] == "held"
         assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("drift", ["conversation", "profile", "generation"])
+def test_offered_research_authorization_change_before_intent_commit_holds_operation(
+    tmp_path, monkeypatch, drift
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            research_operation = db.execute(
+                "SELECT operation FROM public_research_ops"
+            ).fetchone()[0]
+        research = app.journal.read(research_operation)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        original_finish = app.journal.finish
+        changed = []
+
+        def finish_after_source_change(operation, payload, **kwargs):
+            if operation == app.wakeup_operation("wake-2") and kwargs.get("admissible"):
+                if drift == "conversation":
+                    app.service.store.record_conversation_outcome(
+                        outcome_id="late-research-control",
+                        correlation_id=research["correlation"],
+                        account_ref=app.account,
+                        stream=InboundKind(research["kind"]),
+                        inbound_event_id=research["event"],
+                        outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                        reason="source-withdrawn",
+                        resume_condition=None,
+                        now=clock.now(),
+                    )
+                else:
+                    research[
+                        "profile_digest" if drift == "profile" else "generation"
+                    ] = (
+                        "withdrawn"
+                        if drift == "profile"
+                        else research["generation"] + 1
+                    )
+                    with app.journal.transaction() as db:
+                        db.execute(
+                            "UPDATE intents SET payload=? WHERE operation=?",
+                            (json.dumps(research), research_operation),
+                        )
+                changed.append(None)
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_after_source_change)
+        decide_wakeup(app, worker, clock)
+        assert len(changed) == 1
+        if drift == "conversation":
+            assert not app.source_valid(research)
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "held"
+        assert app.mission_evolution.pending() is not None
     finally:
         worker.close()
 
