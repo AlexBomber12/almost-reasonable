@@ -416,6 +416,8 @@ class ThreadsRuntime(ThreadsStage0):
         profile = self.current_research_profile()
         if payload["phase"] != "started":
             return (), ()
+        if profile is None and payload.get("offered_profile_digest") is None:
+            return (), ()
         if profile is None or profile.digest != payload.get("offered_profile_digest"):
             if self.mission_evolution is not None:
                 raise PublicInferenceContextChanged(

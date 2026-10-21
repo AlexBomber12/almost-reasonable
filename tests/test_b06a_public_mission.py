@@ -688,6 +688,26 @@ def test_empty_evolution_state_still_requires_active_profile(tmp_path):
         worker.close()
 
 
+def test_no_profile_offered_allows_nonresearch_inference(tmp_path):
+    app, worker, sdk, _, clock = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(days=31))
+        assert app.current_research_profile() is None
+        assert app.mission_evolution.model_context() == ()
+        previous_calls = len(sdk.calls)
+
+        decide_wakeup(app, worker, clock)
+
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "linked"
+        assert len(sdk.calls) == previous_calls + 1
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize(
     "choice",
     [
