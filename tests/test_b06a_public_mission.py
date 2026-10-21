@@ -628,6 +628,9 @@ def test_confirmed_mission_survives_research_profile_expiry_and_renewal(
         clock.advance(timedelta(days=31))
         assert app.current_research_profile() is None
         assert app.mission.snapshot() == confirmed
+        expired_restart = restarted_evolution_runtime(app, tmp_path)
+        assert expired_restart.mission.snapshot() == confirmed
+        assert expired_restart.mission_evolution.model_context() == ()
 
         path = app.research_profile_path
         renewed = json.loads(path.read_text())
@@ -643,6 +646,20 @@ def test_confirmed_mission_survives_research_profile_expiry_and_renewal(
         assert app.mission.snapshot() == confirmed
         restarted = restarted_evolution_runtime(app, tmp_path)
         assert restarted.mission.snapshot() == confirmed
+    finally:
+        worker.close()
+
+
+def test_empty_evolution_state_still_requires_active_profile(tmp_path):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        with app.journal.transaction() as db:
+            db.execute("DELETE FROM public_mission_state")
+        app.research_profile_path.unlink()
+        with pytest.raises(ValueError, match="active research profile"):
+            restarted_evolution_runtime(app, tmp_path)
     finally:
         worker.close()
 
