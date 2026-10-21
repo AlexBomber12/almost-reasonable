@@ -108,29 +108,37 @@ def _narrative_active_key(store, operation_id):
 
 def _narrative_requested(content: str) -> bool:
     folded = content.casefold()
-    if re.search(
-        r"(?<!\w)(?:non[\s-]*(?:fiction(?:al)?|narrative|story)|"
-        r"not\s+(?:(?:be|being|a|an|the|write|tell|make)\s+){0,3}"
-        r"(?:fiction(?:al)?|narrative|story)|"
-        r"(?:don't|do\s+not|doesn't|does\s+not|never)\s+"
-        r"(?:want|make|write|tell|include)\s+(?:(?:a|an|any)\s+)?"
-        r"(?:fiction(?:al)?|narrative|story)|"
-        r"(?:no|without)\s+(?:(?:a|an|any)\s+)?"
-        r"(?:fiction(?:al)?|narrative|story)|"
-        r"(?:не|без)[\s-]+(?:вымышлен[а-яё]*|сюжет[а-яё]*))(?!\w)",
-        folded,
+    for clause in reversed(
+        re.split(
+            r"[,;.!?…]+|\b(?:but|instead|however|rather|но|однако|вместо)\b", folded
+        )
     ):
-        return False
-    return bool(
-        re.search(
-            r"(?<!\w)(?:вымышлен[а-яё]*|сюжет[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives)(?!\w)",
-            folded,
+        if not (
+            re.search(
+                r"(?<!\w)(?:вымышлен[а-яё]*|сюжет[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives)(?!\w)",
+                clause,
+            )
+            or re.fullmatch(
+                r"\s*(?:расскажи|продолжи|продолжим)\s+истори[а-яё]*\s*",
+                clause,
+            )
+        ):
+            continue
+        return not bool(
+            re.search(
+                r"(?<!\w)(?:non[\s-]*(?:fiction(?:al)?|narrative|story)|"
+                r"not\s+(?:(?:be|being|a|an|the|write|tell|make)\s+){0,3}"
+                r"(?:fiction(?:al)?|narrative|story)|"
+                r"(?:don't|do\s+not|doesn't|does\s+not|never)\s+"
+                r"(?:want|make|write|tell|include)\s+(?:(?:a|an|any)\s+)?"
+                r"(?:fiction(?:al)?|narrative|story)|"
+                r"(?:no|without)\s+(?:(?:a|an|any)\s+)?"
+                r"(?:fiction(?:al)?|narrative|story)|"
+                r"(?:не|без)[\s-]+(?:вымышлен[а-яё]*|сюжет[а-яё]*))(?!\w)",
+                clause,
+            )
         )
-        or re.fullmatch(
-            r"\s*(?:расскажи|продолжи|продолжим)\s+истори[а-яё]*\s*[.!?…]*",
-            folded,
-        )
-    )
+    return False
 
 
 def _without_reviewed_question(text: str, question: str) -> str:

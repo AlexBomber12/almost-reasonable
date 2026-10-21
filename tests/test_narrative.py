@@ -10,7 +10,10 @@ from threading import Event as ThreadEvent, Thread
 import pytest
 
 from app.cognition.narrative_store import NarrativeStore, NarrativeConflict
-from app.cognition.conversation_context import MemoryConversationAssembler
+from app.cognition.conversation_context import (
+    MemoryConversationAssembler,
+    MemoryModelRequest,
+)
 from app.cognition.conversation_context import FictionEpisode
 from app.cognition.worker_narrative import (
     NarrativeModelRequest,
@@ -60,6 +63,7 @@ from app.trusted.private_pilot import PilotAllowance, load_activation
 from app.trusted.private_pilot_worker import PilotRequestGate, PilotStop
 from test_cognition_pipeline import append_event, principal
 from test_openai_gateway import response
+from test_openai_worker_protocol import model_request
 from test_privacy_deletion import context as deletion_context
 from test_privacy_deletion import request as deletion_request
 from test_int22_pilot import activation_file
@@ -579,6 +583,72 @@ def test_narrative_permission_is_separate_and_bounded(tmp_path):
     )
     stop_path.chmod(0o400)
     assert not gate.narrative_commit_allowed()
+
+
+@pytest.mark.parametrize("max_operations,allowed", [(1, False), (2, True)])
+def test_narrative_allowance_reserves_reply_capacity_atomically(
+    tmp_path, max_operations, allowed
+):
+    activation_path, activation_value = activation_file(tmp_path)
+    activation_value["max_operations"] = max_operations
+    activation_path.chmod(0o600)
+    activation_path.write_text(json.dumps(activation_value))
+    activation_path.chmod(0o400)
+    activation = load_activation(activation_path)
+    allowance = PilotAllowance.initialize(tmp_path / "allowance.db", activation)
+    stop_path = activation_path.parent / "stop.json"
+    stop_path.write_text(
+        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": False})
+    )
+    stop_path.chmod(0o400)
+    permission = activation_path.parent / "narrative.json"
+    permission.write_text(
+        json.dumps(
+            {
+                "version": "private-narrative-permission-v1",
+                "pilot_id": activation.pilot_id,
+                "max_operations": 1,
+            }
+        )
+    )
+    permission.chmod(0o400)
+    gate = PilotRequestGate(
+        activation,
+        allowance,
+        activation_path=activation_path,
+        stop=PilotStop(stop_path),
+        narrative_permission_path=permission,
+    )
+    suffix = "a" * 64
+    request = InferenceRequest(
+        "narrative:" + suffix,
+        "corr",
+        NarrativeModelRequest(
+            (
+                ConversationSegment(
+                    ContextRole.PARTICIPANT,
+                    ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,
+                    "Расскажи историю",
+                ),
+            ),
+            (),
+        ),
+    )
+    result = gate.authorize(request)
+    assert (result is None) is allowed
+    if not allowed:
+        assert result.outcome == "authorization_rejected"
+        assert allowance.remaining() == 1
+        return
+    assert allowance.remaining() == 0
+    reply = InferenceRequest(
+        "reply:" + suffix,
+        "corr",
+        MemoryModelRequest(model_request(), (), False, narrative_mode=True),
+    )
+    assert gate.authorize(reply) is None
+    assert allowance.remaining() == 0
+    assert gate.authorize(reply).outcome == "authorization_rejected"
 
 
 def test_versioned_episode_is_scoped_and_stale_heads_fail(tmp_path):
@@ -3347,6 +3417,25 @@ def test_narrative_worker_rechecks_permission_before_returning_result(tmp_path):
 
 
 @pytest.mark.parametrize(
+    "text,expected",
+    [
+        (
+            "Don't write fiction about Rome; instead continue my fictional story",
+            True,
+        ),
+        ("Don't write fiction; continue my fictional story", True),
+        ("Tell me a fictional story, but make it non-fictional", False),
+        ("Give me a true story, not fiction", False),
+        ("Не вымышленную историю; продолжи сюжет", True),
+    ],
+)
+def test_narrative_cue_follows_the_last_relevant_clause(text, expected):
+    from app.private_web.runtime import _narrative_requested
+
+    assert _narrative_requested(text) is expected
+
+
+@pytest.mark.parametrize(
     "question",
     [
         "What is the history of Rome?",
@@ -3377,7 +3466,6 @@ def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
     assert _narrative_requested("Расскажи историю")
     assert _narrative_requested("Продолжим историю")
     assert _narrative_requested("a fictional episode")
-
     events = EventStore(tmp_path / "events.db")
     ledger = PrivacyLedger(tmp_path / "ledger.db")
     gate = PrivacyReadGate(ledger, events)

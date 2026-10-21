@@ -233,7 +233,9 @@ class PilotRequestGate:
             return WorkerResponse("authorization_rejected", 0, _REJECT_RU, None)
         try:
             reserved = self.allowance.reserve(
-                request.operation_id, extraction_limit=limit
+                request.operation_id,
+                extraction_limit=limit,
+                reserve_reply=narrative,
             )
         except PilotAuthorityError:
             reserved = False
