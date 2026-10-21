@@ -832,15 +832,26 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             self.journal.finish(operation, payload, held=True)
             return
+
+        def mission_admissible(db):
+            try:
+                self.guard()
+                return (
+                    self.ledger.control_generation() == generation
+                    and self.mission_evolution.invariants().to_dict()
+                    == origin["mission_invariants"]
+                    and self.source_valid(payload)
+                    and self.mission_evolution.pending_id_in(db) == mission_pending_id
+                    and self.mission_evolution.offered_evidence_in(db, origin)
+                )
+            except (PolicyDeniedError, ValueError):
+                return False
+
         self.journal.finish(
             operation,
             payload,
             rejected=rejected,
-            admissible=None
-            if self.mission_evolution is None
-            else lambda db: self.mission_evolution.pending_id_in(db)
-            == mission_pending_id
-            and self.mission_evolution.offered_evidence_in(db, origin),
+            admissible=None if self.mission_evolution is None else mission_admissible,
         )
         self.checkpoint("after_intent")
 

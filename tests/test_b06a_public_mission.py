@@ -2205,6 +2205,62 @@ def test_stale_abandonment_cannot_touch_replacement_proposal(tmp_path):
         worker.close()
 
 
+@pytest.mark.parametrize("control", ["research_worker", "privacy_generation", "stop"])
+def test_control_change_before_intent_commit_holds_operation(
+    tmp_path, monkeypatch, control
+):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        monkeypatch.setattr(
+            app.engine,
+            "deliberate",
+            lambda _input: DeliberationResult(
+                DeliberationOutcome.PROPOSED,
+                PublicMissionChoice("propose", MissionPurpose.RESEARCH),
+                None,
+                1,
+                1,
+            ),
+        )
+        original_finish = app.journal.finish
+        changed = []
+
+        def finish_after_control_change(operation, payload, **kwargs):
+            if operation == "late-controls" and kwargs.get("admissible"):
+                if control == "research_worker":
+                    app.research_client = PublicResearchClient(
+                        tmp_path / "replacement-research.sock",
+                        expected_worker_uid=os.geteuid(),
+                    )
+                elif control == "privacy_generation":
+                    generation = app.ledger.control_generation()
+                    monkeypatch.setattr(
+                        app.ledger, "control_generation", lambda: generation + 1
+                    )
+                else:
+                    app.policy.emergency_stop = True
+                changed.append(None)
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_after_control_change)
+        app._decide(
+            "late-controls",
+            {
+                "kind": "wake",
+                "event": "wake-late-controls",
+                "correlation": "late-controls",
+            },
+            (),
+        )
+        assert len(changed) == 1
+        assert app.journal.read("late-controls")["phase"] == "held"
+        assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
 def test_abandonment_race_after_precheck_holds_losing_intent(tmp_path, monkeypatch):
     app, worker, _, _, clock = configured(
         tmp_path,
