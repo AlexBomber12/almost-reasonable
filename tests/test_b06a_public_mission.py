@@ -1011,6 +1011,93 @@ def test_stale_worker_context_and_repeated_proposal_are_held(tmp_path):
         worker.close()
 
 
+@pytest.mark.parametrize("action", ["confirm", "reject"])
+def test_changed_proposal_controls_reject_resolution_before_intent(
+    tmp_path, monkeypatch, action
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        original = app.mission_evolution.invariants()
+        changed = replace(original, provider_budget_version="renewed-budget")
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": action,
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        with monkeypatch.context() as patch:
+            patch.setattr(app.mission_evolution, "invariants", lambda: changed)
+            decide_wakeup(app, worker, clock)
+            rejected = app.journal.read(app.wakeup_operation("wake-2"))
+            persisted = {
+                **rejected,
+                "decision": "revise_mission",
+                "mission_action": action,
+                "mission_purpose": None,
+                "correlation": f"stale-{action}",
+            }
+            _staged_intent(app, f"stale-{action}", persisted)
+            with pytest.raises(ValueError, match="controls changed"):
+                app.mission_evolution.apply(f"stale-{action}", persisted)
+            with pytest.raises(PolicyDeniedError, match="transition unavailable"):
+                app._handoff(f"stale-{action}", persisted)
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
+        assert app.mission_evolution.pending() is not None
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
+def test_late_worker_attestation_context_change_holds_started_operation(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        sdk.proposal = {"decision": "no_action", "reason_category": "low_value"}
+        clock.advance(timedelta(minutes=1))
+        original_attest = worker.attest
+        original_context = app.mission_evolution.model_context
+        changed = False
+
+        def late_attestation(request):
+            nonlocal changed
+            changed = True
+            return original_attest(request)
+
+        monkeypatch.setattr(worker, "attest", late_attestation)
+        monkeypatch.setattr(
+            app.mission_evolution,
+            "model_context",
+            lambda: () if changed else original_context(),
+        )
+        decide_wakeup(app, worker, clock)
+        operation = app.wakeup_operation("wake-2")
+        assert changed
+        assert app.journal.read(operation)["phase"] == "held"
+        assert app.mission_evolution.pending() is not None
+        assert app.mission.snapshot()[1]["version"] == "mission-v1"
+    finally:
+        worker.close()
+
+
 def test_exhausted_research_catalog_withholds_new_mission_proposals(
     tmp_path, monkeypatch
 ):

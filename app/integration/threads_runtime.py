@@ -663,6 +663,18 @@ class ThreadsRuntime(ThreadsStage0):
                 held=True,
             )
             return
+        except ValueError:
+            if self.mission_evolution is not None:
+                try:
+                    self.inference_mission_evolution_context(operation)
+                except PublicInferenceContextChanged:
+                    self.journal.finish(
+                        operation,
+                        {**origin, "reason": "public_inference_context_changed"},
+                        held=True,
+                    )
+                    return
+            raise
         payload = {
             **origin,
             "generation": generation,
@@ -727,7 +739,11 @@ class ThreadsRuntime(ThreadsStage0):
                 )
                 or (
                     proposal.action in ("confirm", "reject")
-                    and mission_evidence_operation is None
+                    and (
+                        mission_evidence_operation is None
+                        or pending.proposal.invariants.to_dict()
+                        != origin["mission_invariants"]
+                    )
                 )
             ):
                 rejected = True
