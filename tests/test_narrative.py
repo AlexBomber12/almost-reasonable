@@ -3296,6 +3296,13 @@ def test_narrative_worker_rechecks_permission_before_returning_result(tmp_path):
         "I had a seizure episode",
         "What caused this depressive episode?",
         "У меня был эпизод депрессии",
+        "Write a non-fictional biography",
+        "This should not be fictional",
+        "Please do not write fiction",
+        "Don't write fiction",
+        "Give me a true story, not fiction",
+        "Это не вымышленная история",
+        "Без вымышленной истории",
     ],
 )
 def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
