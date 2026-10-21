@@ -124,20 +124,31 @@ def _narrative_requested(content: str) -> bool:
             )
         ):
             continue
-        return not bool(
-            re.search(
-                r"(?<!\w)(?:non[\s-]*(?:fiction(?:al)?|narrative|story)|"
-                r"not\s+(?:(?:be|being|a|an|the|write|tell|make)\s+){0,3}"
-                r"(?:fiction(?:al)?|narrative|story)|"
-                r"(?:don't|do\s+not|doesn't|does\s+not|never)\s+"
-                r"(?:want|make|write|tell|include)\s+(?:(?:a|an|any)\s+)?"
-                r"(?:fiction(?:al)?|narrative|story)|"
-                r"(?:no|without)\s+(?:(?:a|an|any)\s+)?"
-                r"(?:fiction(?:al)?|narrative|story)|"
-                r"(?:не|без)[\s-]+(?:вымышлен[а-яё]*|сюжет[а-яё]*))(?!\w)",
-                clause,
-            )
-        )
+        if re.search(
+            r"(?<!\w)(?:non[\s-]*(?:fiction(?:al)?|narrative|story)|"
+            r"not\s+(?:(?:be|being|a|an|the|write|tell|make)\s+){0,3}"
+            r"(?:fiction(?:al)?|narrative|story)|"
+            r"(?:don't|do\s+not|doesn't|does\s+not|never)\s+"
+            r"(?:want|make|write|tell|include)\s+(?:(?:a|an|any)\s+)?"
+            r"(?:fiction(?:al)?|narrative|story)|"
+            r"(?:no|without)\s+(?:(?:a|an|any)\s+)?"
+            r"(?:fiction(?:al)?|narrative|story)|"
+            r"(?:не|без)[\s-]+(?:вымышлен[а-яё]*|сюжет[а-яё]*))(?!\w)",
+            clause,
+        ):
+            return False
+        if re.search(
+            r"(?<!\w)(?:user|news|true|real|factual|actual)\s+(?:story|stories|narrative)(?!\w)|(?<!\w)(?:story|narrative)\s+of\b|(?<!\w)narrative\s+medicine(?!\w)",
+            clause,
+        ) and not re.search(r"(?<!\w)(?:fiction(?:al)?|вымышлен[а-яё]*)(?!\w)", clause):
+            continue
+        if re.search(
+            r"(?<!\w)(?:tell|write|create|continue|invent|make|develop|resume|expand|narrate|remember|imagine|compose|draft|generate|build|want|расскажи|продолжи|продолжим|сочини|напиши|создай|измени|добавь)(?!\w)",
+            clause,
+        ) or re.fullmatch(
+            r"\s*(?:(?:a|an)\s+)?fictional\s+(?:episode|story|narrative)\s*", clause
+        ):
+            return True
     return False
 
 

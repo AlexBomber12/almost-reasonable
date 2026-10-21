@@ -3427,6 +3427,8 @@ def test_narrative_worker_rechecks_permission_before_returning_result(tmp_path):
         ("Tell me a fictional story, but make it non-fictional", False),
         ("Give me a true story, not fiction", False),
         ("Не вымышленную историю; продолжи сюжет", True),
+        ("Continue my fictional story", True),
+        ("Write a user story for the login feature", False),
     ],
 )
 def test_narrative_cue_follows_the_last_relevant_clause(text, expected):
@@ -3450,6 +3452,11 @@ def test_narrative_cue_follows_the_last_relevant_clause(text, expected):
         "Give me a true story, not fiction",
         "Это не вымышленная история",
         "Без вымышленной истории",
+        "What is a user story in Agile?",
+        "Summarize this news story",
+        "What is narrative medicine?",
+        "Tell me the story of Rome",
+        "I read fiction last night",
     ],
 )
 def test_narrative_cue_uses_whole_words_and_does_not_spend_on_history(
