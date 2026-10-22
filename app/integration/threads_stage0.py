@@ -274,8 +274,12 @@ class Stage0Journal:
             )
             return True
 
-    def finish(self, operation, payload, *, rejected=False, held=False):
+    def finish(
+        self, operation, payload, *, rejected=False, held=False, admissible=None
+    ):
         with self.transaction() as db:
+            if admissible is not None and not admissible(db):
+                held = True
             db.execute(
                 "UPDATE intents SET phase=?, payload=? WHERE operation=? AND phase='started'",
                 (
@@ -722,7 +726,7 @@ class ThreadsStage0:
         # A source may remain valid while its public conversation becomes
         # suppressed. Reply permission is rechecked at handoff and every effect.
         return (
-            payload.get("decision") not in ("reply", "research")
+            payload.get("decision") not in ("reply", "research", "revise_mission")
             or self.service.store.conversation_control(
                 self.account, event.kind, event.conversation_id, now=self.clock.now()
             )

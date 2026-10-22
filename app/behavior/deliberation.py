@@ -293,9 +293,13 @@ class DeliberationEngine:
         self,
         model: BehaviorModel,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+        parser: Callable[
+            [object], BehaviorProposalValidation
+        ] = parse_behavior_proposal,
     ):
         self._model = model
         self._clock = clock
+        self._parser = parser
 
     def deliberate(self, value: DeliberationInput) -> DeliberationResult:
         if not isinstance(value, DeliberationInput):
@@ -343,7 +347,7 @@ class DeliberationEngine:
                 DeliberationOutcome.BUDGET_EXHAUSTED, None, None, 1, 1
             )
 
-        parsed = parse_behavior_proposal(raw_proposal)
+        parsed = self._parser(raw_proposal)
         if not parsed.valid or parsed.proposal is None:
             return DeliberationResult(
                 DeliberationOutcome.INVALID_PROPOSAL,

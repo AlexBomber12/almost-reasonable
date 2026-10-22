@@ -15,6 +15,7 @@ from app.behavior.mission import (
     EvidenceProvenance,
     JsonMissionRepository,
     Mission,
+    MissionAbandonment,
     MissionConfirmation,
     MissionDocument,
     MissionEvidenceSource,
@@ -139,6 +140,94 @@ def test_rejection_retains_current_mission(tmp_path) -> None:
     )
     assert record.status is MissionStatus.REJECTED
     assert machine.current_mission() == initial
+
+
+def test_abandonment_is_durable_without_evidence_or_mission_change(tmp_path) -> None:
+    path = tmp_path / "abandoned.json"
+    initial = Mission("mission-v1", "Старая миссия", NOW, None)
+    machine = mission_machine(JsonMissionRepository(path, initial))
+    machine.propose(proposal())
+    abandonment = MissionAbandonment(
+        "mp-1",
+        "mission-v1",
+        "event-2",
+        "corr-2",
+        NOW + timedelta(seconds=1),
+        invariants(),
+    )
+    record = machine.abandon(abandonment)
+    assert record.status is MissionStatus.ABANDONED
+    assert record.confirmation is None
+    assert record.abandonment == abandonment
+    assert machine.current_mission() == initial
+    restarted = mission_machine(JsonMissionRepository(path, initial))
+    assert restarted.current_mission() == initial
+    assert restarted._repository.load().proposals[0] == record
+    with pytest.raises(ValueError, match="already resolved"):
+        restarted.abandon(abandonment)
+    with pytest.raises(ValueError, match="already resolved"):
+        restarted.confirm(
+            MissionConfirmation(
+                "mp-1",
+                "event-3",
+                "corr-3",
+                NOW + timedelta(seconds=2),
+                ConfirmationOutcome.CONFIRMED,
+                ("Причина",),
+                ("Контраргумент",),
+                ("evidence-2",),
+                invariants(),
+                independent_sources(),
+            )
+        )
+    later = replace(
+        proposal(),
+        proposal_id="mp-2",
+        version_identity="proposal-v2",
+        initiating_event_id="event-3",
+        correlation_id="corr-3",
+        decided_at=NOW + timedelta(seconds=2),
+    )
+    assert restarted.propose(later).status is MissionStatus.PENDING
+    corrupt = json.loads(path.read_text())
+    corrupt["proposals"][0]["abandonment"]["proposal_id"] = "wrong"
+    path.write_text(json.dumps(corrupt))
+    with pytest.raises(ValueError, match="abandonment does not match"):
+        restarted._repository.load()
+
+
+def test_abandonment_rejects_wrong_identity_parent_event_and_controls(tmp_path) -> None:
+    machine = mission_machine(
+        JsonMissionRepository(
+            tmp_path / "abandon-invalid.json",
+            Mission("mission-v1", "Миссия", NOW, None),
+        )
+    )
+    machine.propose(proposal())
+    valid = MissionAbandonment(
+        "mp-1",
+        "mission-v1",
+        "event-2",
+        "corr-2",
+        NOW + timedelta(seconds=1),
+        invariants(),
+    )
+    with pytest.raises(TypeError, match="MissionAbandonment"):
+        machine.abandon(object())
+    for change in (
+        {"proposal_id": "other"},
+        {"parent_version": "other"},
+        {"event_id": "event-1"},
+        {"event_id": ""},
+        {"correlation_id": "corr-1"},
+        {"decided_at": NOW},
+    ):
+        with pytest.raises(ValueError):
+            machine.abandon(replace(valid, **change))
+    assert machine._repository.load().proposals[0].status is MissionStatus.PENDING
+    changed = replace(valid, invariants=invariants(deployment_stage="production"))
+    assert machine.abandon(changed).status is MissionStatus.ABANDONED
+    assert machine._repository.load().proposals[0].abandonment == changed
 
 
 def test_trusted_root_round_trips_a_dst_fold_by_absolute_instant(tmp_path) -> None:
@@ -1167,3 +1256,14 @@ def test_state_machine_defends_against_stale_custom_repository() -> None:
     )
     with pytest.raises(ValueError, match="parent is no longer"):
         mission_machine(StaleRepository()).confirm(confirmation)
+    with pytest.raises(ValueError, match="parent is no longer"):
+        mission_machine(StaleRepository()).abandon(
+            MissionAbandonment(
+                "mp-1",
+                "mission-v1",
+                "event-2",
+                "corr-2",
+                NOW + timedelta(minutes=1),
+                invariants(),
+            )
+        )

@@ -112,6 +112,21 @@ def _attach_fake_research(app, tmp_path, monkeypatch):
     return calls
 
 
+def test_pre_upgrade_completed_research_remains_public_context(tmp_path, monkeypatch):
+    app, worker, _, _, _ = _setup(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        with app.journal.transaction() as db:
+            db.execute("DELETE FROM public_research_completions")
+        _, evidence = app.public_context("later-decision")
+        assert len(evidence) == 1
+    finally:
+        worker.close()
+
+
 def test_wakeup_research_is_one_search_and_later_unverified_evidence(tmp_path):
     app, infer_worker, infer_sdk, http, clock = _setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}

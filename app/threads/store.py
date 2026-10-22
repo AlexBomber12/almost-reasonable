@@ -1,7 +1,7 @@
 """Dedicated versioned SQLite outbox and inbound cursor store."""
 
 from collections.abc import Callable, Iterable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 import fcntl
 import json
@@ -1397,6 +1397,7 @@ class ThreadsStore:
         resume_condition: str | None,
         now: datetime,
         control_expires_at: datetime | None = None,
+        _linked_mission: bool = False,
     ) -> None:
         require_reference("outcome ID", outcome_id)
         require_reference("correlation ID", correlation_id)
@@ -1426,7 +1427,16 @@ class ThreadsStore:
             if control_expires_at is None
             else control_expires_at.astimezone(UTC).isoformat()
         )
-        with self._open() as connection:
+        control_fence = (
+            self.conversation_control_effect_fence()
+            if outcome
+            in {
+                ConversationOutcome.TERMINATE_CONVERSATION,
+                ConversationOutcome.COOLDOWN,
+            }
+            else nullcontext()
+        )
+        with control_fence, self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 changed = connection.execute(
@@ -1436,7 +1446,7 @@ class ThreadsStore:
                     "SELECT ?, ?, account_ref, kind, event_id, ?, ?, ?, ? "
                     "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
                     "AND event_id=? AND correlation_id=? AND processed_at IS NULL "
-                    "AND NOT EXISTS ("
+                    "AND (?=1 OR NOT EXISTS ("
                     "SELECT 1 FROM threads_conversation_controls AS control "
                     "WHERE control.account_ref=threads_inbound_events.account_ref "
                     "AND control.inbound_kind=threads_inbound_events.kind "
@@ -1444,7 +1454,7 @@ class ThreadsStore:
                     "threads_inbound_events.conversation_id "
                     "AND (control.expires_at IS NULL OR "
                     "threads_utc_timestamp(control.expires_at)>"
-                    "threads_utc_timestamp(?)))",
+                    "threads_utc_timestamp(?))))",
                     (
                         outcome_id,
                         correlation_id,
@@ -1456,6 +1466,7 @@ class ThreadsStore:
                         stream.value,
                         inbound_event_id,
                         correlation_id,
+                        int(_linked_mission),
                         outcome_time,
                     ),
                 ).rowcount
@@ -1480,12 +1491,14 @@ class ThreadsStore:
                     active_control = connection.execute(
                         "SELECT 1 FROM threads_conversation_controls "
                         "WHERE account_ref=? AND inbound_kind=? "
-                        "AND conversation_id=? AND (expires_at IS NULL OR "
+                        "AND conversation_id=? AND ?=0 "
+                        "AND (expires_at IS NULL OR "
                         "threads_utc_timestamp(expires_at)>threads_utc_timestamp(?))",
                         (
                             account_ref,
                             stream.value,
                             event_state["conversation_id"],
+                            int(_linked_mission),
                             outcome_time,
                         ),
                     ).fetchone()
@@ -1537,6 +1550,51 @@ class ThreadsStore:
                     ),
                 )
             connection.commit()
+
+    @contextmanager
+    def conversation_control_fence(self) -> Iterator[None]:
+        """Serialize a cross-store mission commit with conversation controls."""
+        connection = self._open()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield
+        finally:
+            connection.rollback()
+            connection.close()
+
+    @contextmanager
+    def conversation_control_effect_fence(self) -> Iterator[None]:
+        """Serialize control writes with mission-sensitive Threads effects."""
+        with open(str(self.database) + ".control.lock", "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def record_linked_mission_outcome(
+        self,
+        *,
+        outcome_id: str,
+        correlation_id: str,
+        account_ref: str,
+        stream: InboundKind,
+        inbound_event_id: str,
+        now: datetime,
+    ) -> None:
+        """Acknowledge an already-linked mission without replacing a later control."""
+        self.record_conversation_outcome(
+            outcome_id=outcome_id,
+            correlation_id=correlation_id,
+            account_ref=account_ref,
+            stream=stream,
+            inbound_event_id=inbound_event_id,
+            outcome=ConversationOutcome.NO_ACTION,
+            reason="other",
+            resume_condition=None,
+            now=now,
+            _linked_mission=True,
+        )
 
     def inbound_event(
         self, account_ref: str, stream: InboundKind, event_id: str
