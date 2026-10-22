@@ -1,6 +1,6 @@
 """Offline two-phase public mission decisions through the real worker and journal."""
 
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 from threading import Thread
 from dataclasses import replace
@@ -2407,8 +2407,9 @@ def test_controlled_inbound_conversation_before_mission_intent_is_held(
     "control",
     [ConversationOutcome.TERMINATE_CONVERSATION, ConversationOutcome.COOLDOWN],
 )
+@pytest.mark.parametrize("decision_offset", [-1, 1])
 def test_later_conversation_control_reconciles_committed_mission(
-    tmp_path, monkeypatch, control
+    tmp_path, monkeypatch, control, decision_offset
 ):
     app, worker, _, _, clock = configured(
         tmp_path,
@@ -2425,6 +2426,7 @@ def test_later_conversation_control_reconciles_committed_mission(
         def record_after_later_control(operation, payload):
             if changed:
                 return original_record(operation, payload)
+            decided_at = datetime.fromisoformat(payload["decided_at"])
             clock.advance(timedelta(seconds=1))
             stream = InboundKind(payload["kind"])
             source = app.service.store.inbound_event(
@@ -2438,7 +2440,7 @@ def test_later_conversation_control_reconciles_committed_mission(
                 stream,
                 source.conversation_id,
                 None,
-                clock.now(),
+                decided_at - timedelta(seconds=1),
                 "Публичное завершение.",
             )
             app.service.store.commit_poll_page(
@@ -2461,7 +2463,7 @@ def test_later_conversation_control_reconciles_committed_mission(
                 outcome=control,
                 reason="conversation-closed",
                 resume_condition=None,
-                now=clock.now(),
+                now=decided_at + timedelta(seconds=decision_offset),
                 control_expires_at=(
                     clock.now() + timedelta(minutes=1)
                     if control is ConversationOutcome.COOLDOWN

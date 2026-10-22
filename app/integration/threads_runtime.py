@@ -964,17 +964,13 @@ class ThreadsRuntime(ThreadsStage0):
         if payload[
             "kind"
         ] != "wake" and not self.service.store.conversation_outcome_recorded(operation):
-            self.service.store.record_conversation_outcome(
+            self.service.store.record_linked_mission_outcome(
                 outcome_id=operation,
                 correlation_id=payload["correlation"],
                 account_ref=self.account,
                 stream=InboundKind(payload["kind"]),
                 inbound_event_id=payload["event"],
-                outcome=ConversationOutcome.NO_ACTION,
-                reason="other",
-                resume_condition=None,
                 now=self.parse_time(payload["decided_at"]),
-                control_expires_at=None,
             )
 
     def recover(self):

@@ -1397,6 +1397,7 @@ class ThreadsStore:
         resume_condition: str | None,
         now: datetime,
         control_expires_at: datetime | None = None,
+        _linked_mission: bool = False,
     ) -> None:
         require_reference("outcome ID", outcome_id)
         require_reference("correlation ID", correlation_id)
@@ -1436,18 +1437,15 @@ class ThreadsStore:
                     "SELECT ?, ?, account_ref, kind, event_id, ?, ?, ?, ? "
                     "FROM threads_inbound_events WHERE account_ref=? AND kind=? "
                     "AND event_id=? AND correlation_id=? AND processed_at IS NULL "
-                    "AND NOT EXISTS ("
+                    "AND (?=1 OR NOT EXISTS ("
                     "SELECT 1 FROM threads_conversation_controls AS control "
                     "WHERE control.account_ref=threads_inbound_events.account_ref "
                     "AND control.inbound_kind=threads_inbound_events.kind "
                     "AND control.conversation_id="
                     "threads_inbound_events.conversation_id "
-                    "AND (?!='no_action' OR "
-                    "threads_utc_timestamp(control.started_at)<="
-                    "threads_utc_timestamp(?)) "
                     "AND (control.expires_at IS NULL OR "
                     "threads_utc_timestamp(control.expires_at)>"
-                    "threads_utc_timestamp(?)))",
+                    "threads_utc_timestamp(?))))",
                     (
                         outcome_id,
                         correlation_id,
@@ -1459,8 +1457,7 @@ class ThreadsStore:
                         stream.value,
                         inbound_event_id,
                         correlation_id,
-                        outcome.value,
-                        outcome_time,
+                        int(_linked_mission),
                         outcome_time,
                     ),
                 ).rowcount
@@ -1485,18 +1482,14 @@ class ThreadsStore:
                     active_control = connection.execute(
                         "SELECT 1 FROM threads_conversation_controls "
                         "WHERE account_ref=? AND inbound_kind=? "
-                        "AND conversation_id=? "
-                        "AND (?!='no_action' OR "
-                        "threads_utc_timestamp(started_at)<="
-                        "threads_utc_timestamp(?)) "
+                        "AND conversation_id=? AND ?=0 "
                         "AND (expires_at IS NULL OR "
                         "threads_utc_timestamp(expires_at)>threads_utc_timestamp(?))",
                         (
                             account_ref,
                             stream.value,
                             event_state["conversation_id"],
-                            outcome.value,
-                            outcome_time,
+                            int(_linked_mission),
                             outcome_time,
                         ),
                     ).fetchone()
@@ -1548,6 +1541,30 @@ class ThreadsStore:
                     ),
                 )
             connection.commit()
+
+    def record_linked_mission_outcome(
+        self,
+        *,
+        outcome_id: str,
+        correlation_id: str,
+        account_ref: str,
+        stream: InboundKind,
+        inbound_event_id: str,
+        now: datetime,
+    ) -> None:
+        """Acknowledge an already-linked mission without replacing a later control."""
+        self.record_conversation_outcome(
+            outcome_id=outcome_id,
+            correlation_id=correlation_id,
+            account_ref=account_ref,
+            stream=stream,
+            inbound_event_id=inbound_event_id,
+            outcome=ConversationOutcome.NO_ACTION,
+            reason="other",
+            resume_condition=None,
+            now=now,
+            _linked_mission=True,
+        )
 
     def inbound_event(
         self, account_ref: str, stream: InboundKind, event_id: str
