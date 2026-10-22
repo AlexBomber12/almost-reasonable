@@ -29,16 +29,15 @@ def response(decision="reply", value="Да, я готов обсудить эт�
         "research": "brief",
         "propose_publication": "draft",
     }.get(decision, "content")
-    data = dict(
-        decision=decision, reason_category=None, content=None, brief=None, draft=None
-    )
+    data = {"decision": decision}
     data[field] = value
     return ProviderResponse(
         "synthetic-response",
         "completed",
         (
             ProviderOutput(
-                "message", (ProviderContent("output_text", json.dumps(data)),)
+                "message",
+                (ProviderContent("output_text", json.dumps({"proposal": data})),),
             ),
         ),
         None,
@@ -83,6 +82,56 @@ def test_round_trip_restart_retry_exact_identity_and_isolation(setup):
     with pytest.raises(ValueError):
         reopened.submit(a, "one", "Изменённый текст")
     assert len(fake.calls) == 4
+
+
+def test_ship_context_restart_and_rejected_mars_attempt_is_accounted_once(setup):
+    store, ledger, gate, _, _ = setup
+    invalid = ProviderResponse(
+        "synthetic-invalid",
+        "completed",
+        (
+            ProviderOutput(
+                "message",
+                (
+                    ProviderContent(
+                        "output_text",
+                        json.dumps(
+                            {"proposal": {"decision": "reply", "content": None}}
+                        ),
+                    ),
+                ),
+            ),
+        ),
+        None,
+    )
+    fake = FakeOpenAITransport([response(value="Звездолёт летит к Юпитеру"), invalid])
+    a = principal("a")
+    first = Stage0ConversationRuntime(store, gate, fake, clock=Clock()).submit(
+        a, "ship", "Назовём корабль Звездолёт и полетим к Юпитеру"
+    )
+    assert first.model_state.value == "completed"
+    reopened_store = EventStore(store.database_path)
+    reopened_gate = PrivacyReadGate(ledger, reopened_store)
+    assert reopened_gate.reconcile()
+    restarted = Stage0ConversationRuntime(
+        reopened_store, reopened_gate, fake, clock=Clock()
+    )
+    second = restarted.submit(a, "mars", "Сохрани имя корабля, но измени курс на Марс")
+    assert second.model_state.value == "invalid"
+    assert second.response_content is None
+    assert len(fake.calls) == 2
+    assert [(item.role, item.content) for item in restarted.history(a)] == [
+        ("participant", "Назовём корабль Звездолёт и полетим к Юпитеру"),
+        ("agent", "Звездолёт летит к Юпитеру"),
+        ("participant", "Сохрани имя корабля, но измени курс на Марс"),
+    ]
+    with reopened_store._open() as db:
+        assert db.execute(
+            "SELECT count(*) FROM provider_usage_attempts"
+        ).fetchone() == (2,)
+        assert db.execute(
+            "SELECT rejection_reason FROM provider_usage_attempts WHERE outcome='invalid_proposal'"
+        ).fetchone() == ("invalid_field",)
 
 
 def reopened(setup, **kwargs):
@@ -232,10 +281,10 @@ def test_old_backup_cannot_resurrect_released_reply(setup, tmp_path):
     store, ledger, gate, fake, runtime = setup
     runtime.submit(principal("a"), "backup", "Удаляемый синтетический секрет")
     backup = tmp_path / "old.db"
-    create_sqlite_backup(store.database_path, backup, 12, NOW)
+    create_sqlite_backup(store.database_path, backup, 13, NOW)
     event_id = gate.retrieve_private_events(principal("a"))[0].event_id
     delete_source(setup, event_id)
-    result = QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter).restore(
         backup, tmp_path / "quarantine.db", NOW
     )
     assert result.activation_eligible
@@ -897,10 +946,10 @@ def test_commit_boundary_survives_restart_backup_and_vacuum(setup, tmp_path):
     store.append_private_input(principal("a"), original)
     store.append_private_input(principal("a"), later)
     backup = tmp_path / "snapshot.db"
-    create_sqlite_backup(store.database_path, backup, 12, NOW)
+    create_sqlite_backup(store.database_path, backup, 13, NOW)
     quarantine = tmp_path / "quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
         .restore(backup, quarantine, NOW)
         .activation_eligible
     )

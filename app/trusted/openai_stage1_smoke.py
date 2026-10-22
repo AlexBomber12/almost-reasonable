@@ -271,8 +271,8 @@ def _fake_response() -> ProviderResponse:
                 (
                     ProviderContent(
                         "output_text",
-                        '{"decision":"no_action","reason_category":"not_warranted",'
-                        '"content":null,"brief":null,"draft":null}',
+                        '{"proposal":{"decision":"no_action",'
+                        '"reason_category":"not_warranted"}}',
                     ),
                 ),
             ),

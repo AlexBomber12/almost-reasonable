@@ -53,6 +53,7 @@ class ProviderAttemptRecord:
     currency: str | None
     cost_estimate_status: CostEstimateStatus
     provider_error_code: str | None
+    rejection_reason: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,9 +218,9 @@ class ProviderStateStore:
                         input_tokens, cached_input_tokens, output_tokens,
                         total_tokens, outcome, retry_count, estimated_cost,
                         pricing_version, currency, cost_estimate_status,
-                        provider_error_code
+                        provider_error_code, rejection_reason
                     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-                              ?, ?, ?, ?)
+                              ?, ?, ?, ?, ?)
                     """,
                     (
                         record.attempt_id,
@@ -243,6 +244,7 @@ class ProviderStateStore:
                         record.currency,
                         record.cost_estimate_status.value,
                         record.provider_error_code,
+                        record.rejection_reason,
                     ),
                 )
                 if confirmed_spend_limit_code is not None:
@@ -287,7 +289,7 @@ class ProviderStateStore:
                            input_tokens, cached_input_tokens, output_tokens,
                            total_tokens, outcome, retry_count, estimated_cost,
                            pricing_version, currency, cost_estimate_status,
-                           provider_error_code
+                           provider_error_code, rejection_reason
                     FROM provider_usage_attempts
                     WHERE attempt_id = ?
                     """,
@@ -348,6 +350,37 @@ def _validate_record(record: ProviderAttemptRecord) -> str:
         require_identifier("provider response id", record.provider_response_id)
     if record.provider_error_code is not None:
         require_identifier("provider error code", record.provider_error_code)
+    if record.rejection_reason is not None and record.rejection_reason not in {
+        "incomplete",
+        "refused",
+        "missing_output",
+        "unsupported_output",
+        "oversized_output",
+        "invalid_response",
+        "timeout",
+        "invalid_envelope",
+        "invalid_json",
+        "conflicting_fields",
+        "invalid_container",
+        "invalid_decision",
+        "unknown_decision",
+        "unknown_fields",
+        "invalid_field",
+        "oversized_field",
+        "invalid_purpose_proposal",
+    }:
+        raise ValueError("rejection reason is invalid")
+    if record.rejection_reason is not None and record.outcome not in {
+        "invalid_proposal",
+        "invalid_response",
+        "incomplete",
+        "refused",
+        "missing_output",
+        "unsupported_output",
+        "oversized_output",
+        "timeout",
+    }:
+        raise ValueError("rejection reason requires a rejected outcome")
     if not isinstance(record.started_at, datetime) or record.started_at.tzinfo is None:
         raise ValueError("attempt timestamp is invalid")
     timestamp = EventStore._serialize_time(record.started_at)

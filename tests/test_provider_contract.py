@@ -2,6 +2,7 @@ from dataclasses import replace
 from decimal import Decimal, Inexact, localcontext
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from app.core import provider_contract as contract_module
 from app.core.context import (
@@ -100,6 +101,101 @@ def test_request_builder_produces_closed_responses_contract():
     assert set(schema["required"]) == set(schema["properties"])
 
 
+def test_generic_schema_independently_enforces_decision_fields():
+    schema = build_openai_request(model_request(), enabled_config()).to_sdk_kwargs()[
+        "text"
+    ]["format"]["schema"]
+    Draft202012Validator.check_schema(schema)
+    assert schema["type"] == "object" and "anyOf" not in schema
+    forbidden = {"allOf", "not", "if", "then", "else", "dependentSchemas"}
+
+    def check_subset(node):
+        if isinstance(node, dict):
+            assert not forbidden.intersection(node)
+            if node.get("type") == "object":
+                assert node["additionalProperties"] is False
+                assert set(node["required"]) == set(node["properties"])
+            for value in node.values():
+                check_subset(value)
+        elif isinstance(node, list):
+            for value in node:
+                check_subset(value)
+
+    check_subset(schema)
+    validator = Draft202012Validator(schema)
+    valid = [
+        {"decision": "no_action", "reason_category": "other"},
+        {"decision": "reply", "content": "Звездолёт"},
+        {"decision": "research", "brief": "Mars"},
+        {"decision": "propose_publication", "draft": "Draft"},
+    ]
+    assert all(validator.is_valid({"proposal": item}) for item in valid)
+    invalid = [
+        {"decision": "reply", "content": "ok", "reason_category": "other"},
+        {"decision": "reply", "content": None},
+        {"decision": "no_action", "reason_category": None},
+        {"decision": "reply", "content": "ok", "draft": "also"},
+        {"decision": "reply", "content": 3},
+        {"decision": "reply", "content": "ok", "admin": True},
+    ]
+    assert all(not validator.is_valid({"proposal": item}) for item in invalid)
+
+
+def test_prior_nullable_contract_admitted_rejected_decision_combinations():
+    old_schema = {
+        "type": "object",
+        "properties": {
+            "decision": {
+                "enum": ["no_action", "reply", "research", "propose_publication"]
+            },
+            "reason_category": {"type": ["string", "null"]},
+            "content": {"type": ["string", "null"]},
+            "brief": {"type": ["string", "null"]},
+            "draft": {"type": ["string", "null"]},
+        },
+        "required": ["decision", "reason_category", "content", "brief", "draft"],
+        "additionalProperties": False,
+    }
+    old = Draft202012Validator(old_schema)
+    examples = [
+        {
+            "decision": "reply",
+            "reason_category": "other",
+            "content": "ok",
+            "brief": None,
+            "draft": None,
+        },
+        {
+            "decision": "reply",
+            "reason_category": None,
+            "content": None,
+            "brief": None,
+            "draft": None,
+        },
+        {
+            "decision": "no_action",
+            "reason_category": None,
+            "content": None,
+            "brief": None,
+            "draft": None,
+        },
+        {
+            "decision": "reply",
+            "reason_category": None,
+            "content": "ok",
+            "brief": None,
+            "draft": "also",
+        },
+    ]
+    assert all(old.is_valid(item) for item in examples)
+    new = Draft202012Validator(
+        build_openai_request(model_request(), enabled_config()).to_sdk_kwargs()["text"][
+            "format"
+        ]["schema"]
+    )
+    assert all(not new.is_valid({"proposal": item}) for item in examples)
+
+
 @pytest.mark.parametrize(
     "changes",
     [
@@ -155,13 +251,17 @@ def test_directly_constructed_provider_request_cannot_cross_trusted_boundary():
 def test_returned_sdk_payload_cannot_mutate_the_fixed_schema():
     built = build_openai_request(model_request(), enabled_config())
     first = built.to_sdk_kwargs()
-    first["text"]["format"]["schema"]["properties"]["decision"]["enum"].append("shell")
+    first["text"]["format"]["schema"]["properties"]["proposal"]["anyOf"][0][
+        "properties"
+    ]["decision"]["const"] = "shell"
 
     second = built.to_sdk_kwargs()
 
     assert (
-        "shell"
-        not in second["text"]["format"]["schema"]["properties"]["decision"]["enum"]
+        second["text"]["format"]["schema"]["properties"]["proposal"]["anyOf"][0][
+            "properties"
+        ]["decision"]["const"]
+        != "shell"
     )
 
 

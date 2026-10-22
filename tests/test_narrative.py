@@ -810,11 +810,7 @@ def _reply(text):
     return response(
         text=json.dumps(
             {
-                "decision": "reply",
-                "reason_category": None,
-                "content": text,
-                "brief": None,
-                "draft": None,
+                "proposal": {"decision": "reply", "content": text},
             }
         )
     )
@@ -933,7 +929,7 @@ def test_worker_narrative_continuity_across_restart_and_a_b_isolation(tmp_path):
             created_at=NOW,
         )
         backup = tmp_path / "before-deletion.db"
-        create_sqlite_backup(reopened.database_path, backup, 12, NOW)
+        create_sqlite_backup(reopened.database_path, backup, 13, NOW)
         a_source = fresh_gate.retrieve_private_events(principal("a"))[0].event_id
         deleted = DeletionCoordinator(
             ledger, EventStoreErasureAdapter(reopened)
@@ -943,7 +939,7 @@ def test_worker_narrative_continuity_across_restart_and_a_b_isolation(tmp_path):
         assert NarrativeStore(reopened).current(principal("a")) == ()
         assert len(NarrativeStore(reopened).current(principal("b"))) == 1
         assert all(item.role != "agent" for item in fresh.history(principal("a")))
-        restored = QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter).restore(
+        restored = QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter).restore(
             backup, tmp_path / "restored.db", NOW
         )
         assert restored.activation_eligible

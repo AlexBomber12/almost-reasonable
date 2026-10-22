@@ -193,18 +193,18 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7, 8, 9, 10, 11, 12}:
+    if schema_version in {6, 7, 8, 9, 10, 11, 12, 13}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version in {7, 8, 9, 10, 11, 12}:
+    if schema_version in {7, 8, 9, 10, 11, 12, 13}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ApplicationPrivacyError("invalid_generic_graph") from error
     if (
-        schema_version in {9, 10, 11, 12}
+        schema_version in {9, 10, 11, 12, 13}
         and db.execute(
             """SELECT 1 FROM private_extraction_receipts r
         JOIN event_envelopes e ON e.event_id=r.source_event_id
@@ -223,9 +223,9 @@ def _validate_graph(
         is not None
     ):
         raise ApplicationPrivacyError("invalid_extraction_receipt")
-    if schema_version in {10, 11, 12}:
+    if schema_version in {10, 11, 12, 13}:
         _validate_typed_receipts(db)
-    if schema_version == 12:
+    if schema_version in {12, 13}:
         try:
             validate_narrative_graph(db)
             _validate_narrative_receipts(db)
@@ -474,9 +474,9 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version in {7, 8, 9, 10, 11, 12}:
+        if schema_version in {7, 8, 9, 10, 11, 12, 13}:
             erase_generic_source(db, request.content_reference)
-        if schema_version == 12:
+        if schema_version in {12, 13}:
             erase_narrative_source(db, request.content_reference)
             db.execute(
                 """DELETE FROM private_narrative_receipts WHERE source_event_id=?
@@ -486,9 +486,9 @@ def _erase(
                 ) WHERE value=?)""",
                 (request.content_reference, request.content_reference),
             )
-        if schema_version in {6, 7, 8, 9, 10, 11, 12}:
+        if schema_version in {6, 7, 8, 9, 10, 11, 12, 13}:
             erase_shared_source(db, request.content_reference)
-        if schema_version in {9, 10, 11, 12}:
+        if schema_version in {9, 10, 11, 12, 13}:
             db.execute(
                 """DELETE FROM private_extraction_receipts
                 WHERE source_event_id=? OR EXISTS (

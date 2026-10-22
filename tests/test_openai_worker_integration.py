@@ -134,12 +134,7 @@ def test_client_returns_typed_result_and_policy_still_mediates_proposal(tmp_path
     directory = secure_directory(tmp_path)
     instance, transport = gateway(
         directory,
-        [
-            response(
-                '{"decision":"reply","reason_category":null,'
-                '"content":"Только черновик.","brief":null,"draft":null}'
-            )
-        ],
+        [response('{"proposal":{"decision":"reply","content":"Только черновик."}}')],
         stage=DeploymentStage.STAGE_1,
     )
     server = OpenAIWorkerServer(

@@ -54,10 +54,15 @@ def test_v3_migration_preserves_every_existing_row_and_history(tmp_path):
     path = tmp_path / "events.db"
     original = populated_v3(path)
     store = EventStore(path)
-    assert store.diagnostics().schema_version == 12
+    assert store.diagnostics().schema_version == 13
     with sqlite3.connect(path) as db:
         for table, rows in original.items():
-            assert db.execute(f'SELECT * FROM "{table}"').fetchall() == rows
+            migrated = db.execute(f'SELECT * FROM "{table}"').fetchall()
+            if table == "provider_usage_attempts":
+                assert [row[:-1] for row in migrated] == rows
+                assert all(row[-1] is None for row in migrated)
+            else:
+                assert migrated == rows
     assert (
         store.retrieve_private_events(principal("a"))[0].content
         == "synthetic private input"
@@ -86,7 +91,7 @@ def test_v4_interruption_rolls_back_entire_migration(tmp_path):
         assert schema_objects(db) == schema
         assert db.execute("PRAGMA user_version").fetchone() == (3,)
         assert db.execute("SELECT version FROM schema_metadata").fetchone() == (3,)
-    assert EventStore(path).diagnostics().schema_version == 12
+    assert EventStore(path).diagnostics().schema_version == 13
 
 
 @pytest.mark.parametrize(
@@ -134,8 +139,8 @@ def test_v4_online_backup_preserves_private_reply_and_exact_schema(tmp_path):
     outputs.reserve_reply(principal("a"), operation())
     saved = persist(outputs)
     destination = tmp_path / "snapshot.db"
-    assert create_sqlite_backup(path, destination, 12, NOW).schema_version == 12
-    assert _schema_version(destination) == 12
+    assert create_sqlite_backup(path, destination, 13, NOW).schema_version == 13
+    assert _schema_version(destination) == 13
     assert (
         AgentOutputStore(EventStore(destination)).read_reply(principal("a"), "reply-1")
         == saved
