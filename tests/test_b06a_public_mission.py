@@ -10,6 +10,7 @@ import pytest
 
 from app.behavior.mission import (
     EvidenceProvenance,
+    MISSION_SCHEMA_VERSION,
     MissionEvidenceSource,
     MissionPurpose,
     MissionStateMachine,
@@ -132,6 +133,43 @@ def test_second_root_snapshot_cannot_persist_parented_evolution_state(
                     "SELECT 1 FROM sqlite_master WHERE name='public_mission_state'"
                 ).fetchone()
                 is None
+            )
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("schema_version", ["mission-store-v2", None])
+def test_public_mission_rejects_unsupported_persisted_schema(tmp_path, schema_version):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT document FROM public_mission_state WHERE id=1"
+            ).fetchone()
+            stored = json.loads(row[0])
+            assert stored["schema_version"] == MISSION_SCHEMA_VERSION
+            if schema_version is None:
+                del stored["schema_version"]
+            else:
+                stored["schema_version"] = schema_version
+                stored["future_metadata"] = {"retain": True}
+            encoded = json.dumps(stored)
+            db.execute(
+                "UPDATE public_mission_state SET document=? WHERE id=1", (encoded,)
+            )
+
+        with pytest.raises(ValueError, match="unsupported mission repository schema"):
+            app.mission_evolution.document()
+        with pytest.raises(ValueError, match="unsupported mission repository schema"):
+            restarted_evolution_runtime(app, tmp_path)
+        with app.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT document FROM public_mission_state WHERE id=1"
+                ).fetchone()[0]
+                == encoded
             )
     finally:
         worker.close()

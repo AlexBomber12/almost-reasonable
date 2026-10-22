@@ -211,10 +211,6 @@ class JsonMissionRepository:
             raw = json.loads(encoded.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ValueError("mission repository must be valid UTF-8 JSON") from error
-        if not isinstance(raw, dict):
-            raise ValueError("mission repository root must be an object")
-        if raw.get("schema_version") != MISSION_SCHEMA_VERSION:
-            raise ValueError("unsupported mission repository schema")
         return _document_from_dict(raw, self._initial_mission)
 
     def save(self, document: MissionDocument) -> None:
@@ -682,6 +678,10 @@ def _record_to_dict(record: MissionRecord) -> dict[str, object]:
 def _document_from_dict(
     raw: dict[str, object], trusted_root: Mission
 ) -> MissionDocument:
+    if not isinstance(raw, dict):
+        raise ValueError("mission repository root must be an object")
+    if raw.get("schema_version") != MISSION_SCHEMA_VERSION:
+        raise ValueError("unsupported mission repository schema")
     current_raw = raw["current"]
     if not isinstance(current_raw, dict):
         raise ValueError("mission repository current record is invalid")
