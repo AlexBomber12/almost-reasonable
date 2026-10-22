@@ -1,6 +1,7 @@
 """Default-disabled public behavior to Stage 3 Threads coordinator."""
 
 from dataclasses import dataclass
+from contextlib import nullcontext
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -1078,19 +1079,24 @@ class ThreadsRuntime(ThreadsStage0):
                         phase = "completed"
         except (OSError, ValueError, TimeoutError, PolicyDeniedError):
             phase = "uncertain"
-        try:
-            self.guard()
-            self.require_mission(payload)
-            if (
-                self.current_research_profile() != profile
-                or not self.source_valid(payload)
-                or self.ledger.control_generation() != payload["generation"]
-                or not mission_controls_match()
-            ):
+        fence = (
+            nullcontext()
+            if payload["kind"] == "wake"
+            else self.service.store.conversation_control_fence()
+        )
+        with fence, self.journal.transaction() as db:
+            try:
+                self.guard()
+                self.require_mission(payload)
+                if (
+                    self.current_research_profile() != profile
+                    or not self.source_valid(payload)
+                    or self.ledger.control_generation() != payload["generation"]
+                    or not mission_controls_match()
+                ):
+                    phase, evidence = "held", None
+            except (PolicyDeniedError, ValueError):
                 phase, evidence = "held", None
-        except (PolicyDeniedError, ValueError):
-            phase, evidence = "held", None
-        with self.journal.transaction() as db:
             updated = db.execute(
                 "UPDATE public_research_ops SET phase=?, evidence=? WHERE operation=? AND phase='started'",
                 (phase, evidence, operation),

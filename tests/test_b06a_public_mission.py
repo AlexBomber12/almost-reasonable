@@ -569,6 +569,102 @@ def test_research_intent_requires_its_worker_invariants_at_execution(
         worker.close()
 
 
+def test_research_completion_rechecks_profile_after_journal_wait(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        original_execute = app.research_client.execute
+        original_transaction = app.journal.transaction
+        changed = []
+
+        @contextmanager
+        def transaction_after_profile_revocation():
+            app.journal.transaction = original_transaction
+            app.research_enabled = False
+            changed.append(None)
+            with original_transaction() as db:
+                yield db
+
+        def execute_then_wait(request):
+            result = original_execute(request)
+            app.journal.transaction = transaction_after_profile_revocation
+            return result
+
+        monkeypatch.setattr(app.research_client, "execute", execute_then_wait)
+        run_once(app, worker)
+        assert len(changed) == 1
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT phase,evidence FROM public_research_ops"
+            ).fetchone()
+            completions = db.execute(
+                "SELECT COUNT(*) FROM public_research_completions"
+            ).fetchone()[0]
+        assert tuple(row) == ("held", None)
+        assert completions == 0
+    finally:
+        worker.close()
+
+
+def test_inbound_research_completion_fences_conversation_control(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        original_research = app._research
+        original_execute = app.research_client.execute
+        original_fence = app.service.store.conversation_control_fence
+        research_payload = []
+        changed = []
+
+        def capture_research(operation, payload):
+            research_payload.append(payload)
+            return original_research(operation, payload)
+
+        @contextmanager
+        def fence_after_control():
+            app.service.store.conversation_control_fence = original_fence
+            payload = research_payload[0]
+            app.service.store.record_conversation_outcome(
+                outcome_id="research-completion-control",
+                correlation_id=payload["correlation"],
+                account_ref=app.account,
+                stream=InboundKind(payload["kind"]),
+                inbound_event_id=payload["event"],
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="source-withdrawn",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            changed.append(None)
+            with original_fence():
+                yield
+
+        def execute_then_wait(request):
+            result = original_execute(request)
+            app.service.store.conversation_control_fence = fence_after_control
+            return result
+
+        monkeypatch.setattr(app, "_research", capture_research)
+        monkeypatch.setattr(app.research_client, "execute", execute_then_wait)
+        decide_inbound(app, worker)
+        assert len(changed) == 1
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT phase,evidence FROM public_research_ops"
+            ).fetchone()
+            completions = db.execute(
+                "SELECT COUNT(*) FROM public_research_completions"
+            ).fetchone()[0]
+        assert tuple(row) == ("held", None)
+        assert completions == 0
+    finally:
+        worker.close()
+
+
 def test_research_worker_change_during_inference_holds_intent(tmp_path):
     app, worker, _, _, clock = configured(
         tmp_path, {"decision": "no_action", "reason_category": "low_value"}
