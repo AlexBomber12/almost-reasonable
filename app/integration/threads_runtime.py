@@ -868,6 +868,7 @@ class ThreadsRuntime(ThreadsStage0):
                         or (
                             profile is not None
                             and bool(self._available_topics_in(db, profile))
+                            and self.mission_evolution.proposal_capacity_in(db)
                         )
                     )
                     and (

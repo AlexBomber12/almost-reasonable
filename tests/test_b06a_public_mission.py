@@ -2693,6 +2693,61 @@ def test_proposal_rechecks_research_capacity_before_intent_commit(
         worker.close()
 
 
+def test_proposal_rechecks_history_capacity_before_intent_commit(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        monkeypatch.setattr(
+            "app.core.public_mission_evolution.MAX_MISSION_HISTORY_RECORDS", 1
+        )
+        original_finish = app.journal.finish
+        filled = []
+
+        def finish_after_history_filled(operation, payload, **kwargs):
+            if kwargs.get("admissible"):
+                app.journal.finish = original_finish
+                try:
+                    competing = {
+                        **payload,
+                        "event": "competing-propose",
+                        "correlation": "competing-propose",
+                    }
+                    _staged_intent(app, "competing-propose", competing)
+                    clock.advance(timedelta(seconds=1))
+                    app.mission_evolution.apply("competing-propose", competing)
+                    abandoned = {
+                        **competing,
+                        "event": "competing-abandon",
+                        "correlation": "competing-abandon",
+                        "mission_action": "abandon",
+                        "mission_pending_id": (
+                            app.mission_evolution.pending().proposal.proposal_id
+                        ),
+                    }
+                    _staged_intent(app, "competing-abandon", abandoned)
+                    clock.advance(timedelta(seconds=1))
+                    app.mission_evolution.apply("competing-abandon", abandoned)
+                    filled.append(None)
+                finally:
+                    app.journal.finish = finish_after_history_filled
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_after_history_filled)
+        run_once(app, worker)
+        assert len(filled) == 1
+        assert app.mission_evolution.pending() is None
+        assert len(app.mission_evolution.document().proposals) == 1
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "held"
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize("pending", [False, True])
 def test_legacy_research_remains_visible_without_pending_proposal(tmp_path, pending):
     decision = (

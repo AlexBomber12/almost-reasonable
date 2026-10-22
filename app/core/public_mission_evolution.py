@@ -109,6 +109,10 @@ class PublicMissionEvolution:
             None,
         )
 
+    def proposal_capacity_in(self, db):
+        document = _Repository(db, self.root).load()
+        return len(document.proposals) < MAX_MISSION_HISTORY_RECORDS
+
     def offered_evidence_in(self, db, payload):
         operation = payload.get("mission_evidence_operation")
         if operation is None:
