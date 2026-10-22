@@ -3200,6 +3200,64 @@ def test_ordinary_inbound_handoff_finishes_before_concurrent_mission_commit(
         worker.close()
 
 
+@pytest.mark.parametrize("decision", ["reply", "no_action", "research"])
+def test_ordinary_intent_is_held_when_mission_commit_wins_handoff(
+    tmp_path, monkeypatch, decision
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            research_row = db.execute(
+                "SELECT operation,evidence FROM public_research_ops"
+            ).fetchone()
+        research_payload = app.journal.read(research_row["operation"])
+        clock.advance(timedelta(minutes=1))
+        ordinary_operation = f"stale-{decision}"
+        ordinary = {
+            **research_payload,
+            "decision": decision,
+            "event": ordinary_operation,
+            "correlation": ordinary_operation,
+            "decided_at": clock.now().isoformat(),
+        }
+        _staged_intent(app, ordinary_operation, ordinary)
+        confirm_operation = "winning-confirm"
+        confirm = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "event": confirm_operation,
+            "correlation": confirm_operation,
+            "mission_action": "confirm",
+            "mission_purpose": None,
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+            "mission_evidence_operation": research_row["operation"],
+            "mission_evidence_digest": public_context_digest(
+                (research_row["evidence"],)
+            ),
+            "offered_profile_digest": app.current_research_profile().digest,
+            "decided_at": clock.now().isoformat(),
+        }
+        _staged_intent(app, confirm_operation, confirm)
+
+        app._materialize(confirm_operation, confirm)
+        assert app.journal.read(confirm_operation)["phase"] == "linked"
+        app._materialize(ordinary_operation, ordinary)
+        assert app.journal.read(ordinary_operation)["phase"] == "held"
+        app.recover()
+        assert app.journal.read(ordinary_operation)["phase"] == "held"
+    finally:
+        worker.close()
+
+
 def test_abandonment_race_after_precheck_holds_losing_intent(tmp_path, monkeypatch):
     app, worker, _, _, clock = configured(
         tmp_path,

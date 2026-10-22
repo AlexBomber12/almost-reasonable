@@ -897,10 +897,8 @@ class ThreadsRuntime(ThreadsStage0):
         self.guard()
         if payload.get("runtime_version") != PUBLIC_RUNTIME_VERSION:
             raise PolicyDeniedError("foreign public intent")
-        if (
-            self.mission_evolution is not None
-            and payload.get("decision") == AgentDecision.REVISE_MISSION.value
-            and self.mission_evolution.hold_if_stale(operation, payload)
+        if self.mission_evolution is not None and self.mission_evolution.hold_if_stale(
+            operation, payload
         ):
             return
         try:
