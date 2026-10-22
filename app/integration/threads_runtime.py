@@ -1,7 +1,6 @@
 """Default-disabled public behavior to Stage 3 Threads coordinator."""
 
 from dataclasses import dataclass
-from contextlib import nullcontext
 from datetime import datetime, timedelta
 import hashlib
 import json
@@ -1136,12 +1135,10 @@ class ThreadsRuntime(ThreadsStage0):
                         phase = "completed"
         except (OSError, ValueError, TimeoutError, PolicyDeniedError):
             phase = "uncertain"
-        fence = (
-            nullcontext()
-            if payload["kind"] == "wake"
-            else self.service.store.conversation_control_fence()
-        )
-        with fence, self.journal.transaction() as db:
+        with (
+            self.service.store.conversation_control_fence(),
+            self.journal.transaction() as db,
+        ):
             try:
                 self.guard()
                 self.require_mission(payload)

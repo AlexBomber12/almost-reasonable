@@ -4085,6 +4085,197 @@ def test_persisted_proposal_without_research_authority_is_held(tmp_path):
         worker.close()
 
 
+def _evolved_mission_with_inbound_evidence(
+    app, worker, sdk, clock, tmp_path, monkeypatch
+):
+    _attach_fake_research(app, tmp_path, monkeypatch)
+    profile_path = app.research_profile_path
+    profile = json.loads(profile_path.read_text())
+    profile["aggregate_limit"] = 3
+    profile["topics"][0]["limit"] = 3
+    profile_path.write_text(json.dumps(profile))
+    run_once(app, worker)
+    research_after_proposal(app, worker, sdk, clock)
+    sdk.proposal = {
+        "decision": "mission",
+        "mission_action": "confirm",
+        "mission_purpose": None,
+    }
+    clock.advance(timedelta(minutes=1))
+    decide_wakeup(app, worker, clock)
+    assert app.mission_evolution.pending() is None
+    assert app.mission.snapshot()[1]["version"] != "mission-v1"
+
+
+@pytest.mark.parametrize("action", ["propose", "abandon"])
+def test_wake_mission_write_fences_evolved_mission_evidence_control(
+    tmp_path, monkeypatch, action
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _evolved_mission_with_inbound_evidence(
+            app, worker, sdk, clock, tmp_path, monkeypatch
+        )
+        if action == "abandon":
+            sdk.proposal = {
+                "decision": "mission",
+                "mission_action": "propose",
+                "mission_purpose": "dialogue",
+            }
+            clock.advance(timedelta(minutes=1))
+            decide_wakeup(app, worker, clock, "wake-3")
+            assert app.mission_evolution.pending() is not None
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": action,
+            "mission_purpose": "reflection" if action == "propose" else None,
+        }
+        event_id = "wake-4" if action == "abandon" else "wake-3"
+        source = app.service.store.inbound_event(
+            app.account, InboundKind.REPLY, "reply-1"
+        )
+        original_require = app.require_mission
+        original_apply = app.mission_evolution._apply
+        calls = []
+        observed = []
+        control_finished = Event()
+        control_thread = None
+
+        def commit_control():
+            app.service.store.record_conversation_outcome(
+                outcome_id=f"evidence-control-{action}",
+                correlation_id=source.correlation_id,
+                account_ref=app.account,
+                stream=source.kind,
+                inbound_event_id=source.event_id,
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            control_finished.set()
+
+        def require_then_control(payload):
+            nonlocal control_thread
+            result = original_require(payload)
+            if payload["event"] == event_id:
+                calls.append(None)
+                if len(calls) == 2:
+                    control_thread = Thread(target=commit_control)
+                    control_thread.start()
+                    observed.append(control_finished.wait(0.5))
+            return result
+
+        def apply_with_control(operation, payload):
+            app.require_mission = require_then_control
+            try:
+                return original_apply(operation, payload)
+            finally:
+                app.require_mission = original_require
+
+        monkeypatch.setattr(app.mission_evolution, "_apply", apply_with_control)
+        clock.advance(timedelta(minutes=1))
+        try:
+            decide_wakeup(app, worker, clock, event_id)
+        finally:
+            if control_thread is not None:
+                control_thread.join(timeout=5)
+                assert not control_thread.is_alive()
+        assert observed == [False]
+        assert app.journal.read(app.wakeup_operation(event_id))["phase"] == "linked"
+        assert app.service.store.conversation_outcome_recorded(
+            f"evidence-control-{action}"
+        )
+    finally:
+        worker.close()
+
+
+def test_wake_research_completion_fences_evolved_mission_evidence_control(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _evolved_mission_with_inbound_evidence(
+            app, worker, sdk, clock, tmp_path, monkeypatch
+        )
+        sdk.proposal = {"decision": "research", "topic_id": "ocean"}
+        source = app.service.store.inbound_event(
+            app.account, InboundKind.REPLY, "reply-1"
+        )
+        original_require = app.require_mission
+        original_research = app._research
+        calls = []
+        observed = []
+        control_finished = Event()
+        control_thread = None
+
+        def commit_control():
+            app.service.store.record_conversation_outcome(
+                outcome_id="wake-research-evidence-control",
+                correlation_id=source.correlation_id,
+                account_ref=app.account,
+                stream=source.kind,
+                inbound_event_id=source.event_id,
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            control_finished.set()
+
+        def require_then_control(payload):
+            nonlocal control_thread
+            result = original_require(payload)
+            if payload["event"] == "wake-3":
+                calls.append(None)
+                if len(calls) == 3:
+                    control_thread = Thread(target=commit_control)
+                    control_thread.start()
+                    observed.append(control_finished.wait(0.5))
+            return result
+
+        def research_with_control(operation, payload):
+            app.require_mission = require_then_control
+            try:
+                return original_research(operation, payload)
+            finally:
+                app.require_mission = original_require
+
+        monkeypatch.setattr(app, "_research", research_with_control)
+        clock.advance(timedelta(minutes=1))
+        try:
+            decide_wakeup(app, worker, clock, "wake-3")
+        finally:
+            if control_thread is not None:
+                control_thread.join(timeout=5)
+                assert not control_thread.is_alive()
+        assert observed == [False]
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT phase FROM public_research_ops ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        assert row[0] == "completed"
+        assert app.service.store.conversation_outcome_recorded(
+            "wake-research-evidence-control"
+        )
+    finally:
+        worker.close()
+
+
 def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
