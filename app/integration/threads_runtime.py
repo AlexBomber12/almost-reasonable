@@ -901,7 +901,13 @@ class ThreadsRuntime(ThreadsStage0):
         if self.mission_evolution is None:
             return self._handoff_with_mission_fence(operation, payload)
         with self.journal.handoff_lock("mission-evolution"):
-            return self._handoff_with_mission_fence(operation, payload)
+            if AgentDecision(payload["decision"]) in (
+                AgentDecision.REVISE_MISSION,
+                AgentDecision.RESEARCH,
+            ):
+                return self._handoff_with_mission_fence(operation, payload)
+            with self.service.store.conversation_control_effect_fence():
+                return self._handoff_with_mission_fence(operation, payload)
 
     def _handoff_with_mission_fence(self, operation, payload):
         self.guard()

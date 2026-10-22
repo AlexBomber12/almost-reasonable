@@ -1,7 +1,7 @@
 """Dedicated versioned SQLite outbox and inbound cursor store."""
 
 from collections.abc import Callable, Iterable
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from datetime import UTC, datetime
 import fcntl
 import json
@@ -1427,7 +1427,16 @@ class ThreadsStore:
             if control_expires_at is None
             else control_expires_at.astimezone(UTC).isoformat()
         )
-        with self._open() as connection:
+        control_fence = (
+            self.conversation_control_effect_fence()
+            if outcome
+            in {
+                ConversationOutcome.TERMINATE_CONVERSATION,
+                ConversationOutcome.COOLDOWN,
+            }
+            else nullcontext()
+        )
+        with control_fence, self._open() as connection:
             connection.execute("BEGIN IMMEDIATE")
             try:
                 changed = connection.execute(
@@ -1552,6 +1561,16 @@ class ThreadsStore:
         finally:
             connection.rollback()
             connection.close()
+
+    @contextmanager
+    def conversation_control_effect_fence(self) -> Iterator[None]:
+        """Serialize control writes with mission-sensitive Threads effects."""
+        with open(str(self.database) + ".control.lock", "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def record_linked_mission_outcome(
         self,

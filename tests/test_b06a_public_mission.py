@@ -4276,6 +4276,133 @@ def test_wake_research_completion_fences_evolved_mission_evidence_control(
         worker.close()
 
 
+@pytest.mark.parametrize("decision", ["post", "reply", "no_action"])
+def test_ordinary_handoff_fences_evolved_mission_evidence_control(
+    tmp_path, monkeypatch, decision
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _evolved_mission_with_inbound_evidence(
+            app, worker, sdk, clock, tmp_path, monkeypatch
+        )
+        source = app.service.store.inbound_event(
+            app.account, InboundKind.REPLY, "reply-1"
+        )
+        if decision == "post":
+            sdk.proposal = {
+                "decision": "propose_publication",
+                "draft": "Публичный вывод после исследования.",
+            }
+            event_id = "wake-3"
+            operation = app.wakeup_operation(event_id)
+        else:
+            event_id = f"ordinary-{decision}-event"
+            event = InboundEvent(
+                event_id,
+                f"ordinary-{decision}-correlation",
+                app.account,
+                app.simulator.source_ref,
+                InboundKind.REPLY,
+                f"ordinary-{decision}-conversation",
+                None,
+                clock.now(),
+                "Проверим публичный вывод.",
+            )
+            app.service.store.commit_poll_page(
+                correlation_id=f"ordinary-{decision}-poll",
+                account_ref=app.account,
+                stream=InboundKind.REPLY,
+                verified_source_ref=app.simulator.source_ref,
+                expected_cursor=None,
+                next_cursor=None,
+                events=(event,),
+                now=clock.now(),
+                precommit_check=lambda: None,
+            )
+            sdk.proposal = (
+                {"decision": "reply", "content": "Проверю этот публичный вывод."}
+                if decision == "reply"
+                else {"decision": "no_action", "reason_category": "low_value"}
+            )
+            operation = f"ordinary-{decision}-operation"
+            clock.advance(timedelta(minutes=1))
+            thread = Thread(target=worker.serve_once)
+            thread.start()
+            try:
+                app._decide(operation, app._origin(event), (event.content,))
+            finally:
+                thread.join(timeout=5)
+                assert not thread.is_alive()
+            assert app.journal.read(operation)["phase"] == "intent"
+
+        original_handoff = app._handoff_with_mission_fence
+        original_require = app.require_mission
+        calls = []
+        observed = []
+        control_phase = []
+        control_finished = Event()
+        control_thread = None
+
+        def commit_control():
+            app.service.store.record_conversation_outcome(
+                outcome_id=f"ordinary-control-{decision}",
+                correlation_id=source.correlation_id,
+                account_ref=app.account,
+                stream=source.kind,
+                inbound_event_id=source.event_id,
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            control_phase.append(app.journal.read(operation)["phase"])
+            control_finished.set()
+
+        def require_then_control(payload):
+            nonlocal control_thread
+            result = original_require(payload)
+            calls.append(None)
+            if len(calls) == (1 if decision == "no_action" else 2):
+                control_thread = Thread(target=commit_control)
+                control_thread.start()
+                observed.append(control_finished.wait(0.5))
+            return result
+
+        def handoff_with_control(target, payload):
+            app.require_mission = require_then_control
+            try:
+                return original_handoff(target, payload)
+            finally:
+                app.require_mission = original_require
+
+        monkeypatch.setattr(app, "_handoff_with_mission_fence", handoff_with_control)
+        try:
+            if decision == "post":
+                clock.advance(timedelta(minutes=1))
+                decide_wakeup(app, worker, clock, event_id)
+            else:
+                app._materialize(operation, app.journal.read(operation))
+        finally:
+            if control_thread is not None:
+                control_thread.join(timeout=5)
+                assert not control_thread.is_alive()
+        assert observed == [False]
+        assert app.journal.read(operation)["phase"] == "linked"
+        assert control_phase == ["linked"]
+        assert app.service.store.conversation_outcome_recorded(
+            f"ordinary-control-{decision}"
+        )
+    finally:
+        worker.close()
+
+
 def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
