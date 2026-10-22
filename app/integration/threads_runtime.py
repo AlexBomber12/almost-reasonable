@@ -1294,7 +1294,10 @@ class ThreadsRuntime(ThreadsStage0):
             raise PolicyDeniedError("public approval unavailable")
         if self.mission_evolution is None:
             return self.service.dispatch(operation, approval, now=self.clock.now())
-        with self.service.store.conversation_control_effect_fence():
+        with (
+            self.journal.handoff_lock("mission-evolution"),
+            self.service.store.conversation_control_effect_fence(),
+        ):
             return self.service.dispatch(operation, approval, now=self.clock.now())
 
     def reconcile(self, operation, correlation_id):

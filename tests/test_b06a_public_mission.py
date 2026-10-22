@@ -4493,6 +4493,106 @@ def test_publication_dispatch_fences_evolved_mission_evidence_control(
         worker.close()
 
 
+def test_publication_dispatch_serializes_mission_confirmation(tmp_path, monkeypatch):
+    app, worker, sdk, http, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _evolved_mission_with_inbound_evidence(
+            app, worker, sdk, clock, tmp_path, monkeypatch
+        )
+        sdk.proposal = {
+            "decision": "propose_publication",
+            "draft": "Публичная заметка перед сменой миссии.",
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock, "wake-3")
+        publication = app.wakeup_operation("wake-3")
+        assert (
+            app.approve(
+                publication, expires_at=clock.now() + timedelta(minutes=10)
+            ).state
+            is OutboxState.READY
+        )
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "discontinue_optional_channel",
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock, "wake-4")
+        assert app.mission_evolution.pending() is not None
+        sdk.proposal = {"decision": "research", "topic_id": "ocean"}
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock, "wake-5")
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm",
+            "mission_purpose": None,
+        }
+
+        def crash_after_scheduler(point):
+            if point == "after_scheduler":
+                raise SystemExit("before confirmation handoff")
+
+        app.checkpoint = crash_after_scheduler
+        clock.advance(timedelta(minutes=1))
+        with pytest.raises(SystemExit, match="before confirmation handoff"):
+            decide_wakeup(app, worker, clock, "wake-6")
+        app.checkpoint = lambda _point: None
+        confirmation = app.wakeup_operation("wake-6")
+        confirm_payload = app.journal.read(confirmation)
+        assert confirm_payload["phase"] == "intent"
+        original_recheck = app.service._recheck_immediately_before_effect
+        checks = []
+        observed = []
+        confirmation_finished = Event()
+        confirmation_thread = None
+        errors = []
+
+        def commit_confirmation():
+            try:
+                app._materialize(confirmation, confirm_payload)
+            except Exception as error:
+                errors.append(error)
+            finally:
+                confirmation_finished.set()
+
+        def recheck_then_confirmation(*args):
+            nonlocal confirmation_thread
+            result = original_recheck(*args)
+            checks.append(None)
+            if len(checks) == 4:
+                confirmation_thread = Thread(target=commit_confirmation)
+                confirmation_thread.start()
+                observed.append(confirmation_finished.wait(0.5))
+            return result
+
+        monkeypatch.setattr(
+            app.service,
+            "_recheck_immediately_before_effect",
+            recheck_then_confirmation,
+        )
+        try:
+            assert app.dispatch(publication).state is OutboxState.CONFIRMED
+        finally:
+            if confirmation_thread is not None:
+                confirmation_thread.join(timeout=5)
+                assert not confirmation_thread.is_alive()
+        assert observed == [False]
+        assert errors == []
+        assert app.journal.read(confirmation)["phase"] == "linked"
+        assert app.mission.publication_allowed() is False
+        assert any(call[0] == "POST" for call in http.calls)
+    finally:
+        worker.close()
+
+
 def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
