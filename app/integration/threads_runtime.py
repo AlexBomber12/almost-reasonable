@@ -888,6 +888,12 @@ class ThreadsRuntime(ThreadsStage0):
         self.checkpoint("after_intent")
 
     def _handoff(self, operation, payload):
+        if self.mission_evolution is None:
+            return self._handoff_with_mission_fence(operation, payload)
+        with self.journal.handoff_lock("mission-evolution"):
+            return self._handoff_with_mission_fence(operation, payload)
+
+    def _handoff_with_mission_fence(self, operation, payload):
         self.guard()
         if payload.get("runtime_version") != PUBLIC_RUNTIME_VERSION:
             raise PolicyDeniedError("foreign public intent")

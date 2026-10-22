@@ -3071,6 +3071,97 @@ def test_control_committed_before_mission_fence_holds_intent(tmp_path, monkeypat
         worker.close()
 
 
+def test_ordinary_inbound_handoff_finishes_before_concurrent_mission_commit(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            research_row = db.execute(
+                "SELECT operation,evidence FROM public_research_ops"
+            ).fetchone()
+        research_payload = app.journal.read(research_row["operation"])
+        clock.advance(timedelta(minutes=1))
+        no_action_operation = "ordinary-no-action"
+        no_action = {
+            **research_payload,
+            "decision": "no_action",
+            "reason": "low_value",
+            "decided_at": clock.now().isoformat(),
+        }
+        _staged_intent(app, no_action_operation, no_action)
+        confirm_operation = "concurrent-confirm"
+        confirm = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "event": "concurrent-confirm",
+            "correlation": confirm_operation,
+            "mission_action": "confirm",
+            "mission_purpose": None,
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+            "mission_evidence_operation": research_row["operation"],
+            "mission_evidence_digest": public_context_digest(
+                (research_row["evidence"],)
+            ),
+            "offered_profile_digest": app.current_research_profile().digest,
+            "decided_at": clock.now().isoformat(),
+        }
+        _staged_intent(app, confirm_operation, confirm)
+        original_record = app.service.store.record_conversation_outcome
+        in_effect = Event()
+        release_effect = Event()
+        confirm_finished = Event()
+        errors = []
+
+        def paused_record(*args, **kwargs):
+            if kwargs.get("outcome_id") == no_action_operation:
+                in_effect.set()
+                assert release_effect.wait(5)
+            return original_record(*args, **kwargs)
+
+        def handoff(operation):
+            try:
+                app._materialize(operation, app.journal.read(operation))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                if operation == confirm_operation:
+                    confirm_finished.set()
+
+        monkeypatch.setattr(
+            app.service.store, "record_conversation_outcome", paused_record
+        )
+        ordinary_thread = Thread(target=handoff, args=(no_action_operation,))
+        confirm_thread = Thread(target=handoff, args=(confirm_operation,))
+        ordinary_thread.start()
+        try:
+            assert in_effect.wait(5)
+            confirm_thread.start()
+            assert not confirm_finished.wait(0.5)
+        finally:
+            release_effect.set()
+            ordinary_thread.join(timeout=5)
+            if confirm_thread.ident is not None:
+                confirm_thread.join(timeout=5)
+        assert not ordinary_thread.is_alive()
+        assert not confirm_thread.is_alive()
+        assert errors == []
+        assert app.journal.read(no_action_operation)["phase"] == "linked"
+        assert app.journal.read(confirm_operation)["phase"] == "linked"
+        assert app.mission.snapshot()[1]["version"] != "mission-v1"
+    finally:
+        worker.close()
+
+
 def test_abandonment_race_after_precheck_holds_losing_intent(tmp_path, monkeypatch):
     app, worker, _, _, clock = configured(
         tmp_path,
