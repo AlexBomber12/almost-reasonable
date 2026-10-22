@@ -538,19 +538,27 @@ class ThreadsRuntime(ThreadsStage0):
             payload = self.journal.read(request.operation_id)
         except ValueError:
             return False
-        return (
-            payload["phase"] == "started"
-            and payload.get("runtime_version") == PUBLIC_RUNTIME_VERSION
-            and request.operation_id == request.correlation_id
-            and payload["trigger"] == request.trigger
-            and payload["context_digest"] == public_context_digest(request.context)
-            and tuple(payload["mission_text"]) == request.mission
-            and self.inference_public_context(request.operation_id)
-            == (request.catalog, request.evidence)
-            and self.inference_mission_evolution_context(request.operation_id)
-            == request.mission_evolution
-            and 0 < request.deadline_seconds <= payload["timeout"]
-        )
+        try:
+            return (
+                payload["phase"] == "started"
+                and payload.get("runtime_version") == PUBLIC_RUNTIME_VERSION
+                and request.operation_id == request.correlation_id
+                and payload["trigger"] == request.trigger
+                and payload["context_digest"] == public_context_digest(request.context)
+                and tuple(payload["mission_text"]) == request.mission
+                and self.inference_public_context(request.operation_id)
+                == (request.catalog, request.evidence)
+                and self.inference_mission_evolution_context(request.operation_id)
+                == request.mission_evolution
+                and 0 < request.deadline_seconds <= payload["timeout"]
+            )
+        except PublicInferenceContextChanged:
+            self.journal.finish(
+                request.operation_id,
+                {**payload, "reason": "public_inference_context_changed"},
+                held=True,
+            )
+            return False
 
     def inference_mission_evolution_context(self, operation):
         if self.mission_evolution is None:
@@ -692,6 +700,8 @@ class ThreadsRuntime(ThreadsStage0):
             )
             return
         except ValueError:
+            if self.journal.read(operation)["phase"] == "held":
+                return
             if self.mission_evolution is not None:
                 try:
                     self.inference_public_context(operation)

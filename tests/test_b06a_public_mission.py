@@ -1562,6 +1562,66 @@ def test_late_worker_attestation_context_change_holds_started_operation(
         worker.close()
 
 
+def test_transient_worker_attestation_rejection_holds_started_operation(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, clock = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        original_attest = worker.attest
+        original_context = app.mission_evolution.model_context
+        in_attestation = False
+        changed = []
+
+        def transient_context():
+            if in_attestation:
+                changed.append(None)
+                return ("pending", MissionPurpose.RESEARCH.value)
+            return original_context()
+
+        def transient_attestation(request):
+            nonlocal in_attestation
+            in_attestation = True
+            try:
+                return original_attest(request)
+            finally:
+                in_attestation = False
+
+        monkeypatch.setattr(app.mission_evolution, "model_context", transient_context)
+        monkeypatch.setattr(worker, "attest", transient_attestation)
+        run_once(app, worker)
+
+        operation = app.wakeup_operation("wake-1")
+        assert changed
+        assert app.mission_evolution.model_context() == ("enabled",)
+        assert app.journal.read(operation)["phase"] == "held"
+        assert app.recover() == ()
+    finally:
+        worker.close()
+
+
+def test_preworker_value_error_holds_changed_inference_context(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+
+        def fail_before_worker(_input):
+            monkeypatch.setattr(
+                app.mission_evolution,
+                "model_context",
+                lambda: ("pending", MissionPurpose.RESEARCH.value),
+            )
+            raise ValueError("public worker request unavailable")
+
+        monkeypatch.setattr(app.engine, "deliberate", fail_before_worker)
+        app.run((WakeupEvent("wake-1", NOW, "public initiative"),))
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "held"
+    finally:
+        worker.close()
+
+
 def test_exhausted_research_catalog_withholds_new_mission_proposals(
     tmp_path, monkeypatch
 ):
