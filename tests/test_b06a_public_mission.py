@@ -138,6 +138,129 @@ def test_second_root_snapshot_cannot_persist_parented_evolution_state(
         worker.close()
 
 
+@pytest.mark.parametrize("table_existed", [False, True])
+def test_root_replaced_before_binding_rolls_back_initial_evolution_state(
+    tmp_path, monkeypatch, table_existed
+):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        with app.journal.transaction() as db:
+            if table_existed:
+                db.execute("DELETE FROM public_mission_state")
+            else:
+                db.execute("DROP TABLE public_mission_state")
+        app.mission = PublicMissionContext(
+            app.mission.path, clock=lambda: NOW + timedelta(days=1)
+        )
+        original_bind = app.mission.bind_evolution
+
+        def replace_root_before_bind(*args, **kwargs):
+            root = json.loads(app.mission.path.read_text())
+            root["version"] = "mission-v2"
+            replacement = tmp_path / "replacement-mission.json"
+            replacement.write_text(json.dumps(root))
+            replacement.chmod(0o600)
+            replacement.replace(app.mission.path)
+            return original_bind(*args, **kwargs)
+
+        with monkeypatch.context() as patch:
+            patch.setattr(app.mission, "bind_evolution", replace_root_before_bind)
+            with pytest.raises(ValueError):
+                PublicMissionEvolution(app)
+        with app.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE name='public_mission_state'"
+                ).fetchone()
+                is not None
+            ) is table_existed
+            if table_existed:
+                assert (
+                    db.execute(
+                        "SELECT 1 FROM public_mission_state WHERE id=1"
+                    ).fetchone()
+                    is None
+                )
+
+        restarted = PublicMissionEvolution(app)
+        assert restarted.root.version == "mission-v2"
+        assert restarted.document().current.version == "mission-v2"
+    finally:
+        worker.close()
+
+
+def test_failed_bind_resets_context_and_preserves_existing_state(tmp_path):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        mission = PublicMissionContext(
+            app.mission.path, clock=lambda: NOW + timedelta(days=1)
+        )
+        root = mission.root_mission()
+        with app.journal.transaction() as db:
+            original = db.execute(
+                "SELECT document FROM public_mission_state WHERE id=1"
+            ).fetchone()[0]
+            db.execute(
+                "UPDATE public_mission_state SET document=? WHERE id=1",
+                (json.dumps({"schema_version": "mission-store-v2"}),),
+            )
+        with pytest.raises(ValueError, match="unsupported mission repository schema"):
+            mission.bind_evolution(
+                app.journal.path, app.mission_evolution.authorized, expected_root=root
+            )
+        with app.journal.transaction() as db:
+            db.execute(
+                "UPDATE public_mission_state SET document=? WHERE id=1", (original,)
+            )
+        mission.bind_evolution(
+            app.journal.path, app.mission_evolution.authorized, expected_root=root
+        )
+        assert mission.snapshot()[1]["version"] == root.version
+    finally:
+        worker.close()
+
+
+def test_root_replaced_before_binding_preserves_existing_state(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        with app.journal.transaction() as db:
+            original = db.execute(
+                "SELECT document FROM public_mission_state WHERE id=1"
+            ).fetchone()[0]
+        app.mission = PublicMissionContext(
+            app.mission.path, clock=lambda: NOW + timedelta(days=1)
+        )
+        original_bind = app.mission.bind_evolution
+
+        def replace_root_before_bind(*args, **kwargs):
+            root = json.loads(app.mission.path.read_text())
+            root["version"] = "mission-v2"
+            replacement = tmp_path / "replacement-mission.json"
+            replacement.write_text(json.dumps(root))
+            replacement.chmod(0o600)
+            replacement.replace(app.mission.path)
+            return original_bind(*args, **kwargs)
+
+        monkeypatch.setattr(app.mission, "bind_evolution", replace_root_before_bind)
+        with pytest.raises(ValueError, match="root changed"):
+            PublicMissionEvolution(app)
+        with app.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT document FROM public_mission_state WHERE id=1"
+                ).fetchone()[0]
+                == original
+            )
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize("schema_version", ["mission-store-v2", None])
 def test_public_mission_rejects_unsupported_persisted_schema(tmp_path, schema_version):
     app, worker, _, _, _ = configured(

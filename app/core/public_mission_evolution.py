@@ -62,6 +62,13 @@ class PublicMissionEvolution:
         if self.root.parent_version is not None:
             raise ValueError("public mission evolution requires a trusted root mission")
         with app.journal.transaction() as db:
+            table_existed = (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' "
+                    "AND name='public_mission_state'"
+                ).fetchone()
+                is not None
+            )
             db.execute(
                 "CREATE TABLE IF NOT EXISTS public_mission_state("
                 "id INTEGER PRIMARY KEY CHECK(id=1), document TEXT NOT NULL)"
@@ -69,6 +76,7 @@ class PublicMissionEvolution:
             row = db.execute(
                 "SELECT document FROM public_mission_state WHERE id=1"
             ).fetchone()
+            created_state = row is None
             if row is None:
                 db.execute(
                     "INSERT INTO public_mission_state VALUES(1,?)",
@@ -80,7 +88,18 @@ class PublicMissionEvolution:
                 )
             else:
                 _document_from_dict(json.loads(row[0]), self.root)
-        app.mission.bind_evolution(app.journal.path, self.authorized)
+        try:
+            app.mission.bind_evolution(
+                app.journal.path, self.authorized, expected_root=self.root
+            )
+        except Exception:
+            if created_state:
+                with app.journal.transaction() as db:
+                    if table_existed:
+                        db.execute("DELETE FROM public_mission_state WHERE id=1")
+                    else:
+                        db.execute("DROP TABLE public_mission_state")
+            raise
 
     def document(self):
         with self.app.journal.transaction() as db:

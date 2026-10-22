@@ -66,14 +66,22 @@ class PublicMissionContext:
             "purpose": current.purpose.value,
         }
 
-    def bind_evolution(self, journal_path, evidence_authority):
+    def bind_evolution(self, journal_path, evidence_authority, *, expected_root=None):
         if self._evolution_path is not None:
             raise ValueError("public mission evolution already bound")
-        _, binding, _ = self._root_snapshot()
+        _, binding, root = self._root_snapshot()
+        if expected_root is not None and root != expected_root:
+            raise ValueError("public mission root changed during evolution binding")
         self._root_digest = binding["digest"]
         self._evolution_path = Path(journal_path)
         self._evidence_authority = evidence_authority
-        self.snapshot()
+        try:
+            self.snapshot()
+        except Exception:
+            self._root_digest = None
+            self._evolution_path = None
+            self._evidence_authority = None
+            raise
 
     def root_mission(self):
         return self._root_snapshot()[2]
