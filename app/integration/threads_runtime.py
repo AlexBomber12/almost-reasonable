@@ -463,50 +463,56 @@ class ThreadsRuntime(ThreadsStage0):
                 else self.mission_evolution.pending()
             )
             with self.journal.transaction() as db:
-                rows = db.execute(
-                    "SELECT r.operation,r.evidence,i.payload,c.completed_at,i.rowid AS intent_rowid "
-                    "FROM public_research_ops r "
-                    "JOIN intents i ON i.operation=r.operation "
-                    "LEFT JOIN public_research_completions c ON c.operation=r.operation "
-                    "WHERE r.phase='completed' AND r.profile_digest=?",
-                    (profile.digest,),
-                ).fetchall()
-            for row in sorted(
-                rows,
-                key=lambda item: (
-                    datetime.fromisoformat(
-                        item["completed_at"]
-                        or json.loads(item["payload"])["decided_at"]
-                    ),
-                    item["intent_rowid"],
-                ),
-                reverse=True,
-            ):
-                if self.mission_evolution is not None and row["completed_at"] is None:
-                    continue
-                if pending is not None and (
-                    datetime.fromisoformat(row["completed_at"])
-                    <= pending.proposal.decided_at
-                ):
-                    continue
-                payload = json.loads(row["payload"])
-                if (
-                    pending is not None
-                    and payload.get("mission_invariants")
-                    != pending.proposal.invariants.to_dict()
-                ):
-                    continue
-                try:
-                    self.require_mission(payload)
-                    if (
-                        self.source_valid(payload)
-                        and self.ledger.control_generation() == payload["generation"]
-                    ):
-                        evidence, source = (row["evidence"],), row["operation"]
-                        break
-                except ValueError:
-                    continue
+                evidence, source = self._selected_public_evidence_in(
+                    db, profile, pending
+                )
         return catalog, evidence, source
+
+    def _selected_public_evidence_in(self, db, profile, pending):
+        if profile is None:
+            return (), None
+        rows = db.execute(
+            "SELECT r.operation,r.evidence,i.payload,c.completed_at,i.rowid AS intent_rowid "
+            "FROM public_research_ops r "
+            "JOIN intents i ON i.operation=r.operation "
+            "LEFT JOIN public_research_completions c ON c.operation=r.operation "
+            "WHERE r.phase='completed' AND r.profile_digest=?",
+            (profile.digest,),
+        ).fetchall()
+        for row in sorted(
+            rows,
+            key=lambda item: (
+                datetime.fromisoformat(
+                    item["completed_at"] or json.loads(item["payload"])["decided_at"]
+                ),
+                item["intent_rowid"],
+            ),
+            reverse=True,
+        ):
+            if self.mission_evolution is not None and row["completed_at"] is None:
+                continue
+            if pending is not None and (
+                datetime.fromisoformat(row["completed_at"])
+                <= pending.proposal.decided_at
+            ):
+                continue
+            payload = json.loads(row["payload"])
+            if (
+                pending is not None
+                and payload.get("mission_invariants")
+                != pending.proposal.invariants.to_dict()
+            ):
+                continue
+            try:
+                self.require_mission(payload)
+                if (
+                    self.source_valid(payload)
+                    and self.ledger.control_generation() == payload["generation"]
+                ):
+                    return (row["evidence"],), row["operation"]
+            except ValueError:
+                continue
+        return (), None
 
     def available_topics(self, profile):
         if profile is None:
@@ -837,12 +843,23 @@ class ThreadsRuntime(ThreadsStage0):
         def mission_admissible(db):
             try:
                 self.guard()
+                pending = self.mission_evolution.pending_in(db)
+                profile = self.current_research_profile()
+                offered_profile_digest = None if profile is None else profile.digest
+                evidence, source = self._selected_public_evidence_in(
+                    db, profile, pending
+                )
                 return (
                     self.ledger.control_generation() == generation
                     and self.mission_evolution.invariants().to_dict()
                     == origin["mission_invariants"]
                     and self.source_valid(payload)
-                    and self.mission_evolution.pending_id_in(db) == mission_pending_id
+                    and (None if pending is None else pending.proposal.proposal_id)
+                    == mission_pending_id
+                    and offered_profile_digest == origin["offered_profile_digest"]
+                    and source == origin["mission_evidence_operation"]
+                    and public_context_digest(evidence)
+                    == origin["mission_evidence_digest"]
                     and self.mission_evolution.offered_evidence_in(db, payload)
                 )
             except (PolicyDeniedError, ValueError):

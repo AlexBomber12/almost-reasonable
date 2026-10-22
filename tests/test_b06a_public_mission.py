@@ -2066,6 +2066,15 @@ def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch
             "generation": app.ledger.control_generation(),
             "decided_at": (clock.now() + timedelta(minutes=1)).isoformat(),
         }
+        with app.journal.transaction() as db:
+            assert not app.mission_evolution.offered_evidence_in(
+                db,
+                payload
+                | {
+                    "mission_evidence_operation": "unknown",
+                    "offered_profile_digest": app.current_research_profile().digest,
+                },
+            )
         with pytest.raises(ValueError, match="independent later"):
             app.mission_evolution._confirmation_sources(
                 payload | {"mission_evidence_operation": "unknown"}, proposal
@@ -2568,6 +2577,72 @@ def test_offered_research_authorization_change_before_intent_commit_holds_operat
         assert len(changed) == 1
         if drift == "conversation":
             assert not app.source_valid(research)
+        assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "held"
+        assert app.mission_evolution.pending() is not None
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("initial_evidence", [False, True])
+def test_newer_research_completion_before_decision_commit_holds_operation(
+    tmp_path, monkeypatch, initial_evidence
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        if initial_evidence:
+            research_after_proposal(app, worker, sdk, clock)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "confirm" if initial_evidence else "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        original_finish = app.journal.finish
+        inserted = []
+
+        def finish_after_newer_research(operation, payload, **kwargs):
+            if kwargs.get("admissible"):
+                research = {
+                    **payload,
+                    "decision": "research",
+                    "topic": "ocean",
+                    "profile_digest": payload["offered_profile_digest"],
+                }
+                with app.journal.transaction() as db:
+                    db.execute(
+                        "INSERT INTO intents VALUES(?,?,?)",
+                        ("newer-research", "linked", json.dumps(research)),
+                    )
+                    db.execute(
+                        "INSERT INTO public_research_ops VALUES(?,?,?,?,?,?)",
+                        (
+                            "newer-research",
+                            "newer-research-id",
+                            "ocean",
+                            research["profile_digest"],
+                            "completed",
+                            "newer evidence",
+                        ),
+                    )
+                    db.execute(
+                        "INSERT INTO public_research_completions VALUES(?,?)",
+                        ("newer-research", clock.now().isoformat()),
+                    )
+                inserted.append(None)
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_after_newer_research)
+        decide_wakeup(app, worker, clock)
+        assert len(inserted) == 1
         assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "held"
         assert app.mission_evolution.pending() is not None
     finally:

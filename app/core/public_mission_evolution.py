@@ -98,9 +98,9 @@ class PublicMissionEvolution:
             None,
         )
 
-    def pending_id_in(self, db):
+    def pending_in(self, db):
         document = _Repository(db, self.root).load()
-        record = next(
+        return next(
             (
                 item
                 for item in document.proposals
@@ -108,7 +108,6 @@ class PublicMissionEvolution:
             ),
             None,
         )
-        return None if record is None else record.proposal.proposal_id
 
     def offered_evidence_in(self, db, payload):
         operation = payload.get("mission_evidence_operation")
