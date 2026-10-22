@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta
 from contextlib import contextmanager
 import json
+import sqlite3
 from threading import Event, Thread
 from dataclasses import replace
 
@@ -478,11 +479,14 @@ def test_proposal_stores_the_validated_invariant_snapshot(tmp_path, monkeypatch)
             return baseline if len(calls) == 1 else changed
 
         monkeypatch.setattr(app.mission_evolution, "invariants", changing_invariants)
-        with pytest.raises(ValueError, match="source changed"):
+        with pytest.raises(ValueError, match="controls changed"):
             app.mission_evolution.apply("snapshot-test", payload)
         assert app.mission_evolution.document().proposals == ()
+        assert app.journal.read("snapshot-test")["phase"] == "held"
         monkeypatch.setattr(app.mission_evolution, "invariants", lambda: baseline)
-        app.mission_evolution.apply("snapshot-test", payload)
+        fresh = {**payload, "correlation": "fresh-snapshot"}
+        _staged_intent(app, "fresh-snapshot", fresh)
+        app.mission_evolution.apply("fresh-snapshot", fresh)
         assert len(calls) == 2
         assert app.mission_evolution.pending().proposal.invariants == baseline
     finally:
@@ -513,10 +517,11 @@ def test_generation_change_inside_mission_transaction_rolls_back(tmp_path, monke
 
         with monkeypatch.context() as patch:
             patch.setattr(app.ledger, "control_generation", generation)
-            with pytest.raises(ValueError, match="source changed"):
+            with pytest.raises(ValueError, match="controls changed"):
                 app.mission_evolution.apply("generation-race", payload)
         assert len(calls) >= 2
         assert app.mission_evolution.document().proposals == ()
+        assert app.journal.read("generation-race")["phase"] == "held"
     finally:
         worker.close()
 
@@ -1516,8 +1521,8 @@ def test_changed_proposal_controls_reject_resolution_before_intent(
             _staged_intent(app, f"stale-{action}", persisted)
             with pytest.raises(ValueError, match="controls changed"):
                 app.mission_evolution.apply(f"stale-{action}", persisted)
-            with pytest.raises(PolicyDeniedError, match="transition unavailable"):
-                app._handoff(f"stale-{action}", persisted)
+            assert app.journal.read(f"stale-{action}")["phase"] == "held"
+            app._handoff(f"stale-{action}", persisted)
         assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "rejected"
         assert app.mission_evolution.pending() is not None
         assert app.mission.snapshot()[1]["version"] == "mission-v1"
@@ -3666,6 +3671,327 @@ def test_stop_during_abandonment_commit_rolls_back(tmp_path, monkeypatch):
         app.policy.emergency_stop = False
         assert app.mission_evolution.pending() is not None
         assert app.journal.read("abandon-stop")["phase"] == "intent"
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize(
+    "binding",
+    [
+        "behavior_socket",
+        "behavior_uid",
+        "research_socket",
+        "research_uid",
+        "generation",
+    ],
+)
+def test_stale_inbound_abandonment_is_held_across_recovery(
+    tmp_path, monkeypatch, binding
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        pending_id = app.mission_evolution.pending().proposal.proposal_id
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+
+        def crash_after_intent(point):
+            if point == "after_intent":
+                raise SystemExit("before inbound handoff")
+
+        app.checkpoint = crash_after_intent
+        with pytest.raises(SystemExit, match="before inbound handoff"):
+            decide_inbound(app, worker)
+        with app.journal.transaction() as db:
+            operation = db.execute(
+                "SELECT operation FROM intents WHERE phase='intent' AND operation != ?",
+                (app.wakeup_operation("wake-1"),),
+            ).fetchone()[0]
+        assert app.journal.read(operation)["phase"] == "intent"
+        app.checkpoint = lambda _point: None
+        if binding.startswith("behavior"):
+            app.model = PublicBehaviorClient(
+                tmp_path
+                / (
+                    "replacement-worker.sock"
+                    if binding == "behavior_socket"
+                    else "worker.sock"
+                ),
+                expected_uid=os.getuid() + (binding == "behavior_uid"),
+            )
+            app.engine._model = app.model
+        elif binding.startswith("research"):
+            app.research_client = PublicResearchClient(
+                tmp_path
+                / (
+                    "replacement-research.sock"
+                    if binding == "research_socket"
+                    else "unused-research.sock"
+                ),
+                expected_worker_uid=os.geteuid() + (binding == "research_uid"),
+            )
+        else:
+            generation = app.ledger.control_generation()
+            monkeypatch.setattr(
+                app.ledger, "control_generation", lambda: generation + 1
+            )
+
+        assert app.recover() == ()
+        assert app.recover() == ()
+        assert app.journal.read(operation)["phase"] == "held"
+        assert app.mission_evolution.pending().proposal.proposal_id == pending_id
+        assert not app.service.store.conversation_outcome_recorded(operation)
+        assert operation not in app.journal.recoverable()
+        if binding == "generation":
+            clock.advance(timedelta(minutes=1))
+            decide_wakeup(app, worker, clock)
+            assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "linked"
+            assert app.mission_evolution.pending() is None
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("action", ["propose", "confirm", "reject", "abandon"])
+def test_stale_mission_action_holds_before_transition(tmp_path, monkeypatch, action):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        if action != "propose":
+            run_once(app, worker)
+            clock.advance(timedelta(minutes=1))
+            payload = _staged_abandonment(app, "stale-action", "later-event")
+            payload["mission_action"] = action
+        else:
+
+            def crash_after_intent(point):
+                if point == "after_intent":
+                    raise SystemExit("before mission handoff")
+
+            app.checkpoint = crash_after_intent
+            with pytest.raises(SystemExit, match="before mission handoff"):
+                run_once(app, worker)
+            payload = app.journal.read(app.wakeup_operation("wake-1"))
+            payload = {**payload, "event": "new-event", "correlation": "stale-action"}
+            _staged_intent(app, "stale-action", payload)
+        generation = app.ledger.control_generation()
+        monkeypatch.setattr(app.ledger, "control_generation", lambda: generation + 1)
+        before = app.mission_evolution.document()
+        app._materialize("stale-action", payload)
+        assert app.journal.read("stale-action")["phase"] == "held"
+        assert app.mission_evolution.document() == before
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("binding", ["research_worker", "generation"])
+def test_mission_controls_changing_after_save_rollback_and_hold(
+    tmp_path, monkeypatch, binding
+):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        payload = _staged_abandonment(app, "late-binding", "late-event")
+        before = app.mission_evolution.document()
+        original = MissionStateMachine.abandon
+
+        def change_after_save(machine, abandonment):
+            result = original(machine, abandonment)
+            if binding == "research_worker":
+                app.research_client = PublicResearchClient(
+                    tmp_path / "replacement-research.sock",
+                    expected_worker_uid=os.geteuid(),
+                )
+            else:
+                generation = app.ledger.control_generation()
+                monkeypatch.setattr(
+                    app.ledger, "control_generation", lambda: generation + 1
+                )
+            return result
+
+        monkeypatch.setattr(MissionStateMachine, "abandon", change_after_save)
+        app._materialize("late-binding", payload)
+        assert app.journal.read("late-binding")["phase"] == "held"
+        assert app.mission_evolution.document() == before
+        assert app.recover() == ()
+    finally:
+        worker.close()
+
+
+def test_linked_mission_reconciles_after_late_control_change(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        payload = _staged_abandonment(app, "linked-before-change", "later-event")
+        original = app.mission_evolution.apply
+
+        def committed_then_changed(operation, admitted):
+            original(operation, admitted)
+            generation = app.ledger.control_generation()
+            monkeypatch.setattr(
+                app.ledger, "control_generation", lambda: generation + 1
+            )
+            raise sqlite3.OperationalError("commit acknowledgement lost")
+
+        monkeypatch.setattr(app.mission_evolution, "apply", committed_then_changed)
+        app._materialize("linked-before-change", payload)
+        assert app.journal.read("linked-before-change")["phase"] == "linked"
+        assert app.mission_evolution.pending() is None
+        restarted = restarted_evolution_runtime(app, tmp_path)
+        assert restarted.recover() == ()
+        assert restarted.journal.read("linked-before-change")["phase"] == "linked"
+    finally:
+        worker.close()
+
+
+def test_uncommitted_mission_storage_error_keeps_intent(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        clock.advance(timedelta(minutes=1))
+        payload = _staged_abandonment(app, "storage-uncertain", "later-event")
+        monkeypatch.setattr(
+            app.mission_evolution,
+            "apply",
+            lambda _operation, _payload: (_ for _ in ()).throw(
+                sqlite3.OperationalError("database unavailable")
+            ),
+        )
+        with pytest.raises(sqlite3.OperationalError, match="database unavailable"):
+            app._materialize("storage-uncertain", payload)
+        assert app.journal.read("storage-uncertain")["phase"] == "intent"
+        assert app.mission_evolution.pending() is not None
+    finally:
+        worker.close()
+
+
+def test_linked_inbound_ack_reconciles_after_restart_and_control_change(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+        original_record = app._record_mission_outcome
+
+        def fail_inbound_ack(operation, payload):
+            if payload["kind"] != "wake":
+                raise SystemExit("after mission commit")
+            return original_record(operation, payload)
+
+        monkeypatch.setattr(
+            app,
+            "_record_mission_outcome",
+            fail_inbound_ack,
+        )
+        with pytest.raises(SystemExit, match="after mission commit"):
+            decide_inbound(app, worker)
+        with app.journal.transaction() as db:
+            operation = db.execute(
+                "SELECT operation FROM intents WHERE phase='linked' AND operation != ?",
+                (app.wakeup_operation("wake-1"),),
+            ).fetchone()[0]
+        assert not app.service.store.conversation_outcome_recorded(operation)
+        generation = app.ledger.control_generation()
+        monkeypatch.setattr(app.ledger, "control_generation", lambda: generation + 1)
+        restarted = restarted_evolution_runtime(app, tmp_path)
+        assert restarted.recover() == ()
+        assert restarted.recover() == ()
+        assert restarted.journal.read(operation)["phase"] == "linked"
+        assert restarted.service.store.conversation_outcome_recorded(operation)
+        assert restarted.mission_evolution.pending() is None
+    finally:
+        worker.close()
+
+
+def test_temporary_stop_keeps_inbound_mission_intent_recoverable(tmp_path):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        run_once(app, worker)
+        sdk.proposal = {
+            "decision": "mission",
+            "mission_action": "abandon",
+            "mission_purpose": None,
+        }
+        clock.advance(timedelta(minutes=1))
+
+        def crash_after_intent(point):
+            if point == "after_intent":
+                raise SystemExit("before inbound handoff")
+
+        app.checkpoint = crash_after_intent
+        with pytest.raises(SystemExit, match="before inbound handoff"):
+            decide_inbound(app, worker)
+        with app.journal.transaction() as db:
+            operation = db.execute(
+                "SELECT operation FROM intents WHERE phase='intent'"
+            ).fetchone()[0]
+        app.policy.emergency_stop = True
+        with pytest.raises(PolicyDeniedError):
+            app.recover()
+        assert app.journal.read(operation)["phase"] == "intent"
+        app.policy.emergency_stop = False
+        assert app.recover() == ()
+        assert app.journal.read(operation)["phase"] == "linked"
+        assert app.mission_evolution.pending() is None
     finally:
         worker.close()
 

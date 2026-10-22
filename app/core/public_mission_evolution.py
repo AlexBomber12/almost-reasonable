@@ -155,29 +155,51 @@ class PublicMissionEvolution:
         )
 
     def hold_if_stale(self, operation, payload):
-        """Finish an intent whose exact parent or pending proposal was replaced."""
+        """Finish an uncommitted intent whose admitted authority is obsolete."""
         with self.app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT phase FROM intents WHERE operation=?", (operation,)
+            ).fetchone()
+            if row is None or row[0] != "intent":
+                return False
+            if self._stale_in(db, payload):
+                self._hold_in(db, operation)
+                return True
+            return False
+
+    def _stale_in(self, db, payload, document=None):
+        if document is None:
             document = _Repository(db, self.root).load()
-            pending = next(
-                (
-                    item.proposal.proposal_id
-                    for item in document.proposals
-                    if item.status is MissionStatus.PENDING
-                ),
-                None,
+        pending = next(
+            (
+                item
+                for item in document.proposals
+                if item.status is MissionStatus.PENDING
+            ),
+            None,
+        )
+        return (
+            payload.get("mission_invariants") is None
+            or payload["mission"]["version"] != document.current.version
+            or payload.get("mission_pending_id")
+            != (None if pending is None else pending.proposal.proposal_id)
+            or not self.app.source_valid(payload)
+            or self.app.ledger.control_generation() != payload["generation"]
+            or self.invariants().to_dict() != payload["mission_invariants"]
+            or (
+                payload.get("mission_action") in ("confirm", "reject")
+                and pending is not None
+                and pending.proposal.invariants.to_dict()
+                != payload["mission_invariants"]
             )
-            stale = (
-                payload.get("mission_invariants") is None
-                or payload["mission"]["version"] != document.current.version
-                or payload.get("mission_pending_id") != pending
-                or not self.app.source_valid(payload)
-            )
-            if stale:
-                db.execute(
-                    "UPDATE intents SET phase='held' WHERE operation=? AND phase='intent'",
-                    (operation,),
-                )
-            return stale
+        )
+
+    @staticmethod
+    def _hold_in(db, operation):
+        db.execute(
+            "UPDATE intents SET phase='held' WHERE operation=? AND phase='intent'",
+            (operation,),
+        )
 
     def model_context(self):
         return self.decision_context()[0]
@@ -294,10 +316,12 @@ class PublicMissionEvolution:
             "confirm",
             "reject",
         ):
-            self._apply(operation, payload)
+            committed = self._apply(operation, payload)
         else:
             with self.app.service.store.conversation_control_fence():
-                self._apply(operation, payload)
+                committed = self._apply(operation, payload)
+        if not committed:
+            raise ValueError("public mission controls changed")
 
     def _apply(self, operation, payload):
         app = self.app
@@ -334,6 +358,9 @@ class PublicMissionEvolution:
                 None if pending is None else pending.proposal.proposal_id
             ):
                 raise ValueError("public mission proposal changed")
+            if self._stale_in(db, payload, document):
+                self._hold_in(db, operation)
+                return False
             if action == "propose" and pending is not None:
                 raise ValueError("public mission proposal already pending")
             if action in ("confirm", "reject", "abandon") and (
@@ -343,11 +370,10 @@ class PublicMissionEvolution:
             if action not in ("propose", "confirm", "reject", "abandon"):
                 raise ValueError("invalid public mission action")
             invariants = self.invariants()
-            if invariants.to_dict() != payload["mission_invariants"] or (
-                action in ("confirm", "reject")
-                and invariants != pending.proposal.invariants
-            ):
-                raise ValueError("public mission controls changed")
+            if invariants.to_dict() != payload["mission_invariants"]:
+                self._hold_in(db, operation)
+                return False
+            db.execute("SAVEPOINT mission_effect")
             if action == "propose":
                 purpose = MissionPurpose(payload["mission_purpose"])
                 machine.propose(
@@ -400,14 +426,20 @@ class PublicMissionEvolution:
             app.guard()
             app.require_mission(payload)
             if (
-                app.ledger.control_generation() != payload["generation"]
+                not app.source_valid(payload)
+                or app.ledger.control_generation() != payload["generation"]
                 or self.invariants() != invariants
             ):
-                raise ValueError("public mission source changed")
+                db.execute("ROLLBACK TO mission_effect")
+                db.execute("RELEASE mission_effect")
+                self._hold_in(db, operation)
+                return False
+            db.execute("RELEASE mission_effect")
             db.execute(
                 "UPDATE intents SET phase='linked' WHERE operation=? AND phase='intent'",
                 (operation,),
             )
+            return True
 
     def _initiating_source(self, operation, payload):
         if payload["kind"] == "wake":

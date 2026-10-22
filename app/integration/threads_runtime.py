@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import sqlite3
 
 from app.behavior.deliberation import (
     BehaviorCapabilities,
@@ -926,12 +927,22 @@ class ThreadsRuntime(ThreadsStage0):
                 raise PolicyDeniedError("public mission evolution disabled")
             try:
                 self.mission_evolution.apply(operation, payload)
-            except ValueError as error:
-                if self.mission_evolution.hold_if_stale(operation, payload):
+            except (ValueError, sqlite3.Error) as error:
+                phase = self.journal.read(operation)["phase"]
+                if phase == "linked":
+                    self._record_mission_outcome(operation, payload)
                     return
-                raise PolicyDeniedError(
-                    "public mission transition unavailable"
-                ) from error
+                if phase == "held":
+                    return
+                if isinstance(
+                    error, ValueError
+                ) and self.mission_evolution.hold_if_stale(operation, payload):
+                    return
+                if isinstance(error, ValueError):
+                    raise PolicyDeniedError(
+                        "public mission transition unavailable"
+                    ) from error
+                raise
             self._record_mission_outcome(operation, payload)
             return
         if decision is AgentDecision.RESEARCH:
