@@ -4403,6 +4403,87 @@ def test_ordinary_handoff_fences_evolved_mission_evidence_control(
         worker.close()
 
 
+def test_publication_dispatch_fences_evolved_mission_evidence_control(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, http, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _evolved_mission_with_inbound_evidence(
+            app, worker, sdk, clock, tmp_path, monkeypatch
+        )
+        sdk.proposal = {
+            "decision": "propose_publication",
+            "draft": "Публичная заметка после исследования.",
+        }
+        clock.advance(timedelta(minutes=1))
+        decide_wakeup(app, worker, clock, "wake-3")
+        operation = app.wakeup_operation("wake-3")
+        assert app.journal.read(operation)["phase"] == "linked"
+        assert (
+            app.approve(operation, expires_at=clock.now() + timedelta(minutes=10)).state
+            is OutboxState.READY
+        )
+        source = app.service.store.inbound_event(
+            app.account, InboundKind.REPLY, "reply-1"
+        )
+        original_recheck = app.service._recheck_immediately_before_effect
+        checks = []
+        observed = []
+        control_state = []
+        control_finished = Event()
+        control_thread = None
+
+        def commit_control():
+            app.service.store.record_conversation_outcome(
+                outcome_id="dispatch-evidence-control",
+                correlation_id=source.correlation_id,
+                account_ref=app.account,
+                stream=source.kind,
+                inbound_event_id=source.event_id,
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            control_state.append(app.service.store.get(operation).state)
+            control_finished.set()
+
+        def recheck_then_control(*args):
+            nonlocal control_thread
+            result = original_recheck(*args)
+            checks.append(None)
+            if len(checks) == 4:
+                control_thread = Thread(target=commit_control)
+                control_thread.start()
+                observed.append(control_finished.wait(0.5))
+            return result
+
+        monkeypatch.setattr(
+            app.service, "_recheck_immediately_before_effect", recheck_then_control
+        )
+        try:
+            assert app.dispatch(operation).state is OutboxState.CONFIRMED
+        finally:
+            if control_thread is not None:
+                control_thread.join(timeout=5)
+                assert not control_thread.is_alive()
+        assert observed == [False]
+        assert control_state == [OutboxState.CONFIRMED]
+        assert app.service.store.conversation_outcome_recorded(
+            "dispatch-evidence-control"
+        )
+        assert any(call[0] == "POST" for call in http.calls)
+    finally:
+        worker.close()
+
+
 def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
