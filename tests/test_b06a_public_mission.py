@@ -723,6 +723,9 @@ def test_research_intent_requires_its_worker_invariants_at_execution(
         if change == "before_handoff":
             assert calls == []
             assert row is None
+            assert payload["phase"] == "held"
+            assert app.recover() == ()
+            assert app.journal.read(operation)["phase"] == "held"
         else:
             assert len(calls) == 1
             assert tuple(row) == ("held", None)

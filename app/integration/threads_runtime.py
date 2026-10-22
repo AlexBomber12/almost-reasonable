@@ -1052,6 +1052,9 @@ class ThreadsRuntime(ThreadsStage0):
                 == payload["mission_invariants"]
             )
 
+        if not mission_controls_match():
+            self.journal.hold_intent(operation)
+            return
         profile = self.current_research_profile()
         if profile is None or profile.digest != payload["profile_digest"]:
             raise PolicyDeniedError("public research authority changed")
@@ -1061,8 +1064,6 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise PolicyDeniedError("public research source changed")
         self.require_mission(payload)
-        if not mission_controls_match():
-            raise PolicyDeniedError("public research mission controls changed")
         research_id = _identity(
             operation, "research", payload["topic"], profile.profile_id
         )
