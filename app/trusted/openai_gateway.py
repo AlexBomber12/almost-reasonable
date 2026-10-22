@@ -468,6 +468,8 @@ class TrustedOpenAIGateway:
         if not math.isfinite(duration) or duration < 0:
             self._persistence_failed = True
             return False
+        if outcome is GatewayOutcome.TIMEOUT and rejection_reason is None:
+            rejection_reason = RejectionReason.TIMEOUT
         estimate = estimate_cost(usage, self._pricing, self._config.model)
         record = ProviderAttemptRecord(
             attempt_id=attempt_id,

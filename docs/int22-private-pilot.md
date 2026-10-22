@@ -18,7 +18,7 @@ typed context protocol, and reserves the reply operation in its own allowance
 database before the trusted gateway or SDK adapter can contact a provider.
 
 The worker fixes `gpt-6-luna`, provider config `openai-private-pilot-v1`, prompt
-`agent-proposal-v1`, 512 maximum output tokens, 30-second attempt and 40-second
+`agent-proposal-v2`, 512 maximum output tokens, 30-second attempt and 40-second
 overall timeouts, one attempt per logical operation, zero SDK retries, a strict
 JSON proposal schema, `tools=[]`, `store=false`, `background=false`,
 `stream=false`, and `truncation=disabled`. The credential loader reads only the

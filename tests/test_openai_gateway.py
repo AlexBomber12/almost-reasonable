@@ -388,6 +388,11 @@ def test_provider_error_classification_and_retry_bounds(
     assert store.usage_attempt_count() == calls
     assert len(sleeps) == calls - 1
     assert all(delay <= 4.25 for delay in sleeps)
+    if outcome is GatewayOutcome.TIMEOUT:
+        assert all(
+            store.usage_attempt(f"operation-a:{number}").rejection_reason == "timeout"
+            for number in range(1, calls + 1)
+        )
 
 
 def test_transient_failure_can_retry_then_succeed(tmp_path):
@@ -719,6 +724,7 @@ def test_response_at_overall_deadline_is_recorded_as_timeout(tmp_path):
     assert len(transport.calls) == 1
     record = store.usage_attempt("operation-a:1")
     assert record.outcome == "timeout"
+    assert record.rejection_reason == "timeout"
     assert record.provider_response_id == "resp_synthetic"
     assert record.total_tokens == 120
 
@@ -750,6 +756,8 @@ def test_error_at_overall_deadline_preserves_only_confirmed_spend_limit(
     assert result.outcome is expected
     assert len(transport.calls) == 1
     assert store.usage_attempt("operation-a:1").outcome == expected.value
+    if expected is GatewayOutcome.TIMEOUT:
+        assert store.usage_attempt("operation-a:1").rejection_reason == "timeout"
     assert store.is_spend_suspended() is suspended
 
 
@@ -764,6 +772,7 @@ def test_reservation_that_consumes_deadline_blocks_provider_call(tmp_path):
     assert result.attempts == 0
     assert transport.calls == []
     assert store.usage_attempt("operation-a:1").outcome == "timeout"
+    assert store.usage_attempt("operation-a:1").rejection_reason == "timeout"
 
 
 def test_pre_call_deadline_persistence_failure_fails_closed(tmp_path, monkeypatch):
