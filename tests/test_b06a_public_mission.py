@@ -1097,6 +1097,15 @@ def test_invalid_public_mission_choices(choice):
     assert not parse_public_proposal(choice, evolution=True).valid
 
 
+@pytest.mark.parametrize("raw_purpose", ["[]", "{}", "1", "true"])
+def test_nonstring_public_mission_purpose_is_invalid_json_proposal(raw_purpose):
+    choice = json.loads(
+        '{"decision":"mission","action":"propose","purpose":' + raw_purpose + "}"
+    )
+    result = parse_public_proposal(choice, evolution=True)
+    assert not result.valid
+
+
 @pytest.mark.parametrize(
     "proposal",
     [

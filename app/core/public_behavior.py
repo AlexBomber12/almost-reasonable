@@ -217,7 +217,10 @@ def parse_public_proposal(value: object, *, evolution: bool = False):
             action not in ("propose", "confirm", "reject", "abandon")
             or (
                 action == "propose"
-                and raw_purpose not in MissionPurpose._value2member_map_
+                and (
+                    type(raw_purpose) is not str
+                    or raw_purpose not in MissionPurpose._value2member_map_
+                )
             )
             or (action != "propose" and raw_purpose is not None)
         ):
