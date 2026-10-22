@@ -147,6 +147,7 @@ class PublicMissionEvolution:
             stale = (
                 payload["mission"]["version"] != document.current.version
                 or payload.get("mission_pending_id") != pending
+                or not self.app.source_valid(payload)
             )
             if stale:
                 db.execute(
@@ -266,6 +267,13 @@ class PublicMissionEvolution:
 
     def apply(self, operation, payload):
         """Resolve a persisted intent once; SQLite serializes document CAS changes."""
+        if payload["kind"] == "wake":
+            self._apply(operation, payload)
+        else:
+            with self.app.service.store.conversation_control_fence():
+                self._apply(operation, payload)
+
+    def _apply(self, operation, payload):
         app = self.app
         app.guard()
         app.require_mission(payload)

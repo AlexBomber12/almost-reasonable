@@ -1,8 +1,9 @@
 """Offline two-phase public mission decisions through the real worker and journal."""
 
 from datetime import datetime, timedelta
+from contextlib import contextmanager
 import json
-from threading import Thread
+from threading import Event, Thread
 from dataclasses import replace
 
 import pytest
@@ -2490,6 +2491,153 @@ def test_later_conversation_control_reconciles_committed_mission(
         )
         clock.advance(timedelta(minutes=2))
         assert app.recover() == ()
+    finally:
+        worker.close()
+
+
+def test_inbound_control_write_waits_for_mission_commit(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "dialogue",
+        },
+    )
+    try:
+        original_apply = app.mission_evolution.apply
+        observed = []
+        control_operation = "racing-conversation-control"
+
+        def apply_with_competing_control(operation, payload):
+            stream = InboundKind(payload["kind"])
+            source = app.service.store.inbound_event(
+                app.account, stream, payload["event"]
+            )
+            later = InboundEvent(
+                "racing-control-event",
+                "racing-control-correlation",
+                app.account,
+                app.simulator.source_ref,
+                stream,
+                source.conversation_id,
+                None,
+                clock.now(),
+                "Публичное завершение.",
+            )
+            app.service.store.commit_poll_page(
+                correlation_id="poll-racing-control",
+                account_ref=app.account,
+                stream=stream,
+                verified_source_ref=app.simulator.source_ref,
+                expected_cursor=None,
+                next_cursor=None,
+                events=(later,),
+                now=clock.now(),
+                precommit_check=lambda: None,
+            )
+            started = Event()
+            finished = Event()
+
+            def commit_control():
+                started.set()
+                app.service.store.record_conversation_outcome(
+                    outcome_id=control_operation,
+                    correlation_id=later.correlation_id,
+                    account_ref=app.account,
+                    stream=stream,
+                    inbound_event_id=later.event_id,
+                    outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                    reason="conversation-closed",
+                    resume_condition=None,
+                    now=clock.now(),
+                )
+                finished.set()
+
+            original_transaction = app.journal.transaction
+            injected = False
+            control_thread = None
+
+            @contextmanager
+            def journal_after_control_started():
+                nonlocal injected, control_thread
+                if not injected:
+                    injected = True
+                    control_thread = Thread(target=commit_control)
+                    control_thread.start()
+                    assert started.wait(5)
+                    observed.append(finished.wait(0.5))
+                with original_transaction() as db:
+                    yield db
+
+            monkeypatch.setattr(
+                app.journal, "transaction", journal_after_control_started
+            )
+            try:
+                original_apply(operation, payload)
+            finally:
+                monkeypatch.setattr(app.journal, "transaction", original_transaction)
+                if control_thread is not None:
+                    control_thread.join(timeout=5)
+                    assert not control_thread.is_alive()
+
+        monkeypatch.setattr(
+            app.mission_evolution, "apply", apply_with_competing_control
+        )
+        decide_inbound(app, worker)
+        assert observed == [False]
+        assert app.mission_evolution.pending() is not None
+        assert app.service.store.conversation_outcome_recorded(control_operation)
+    finally:
+        worker.close()
+
+
+def test_control_committed_before_mission_fence_holds_intent(tmp_path, monkeypatch):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "dialogue",
+        },
+    )
+    try:
+        original_fence = app.service.store.conversation_control_fence
+        changed = []
+
+        @contextmanager
+        def fence_after_control():
+            event = app.service.store.inbound_event(
+                app.account, InboundKind.REPLY, "reply-1"
+            )
+            app.service.store.record_conversation_outcome(
+                outcome_id="control-before-mission-fence",
+                correlation_id=event.correlation_id,
+                account_ref=app.account,
+                stream=event.kind,
+                inbound_event_id=event.event_id,
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            changed.append(None)
+            with original_fence():
+                yield
+
+        monkeypatch.setattr(
+            app.service.store, "conversation_control_fence", fence_after_control
+        )
+        decide_inbound(app, worker)
+        assert len(changed) == 1
+        with app.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT phase FROM intents ORDER BY rowid DESC LIMIT 1"
+                ).fetchone()[0]
+                == "held"
+            )
+        assert app.mission_evolution.document().proposals == ()
     finally:
         worker.close()
 

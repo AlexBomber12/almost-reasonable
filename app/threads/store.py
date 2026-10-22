@@ -1542,6 +1542,17 @@ class ThreadsStore:
                 )
             connection.commit()
 
+    @contextmanager
+    def conversation_control_fence(self) -> Iterator[None]:
+        """Serialize a cross-store mission commit with conversation controls."""
+        connection = self._open()
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            yield
+        finally:
+            connection.rollback()
+            connection.close()
+
     def record_linked_mission_outcome(
         self,
         *,
