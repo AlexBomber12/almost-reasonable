@@ -148,7 +148,8 @@ class PublicMissionEvolution:
                 None,
             )
             stale = (
-                payload["mission"]["version"] != document.current.version
+                payload.get("mission_invariants") is None
+                or payload["mission"]["version"] != document.current.version
                 or payload.get("mission_pending_id") != pending
                 or not self.app.source_valid(payload)
             )

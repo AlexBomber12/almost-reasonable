@@ -2831,6 +2831,50 @@ def test_legacy_research_remains_visible_without_pending_proposal(tmp_path, pend
         worker.close()
 
 
+def test_recovery_holds_preupgrade_research_intent_without_invariants(tmp_path):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        assert decide_inbound(app, worker)
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT payload FROM intents WHERE json_extract(payload,'$.kind')='reply' "
+                "ORDER BY rowid DESC LIMIT 1"
+            ).fetchone()
+        legacy = json.loads(row[0])
+        legacy.update(
+            decision="research",
+            topic="ocean",
+            profile_digest=app.current_research_profile().digest,
+        )
+        for field in (
+            "mission_invariants",
+            "mission_evolution",
+            "mission_pending_id",
+            "mission_evidence_operation",
+            "mission_evidence_digest",
+        ):
+            legacy.pop(field, None)
+        operation = "preupgrade-research-intent"
+        _staged_intent(app, operation, legacy)
+
+        app.recover()
+
+        assert app.journal.read(operation)["phase"] == "held"
+        with app.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT 1 FROM public_research_ops WHERE operation=?", (operation,)
+                ).fetchone()
+                is None
+            )
+        app.recover()
+        assert app.journal.read(operation)["phase"] == "held"
+    finally:
+        worker.close()
+
+
 def test_controlled_inbound_conversation_before_mission_intent_is_held(
     tmp_path, monkeypatch
 ):
