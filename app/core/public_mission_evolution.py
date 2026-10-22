@@ -290,7 +290,10 @@ class PublicMissionEvolution:
 
     def apply(self, operation, payload):
         """Resolve a persisted intent once; SQLite serializes document CAS changes."""
-        if payload["kind"] == "wake":
+        if payload["kind"] == "wake" and payload.get("mission_action") not in (
+            "confirm",
+            "reject",
+        ):
             self._apply(operation, payload)
         else:
             with self.app.service.store.conversation_control_fence():

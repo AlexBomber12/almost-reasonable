@@ -3129,6 +3129,90 @@ def test_later_conversation_control_reconciles_committed_mission(
         worker.close()
 
 
+@pytest.mark.parametrize("action", ["confirm", "reject"])
+def test_wake_resolution_fences_control_of_inbound_research(
+    tmp_path, monkeypatch, action
+):
+    app, worker, sdk, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        _attach_fake_research(app, tmp_path, monkeypatch)
+        run_once(app, worker)
+        research_after_proposal(app, worker, sdk, clock)
+        with app.journal.transaction() as db:
+            research_row = db.execute(
+                "SELECT operation,evidence FROM public_research_ops"
+            ).fetchone()
+        research_payload = app.journal.read(research_row["operation"])
+        assert research_payload["kind"] == "reply"
+        clock.advance(timedelta(minutes=1))
+        operation = f"wake-{action}-using-inbound-research"
+        payload = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "event": operation,
+            "correlation": operation,
+            "mission_action": action,
+            "mission_purpose": None,
+            "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+            "mission_evidence_operation": research_row["operation"],
+            "mission_evidence_digest": public_context_digest(
+                (research_row["evidence"],)
+            ),
+            "offered_profile_digest": app.current_research_profile().digest,
+            "decided_at": clock.now().isoformat(),
+        }
+        _staged_intent(app, operation, payload)
+        original_sources = app.mission_evolution._confirmation_sources
+        control_finished = Event()
+        observed = []
+        control_phase = []
+        control_thread = None
+
+        def commit_control():
+            app.service.store.record_conversation_outcome(
+                outcome_id=f"control-{operation}",
+                correlation_id=research_payload["correlation"],
+                account_ref=app.account,
+                stream=InboundKind.REPLY,
+                inbound_event_id=research_payload["event"],
+                outcome=ConversationOutcome.TERMINATE_CONVERSATION,
+                reason="conversation-closed",
+                resume_condition=None,
+                now=clock.now(),
+            )
+            control_phase.append(app.journal.read(operation)["phase"])
+            control_finished.set()
+
+        def sources_then_control(*args):
+            nonlocal control_thread
+            sources = original_sources(*args)
+            control_thread = Thread(target=commit_control)
+            control_thread.start()
+            observed.append(control_finished.wait(0.5))
+            return sources
+
+        monkeypatch.setattr(
+            app.mission_evolution, "_confirmation_sources", sources_then_control
+        )
+        try:
+            app._materialize(operation, payload)
+        finally:
+            if control_thread is not None:
+                control_thread.join(timeout=5)
+                assert not control_thread.is_alive()
+        assert observed == [False]
+        assert app.journal.read(operation)["phase"] == "linked"
+        assert control_phase == ["linked"]
+    finally:
+        worker.close()
+
+
 def test_inbound_control_write_waits_for_mission_commit(tmp_path, monkeypatch):
     app, worker, _, _, clock = configured(
         tmp_path,
