@@ -132,6 +132,12 @@ class PublicMissionEvolution:
         document = _Repository(db, self.root).load()
         return len(document.proposals) < MAX_MISSION_HISTORY_RECORDS
 
+    def _proposal_handoff_capacity_in(self, db, document):
+        if len(document.proposals) >= MAX_MISSION_HISTORY_RECORDS:
+            return False
+        profile = self.app.current_research_profile()
+        return profile is not None and bool(self.app._available_topics_in(db, profile))
+
     def offered_evidence_in(self, db, payload):
         operation = payload.get("mission_evidence_operation")
         if operation is None:
@@ -191,6 +197,10 @@ class PublicMissionEvolution:
                 and pending is not None
                 and pending.proposal.invariants.to_dict()
                 != payload["mission_invariants"]
+            )
+            or (
+                payload.get("mission_action") == "propose"
+                and not self._proposal_handoff_capacity_in(db, document)
             )
         )
 

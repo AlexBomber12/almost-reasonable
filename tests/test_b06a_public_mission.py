@@ -3996,6 +3996,95 @@ def test_temporary_stop_keeps_inbound_mission_intent_recoverable(tmp_path):
         worker.close()
 
 
+@pytest.mark.parametrize("capacity", ["history", "research"])
+def test_proposal_capacity_exhausted_after_intent_is_held_at_handoff(
+    tmp_path, monkeypatch, capacity
+):
+    app, worker, _, _, clock = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        if capacity == "history":
+            monkeypatch.setattr(
+                "app.core.public_mission_evolution.MAX_MISSION_HISTORY_RECORDS", 1
+            )
+
+        def consume_after_intent(point):
+            if point != "after_scheduler":
+                return
+            operation = app.wakeup_operation("wake-1")
+            assert app.journal.read(operation)["phase"] == "intent"
+            if capacity == "history":
+                competing = {
+                    **app.journal.read(operation),
+                    "event": "competing-proposal",
+                    "correlation": "competing-proposal",
+                }
+                _staged_intent(app, "competing-proposal", competing)
+                app.mission_evolution.apply("competing-proposal", competing)
+                clock.advance(timedelta(seconds=1))
+                abandonment = {
+                    **competing,
+                    "event": "competing-abandonment",
+                    "correlation": "competing-abandonment",
+                    "mission_action": "abandon",
+                    "mission_pending_id": app.mission_evolution.pending().proposal.proposal_id,
+                }
+                _staged_intent(app, "competing-abandonment", abandonment)
+                app.mission_evolution.apply("competing-abandonment", abandonment)
+            else:
+                with app.journal.transaction() as db:
+                    db.execute(
+                        "INSERT INTO public_research_ops VALUES(?,?,?,?,?,NULL)",
+                        (
+                            "capacity-research",
+                            "capacity-research-id",
+                            "ocean",
+                            app.current_research_profile().digest,
+                            "started",
+                        ),
+                    )
+
+        app.checkpoint = consume_after_intent
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        assert app.journal.read(operation)["phase"] == "held"
+        assert app.recover() == ()
+        assert len(app.mission_evolution.document().proposals) == (
+            1 if capacity == "history" else 0
+        )
+    finally:
+        worker.close()
+
+
+def test_persisted_proposal_without_research_authority_is_held(tmp_path):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "no_action", "reason_category": "low_value"}
+    )
+    try:
+        run_once(app, worker)
+        app.research_enabled = False
+        payload = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "decision": "revise_mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+            "mission_invariants": app.mission_evolution.invariants().to_dict(),
+            "correlation": "no-research-authority",
+        }
+        _staged_intent(app, "no-research-authority", payload)
+        app._materialize("no-research-authority", payload)
+        assert app.journal.read("no-research-authority")["phase"] == "held"
+        assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
 def test_research_completion_must_follow_durable_proposal(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
