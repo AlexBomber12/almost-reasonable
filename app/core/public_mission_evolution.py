@@ -372,6 +372,7 @@ class PublicMissionEvolution:
                     )
                 )
             app.guard()
+            app.require_mission(payload)
             if (
                 app.ledger.control_generation() != payload["generation"]
                 or self.invariants() != invariants

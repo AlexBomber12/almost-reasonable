@@ -1110,6 +1110,58 @@ def test_public_event_proposal_binds_registered_content(tmp_path):
         worker.close()
 
 
+def test_mission_root_replaced_while_commit_waits_cannot_link(tmp_path, monkeypatch):
+    app, worker, _, _, _ = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "dialogue",
+        },
+    )
+    root_path = app.mission.path
+    original_root = root_path.read_text()
+    replacement = json.loads(original_root)
+    replacement["version"] = "replacement-root"
+    replacement_path = tmp_path / "replacement-root.json"
+    replacement_path.write_text(json.dumps(replacement))
+    replacement_path.chmod(0o600)
+    original_apply = app.mission_evolution._apply
+    original_transaction = app.journal.transaction
+    changed = []
+
+    def apply_with_root_swap(operation, payload):
+        @contextmanager
+        def transaction_after_root_swap():
+            app.journal.transaction = original_transaction
+            os.replace(replacement_path, root_path)
+            changed.append(None)
+            with original_transaction() as db:
+                yield db
+
+        app.journal.transaction = transaction_after_root_swap
+        try:
+            return original_apply(operation, payload)
+        finally:
+            app.journal.transaction = original_transaction
+
+    monkeypatch.setattr(app.mission_evolution, "_apply", apply_with_root_swap)
+    try:
+        try:
+            run_once(app, worker)
+        except PolicyDeniedError:
+            pass
+        assert len(changed) == 1
+    finally:
+        restored = tmp_path / "restored-root.json"
+        restored.write_text(original_root)
+        restored.chmod(0o600)
+        os.replace(restored, root_path)
+        worker.close()
+    assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] != "linked"
+    assert app.mission_evolution.document().proposals == ()
+
+
 def test_invalid_research_provenance_holds_confirmation(tmp_path, monkeypatch):
     app, worker, sdk, _, clock = configured(
         tmp_path,
