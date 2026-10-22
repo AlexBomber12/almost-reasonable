@@ -507,6 +507,68 @@ def test_research_worker_replacement_holds_confirmation(tmp_path, monkeypatch):
         worker.close()
 
 
+@pytest.mark.parametrize("change", ["before_handoff", "during_execution"])
+@pytest.mark.parametrize("control", ["socket", "worker_uid"])
+def test_research_intent_requires_its_worker_invariants_at_execution(
+    tmp_path, monkeypatch, change, control
+):
+    app, worker, _, _, _ = configured(
+        tmp_path, {"decision": "research", "topic_id": "ocean"}
+    )
+    try:
+        calls = _attach_fake_research(app, tmp_path, monkeypatch)
+        original_client = app.research_client
+        original_execute = original_client.execute
+        replacement = PublicResearchClient(
+            tmp_path
+            / (
+                "replacement-research.sock"
+                if control == "socket"
+                else "unused-research.sock"
+            ),
+            expected_worker_uid=os.geteuid() + (control == "worker_uid"),
+        )
+        monkeypatch.setattr(replacement, "execute", original_execute)
+
+        if change == "before_handoff":
+            original_research = app._research
+
+            def research_after_restart(operation, payload):
+                app.research_client = replacement
+                return original_research(operation, payload)
+
+            monkeypatch.setattr(app, "_research", research_after_restart)
+        else:
+
+            def execute_then_change_worker(request):
+                result = original_execute(request)
+                app.research_client = replacement
+                return result
+
+            monkeypatch.setattr(original_client, "execute", execute_then_change_worker)
+
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        payload = app.journal.read(operation)
+        assert (
+            payload["mission_invariants"]
+            != app.mission_evolution.invariants().to_dict()
+        )
+        with app.journal.transaction() as db:
+            row = db.execute(
+                "SELECT phase,evidence FROM public_research_ops WHERE operation=?",
+                (operation,),
+            ).fetchone()
+        if change == "before_handoff":
+            assert calls == []
+            assert row is None
+        else:
+            assert len(calls) == 1
+            assert tuple(row) == ("held", None)
+    finally:
+        worker.close()
+
+
 def test_research_worker_change_during_inference_holds_intent(tmp_path):
     app, worker, _, _, clock = configured(
         tmp_path, {"decision": "no_action", "reason_category": "low_value"}
