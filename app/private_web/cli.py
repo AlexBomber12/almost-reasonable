@@ -1,6 +1,7 @@
 """Operator-only account provisioning and local WSGI server commands."""
 
 import argparse
+import json
 from collections.abc import Callable, Sequence
 from getpass import getpass
 from ipaddress import ip_address
@@ -26,6 +27,8 @@ from app.owner_control.store import OwnerStore
 from app.privacy.application import PrivacyReadGate
 from app.privacy.ledger import PrivacyLedger
 from app.cognition.shared import SharedIntelligence
+from app.trusted.private_pilot import read_pilot_control, _unique, PilotAuthorityError
+from app.trusted.openai_credential_files import TrustedTransportConfigurationError
 
 from .auth import AuthStore
 from .conversation import ConversationService, _utc_now
@@ -60,6 +63,9 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-memory-evolution", action="store_true")
     serve.add_argument("--enable-typed-memory", action="store_true")
+    serve.add_argument("--enable-narrative", action="store_true")
+    serve.add_argument("--narrative-permission")
+    serve.add_argument("--narrative-pilot-id")
     serve.add_argument("--enable-shared-proposals", action="store_true")
     serve.add_argument("--shared-proposal-audience", action="append", default=[])
     serve.add_argument("--enable-public-research", action="store_true")
@@ -114,6 +120,31 @@ def _https_origin(value: str) -> bool:
         return False
 
 
+def _narrative_permission_current(path: Path, pilot_id: str) -> bool:
+    try:
+        value = json.loads(
+            read_pilot_control(path, maximum_bytes=1024), object_pairs_hook=_unique
+        )
+        return (
+            type(value) is dict
+            and set(value) == {"version", "pilot_id", "max_operations"}
+            and value["version"] == "private-narrative-permission-v1"
+            and value["pilot_id"] == pilot_id
+            and type(value["max_operations"]) is int
+            # Every valid pilot permits at least one operation; this narrower
+            # permission limit cannot exceed its active allowance.
+            and value["max_operations"] == 1
+        )
+    except (
+        PilotAuthorityError,
+        TrustedTransportConfigurationError,
+        UnicodeError,
+        ValueError,
+        TypeError,
+    ):
+        return False
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -152,6 +183,17 @@ def main(
         trusted_proxy_addresses=frozenset(args.trusted_proxy),
     )
     if args.worker_socket is not None:
+        if args.enable_narrative != (
+            args.narrative_permission is not None
+            and args.narrative_pilot_id is not None
+        ) or (
+            not args.enable_narrative
+            and (
+                args.narrative_permission is not None
+                or args.narrative_pilot_id is not None
+            )
+        ):
+            raise SystemExit("narrative mode requires its permission file and pilot ID")
         if (
             args.privacy_ledger is None
             or args.owner_directory is None
@@ -217,6 +259,9 @@ def main(
         or args.enable_memory_extraction
         or args.enable_memory_evolution
         or args.enable_typed_memory
+        or args.enable_narrative
+        or args.narrative_permission is not None
+        or args.narrative_pilot_id is not None
         or args.enable_shared_proposals
         or args.shared_proposal_audience
     ):
@@ -273,11 +318,19 @@ def main(
             OpenAIWorkerClient(args.worker_socket, expected_worker_uid=args.worker_uid),
             provider_state=ProviderStateStore(EventStore(args.ipc_state_db)),
             emergency_stop=owner.active,
-            shared_intelligence=shared,
+            shared_intelligence=None if args.enable_narrative else shared,
             research_bridge=research,
             memory_extraction_enabled=args.enable_memory_extraction,
             memory_evolution_enabled=args.enable_memory_evolution,
             typed_memory_enabled=args.enable_typed_memory,
+            narrative_enabled=args.enable_narrative,
+            narrative_permission_current=(
+                lambda: _narrative_permission_current(
+                    Path(args.narrative_permission), args.narrative_pilot_id
+                )
+            )
+            if args.enable_narrative
+            else None,
             shared_proposals_enabled=args.enable_shared_proposals,
             shared_proposal_audience=tuple(sorted(set(args.shared_proposal_audience))),
         )

@@ -141,6 +141,43 @@ def test_parallel_reservations_and_file_loss_cannot_rearm(tmp_path):
         PilotAllowance(db, authority)
 
 
+def test_narrative_pair_reservation_is_atomic_and_reply_hold_is_one_use(tmp_path):
+    path, value = activation_file(tmp_path)
+    value["max_operations"] = 2
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    path.chmod(0o400)
+    allowance = PilotAllowance.initialize(
+        tmp_path / "allowance.sqlite3", load_activation(path)
+    )
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(
+            executor.map(
+                lambda suffix: allowance.reserve(
+                    "narrative:" + suffix * 64,
+                    extraction_limit=2,
+                    reserve_reply=True,
+                ),
+                ("a", "b"),
+            )
+        )
+    assert sum(outcomes) == 1
+    assert allowance.remaining() == 0
+    winner = ("a", "b")[outcomes.index(True)]
+    reply = "reply:" + winner * 64
+    assert allowance.reserve(reply)
+    assert not allowance.reserve(reply)
+    assert allowance.remaining() == 0
+    with pytest.raises(PilotAuthorityError):
+        allowance.reserve("reply:" + "c" * 64, reserve_reply=True)
+    with pytest.raises(PilotAuthorityError):
+        allowance.reserve(
+            "narrative:" + "c" * 64,
+            extraction_limit=2,
+            reserve_reply=1,
+        )
+
+
 def test_allowance_tamper_and_invalid_operations_fail_closed(tmp_path):
     path, _ = activation_file(tmp_path)
     authority = load_activation(path)

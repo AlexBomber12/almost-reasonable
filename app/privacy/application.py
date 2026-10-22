@@ -20,6 +20,11 @@ from app.core.self_state import StateType
 from app.core.self_state_store import SelfStateStore
 from app.core.store import EventStore, SCHEMA_VERSION
 from app.core.generic_graph import validate_generic_graph, erase_generic_source
+from app.cognition.narrative_store import (
+    MAX_NARRATIVE_RECEIPTS,
+    erase_narrative_source,
+    validate_narrative_graph,
+)
 from app.core.shared_graph import (
     validate_shared_graph,
     erase_shared_source,
@@ -188,18 +193,18 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7, 8, 9, 10, 11}:
+    if schema_version in {6, 7, 8, 9, 10, 11, 12}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version in {7, 8, 9, 10, 11}:
+    if schema_version in {7, 8, 9, 10, 11, 12}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ApplicationPrivacyError("invalid_generic_graph") from error
     if (
-        schema_version in {9, 10, 11}
+        schema_version in {9, 10, 11, 12}
         and db.execute(
             """SELECT 1 FROM private_extraction_receipts r
         JOIN event_envelopes e ON e.event_id=r.source_event_id
@@ -218,8 +223,14 @@ def _validate_graph(
         is not None
     ):
         raise ApplicationPrivacyError("invalid_extraction_receipt")
-    if schema_version in {10, 11}:
+    if schema_version in {10, 11, 12}:
         _validate_typed_receipts(db)
+    if schema_version == 12:
+        try:
+            validate_narrative_graph(db)
+            _validate_narrative_receipts(db)
+        except ValueError:
+            raise ApplicationPrivacyError("invalid_narrative_graph") from None
     for reason, sql in checks:
         if db.execute(sql).fetchone() is not None:
             raise ApplicationPrivacyError(reason)
@@ -328,6 +339,87 @@ def _validate_typed_receipts(db: sqlite3.Connection) -> None:
         raise ApplicationPrivacyError("invalid_typed_receipt") from None
 
 
+def _validate_narrative_receipts(db: sqlite3.Connection) -> None:
+    """Receipts bind exactly the reply's private source and narrative selection."""
+    from app.cognition.worker_narrative import _HANDLE, parse_narrative_proposal
+
+    rows = db.execute(
+        "SELECT operation_id,source_event_id,principal_id,receipt FROM private_narrative_receipts"
+    ).fetchall()
+    if len(rows) > MAX_NARRATIVE_RECEIPTS:
+        raise ValueError("invalid narrative receipts")
+    for operation, source, principal, raw in rows:
+        try:
+            if type(raw) is not str or len(raw.encode("utf-8")) > 65536:
+                raise ValueError
+            value = json.loads(raw)
+            if type(value) is not dict or set(value) != {
+                "heads",
+                "selected",
+                "sources",
+                "proposal",
+            }:
+                raise ValueError
+            heads = tuple(tuple(row) for row in value["heads"])
+            selected = tuple(tuple(row) for row in value["selected"])
+            sources = tuple(value["sources"])
+            if (
+                len(heads) > 16
+                or len(selected) > 16
+                or not 1 <= len(sources) <= 100
+                or tuple(sorted(set(heads))) != heads
+                or tuple(sorted(set(sources))) != sources
+                or len({handle for handle, _ in selected}) != len(selected)
+                or len({operation_id for _, operation_id in selected}) != len(selected)
+                or any(
+                    len(row) != 2
+                    or type(row[0]) is not str
+                    or type(row[1]) is not int
+                    or row[1] < 1
+                    for row in heads
+                )
+                or any(
+                    len(row) != 2
+                    or type(row[0]) is not str
+                    or _HANDLE.fullmatch(row[0]) is None
+                    or type(row[1]) is not str
+                    for row in selected
+                )
+            ):
+                raise ValueError
+            if value["proposal"] is not None:
+                parse_narrative_proposal(json.dumps(value["proposal"]))
+            reply = "reply:" + operation.removeprefix("narrative:")
+            if not operation.startswith("narrative:"):
+                raise ValueError
+            row = db.execute(
+                "SELECT initiating_event_id,audience_principal_id FROM agent_reply_operations WHERE operation_id=?",
+                (reply,),
+            ).fetchone()
+            reply_sources = tuple(
+                item[0]
+                for item in db.execute(
+                    "SELECT event_id FROM agent_reply_sources WHERE operation_id=? ORDER BY event_id",
+                    (reply,),
+                )
+            )
+            exposed = {
+                item[0]
+                for item in db.execute(
+                    "SELECT narrative_operation_id FROM protected_reply_narrative WHERE reply_operation_id=? AND principal_id=?",
+                    (reply, principal),
+                )
+            }
+            if (
+                row != (source, principal)
+                or sources != reply_sources
+                or not {operation_id for _, operation_id in selected} <= exposed
+            ):
+                raise ValueError
+        except (TypeError, ValueError, KeyError, IndexError, UnicodeError):
+            raise ValueError("invalid narrative receipts") from None
+
+
 def _erase(
     db: sqlite3.Connection,
     request: DeletionRequest,
@@ -382,11 +474,21 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version in {7, 8, 9, 10, 11}:
+        if schema_version in {7, 8, 9, 10, 11, 12}:
             erase_generic_source(db, request.content_reference)
-        if schema_version in {6, 7, 8, 9, 10, 11}:
+        if schema_version == 12:
+            erase_narrative_source(db, request.content_reference)
+            db.execute(
+                """DELETE FROM private_narrative_receipts WHERE source_event_id=?
+                OR EXISTS (SELECT 1 FROM json_each(
+                    CASE WHEN json_valid(receipt) THEN
+                        json_extract(receipt,'$.sources') ELSE NULL END
+                ) WHERE value=?)""",
+                (request.content_reference, request.content_reference),
+            )
+        if schema_version in {6, 7, 8, 9, 10, 11, 12}:
             erase_shared_source(db, request.content_reference)
-        if schema_version in {9, 10, 11}:
+        if schema_version in {9, 10, 11, 12}:
             db.execute(
                 """DELETE FROM private_extraction_receipts
                 WHERE source_event_id=? OR EXISTS (

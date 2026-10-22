@@ -7,8 +7,11 @@ from dataclasses import replace
 from datetime import datetime
 import hashlib
 import os
+import re
+from threading import Lock
 
 from app.cognition.conversation_context import (
+    FictionEpisode,
     MemoryConversationAssembler,
     MemoryModelRequest,
 )
@@ -82,6 +85,8 @@ from .conversation import (
 from .extraction_audit import ExtractionAuditStore
 from .evolution_audit import EvolutionAuditStore
 from .typed_audit import TypedAuditStore
+from .narrative_audit import NarrativeAuditStore
+from app.cognition.narrative_store import NarrativeStore, NarrativeConflict
 from .shared_audit import SharedProposalAuditStore
 
 
@@ -89,6 +94,62 @@ _WORKER_FAILURE_RU = "Сервис модели временно недосту�
 _WORKER_STOPPED_RU = "Новые запросы к модели временно остановлены."
 _WORKER_SPEND_RU = "Запросы к модели приостановлены из-за лимита расходов."
 _WORKER_REJECTED_RU = "Ответ модели отклонён проверкой безопасности."
+_NARRATIVE_ACTIVE_LOCK = Lock()
+_NARRATIVE_ACTIVE: set[tuple[int, str, str]] = set()
+_NARRATIVE_SUBMITTING = ("submit",)
+_NARRATIVE_SUBMIT_KEY: ContextVar[tuple | None] = ContextVar(
+    "narrative_submit_key", default=None
+)
+
+
+def _narrative_active_key(store, operation_id):
+    return (os.getpid(), str(store.database_path.resolve()), operation_id)
+
+
+def _narrative_requested(content: str) -> bool:
+    folded = content.casefold()
+    for clause in reversed(
+        re.split(
+            r"[,;.!?…]+|\b(?:but|instead|however|rather|но|однако|вместо)\b", folded
+        )
+    ):
+        if not (
+            re.search(
+                r"(?<!\w)(?:вымышлен[а-яё]*|сюжет[а-яё]*|story|stories|storytelling|fiction|fictional|narrative|narratives)(?!\w)",
+                clause,
+            )
+            or re.fullmatch(
+                r"\s*(?:расскажи|продолжи|продолжим)\s+истори[а-яё]*\s*",
+                clause,
+            )
+        ):
+            continue
+        if re.search(
+            r"(?<!\w)(?:non[\s-]*(?:fiction(?:al)?|narrative|story)|"
+            r"not\s+(?:(?:be|being|a|an|the|write|tell|make)\s+){0,3}"
+            r"(?:fiction(?:al)?|narrative|story)|"
+            r"(?:don't|do\s+not|doesn't|does\s+not|never)\s+"
+            r"(?:want|make|write|tell|include)\s+(?:(?:a|an|any)\s+)?"
+            r"(?:fiction(?:al)?|narrative|story)|"
+            r"(?:no|without)\s+(?:(?:a|an|any)\s+)?"
+            r"(?:fiction(?:al)?|narrative|story)|"
+            r"(?:не|без)[\s-]+(?:вымышлен[а-яё]*|сюжет[а-яё]*))(?!\w)",
+            clause,
+        ):
+            return False
+        if re.search(
+            r"(?<!\w)(?:user|news|true|real|factual|actual)\s+(?:story|stories|narrative)(?!\w)|(?<!\w)(?:story|narrative)\s+of\b|(?<!\w)narrative\s+medicine(?!\w)",
+            clause,
+        ) and not re.search(r"(?<!\w)(?:fiction(?:al)?|вымышлен[а-яё]*)(?!\w)", clause):
+            continue
+        if re.search(
+            r"(?<!\w)(?:tell|write|create|continue|invent|make|develop|resume|expand|narrate|remember|imagine|compose|draft|generate|build|want|расскажи|продолжи|продолжим|сочини|напиши|создай|измени|добавь)(?!\w)",
+            clause,
+        ) or re.fullmatch(
+            r"\s*(?:(?:a|an)\s+)?fictional\s+(?:episode|story|narrative)\s*", clause
+        ):
+            return True
+    return False
 
 
 def _without_reviewed_question(text: str, question: str) -> str:
@@ -323,6 +384,26 @@ class _DurableConversationRuntime(ConversationService):
         *,
         evidence_event_ids: tuple[str, ...] = (),
     ) -> SubmittedMessage:
+        token = _NARRATIVE_SUBMIT_KEY.set(_NARRATIVE_SUBMITTING)
+        try:
+            return self._submit_once(
+                principal, message_id, content, evidence_event_ids=evidence_event_ids
+            )
+        finally:
+            key = _NARRATIVE_SUBMIT_KEY.get()
+            if key is not None and key != _NARRATIVE_SUBMITTING:
+                with _NARRATIVE_ACTIVE_LOCK:
+                    _NARRATIVE_ACTIVE.discard(key)
+            _NARRATIVE_SUBMIT_KEY.reset(token)
+
+    def _submit_once(
+        self,
+        principal,
+        message_id,
+        content,
+        *,
+        evidence_event_ids: tuple[str, ...] = (),
+    ) -> SubmittedMessage:
         EventStore._validate_context(principal)
         self._validate_message(message_id, content)
 
@@ -342,6 +423,8 @@ class _DurableConversationRuntime(ConversationService):
         existing = self._gate.read_reply(principal, operation_id)
         if getattr(self, "_shared_proposal_audit", None) is not None:
             self._reconcile_shared_proposal(principal, event_id, content, operation_id)
+        if getattr(self, "_narrative_audit", None) is not None:
+            self._reconcile_narrative(principal, event_id, content, operation_id)
         if existing is not None and (
             getattr(self, "_extraction_audit", None) is not None
             or getattr(self, "_evolution_audit", None) is not None
@@ -366,7 +449,14 @@ class _DurableConversationRuntime(ConversationService):
                     return previous, None
                 if self._memory_bridge is not None or self._worker is not None:
                     return self._reserve_memory(
-                        principal, event_id, correlation, operation_id
+                        principal,
+                        event_id,
+                        correlation,
+                        operation_id,
+                        reserve_narrative_slot=(
+                            getattr(self, "_narrative_audit", None) is not None
+                            and _narrative_requested(content)
+                        ),
                     )
                 events = self._event_store.retrieve_private_events_in_commit_order(
                     principal, event_id
@@ -392,7 +482,20 @@ class _DurableConversationRuntime(ConversationService):
                 )
                 return self._outputs.reserve_reply(principal, operation), context
 
-            reserved, context = self._gate.authorized(reserve)
+            if getattr(
+                self, "_narrative_audit", None
+            ) is not None and _narrative_requested(content):
+                key = _narrative_active_key(
+                    self._event_store,
+                    "narrative:" + operation_id.removeprefix("reply:"),
+                )
+                with _NARRATIVE_ACTIVE_LOCK:
+                    reserved, context = self._gate.authorized(reserve)
+                    if reserved.reservation_created and key not in _NARRATIVE_ACTIVE:
+                        _NARRATIVE_ACTIVE.add(key)
+                        _NARRATIVE_SUBMIT_KEY.set(key)
+            else:
+                reserved, context = self._gate.authorized(reserve)
             if reserved.reservation_created:
                 self._checkpoint("after_reservation")
 
@@ -406,6 +509,13 @@ class _DurableConversationRuntime(ConversationService):
                     caps.emergency_stop_active
                     or caps.provider_spend_suspended
                     or not caps.private_reply_drafts_enabled
+                    or (
+                        getattr(self, "_narrative_audit", None) is not None
+                        and (
+                            not self._narrative_permission()
+                            or not self._current_request.get()()
+                        )
+                    )
                 ):
                     self._gate.authorized(
                         lambda: self._outputs.resolve_without_reply(
@@ -441,17 +551,69 @@ class _DurableConversationRuntime(ConversationService):
                             principal, event_id, content, correlation, operation_id
                         )
                         caps = self._gate.authorized(preflight)
+                    narrative_blocked = False
+                    if getattr(
+                        self, "_narrative_audit", None
+                    ) is not None and _narrative_requested(content):
+                        narrative_audit = self._evolve_narrative(
+                            principal,
+                            event_id,
+                            content,
+                            correlation,
+                            operation_id,
+                            reserved.operation,
+                            context,
+                        )
+                        if narrative_audit is not None:
+                            try:
+                                context = self._project_narrative(
+                                    context,
+                                    narrative_audit,
+                                    self._limits.max_utf8_bytes,
+                                )
+                            except ValueError:
+                                narrative_blocked = True
+                                self._narrative_audit.finish(
+                                    "narrative:" + operation_id.removeprefix("reply:"),
+                                    "unavailable",
+                                )
+                        caps = self._gate.authorized(preflight)
                     if (
                         self._cognition is not None
                         or getattr(self, "_extraction_audit", None) is not None
                         or getattr(self, "_evolution_audit", None) is not None
                         or getattr(self, "_typed_audit", None) is not None
                         or getattr(self, "_shared_proposal_audit", None) is not None
+                        or getattr(self, "_narrative_audit", None) is not None
                     ) and (
                         caps.emergency_stop_active
                         or caps.provider_spend_suspended
                         or not caps.private_reply_drafts_enabled
+                        or narrative_blocked
+                        or (
+                            getattr(self, "_narrative_audit", None) is not None
+                            and (
+                                not self._narrative_permission()
+                                or not self._current_request.get()()
+                            )
+                        )
                     ):
+                        if getattr(
+                            self, "_narrative_audit", None
+                        ) is not None and _narrative_requested(content):
+                            narrative_id = "narrative:" + operation_id.removeprefix(
+                                "reply:"
+                            )
+                            audit = self._narrative_audit.read(
+                                narrative_id,
+                                principal.principal_id.value,
+                                event_id,
+                                content,
+                            )
+                            if audit is not None and audit.status == "received":
+                                self._narrative_audit.finish(
+                                    narrative_id, "unavailable"
+                                )
                         self._gate.authorized(
                             lambda: self._outputs.resolve_without_reply(
                                 principal, operation_id, self._skip_outcome(caps)
@@ -477,12 +639,41 @@ class _DurableConversationRuntime(ConversationService):
                             )
                         if persisted:
                             self._checkpoint("after_reply_commit")
+                        if getattr(
+                            self, "_narrative_audit", None
+                        ) is not None and _narrative_requested(content):
+                            narrative_id = "narrative:" + operation_id.removeprefix(
+                                "reply:"
+                            )
+                            audit = self._narrative_audit.read(
+                                narrative_id,
+                                principal.principal_id.value,
+                                event_id,
+                                content,
+                            )
+                            if audit is not None and audit.status == "received":
+                                if persisted:
+                                    self._commit_narrative(
+                                        principal, event_id, narrative_id, audit
+                                    )
+                                else:
+                                    self._narrative_audit.finish(
+                                        narrative_id, "unavailable"
+                                    )
         self._checkpoint("before_release")
         return self._gate.authorized(
             lambda: self._response(admission.message_status, route, operation_id)
         )
 
-    def _reserve_memory(self, principal, event_id, correlation, operation_id):
+    def _reserve_memory(
+        self,
+        principal,
+        event_id,
+        correlation,
+        operation_id,
+        *,
+        reserve_narrative_slot=False,
+    ):
         db = self._event_store._open()
         try:
             with db:
@@ -505,11 +696,17 @@ class _DurableConversationRuntime(ConversationService):
                     db,
                     reply_permitted=lambda reply: self._current_request.get()()
                     and self._shared_consent_live(reply.operation, principal)
+                    and self._narrative_reply_permitted(reply.operation)
                     and self._research_evidence(reply.operation.operation_id) is None
                     and self._historical_research_permitted(principal, reply),
+                    include_memories=getattr(self, "_narrative_audit", None) is None,
+                    include_narrative=getattr(self, "_narrative_audit", None)
+                    is not None,
+                    reserve_narrative_slot=reserve_narrative_slot,
                 )
                 generic_operations = request.generic_operation_ids
                 shared_operations = request.inherited_shared_operation_ids
+                narrative_operations = request.narrative_operation_ids
                 if self._shared is not None:
                     request, shared_operations = assemble_shared(
                         request,
@@ -535,6 +732,7 @@ class _DurableConversationRuntime(ConversationService):
                     sources,
                     shared_operations,
                     generic_operations,
+                    narrative_operations,
                 )
                 return self._outputs.reserve_reply(
                     principal, operation, _connection=db
@@ -560,6 +758,10 @@ class _DurableConversationRuntime(ConversationService):
                 if (
                     not caps.private_reply_drafts_enabled
                     or not self._current_request.get()()
+                    or (
+                        getattr(self, "_narrative_audit", None) is not None
+                        and not self._narrative_permission()
+                    )
                 ):
                     return "authorization_rejected"
                 if not self._inference_consent_live(principal, operation_id):
@@ -822,6 +1024,368 @@ class _DurableConversationRuntime(ConversationService):
         )
         if audit is not None and audit.status == "received":
             self._commit_worker_typed(principal, event_id, operation_id, audit)
+
+    def _reconcile_narrative(self, principal, event_id, content, reply_operation_id):
+        operation_id = "narrative:" + reply_operation_id.removeprefix("reply:")
+        key = _narrative_active_key(self._event_store, operation_id)
+        with _NARRATIVE_ACTIVE_LOCK:
+            if key in _NARRATIVE_ACTIVE:
+                return
+            _NARRATIVE_ACTIVE.add(key)
+        try:
+            self._reconcile_narrative_once(
+                principal, event_id, content, reply_operation_id, operation_id
+            )
+        finally:
+            with _NARRATIVE_ACTIVE_LOCK:
+                _NARRATIVE_ACTIVE.remove(key)
+
+    def _reconcile_narrative_once(
+        self, principal, event_id, content, reply_operation_id, operation_id
+    ):
+        try:
+            audit = self._narrative_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+        except ValueError:
+            return
+        if audit is None and _narrative_requested(content):
+
+            def resolve_missing_audit():
+                reply, resolution = self._outputs.read_reply_and_resolution(
+                    principal, reply_operation_id
+                )
+                if (
+                    reply is not None
+                    and reply.result_state is ResultState.PENDING
+                    and resolution is None
+                    and not self._provider.attempt_exists("ipc:" + reply_operation_id)
+                ):
+                    self._outputs.resolve_without_reply(
+                        principal, reply_operation_id, "unavailable"
+                    )
+
+            self._gate.authorized(resolve_missing_audit)
+            return
+        if audit is not None and audit.status == "reserved":
+            self._narrative_audit.finish(operation_id, "unavailable")
+            audit = self._narrative_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+        if audit is not None and audit.status == "received":
+            reply = self._gate.authorized(
+                lambda: self._outputs.read_reply(principal, reply_operation_id)
+            )
+            if reply is not None and reply.result_state is ResultState.PERSISTED:
+                self._commit_narrative(principal, event_id, operation_id, audit)
+            elif reply is None or not self._provider.attempt_exists(
+                "ipc:" + reply_operation_id
+            ):
+                self._narrative_audit.finish(operation_id, "unavailable")
+            audit = self._narrative_audit.read(
+                operation_id, principal.principal_id.value, event_id, content
+            )
+        if audit is not None and audit.status not in {"reserved", "received"}:
+
+            def resolve_interrupted_reply():
+                reply, resolution = self._outputs.read_reply_and_resolution(
+                    principal, reply_operation_id
+                )
+                if (
+                    reply is not None
+                    and reply.result_state is ResultState.PENDING
+                    and resolution is None
+                    and not self._provider.attempt_exists("ipc:" + reply_operation_id)
+                ):
+                    self._outputs.resolve_without_reply(
+                        principal, reply_operation_id, "unavailable"
+                    )
+
+            self._gate.authorized(resolve_interrupted_reply)
+
+    def _narrative_current(
+        self, principal, event_id, reply_operation, audit, *, committed=False
+    ):
+        caps = self._capabilities()
+        if (
+            caps.emergency_stop_active
+            or caps.provider_spend_suspended
+            or not caps.private_reply_drafts_enabled
+            or not self._current_request.get()()
+            or not self._narrative_permission()
+            or not self._inference_consent_live(principal, reply_operation.operation_id)
+        ):
+            return False
+        current_reply = self._outputs.read_reply(
+            principal, reply_operation.operation_id
+        )
+        if current_reply is None or current_reply.operation != reply_operation:
+            return False
+        if audit.sources != reply_operation.source_event_ids or not {
+            operation for _handle, operation in audit.selected
+        } <= set(reply_operation.narrative_operation_ids):
+            return False
+        heads = tuple(
+            sorted(
+                (episode.item_id, episode.revision)
+                for episode in self._narrative_store.current(principal)
+            )
+        )
+        return (heads == audit.heads or committed) and event_id in audit.sources
+
+    def _commit_narrative(self, principal, event_id, operation_id, audit):
+        reply_operation_id = "reply:" + operation_id.removeprefix("narrative:")
+
+        def commit():
+            reply = self._outputs.read_reply(principal, reply_operation_id)
+            if reply is None or reply.result_state is not ResultState.PERSISTED:
+                return "unavailable"
+            already = self._narrative_store.committed(
+                principal,
+                operation_id=operation_id,
+                source_event_id=event_id,
+                proposal=audit.proposal,
+                selected=audit.selected,
+                heads=audit.heads,
+                sources=audit.sources,
+            )
+            if not self._narrative_current(
+                principal, event_id, reply.operation, audit, committed=already
+            ):
+                return "unavailable"
+            if already:
+                self._outputs.attach_narrative(
+                    principal, reply_operation_id, operation_id
+                )
+                return "accepted"
+            proposal = audit.proposal
+            if proposal.decision == "no_change":
+                return "no_change"
+            selected = dict(audit.selected)
+            if proposal.decision == "revise":
+                target = selected.get(proposal.handle)
+                current = {
+                    episode.operation_id: episode
+                    for episode in self._narrative_store.current(principal)
+                }
+                if target not in current:
+                    return "rejected"
+                item_id = current[target].item_id
+                expected_revision = current[target].revision
+            else:
+                item_id = "episode:" + operation_id.removeprefix("narrative:")
+                expected_revision = 0
+            self._write_narrative(
+                principal, event_id, operation_id, audit, item_id, expected_revision
+            )
+            self._checkpoint("after_memory_store_commit")
+            return "accepted"
+
+        try:
+            status = self._gate.authorized(commit)
+        except (PrivacyReadBlocked, NarrativeConflict, ValueError):
+            status = "unavailable"
+        if status not in {"accepted", "no_change"}:
+            status = "unavailable"
+        self._narrative_audit.finish(operation_id, status)
+
+    def _write_narrative(
+        self, principal, event_id, operation_id, audit, item_id, expected_revision
+    ):
+        db = self._event_store._open()
+        try:
+            with db:
+                db.execute("BEGIN IMMEDIATE")
+                self._narrative_store.commit(
+                    principal,
+                    operation_id=operation_id,
+                    source_event_id=event_id,
+                    text=audit.proposal.episode,
+                    item_id=item_id,
+                    expected_revision=expected_revision,
+                    expected_heads=audit.heads,
+                    exposed_sources=audit.sources,
+                    exposed_episodes=tuple(
+                        operation for _handle, operation in audit.selected
+                    ),
+                    created_at=self._clock(),
+                    _connection=db,
+                )
+                self._outputs.attach_narrative(
+                    principal,
+                    "reply:" + operation_id.removeprefix("narrative:"),
+                    operation_id,
+                    _connection=db,
+                )
+        finally:
+            db.close()
+
+    @staticmethod
+    def _project_narrative(context, audit, max_utf8_bytes):
+        proposal = audit.proposal
+        if proposal is None or proposal.decision == "no_change":
+            return context
+        episodes = list(context.episodes)
+        if proposal.decision == "revise":
+            target = dict(audit.selected).get(proposal.handle)
+            if target not in context.projected_narrative_operation_ids:
+                raise ValueError("narrative projection unavailable")
+            index = context.projected_narrative_operation_ids.index(target)
+            episodes[index] = FictionEpisode(
+                proposal.episode, episodes[index].revision + 1
+            )
+        else:
+            episodes.append(FictionEpisode(proposal.episode, 1))
+        projected = replace(context, episodes=tuple(episodes))
+        if len(projected.serialize().encode("utf-8")) > max_utf8_bytes:
+            raise ValueError("narrative projection exceeds context budget")
+        return projected
+
+    def _evolve_narrative(
+        self,
+        principal,
+        event_id,
+        content,
+        correlation,
+        reply_operation_id,
+        reply_operation,
+        context,
+    ):
+        operation_id = "narrative:" + reply_operation_id.removeprefix("reply:")
+        key = _narrative_active_key(self._event_store, operation_id)
+        with _NARRATIVE_ACTIVE_LOCK:
+            if key in _NARRATIVE_ACTIVE:
+                if _NARRATIVE_SUBMIT_KEY.get() != key:
+                    return
+            else:
+                _NARRATIVE_ACTIVE.add(key)
+        try:
+            return self._evolve_narrative_once(
+                principal,
+                event_id,
+                content,
+                correlation,
+                reply_operation_id,
+                reply_operation,
+                context,
+            )
+        finally:
+            if _NARRATIVE_SUBMIT_KEY.get() is None:
+                with _NARRATIVE_ACTIVE_LOCK:
+                    _NARRATIVE_ACTIVE.remove(key)
+            else:
+                _NARRATIVE_SUBMIT_KEY.set(key)
+
+    def _evolve_narrative_once(
+        self,
+        principal,
+        event_id,
+        content,
+        correlation,
+        reply_operation_id,
+        reply_operation,
+        context,
+    ):
+        operation_id = "narrative:" + reply_operation_id.removeprefix("reply:")
+
+        def admit():
+            caps = self._capabilities()
+            if (
+                caps.emergency_stop_active
+                or caps.provider_spend_suspended
+                or not caps.private_reply_drafts_enabled
+                or not self._current_request.get()()
+                or not self._narrative_permission()
+            ):
+                return None
+            return self._narrative_audit.reserve(
+                operation_id, principal, event_id, content, reply_operation, context
+            )
+
+        try:
+            audit = self._gate.authorized(admit)
+        except (PrivacyReadBlocked, ValueError):
+            return
+        if audit is None:
+            return
+        if audit.request is None:
+            return audit if audit.status == "received" else None
+        reservation = self._provider.reserve_attempt(
+            "ipc:" + operation_id, correlation, self._clock()
+        )
+        if reservation is not AttemptReservationStatus.CREATED:
+            self._narrative_audit.finish(operation_id, "unavailable")
+            return
+        try:
+            allowed = self._gate.authorized(
+                lambda: self._narrative_current(
+                    principal, event_id, reply_operation, audit
+                )
+            )
+        except PrivacyReadBlocked:
+            allowed = False
+        if not allowed:
+            self._narrative_audit.finish(operation_id, "unavailable")
+            return
+        try:
+            result = self._worker.infer(
+                audit.request, correlation_id=correlation, operation_id=operation_id
+            )
+        except (TypeError, ValueError):
+            self._narrative_audit.finish(operation_id, "rejected")
+            return
+        if result.outcome == CLIENT_OUTCOME_UNCERTAIN:
+            self._narrative_audit.finish(operation_id, "uncertain")
+            return
+        if result.outcome != "completed" or result.narrative is None:
+            self._narrative_audit.finish(
+                operation_id,
+                "unavailable"
+                if result.outcome
+                in {
+                    CLIENT_COMMUNICATION_FAILURE,
+                    "emergency_stop",
+                    "spend_suspended",
+                    "authorization_rejected",
+                }
+                else "rejected",
+            )
+            return
+        if (
+            result.narrative.decision == "create" and not audit.request.create_allowed
+        ) or (
+            result.narrative.decision == "revise"
+            and result.narrative.handle
+            not in {handle for handle, _operation in audit.selected}
+        ):
+            self._narrative_audit.finish(operation_id, "rejected")
+            return
+        try:
+
+            def receive():
+                if not self._narrative_current(
+                    principal, event_id, reply_operation, audit
+                ):
+                    return False
+                self._narrative_audit.receive(
+                    operation_id,
+                    principal.principal_id.value,
+                    event_id,
+                    content,
+                    result.narrative,
+                )
+                return True
+
+            received = self._gate.authorized(receive)
+        except (PrivacyReadBlocked, ValueError):
+            received = False
+        if not received:
+            self._narrative_audit.finish(operation_id, "unavailable")
+            return
+        self._checkpoint("after_extraction_receipt")
+        return replace(
+            audit, status="received", proposal=result.narrative, request=None
+        )
 
     def _commit_worker_typed(self, principal, event_id, operation_id, audit):
         def commit():
@@ -1532,6 +2096,11 @@ class _DurableConversationRuntime(ConversationService):
             outcome = "unavailable"
         elif not self._shared_consent_live(operation, route.principal):
             outcome = "unavailable"
+        elif (
+            getattr(self, "_narrative_audit", None) is not None
+            and not self._narrative_permission()
+        ):
+            outcome = "unavailable"
         elif self._worker is not None and not self._current_request.get()():
             return
         elif self._worker is not None and result.outcome == CLIENT_OUTCOME_UNCERTAIN:
@@ -1606,6 +2175,13 @@ class _DurableConversationRuntime(ConversationService):
             raise PrivacyReadBlocked("reply_sources_unavailable")
         if not self._shared_consent_live(reply.operation, route.principal):
             return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
+        if not self._narrative_reply_permitted(reply.operation):
+            return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
+        if (
+            getattr(self, "_narrative_audit", None) is not None
+            and not self._narrative_permission()
+        ):
+            return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
         evidence = self._research_evidence(operation_id)
         if evidence is not None:
             if isinstance(evidence, str) or reply.result_state is ResultState.PENDING:
@@ -1652,6 +2228,17 @@ class _DurableConversationRuntime(ConversationService):
             ):
                 return SubmittedMessage(message_status, ModelState.RESEARCH_DENIED)
         if reply.result_state is ResultState.PERSISTED:
+            if getattr(self, "_narrative_audit", None) is not None:
+                active_key = _narrative_active_key(
+                    self._event_store,
+                    "narrative:" + operation_id.removeprefix("reply:"),
+                )
+                with _NARRATIVE_ACTIVE_LOCK:
+                    if (
+                        active_key in _NARRATIVE_ACTIVE
+                        and _NARRATIVE_SUBMIT_KEY.get() != active_key
+                    ):
+                        return SubmittedMessage(message_status, ModelState.PENDING)
             if self._worker is not None and not self._current_request.get()():
                 return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
             caps = self._capabilities()
@@ -1666,6 +2253,21 @@ class _DurableConversationRuntime(ConversationService):
                         ModelState(self._skip_outcome(caps)),
                     )
                 return SubmittedMessage(message_status, ModelState.SKIPPED)
+            narrative_audit = getattr(self, "_narrative_audit", None)
+            if narrative_audit is None and self._worker is not None:
+                narrative_audit = NarrativeAuditStore(self._provider, self._event_store)
+            if narrative_audit is not None:
+                narrative_id = "narrative:" + operation_id.removeprefix("reply:")
+                status = narrative_audit.status(
+                    narrative_id,
+                    route.principal.principal_id.value,
+                    reply.operation.initiating_event_id,
+                )
+                if status in {"received", "withheld"} or (
+                    status == "accepted"
+                    and narrative_id not in reply.operation.narrative_operation_ids
+                ):
+                    return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
             validation = ProposalValidation(ReplyProposal(reply.content), None)
             grant = ActionPolicy().evaluate(validation, route, caps)
             self._outputs.release_reply(
@@ -1716,7 +2318,12 @@ class _DurableConversationRuntime(ConversationService):
                     and reply.result_state is ResultState.PERSISTED
                     and resolution == ("completed", f"release:{operation_id}")
                     and self._current_request.get()()
+                    and (
+                        getattr(self, "_narrative_audit", None) is None
+                        or self._narrative_permission()
+                    )
                     and self._shared_consent_live(reply.operation, principal)
+                    and self._narrative_reply_permitted(reply.operation)
                     and self._historical_research_permitted(principal, reply)
                 ):
                     items.append(
@@ -1734,6 +2341,12 @@ class _DurableConversationRuntime(ConversationService):
             or self._shared_guard.operations_consent_live(
                 operation.shared_operation_ids, principal
             )
+        )
+
+    def _narrative_reply_permitted(self, operation):
+        return not operation.narrative_operation_ids or (
+            getattr(self, "_narrative_audit", None) is not None
+            and self._narrative_permission()
         )
 
     def _inference_consent_live(self, principal, operation_id):
@@ -1802,6 +2415,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         memory_extraction_enabled=False,
         memory_evolution_enabled=False,
         typed_memory_enabled=False,
+        narrative_enabled=False,
+        narrative_permission_current=None,
         shared_proposals_enabled=False,
         shared_proposal_audience=(),
         **kwargs,
@@ -1818,6 +2433,10 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("memory_evolution_enabled must be bool")
         if type(typed_memory_enabled) is not bool:
             raise TypeError("typed_memory_enabled must be bool")
+        if type(narrative_enabled) is not bool:
+            raise TypeError("narrative_enabled must be bool")
+        if narrative_enabled and not callable(narrative_permission_current):
+            raise TypeError("narrative permission check required")
         if type(shared_proposals_enabled) is not bool:
             raise TypeError("shared_proposals_enabled must be bool")
         if shared_proposals_enabled and kwargs.get("shared_intelligence") is None:
@@ -1826,6 +2445,18 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             memory_extraction_enabled or memory_evolution_enabled
         ):
             raise ValueError("typed memory mode must be selected alone")
+        if narrative_enabled and (
+            memory_extraction_enabled
+            or memory_evolution_enabled
+            or typed_memory_enabled
+            or shared_proposals_enabled
+        ):
+            raise ValueError("narrative mode must be selected alone")
+        if narrative_enabled and (
+            kwargs.get("shared_intelligence") is not None
+            or kwargs.get("research_bridge") is not None
+        ):
+            raise ValueError("narrative mode cannot combine with shared or research")
         if os.path.samefile(
             provider_state._event_store.database_path, event_store.database_path
         ):
@@ -1853,6 +2484,15 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             if typed_memory_enabled
             else None
         )
+        self._narrative_audit = (
+            NarrativeAuditStore(provider_state, event_store)
+            if narrative_enabled
+            else None
+        )
+        self._narrative_store = (
+            NarrativeStore(event_store) if narrative_enabled else None
+        )
+        self._narrative_permission = narrative_permission_current
         self._shared_proposal_audit = (
             SharedProposalAuditStore(
                 provider_state,

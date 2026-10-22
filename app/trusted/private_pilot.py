@@ -239,7 +239,10 @@ class PilotAllowance:
             raise PilotAuthorityError("allowance location changed")
 
     def _transact(
-        self, operation_id: str | None, extraction_limit: int | None = None
+        self,
+        operation_id: str | None,
+        extraction_limit: int | None = None,
+        reserve_reply: bool = False,
     ) -> int | bool:
         self._inspect_file()
         try:
@@ -259,12 +262,29 @@ class PilotAllowance:
                 result = max(0, self.activation.max_operations - used)
                 if operation_id is not None:
                     result = False
-                    if used < self.activation.max_operations:
+                    reply_hold = "reply_hold:" + operation_id.removeprefix("reply:")
+                    if (
+                        operation_id.startswith("reply:")
+                        and connection.execute(
+                            "SELECT 1 FROM consumed WHERE operation_id=?", (reply_hold,)
+                        ).fetchone()
+                    ):
+                        connection.execute(
+                            "DELETE FROM consumed WHERE operation_id=?", (reply_hold,)
+                        )
+                        connection.execute(
+                            "INSERT INTO consumed VALUES (?)", (operation_id,)
+                        )
+                        result = True
+                    elif (
+                        used + (2 if reserve_reply else 1)
+                        <= self.activation.max_operations
+                    ):
                         extracted = (
                             0
                             if extraction_limit is None
                             else connection.execute(
-                                "SELECT count(*) FROM consumed WHERE operation_id LIKE 'memory:%' OR operation_id LIKE 'evolution:%' OR operation_id LIKE 'typed:%' OR operation_id LIKE 'sharedgen:%'"
+                                "SELECT count(*) FROM consumed WHERE operation_id LIKE 'memory:%' OR operation_id LIKE 'evolution:%' OR operation_id LIKE 'typed:%' OR operation_id LIKE 'sharedgen:%' OR operation_id LIKE 'narrative:%'"
                             ).fetchone()[0]
                         )
                         if extraction_limit is None or extracted < extraction_limit:
@@ -276,6 +296,14 @@ class PilotAllowance:
                                 connection.execute(
                                     "INSERT INTO consumed VALUES (?)", (operation_id,)
                                 )
+                                if reserve_reply:
+                                    connection.execute(
+                                        "INSERT INTO consumed VALUES (?)",
+                                        (
+                                            "reply_hold:"
+                                            + operation_id.removeprefix("narrative:"),
+                                        ),
+                                    )
                                 result = True
             self._inspect_file()
             return result
@@ -286,12 +314,16 @@ class PilotAllowance:
         return self._transact(None)
 
     def reserve(
-        self, operation_id: str, *, extraction_limit: int | None = None
+        self,
+        operation_id: str,
+        *,
+        extraction_limit: int | None = None,
+        reserve_reply: bool = False,
     ) -> bool:
         if (
             type(operation_id) is not str
             or re.fullmatch(
-                r"(?:memory|evolution|typed|sharedgen):[0-9a-f]{64}"
+                r"(?:memory|evolution|typed|sharedgen|narrative):[0-9a-f]{64}"
                 if extraction_limit is not None
                 else r"reply:[0-9a-f]{64}",
                 operation_id,
@@ -304,6 +336,8 @@ class PilotAllowance:
                     or not 1 <= extraction_limit <= self.activation.max_operations
                 )
             )
+            or type(reserve_reply) is not bool
+            or (reserve_reply and not operation_id.startswith("narrative:"))
         ):
             raise PilotAuthorityError("invalid pilot operation")
-        return self._transact(operation_id, extraction_limit)
+        return self._transact(operation_id, extraction_limit, reserve_reply)

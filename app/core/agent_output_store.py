@@ -20,6 +20,11 @@ from .agent_proposals import ReplyProposal
 from .events import TrustedPrincipalContext
 from .shared_graph import validate_shared_graph
 from .generic_graph import MAX_GENERIC_GRAPH_REPLIES, validate_generic_graph
+from app.cognition.narrative_store import (
+    MAX_NARRATIVE_GRAPH_REPLIES,
+    _eligible,
+    validate_narrative_graph,
+)
 
 from .store import (
     EventIdentityConflictError,
@@ -49,6 +54,7 @@ class ReplyOperation:
     source_event_ids: tuple[str, ...]
     shared_operation_ids: tuple[str, ...] = ()
     generic_operation_ids: tuple[str, ...] = ()
+    narrative_operation_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +125,15 @@ class AgentOutputStore:
             raise EventValidationError("invalid generic reply sources")
         for item in generic:
             EventStore._require_token("generic operation", item)
+        narrative = operation.narrative_operation_ids
+        if (
+            type(narrative) is not tuple
+            or len(narrative) > 16
+            or tuple(sorted(set(narrative))) != narrative
+        ):
+            raise EventValidationError("invalid narrative reply sources")
+        for item in narrative:
+            EventStore._require_token("narrative operation", item)
 
     @staticmethod
     def _binding(context: TrustedPrincipalContext, op: ReplyOperation) -> tuple:
@@ -140,6 +155,7 @@ class AgentOutputStore:
     ) -> bool:
         validate_shared_graph(db)
         validate_generic_graph(db)
+        validate_narrative_graph(db)
         all_sources = set(op.source_event_ids)
         for generic in op.generic_operation_ids:
             row = db.execute(
@@ -159,6 +175,12 @@ class AgentOutputStore:
                 )
             }
             if not dependencies <= set(op.source_event_ids):
+                return False
+        for narrative in op.narrative_operation_ids:
+            dependencies = _eligible(db, principal, narrative)
+            if dependencies is None or not set(dependencies) <= set(
+                op.source_event_ids
+            ):
                 return False
         for shared in op.shared_operation_ids:
             authorized = db.execute(
@@ -259,18 +281,27 @@ class AgentOutputStore:
                     > MAX_GENERIC_GRAPH_REPLIES
                 ):
                     raise EventValidationError("generic reply graph bound")
+                if operation.narrative_operation_ids and (
+                    db.execute(
+                        "SELECT COUNT(*) FROM protected_reply_narrative"
+                    ).fetchone()[0]
+                    + len(operation.narrative_operation_ids)
+                    > MAX_NARRATIVE_GRAPH_REPLIES
+                ):
+                    raise EventValidationError("narrative reply graph bound")
                 db.execute(
                     """
                     INSERT INTO agent_reply_operations(operation_id, audience_principal_id,
                         initiating_event_id, conversation_id, correlation_id, model_identifier,
                         prompt_version, core_self_version, source_count, shared_count,
-                        generic_count)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        generic_count, narrative_count)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                     (
                         *self._binding(context, operation),
                         len(operation.shared_operation_ids),
                         len(operation.generic_operation_ids),
+                        len(operation.narrative_operation_ids),
                     ),
                 )
                 db.executemany(
@@ -295,6 +326,13 @@ class AgentOutputStore:
                     (
                         (operation.operation_id, item, context.principal_id.value)
                         for item in operation.generic_operation_ids
+                    ),
+                )
+                db.executemany(
+                    "INSERT INTO protected_reply_narrative VALUES (?, ?, ?)",
+                    (
+                        (operation.operation_id, context.principal_id.value, item)
+                        for item in operation.narrative_operation_ids
                     ),
                 )
                 return PrivateReply(
@@ -377,6 +415,75 @@ class AgentOutputStore:
         finally:
             db.close()
 
+    def attach_narrative(
+        self,
+        context: TrustedPrincipalContext,
+        reply_operation_id: str,
+        narrative_operation_id: str,
+        *,
+        _connection: sqlite3.Connection | None = None,
+    ) -> PrivateReply:
+        """Bind a held draft to a newly committed episode before release."""
+        EventStore._validate_context(context)
+        EventStore._require_token("reply operation", reply_operation_id)
+        EventStore._require_token("narrative operation", narrative_operation_id)
+        db = _connection if _connection is not None else self._store._open()
+        try:
+            with db if _connection is None else nullcontext(db):
+                if _connection is None:
+                    db.execute("BEGIN IMMEDIATE")
+                self._store._verify_current_schema(db)
+                reply = self._read(db, context, reply_operation_id)
+                if reply is None or reply.result_state is not ResultState.PERSISTED:
+                    raise EventValidationError("held reply unavailable")
+                if (
+                    db.execute(
+                        "SELECT 1 FROM agent_reply_resolutions WHERE operation_id=?",
+                        (reply_operation_id,),
+                    ).fetchone()
+                    is not None
+                ):
+                    raise EventValidationError("reply already released")
+                if narrative_operation_id in reply.operation.narrative_operation_ids:
+                    return reply
+                if len(reply.operation.narrative_operation_ids) >= 16:
+                    raise EventValidationError("narrative reply graph bound")
+                if (
+                    db.execute(
+                        "SELECT COUNT(*) FROM protected_reply_narrative"
+                    ).fetchone()[0]
+                    >= MAX_NARRATIVE_GRAPH_REPLIES
+                ):
+                    raise EventValidationError("narrative reply graph bound")
+                dependencies = _eligible(
+                    db, context.principal_id.value, narrative_operation_id
+                )
+                if dependencies is None or not set(dependencies) <= set(
+                    reply.operation.source_event_ids
+                ):
+                    raise EventValidationError("invalid narrative reply sources")
+                db.execute(
+                    "INSERT INTO protected_reply_narrative VALUES (?, ?, ?)",
+                    (
+                        reply_operation_id,
+                        context.principal_id.value,
+                        narrative_operation_id,
+                    ),
+                )
+                db.execute(
+                    "UPDATE agent_reply_operations SET narrative_count=narrative_count+1 WHERE operation_id=?",
+                    (reply_operation_id,),
+                )
+                result = self._read(db, context, reply_operation_id)
+                if result is None:
+                    raise EventValidationError("narrative reply sources unavailable")
+                return result
+        except sqlite3.Error as error:
+            raise self._store._translated_error(error) from None
+        finally:
+            if _connection is None:
+                db.close()
+
     def read_reply(
         self, context: TrustedPrincipalContext, operation_id: str
     ) -> PrivateReply | None:
@@ -438,6 +545,15 @@ class AgentOutputStore:
         )
         if len(generic) != row[14]:
             return None
+        narrative = tuple(
+            item[0]
+            for item in db.execute(
+                "SELECT narrative_operation_id FROM protected_reply_narrative WHERE reply_operation_id=? ORDER BY narrative_operation_id",
+                (operation_id,),
+            )
+        )
+        if len(narrative) != row[15]:
+            return None
         op = ReplyOperation(
             row[0],
             row[2],
@@ -449,6 +565,7 @@ class AgentOutputStore:
             tuple(source[0] for source in sources),
             shared,
             generic,
+            narrative,
         )
         self._validate(context, op)
         try:

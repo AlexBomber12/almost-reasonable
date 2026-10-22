@@ -29,11 +29,13 @@ from app.privacy.application import PrivacyReadBlocked
 from .contracts import MemoryRecord, RetrievalPurpose, RetrievalRequest
 from .read_store import CognitionReadStore
 from .generic_store import MAX_GENERIC_SOURCES, GenericMemoryStore
+from .narrative_store import NarrativeStore
 from .retrieval import MemoryContextSelector
 
 
 MEMORY_MODEL_CONTRACT_VERSION = "model-contract-private-memory-v2"
 TRANSCRIPT_CONTEXT_CONTRACT_VERSION = "model-contract-conversation-transcript-v4"
+NARRATIVE_CONTEXT_CONTRACT_VERSION = "model-contract-private-narrative-context-v1"
 MAX_MEMORY_RECORDS = 16
 
 
@@ -172,6 +174,26 @@ def _text(value):
 
 
 @dataclass(frozen=True, slots=True)
+class FictionEpisode:
+    text: str
+    revision: int
+
+    def structured(self):
+        _text(self.text)
+        if type(self.revision) is not int or not 1 <= self.revision <= 16:
+            raise ValueError("invalid fiction revision")
+        return {
+            "text": self.text,
+            "revision": self.revision,
+            "classification": "fictional_autobiography",
+            "trust": "untrusted_fiction_data",
+            "can_instruct": False,
+            "verified_action": False,
+            "evidence": False,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class MemoryModelRequest:
     """Assembler-owned v2 input; bounded as one complete serialized request."""
 
@@ -180,6 +202,10 @@ class MemoryModelRequest:
     memories_omitted: bool
     generic_operation_ids: tuple[str, ...] = ()
     inherited_shared_operation_ids: tuple[str, ...] = ()
+    episodes: tuple[FictionEpisode, ...] = ()
+    narrative_operation_ids: tuple[str, ...] = ()
+    projected_narrative_operation_ids: tuple[str, ...] = ()
+    narrative_mode: bool = False
 
     def serialize(self) -> str:
         serialized = self._serialized()
@@ -194,16 +220,26 @@ class MemoryModelRequest:
             or len(self.memories) > MAX_MEMORY_RECORDS
             or any(type(memory) is not ModelMemory for memory in self.memories)
             or type(self.memories_omitted) is not bool
+            or type(self.narrative_mode) is not bool
+            or type(self.episodes) is not tuple
+            or len(self.episodes) > 16
+            or any(type(episode) is not FictionEpisode for episode in self.episodes)
         ):
             raise ValueError("invalid memory request")
         data = self.conversation.to_structured_data()
         data["contract_version"] = (
-            TRANSCRIPT_CONTEXT_CONTRACT_VERSION
+            NARRATIVE_CONTEXT_CONTRACT_VERSION
+            if self.narrative_mode
+            else TRANSCRIPT_CONTEXT_CONTRACT_VERSION
             if self.conversation.contract_version == TRANSCRIPT_MODEL_CONTRACT_VERSION
             else MEMORY_MODEL_CONTRACT_VERSION
         )
         data["memories"] = [memory.structured() for memory in self.memories]
         data["memories_omitted"] = self.memories_omitted
+        if self.narrative_mode:
+            data["fictional_episodes"] = [
+                episode.structured() for episode in self.episodes
+            ]
         return json.dumps(
             data, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         )
@@ -231,8 +267,19 @@ class MemoryConversationAssembler:
         self._read = CognitionReadStore(store, self._state)
         self._selector = MemoryContextSelector(store, self._state)
         self._generic = GenericMemoryStore(store)
+        self._narrative = NarrativeStore(store)
 
-    def build(self, principal, event_id, db, *, reply_permitted=lambda _reply: True):
+    def build(
+        self,
+        principal,
+        event_id,
+        db,
+        *,
+        reply_permitted=lambda _reply: True,
+        include_memories=True,
+        include_narrative=False,
+        reserve_narrative_slot=False,
+    ):
         events = self._store.retrieve_private_events_in_commit_order(
             principal,
             event_id,
@@ -242,9 +289,13 @@ class MemoryConversationAssembler:
             raise PrivacyReadBlocked("original_input_outside_context_window")
         # Relevance words use a bounded prefix; content itself is never truncated.
         topic = events[-1].content[:1024]
-        authorized = self._read.retrieve_all_private_candidate_reads(
-            principal,
-            _connection=db,
+        authorized = (
+            self._read.retrieve_all_private_candidate_reads(
+                principal,
+                _connection=db,
+            )
+            if include_memories
+            else ()
         )
         dependencies = {
             (
@@ -271,7 +322,7 @@ class MemoryConversationAssembler:
                 ): read.source_event_ids
                 for read in self._generic.current(principal, _connection=db)
             }
-        )
+        ) if include_memories else None
         generic_operations = {
             (
                 read.view.memory_kind,
@@ -279,16 +330,21 @@ class MemoryConversationAssembler:
                 read.view.revision,
             ): read.operation_id
             for read in self._generic.current(principal, _connection=db)
+            if include_memories
         }
-        selection = self._selector.select(
-            principal,
-            RetrievalRequest(
-                RetrievalPurpose.CONVERSATION,
-                topic,
-                self._limits.max_utf8_bytes,
-                MAX_MEMORY_RECORDS,
-            ),
-            _connection=db,
+        selection = (
+            self._selector.select(
+                principal,
+                RetrievalRequest(
+                    RetrievalPurpose.CONVERSATION,
+                    topic,
+                    self._limits.max_utf8_bytes,
+                    MAX_MEMORY_RECORDS,
+                ),
+                _connection=db,
+            )
+            if include_memories
+            else None
         )
         # Keep current input first, then ranked memories, then recent history.
         base = build_model_request(
@@ -298,14 +354,19 @@ class MemoryConversationAssembler:
             ).build(principal)
         )
         base = replace(base, contract_version=TRANSCRIPT_MODEL_CONTRACT_VERSION)
-        request = MemoryModelRequest(base, (), selection.records_omitted)
+        request = MemoryModelRequest(
+            base,
+            (),
+            selection.records_omitted if selection else False,
+            narrative_mode=include_narrative,
+        )
         sources = {event_id}
         if (
             not base.conversation
             or len(request.serialize().encode("utf-8")) > self._limits.max_utf8_bytes
         ):
             raise PrivacyReadBlocked("current_input_exceeds_combined_budget")
-        for record in selection.records:
+        for record in selection.records if selection else ():
             evidence = dependencies[
                 (record.memory_kind, record.item_id, record.revision)
             ]
@@ -336,11 +397,67 @@ class MemoryConversationAssembler:
                     ),
                 )
             )
+        if include_narrative:
+            narrative_limit = 15 if reserve_narrative_slot else 16
+            episodes = self._narrative.current(principal, _connection=db)
+            words = set(MemoryContextSelector._words(topic))
+            ranked = sorted(
+                episodes,
+                key=lambda episode: (
+                    len(words & set(MemoryContextSelector._words(episode.text))),
+                    episode.created_at,
+                    episode.operation_id,
+                ),
+                reverse=True,
+            )
+            for episode in ranked:
+                creator_reply = "reply:" + episode.operation_id.removeprefix(
+                    "narrative:"
+                )
+                creator_edge = db.execute(
+                    """SELECT 1 FROM protected_reply_narrative
+                       WHERE reply_operation_id=? AND principal_id=?
+                         AND narrative_operation_id=?""",
+                    (
+                        creator_reply,
+                        principal.principal_id.value,
+                        episode.operation_id,
+                    ),
+                ).fetchone()
+                if creator_edge is not None and db.execute(
+                    "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                    (creator_reply,),
+                ).fetchone() != ("completed", f"release:{creator_reply}"):
+                    continue
+                proposed = replace(
+                    request,
+                    episodes=(
+                        *request.episodes,
+                        FictionEpisode(episode.text, episode.revision),
+                    ),
+                    narrative_operation_ids=(
+                        *request.narrative_operation_ids,
+                        episode.operation_id,
+                    ),
+                    projected_narrative_operation_ids=(
+                        *request.projected_narrative_operation_ids,
+                        episode.operation_id,
+                    ),
+                )
+                if (
+                    len(proposed.narrative_operation_ids) <= narrative_limit
+                    and len(sources | set(episode.sources)) <= 100
+                    and len(proposed.serialize().encode("utf-8"))
+                    <= self._limits.max_utf8_bytes
+                ):
+                    request = proposed
+                    sources.update(episode.sources)
         history_omitted = False
         outputs = AgentOutputStore(self._store)
         selected_history = ()
         inherited_shared = set()
         inherited_generic = set(request.generic_operation_ids)
+        inherited_narrative = set(request.narrative_operation_ids)
         shared_sources = set()
 
         def source_budget_exceeded(extra_private, extra_shared):
@@ -395,6 +512,9 @@ class MemoryConversationAssembler:
             extra_generic = (
                 set(reply.operation.generic_operation_ids) if released else set()
             )
+            extra_narrative = (
+                set(reply.operation.narrative_operation_ids) if released else set()
+            )
             extra_shared_sources = {
                 row[0]
                 for shared_id in extra_shared
@@ -420,6 +540,8 @@ class MemoryConversationAssembler:
                 )
                 or len(inherited_shared | extra_shared) > 16
                 or len(inherited_generic | extra_generic) > 16
+                or len(inherited_narrative | extra_narrative)
+                > (15 if reserve_narrative_slot else 16)
                 or len(proposed._serialized().encode("utf-8"))
                 > self._limits.max_utf8_bytes
             ):
@@ -428,6 +550,7 @@ class MemoryConversationAssembler:
                 extra_sources = set()
                 extra_shared = set()
                 extra_generic = set()
+                extra_narrative = set()
                 extra_shared_sources = set()
                 proposed = replace(
                     request,
@@ -448,6 +571,7 @@ class MemoryConversationAssembler:
             sources.update({event.event_id} | extra_sources)
             inherited_shared.update(extra_shared)
             inherited_generic.update(extra_generic)
+            inherited_narrative.update(extra_narrative)
             shared_sources.update(extra_shared_sources)
             request = proposed
         request = replace(
@@ -461,4 +585,5 @@ class MemoryConversationAssembler:
             request,
             generic_operation_ids=tuple(sorted(inherited_generic)),
             inherited_shared_operation_ids=tuple(sorted(inherited_shared)),
+            narrative_operation_ids=tuple(sorted(inherited_narrative)),
         ), tuple(sorted(sources))
