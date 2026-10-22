@@ -2067,6 +2067,9 @@ def test_confirmation_checks_exact_offered_research_record(tmp_path, monkeypatch
             "decided_at": (clock.now() + timedelta(minutes=1)).isoformat(),
         }
         with app.journal.transaction() as db:
+            assert app.mission_evolution.offered_evidence_in(
+                db, {"mission_evidence_operation": None}
+            )
             assert not app.mission_evolution.offered_evidence_in(
                 db,
                 payload
@@ -2645,6 +2648,92 @@ def test_newer_research_completion_before_decision_commit_holds_operation(
         assert len(inserted) == 1
         assert app.journal.read(app.wakeup_operation("wake-2"))["phase"] == "held"
         assert app.mission_evolution.pending() is not None
+    finally:
+        worker.close()
+
+
+def test_proposal_rechecks_research_capacity_before_intent_commit(
+    tmp_path, monkeypatch
+):
+    app, worker, _, _, _ = configured(
+        tmp_path,
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        },
+    )
+    try:
+        original_finish = app.journal.finish
+        consumed = []
+
+        def finish_after_capacity_consumed(operation, payload, **kwargs):
+            if kwargs.get("admissible"):
+                with app.journal.transaction() as db:
+                    db.execute(
+                        "INSERT INTO public_research_ops VALUES(?,?,?,?,?,NULL)",
+                        (
+                            "competing-research",
+                            "competing-research-id",
+                            "ocean",
+                            app.current_research_profile().digest,
+                            "started",
+                        ),
+                    )
+                consumed.append(None)
+            return original_finish(operation, payload, **kwargs)
+
+        monkeypatch.setattr(app.journal, "finish", finish_after_capacity_consumed)
+        run_once(app, worker)
+        assert len(consumed) == 1
+        assert app.available_topics(app.current_research_profile()) == ()
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "held"
+        assert app.mission_evolution.document().proposals == ()
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("pending", [False, True])
+def test_legacy_research_remains_visible_without_pending_proposal(tmp_path, pending):
+    decision = (
+        {
+            "decision": "mission",
+            "mission_action": "propose",
+            "mission_purpose": "research",
+        }
+        if pending
+        else {"decision": "no_action", "reason_category": "low_value"}
+    )
+    app, worker, _, _, _ = configured(tmp_path, decision)
+    try:
+        run_once(app, worker)
+        profile = app.current_research_profile()
+        research = {
+            **app.journal.read(app.wakeup_operation("wake-1")),
+            "decision": "research",
+            "topic": "ocean",
+            "profile_digest": profile.digest,
+        }
+        with app.journal.transaction() as db:
+            db.execute(
+                "INSERT INTO intents VALUES(?,?,?)",
+                ("legacy-research", "linked", json.dumps(research)),
+            )
+            db.execute(
+                "INSERT INTO public_research_ops VALUES(?,?,?,?,?,?)",
+                (
+                    "legacy-research",
+                    "legacy-research-id",
+                    "ocean",
+                    profile.digest,
+                    "completed",
+                    "legacy evidence",
+                ),
+            )
+        _, evidence, source = app._public_context_with_source(profile)
+        assert (evidence, source) == (
+            ((), None) if pending else (("legacy evidence",), "legacy-research")
+        )
     finally:
         worker.close()
 

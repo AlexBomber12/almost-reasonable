@@ -489,7 +489,7 @@ class ThreadsRuntime(ThreadsStage0):
             ),
             reverse=True,
         ):
-            if self.mission_evolution is not None and row["completed_at"] is None:
+            if pending is not None and row["completed_at"] is None:
                 continue
             if pending is not None and (
                 datetime.fromisoformat(row["completed_at"])
@@ -518,9 +518,12 @@ class ThreadsRuntime(ThreadsStage0):
         if profile is None:
             return ()
         with self.journal.transaction() as db:
-            rows = db.execute(
-                "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
-            ).fetchall()
+            return self._available_topics_in(db, profile)
+
+    def _available_topics_in(self, db, profile):
+        rows = db.execute(
+            "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
+        ).fetchall()
         counts = dict(rows)
         if sum(counts.values()) >= profile.aggregate_limit:
             return ()
@@ -860,7 +863,17 @@ class ThreadsRuntime(ThreadsStage0):
                     and source == origin["mission_evidence_operation"]
                     and public_context_digest(evidence)
                     == origin["mission_evidence_digest"]
-                    and self.mission_evolution.offered_evidence_in(db, payload)
+                    and (
+                        payload.get("mission_action") != "propose"
+                        or (
+                            profile is not None
+                            and bool(self._available_topics_in(db, profile))
+                        )
+                    )
+                    and (
+                        payload.get("mission_action") not in ("confirm", "reject")
+                        or self.mission_evolution.offered_evidence_in(db, payload)
+                    )
                 )
             except (PolicyDeniedError, ValueError):
                 return False
