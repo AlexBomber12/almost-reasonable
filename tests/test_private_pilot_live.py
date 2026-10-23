@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import stat
 import sys
 from types import SimpleNamespace
 
@@ -288,6 +289,35 @@ def test_control_files_reject_symlinks_and_creation_race(tmp_path, monkeypatch):
     assert target.read_text() == "keep"
 
 
+def test_state_directory_preparation_rejects_symlinks_and_worker_owner(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
+    target = tmp_path / "target"
+    target.mkdir(mode=0o755)
+    target.chmod(0o755)
+    linked = tmp_path / "state"
+    linked.symlink_to(target, target_is_directory=True)
+    with pytest.raises(OSError):
+        live._prepare_state_directory(linked)
+    with pytest.raises(OSError):
+        live._prepare_service_directory(linked, live.WORKER_UID, live.WORKER_UID, 0o700)
+    assert stat.S_IMODE(target.stat().st_mode) == 0o755
+    assert target.stat().st_uid == os.geteuid()
+
+    linked.unlink()
+    linked.mkdir(mode=0o700)
+    monkeypatch.setattr(
+        live.os,
+        "fstat",
+        lambda _fd: SimpleNamespace(
+            st_uid=live.WORKER_UID, st_mode=stat.S_IFDIR | 0o700
+        ),
+    )
+    with pytest.raises(ValueError, match="unsafe state directory"):
+        live._prepare_state_directory(linked)
+
+
 @pytest.mark.parametrize("invalid", ["history", "transcript"])
 def test_journey_validation_survives_optimized_python(invalid):
     script = f"""
@@ -407,6 +437,16 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     monkeypatch.setattr(live, "_protected", lambda *_: None)
     monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
     monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+    monkeypatch.setattr(
+        live,
+        "_prepare_state_directory",
+        lambda path: path.mkdir(mode=0o700, exist_ok=True),
+    )
+    monkeypatch.setattr(
+        live,
+        "_prepare_service_directory",
+        lambda path, _uid, _gid, mode: path.mkdir(mode=mode, exist_ok=True),
+    )
 
     def write_control(path, payload, _uid, *, create_only=False):
         if create_only and path.exists():

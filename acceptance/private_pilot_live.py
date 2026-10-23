@@ -128,6 +128,28 @@ def _write_control(path, payload, uid, *, create_only=False):
         os.close(fd)
 
 
+def _prepare_state_directory(path):
+    _protected_parents(path, 0)
+    path.mkdir(mode=0o700, exist_ok=True)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        entry = os.fstat(fd)
+        if entry.st_uid != 0 or stat.S_IMODE(entry.st_mode) != 0o700:
+            raise ValueError(f"unsafe state directory: {path}")
+    finally:
+        os.close(fd)
+
+
+def _prepare_service_directory(path, uid, gid, mode):
+    path.mkdir(mode=mode, exist_ok=True)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        os.fchown(fd, uid, gid)
+        os.fchmod(fd, mode)
+    finally:
+        os.close(fd)
+
+
 def _write_report(path, report):
     _protected_parents(path, os.geteuid())
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -478,13 +500,11 @@ def run(args):
         or urlsplit(args.origin).hostname is None
     ):
         raise ValueError("an approved HTTPS origin is required")
-    if args.state_root.exists() and args.state_root.is_symlink():
-        raise ValueError("state root cannot be a symlink")
     args.report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _protected_parents(args.report, os.geteuid())
     if args.report.exists() or args.report.is_symlink():
         _protected(args.report, 0o600, os.geteuid())
-    args.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _prepare_state_directory(args.state_root)
     if args.aggregate_ledger.exists() or args.aggregate_ledger.is_symlink():
         _protected(args.aggregate_ledger, 0o600, 0)
     run_id = uuid4().hex
@@ -494,15 +514,15 @@ def run(args):
     secret_dir = args.state_root / "secrets"
     app_dir = args.state_root / "runs" / run_id / "app"
     _protected(secret_dir / "openai-api-key", 0o400, WORKER_UID)
+    _prepare_state_directory(args.state_root / "runs")
+    _prepare_state_directory(args.state_root / "runs" / run_id)
     for path, uid, gid, mode in (
         (socket_dir, WORKER_UID, 11020, 0o710),
         (worker_dir, WORKER_UID, WORKER_UID, 0o700),
         (control_dir, WORKER_UID, WORKER_UID, 0o700),
         (app_dir, APP_UID, APP_UID, 0o700),
     ):
-        path.mkdir(mode=mode, parents=True, exist_ok=True)
-        os.chown(path, uid, gid)
-        path.chmod(mode)
+        _prepare_service_directory(path, uid, gid, mode)
     activation_target = control_dir / "activation.json"
     if activation_target.exists() or activation_target.is_symlink():
         if _read_protected(activation_target, 0o400, WORKER_UID) != activation_bytes:

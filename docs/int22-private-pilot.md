@@ -295,6 +295,11 @@ must cover these values, the synthetic account, host and execution window.
 
 Before invoking the command, stage the worker-owned `0400` credential at
 `STATE_ROOT/secrets/openai-api-key` through the approved secret procedure and
+precreate `STATE_ROOT` as a root-owned `0700` directory beneath protected
+ancestors. The runner also requires root-owned `0700` `runs` directories and
+rejects symlinked state or service directories before changing their ownership.
+The worker-owned `secrets`, `worker`, and `control` entries remain inside that
+root-owned state root. The state root's parent must already exist. Also
 make the approved HTTPS origin route to the isolated Compose app's loopback
 port. Keep `STATE_ROOT` and `AGGREGATE_LEDGER` outside the working server state;
 retain both across run IDs and commits. The command prompts for synthetic owner
