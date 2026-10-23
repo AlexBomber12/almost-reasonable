@@ -944,6 +944,7 @@ def attempt(
         "worker_not_ready",
         "interrupted",
         "cleanup_sigint",
+        "cleanup_progress_failure",
         "continued",
     ],
 )
@@ -1041,6 +1042,15 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         path.chmod(0o600)
 
     monkeypatch.setattr(live, "_write_report", write_report)
+    if case == "cleanup_progress_failure":
+        original_progress = live._progress
+
+        def progress(path, report, phase):
+            if phase == "cleanup":
+                raise OSError("synthetic report filesystem failure")
+            original_progress(path, report, phase)
+
+        monkeypatch.setattr(live, "_progress", progress)
     monkeypatch.setattr(live, "getpass", lambda _: "synthetic-password")
     real_stop = live._stop_file
 
@@ -1308,6 +1318,11 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         assert len(sends) == 1
     if case in {"interrupted", "cleanup_sigint"}:
         assert report["error"] == "KeyboardInterrupt"
+    if case == "cleanup_progress_failure":
+        assert report["cleanup_progress_error"] is True
+        assert ("worker_stop", True) in events
+        assert ("owner_stop", True) in events
+        assert len(sends) == 3
     if case == "interrupted":
         assert sends == []
         assert report["provider_attempts"] == 0
@@ -1326,7 +1341,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         assert report["estimated_cost_total"] is None
         assert report["cost_estimate_statuses"] == ["pricing_unavailable"]
     output = capsys.readouterr().err
-    assert "Acceptance phase: cleanup" in output
+    if case != "cleanup_progress_failure":
+        assert "Acceptance phase: cleanup" in output
     assert "synthetic-password" not in output
     assert FIRST not in output
     assert replies[0] not in output

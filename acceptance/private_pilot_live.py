@@ -1109,7 +1109,10 @@ def run(args):
         cleanup_interrupted = [False]
         try:
             with _ignore_sigint(lambda: cleanup_interrupted.__setitem__(0, True)):
-                _progress(args.report, report, "cleanup")
+                try:
+                    _progress(args.report, report, "cleanup")
+                except Exception:
+                    report["cleanup_progress_error"] = True
                 try:
                     _stop_file(stop, True)
                     report["worker_stop"] = json.loads(stop.read_text())["stop"] is True
@@ -1210,6 +1213,7 @@ def run(args):
                     or report.get("container_stop_error")
                     or report.get("accounting_error")
                     or report.get("token_limit_exceeded")
+                    or report.get("cleanup_progress_error")
                 ):
                     if report["status"] != "interrupted":
                         report["status"] = "failed"
