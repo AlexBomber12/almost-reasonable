@@ -33,7 +33,19 @@ def _utc(value):
     return result
 
 
+def _protected_parents(path, uid):
+    for directory in (path.parent, *path.parent.parents):
+        parent = directory.lstat()
+        if (
+            not stat.S_ISDIR(parent.st_mode)
+            or parent.st_uid not in {0, uid}
+            or stat.S_IMODE(parent.st_mode) & 0o022
+        ):
+            raise ValueError(f"unsafe protected directory: {directory}")
+
+
 def _protected(path, mode, uid):
+    _protected_parents(path, uid)
     entry = path.lstat()
     if (
         not stat.S_ISREG(entry.st_mode)
@@ -42,6 +54,26 @@ def _protected(path, mode, uid):
         or entry.st_nlink != 1
     ):
         raise ValueError(f"unsafe protected file: {path}")
+    return entry
+
+
+def _read_protected(path, mode, uid):
+    entry = _protected(path, mode, uid)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        opened = os.fstat(fd)
+        if (
+            (opened.st_dev, opened.st_ino) != (entry.st_dev, entry.st_ino)
+            or not stat.S_ISREG(opened.st_mode)
+            or stat.S_IMODE(opened.st_mode) != mode
+            or opened.st_uid != uid
+            or opened.st_nlink != 1
+        ):
+            raise ValueError(f"protected file changed while opening: {path}")
+        with os.fdopen(fd, "rb", closefd=False) as source:
+            return source.read()
+    finally:
+        os.close(fd)
 
 
 def validate_authorization(approval, activation, commit, now):
@@ -362,10 +394,9 @@ def run(args):
     commit = _command(("git", "rev-parse", "HEAD"), os.environ.copy())
     if _command(("git", "status", "--porcelain"), os.environ.copy()):
         raise ValueError("checkout must be clean")
-    _protected(args.authorization, 0o400, 0)
-    _protected(args.activation, 0o400, 0)
-    approval = json.loads(args.authorization.read_text())
-    activation = json.loads(args.activation.read_text())
+    approval = json.loads(_read_protected(args.authorization, 0o400, 0))
+    activation_bytes = _read_protected(args.activation, 0o400, 0)
+    activation = json.loads(activation_bytes)
     validate_authorization(approval, activation, commit, datetime.now(UTC))
     if (
         urlsplit(args.origin).scheme != "https"
@@ -395,11 +426,10 @@ def run(args):
         path.chmod(mode)
     activation_target = control_dir / "activation.json"
     if activation_target.exists():
-        _protected(activation_target, 0o400, WORKER_UID)
-        if activation_target.read_bytes() != args.activation.read_bytes():
+        if _read_protected(activation_target, 0o400, WORKER_UID) != activation_bytes:
             raise ValueError("existing allowance is bound to another activation")
     else:
-        activation_target.write_bytes(args.activation.read_bytes())
+        activation_target.write_bytes(activation_bytes)
         os.chown(activation_target, WORKER_UID, WORKER_UID)
         activation_target.chmod(0o400)
     stop = control_dir / "emergency-stop.json"

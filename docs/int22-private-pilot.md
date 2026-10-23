@@ -300,7 +300,13 @@ port. Keep `STATE_ROOT` and `AGGREGATE_LEDGER` outside the working server state;
 retain both across run IDs and commits. The command prompts for synthetic owner
 and participant passwords before opening the activation window. The activation
 window can start up to ten minutes after preparation begins; provide enough
-time for image build and state initialization. The one command is:
+time for image build and state initialization.
+
+Place authorization, activation, credential, control, and aggregate-ledger
+files beneath directories owned by root or the file's service owner, without
+group or world write permission. The runner verifies each parent directory
+and opens authorization and activation through checked file descriptors.
+The one command is:
 
 ```sh
 sudo python -m acceptance.private_pilot_live \

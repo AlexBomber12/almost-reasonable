@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 import hashlib
 import json
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -83,7 +84,10 @@ def test_live_authorization_requires_task_scope_limits_and_current_commit():
         validate_authorization(approval(), changed_activation, "synthetic-commit", NOW)
 
 
-def test_aggregate_allowance_is_durable_across_run_ids_and_commit_changes(tmp_path):
+def test_aggregate_allowance_is_durable_across_run_ids_and_commit_changes(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
     ledger = tmp_path / "aggregate.sqlite3"
     approved = approval()
     assert reserve_aggregate(ledger, approved, "first-run") == 3
@@ -110,6 +114,34 @@ def test_contradictory_mars_text_does_not_pass_destination_oracle():
 
     with pytest.raises(AssertionError, match="Mars"):
         run_ship_journey(send, lambda: [], lambda: None)
+
+
+def test_protected_file_rejects_writable_parent_and_open_replacement(
+    tmp_path, monkeypatch
+):
+    unsafe = tmp_path / "unsafe"
+    unsafe.mkdir(mode=0o770)
+    unsafe.chmod(0o770)
+    protected = unsafe / "approval.json"
+    protected.write_bytes(b"approved")
+    protected.chmod(0o400)
+    with pytest.raises(ValueError, match="unsafe protected directory"):
+        live._protected(protected, 0o400, os.geteuid())
+
+    monkeypatch.setattr(live, "_protected", lambda path, _mode, _uid: path.lstat())
+    assert live._read_protected(protected, 0o400, os.geteuid()) == b"approved"
+    original_open = live.os.open
+
+    def replace_before_open(path, flags):
+        replacement = unsafe / "replacement.json"
+        replacement.write_bytes(b"substituted")
+        replacement.chmod(0o400)
+        replacement.replace(path)
+        return original_open(path, flags)
+
+    monkeypatch.setattr(live.os, "open", replace_before_open)
+    with pytest.raises(ValueError, match="changed while opening"):
+        live._read_protected(protected, 0o400, os.geteuid())
 
 
 def attempt(
@@ -201,6 +233,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     monkeypatch.setattr(live.os, "geteuid", lambda: 0)
     monkeypatch.setattr(live.os, "chown", lambda *_: None)
     monkeypatch.setattr(live, "_protected", lambda *_: None)
+    monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
     monkeypatch.setattr(live, "getpass", lambda _: "synthetic-password")
     real_stop = live._stop_file
 
