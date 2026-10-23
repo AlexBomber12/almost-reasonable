@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import stat
 import sys
@@ -20,6 +21,70 @@ from acceptance.private_pilot_live import (
     reserve_aggregate,
     validate_authorization,
 )
+
+
+def test_effective_compose_keeps_static_backend_on_internal_network(tmp_path):
+    if shutil.which("docker") is None:
+        pytest.skip("Docker Compose unavailable")
+    env = os.environ.copy()
+    env.update(
+        {
+            "PILOT_SOCKET_DIR": str(tmp_path / "ipc"),
+            "PILOT_WORKER_STATE_DIR": str(tmp_path / "worker"),
+            "PILOT_CONTROL_DIR": str(tmp_path / "control"),
+            "PILOT_SECRET_DIR": str(tmp_path / "secrets"),
+            "PILOT_APP_STATE_DIR": str(tmp_path / "app"),
+            "PILOT_ALLOWED_HOST": "acceptance.test",
+            "PILOT_ALLOWED_ORIGIN": "https://acceptance.test",
+            "PILOT_APP_SUBNET": "172.30.252.0/29",
+            "PILOT_APP_IP": "172.30.252.3",
+        }
+    )
+    result = subprocess.run(
+        [*live.COMPOSE, "config", "--format", "json"],
+        cwd=Path(__file__).resolve().parents[1],
+        env=env,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    config = json.loads(result.stdout)
+    app = config["services"]["private-app"]
+    assert "ports" not in app
+    assert app["networks"]["app-local"]["ipv4_address"] == "172.30.252.3"
+    assert set(app["networks"]) == {"app-local"}
+    network = config["networks"]["app-local"]
+    assert network["internal"] is True
+    assert network["ipam"]["config"] == [{"subnet": "172.30.252.0/29"}]
+
+
+def test_backend_conflict_check_rejects_docker_and_host_overlap(monkeypatch):
+    subnet, address = live._backend_network("172.30.252.0/29", "172.30.252.3")
+    assert str(address) == "172.30.252.3"
+    for invalid in ("172.30.252.1", "172.30.252.8", "127.0.0.1"):
+        with pytest.raises(ValueError, match="invalid acceptance backend"):
+            live._backend_network("172.30.252.0/29", invalid)
+    with pytest.raises(ValueError, match="invalid acceptance backend"):
+        live._backend_network("not-a-subnet", "172.30.252.3")
+
+    def commands(docker_subnet, route_subnet):
+        def command(parts, _env):
+            if parts[:3] == ("docker", "network", "ls"):
+                return "network-id"
+            if parts[:3] == ("docker", "network", "inspect"):
+                return json.dumps([{"IPAM": {"Config": [{"Subnet": docker_subnet}]}}])
+            return json.dumps([{"dst": route_subnet}])
+
+        return command
+
+    monkeypatch.setattr(live, "_command", commands("172.30.252.0/24", "10.0.0.0/8"))
+    with pytest.raises(ValueError, match="Docker network"):
+        live._check_backend_conflicts(subnet, {})
+    monkeypatch.setattr(live, "_command", commands("172.20.0.0/16", "172.30.252.0/24"))
+    with pytest.raises(ValueError, match="host route"):
+        live._check_backend_conflicts(subnet, {})
+    monkeypatch.setattr(live, "_command", commands("172.20.0.0/16", "10.0.0.0/8"))
+    live._check_backend_conflicts(subnet, {})
 
 
 NOW = datetime(2030, 1, 1, tzinfo=UTC)
@@ -199,10 +264,13 @@ def test_report_symlink_is_rejected_before_preparation(tmp_path, monkeypatch):
         state_root=tmp_path / "state",
         aggregate_ledger=tmp_path / "aggregate.sqlite3",
         origin="https://chat.test",
+        backend_subnet="172.30.252.0/29",
+        backend_ip="172.30.252.3",
         report=report_path,
     )
     monkeypatch.setattr(live.os, "geteuid", lambda: 0)
     monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+    monkeypatch.setattr(live, "_check_backend_conflicts", lambda *_: None)
 
     def command(parts, _env):
         return "synthetic-commit" if parts[:2] == ("git", "rev-parse") else ""
@@ -226,6 +294,8 @@ def test_duplicate_authorization_is_rejected_before_preparation(tmp_path, monkey
         state_root=tmp_path / "state",
         aggregate_ledger=tmp_path / "aggregate.sqlite3",
         origin="https://chat.test",
+        backend_subnet="172.30.252.0/29",
+        backend_ip="172.30.252.3",
         report=tmp_path / "report.json",
     )
     monkeypatch.setattr(live.os, "geteuid", lambda: 0)
@@ -393,6 +463,8 @@ def attempt(
         "wrong_correlation",
         "unresolved",
         "expired_mid_journey",
+        "route_failure",
+        "restart_route_failure",
     ],
 )
 def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, case):
@@ -428,15 +500,19 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
         state_root=state_dir,
         aggregate_ledger=tmp_path / "aggregate.sqlite3",
         origin="https://chat.test",
+        backend_subnet="172.30.252.0/29",
+        backend_ip="172.30.252.3",
         report=tmp_path / "report.json",
     )
     commands = []
     owner_changes = []
+    events = []
     monkeypatch.setattr(live.os, "geteuid", lambda: 0)
     monkeypatch.setattr(live.os, "chown", lambda *_: None)
     monkeypatch.setattr(live, "_protected", lambda *_: None)
     monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
     monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+    monkeypatch.setattr(live, "_check_backend_conflicts", lambda *_: None)
     monkeypatch.setattr(
         live,
         "_prepare_state_directory",
@@ -465,6 +541,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     real_stop = live._stop_file
 
     def stop(path, active):
+        events.append(("worker_stop", active))
         if path.exists():
             path.chmod(0o600)
         real_stop(path, active)
@@ -484,6 +561,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
         if parts == ("build",):
             assert _kwargs["timeout"] == 600
         commands.append(parts)
+        if parts[:2] == ("up", "-d"):
+            events.append(("up", parts[2:]))
         return ""
 
     monkeypatch.setattr(live, "_compose", compose)
@@ -515,11 +594,19 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
         return ""
 
     monkeypatch.setattr(live, "_worker_python", worker_python)
-    monkeypatch.setattr(
-        live,
-        "_owner_change",
-        lambda _env, _password, active: owner_changes.append(active),
-    )
+
+    def owner_change(_env, _password, active):
+        owner_changes.append(active)
+        events.append(("owner_stop", active))
+
+    monkeypatch.setattr(live, "_owner_change", owner_change)
+    original_reserve = live.reserve_aggregate
+
+    def reserve(*values):
+        events.append(("reserve", None))
+        return original_reserve(*values)
+
+    monkeypatch.setattr(live, "reserve_aggregate", reserve)
     replies = (
         "Искра",
         "Корабль: Искра; Назначение: Юпитер",
@@ -529,14 +616,22 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     sends = []
 
     class Participant:
-        def __init__(self, _origin):
-            pass
+        def __init__(self, _origin, username):
+            self.username = username
 
         def login(self, _password):
             pass
 
         def request(self, method, path, payload=None):
             nonlocal history_seen
+            if path == "/session":
+                events.append(("session", None))
+                if case == "route_failure" or (
+                    case == "restart_route_failure"
+                    and ("restart", "private-app") in commands
+                ):
+                    return {"authenticated": False}
+                return {"authenticated": True, "username": self.username}
             if path == "/api/history":
                 history_seen = True
                 return {"messages": transcript}
@@ -604,7 +699,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     else:
         with pytest.raises(
             (ValueError, RuntimeError),
-            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match",
+            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route",
         ):
             live.run(args)
     report = json.loads(args.report.read_text())
@@ -616,11 +711,28 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     assert report["worker_stop"] is True
     assert report["owner_stop"] is True
     assert report["running_services"] == []
-    assert owner_changes == [False, True]
+    if case == "route_failure":
+        assert owner_changes == [True, True]
+        assert ("reserve", None) not in events
+        assert ("worker_stop", False) not in events
+        assert report.get("backend_ready") is None
+        assert (
+            report["backend_error"] == "HTTPS route does not reach this acceptance app"
+        )
+        assert sends == []
+    else:
+        assert owner_changes == [True, False, True]
+        assert events.index(("up", ("private-app",))) < events.index(("session", None))
+        assert events.index(("session", None)) < events.index(("reserve", None))
+        assert events.index(("reserve", None)) < events.index(("worker_stop", False))
+        assert report["backend_ready"] is True
     assert any(parts[:2] == ("stop", "private-app") for parts in commands)
     assert Path(args.report).stat().st_mode & 0o777 == 0o600
     if case in {"limit_after_first", "unknown_after_first"}:
         assert len(sends) == 1
+    if case == "restart_route_failure":
+        assert len(sends) == 2
+        assert report["backend_error"] == "HTTPS route changed after app restart"
     if case in {"passed", "exact_limit_final", "pricing_unavailable"}:
         assert [item["content"] for item in sends] == [FIRST, ASK, MARS]
         assert report["provider_attempts"] == 3

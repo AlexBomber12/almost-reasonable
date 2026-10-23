@@ -114,8 +114,10 @@ docker compose -f ops/compose.private-pilot.yaml build
 Build uses pinned base and SDK dependency versions. The app container has no
 provider credential mount, no worker provider/allowance database mount and no
 SDK dependency. The worker has no application store mount. Only the AF_UNIX
-socket directory is shared. The app's network is internal and its HTTP port is
-published on host loopback for a separately reviewed HTTPS reverse proxy. The
+socket directory is shared. The app's network is internal. The base Compose
+file retains a loopback publication for the existing pilot, but that port is
+not reachable on the intended AI-Server host. The acceptance override removes
+it and assigns a fixed backend IP for the existing SSH-forward path. The
 worker alone has a provider-egress network. Confirm host firewall, DNS, network
 namespace, proxy, UID/GID and mount behavior on the target host; Compose text is
 configuration evidence, not proof of deployed isolation.
@@ -299,9 +301,8 @@ precreate `STATE_ROOT` as a root-owned `0700` directory beneath protected
 ancestors. The runner also requires root-owned `0700` `runs` directories and
 rejects symlinked state or service directories before changing their ownership.
 The worker-owned `secrets`, `worker`, and `control` entries remain inside that
-root-owned state root. The state root's parent must already exist. Also
-make the approved HTTPS origin route to the isolated Compose app's loopback
-port. Keep `STATE_ROOT` and `AGGREGATE_LEDGER` outside the working server state;
+root-owned state root. The state root's parent must already exist. Keep
+`STATE_ROOT` and `AGGREGATE_LEDGER` outside the working server state;
 retain both across run IDs and commits. The command prompts for synthetic owner
 and participant passwords before opening the activation window. The activation
 window can start up to ten minutes after preparation begins; provide enough
@@ -312,6 +313,69 @@ Place authorization, activation, credential, control, aggregate-ledger, and repo
 files beneath directories owned by root or the file's service owner, without
 group or world write permission. The runner verifies each parent directory
 and opens authorization, activation, and the report through checked descriptors.
+
+### AI-Server: prepare the acceptance backend
+
+Choose a private subnet and container address unused by all Docker networks
+and host routes. The values below are examples; replace them if the preflight
+finds a conflict. The acceptance override uses a fresh Compose project per
+run, an internal app network, and a fixed container address. It publishes no
+host port and does not attach the app to provider egress. Keep the existing
+pilot's project, network, container IP, state, and services untouched.
+
+```sh
+cd /path/to/reviewed/almost-reasonable
+export ACCEPTANCE_SUBNET=172.30.252.0/29 ACCEPTANCE_IP=172.30.252.3
+ip -4 route show
+docker network ls
+scripts/probe_private_pilot_backend.sh "$ACCEPTANCE_SUBNET" "$ACCEPTANCE_IP"
+```
+
+The probe checks Docker and host-route conflicts before creating anything,
+starts a temporary HTTP server on a temporary internal network at the chosen
+address, checks HTTP from inside that network and from the AI-Server host,
+restarts that container, checks its fixed address and HTTP again, then removes
+only its own container and network. It uses the locally built app image and no
+provider credential. Do not continue if the host HTTP check fails. Recheck
+network conflicts immediately before the runner; inspect any old acceptance
+network and have its owner remove it before choosing the same subnet again.
+
+### SERVER: prepare the existing HTTPS and SSH path
+
+Use a dedicated acceptance HTTPS hostname and a free SERVER loopback port.
+Check the port before starting the forward; if it is occupied, identify the
+owner instead of replacing the working pilot's forward. Configure the existing
+nginx HTTPS server block for that hostname to proxy to
+`http://127.0.0.1:18032` with the original Host and HTTPS scheme headers.
+For example, its location can contain `proxy_pass http://127.0.0.1:18032;`,
+`proxy_set_header Host $host;`, and
+`proxy_set_header X-Forwarded-Proto https;`. Keep its existing TLS configuration.
+In a supervised SERVER session, establish the forward before starting the
+runner on AI-Server:
+
+```sh
+ss -H -ltnp '( sport = :18032 )'  # must be empty before creating this forward
+ssh -NT -o ExitOnForwardFailure=yes -o ServerAliveInterval=15 \
+  -o ServerAliveCountMax=3 \
+  -L 127.0.0.1:18032:172.30.252.3:8000 operator@192.168.50.4
+```
+
+The target IP is fixed, so this same forward survives the application's
+restart between messages. The AI-Server runner starts the exact acceptance
+app while both owner and worker Stops remain enabled, then requires an
+authenticated `GET /session` through the approved HTTPS origin to return its
+new per-run account name. Wrong routing or a failed tunnel stops the run before
+aggregate reservation, worker allowance preparation, or either Stop is opened.
+The exact app route cannot be tested until the app starts; the runner performs
+that test in its stopped readiness phase, before the paid window. From SERVER,
+`curl -fsS https://approved-synthetic-host.example/login` can independently
+confirm the HTTPS path at that point. The runner also checks the authenticated
+route after the application-only restart. A route failure is recorded as a
+bounded `backend_error` in the protected report; subnet conflicts are printed
+by the runner before it creates acceptance state or networks.
+
+### AI-Server: run only after separate paid authorization
+
 The one command is:
 
 ```sh
@@ -321,6 +385,8 @@ sudo python -m acceptance.private_pilot_live \
   --state-root /srv/almost-reasonable/synthetic-ship-acceptance \
   --aggregate-ledger /srv/almost-reasonable/synthetic-ship-aggregate.sqlite3 \
   --origin https://approved-synthetic-host.example \
+  --backend-subnet "$ACCEPTANCE_SUBNET" \
+  --backend-ip "$ACCEPTANCE_IP" \
   --report /protected/ship-acceptance-report.json
 ```
 
@@ -337,6 +403,10 @@ inspects the actual serialized provider request after restart, including roles,
 trust labels and the earlier released assistant reply. The destination answers
 must match the requested single-line `Корабль: <имя>; Назначение: <планета>`
 format exactly; merely mentioning Mars in a denial does not pass.
+After the run, stop only the dedicated acceptance SSH forward on SERVER and
+inspect the runner's `compose_project` before removing acceptance-owned
+containers or its network. Preserve the acceptance worker state and aggregate
+ledger for accounting review; leave the existing working pilot untouched.
 
 The aggregate ledger reserves all three operations before contact. Failed or
 interrupted runs keep that reservation. The worker's separate SQLite allowance

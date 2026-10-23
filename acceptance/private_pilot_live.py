@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from getpass import getpass
 from http.cookiejar import CookieJar
+from ipaddress import ip_address, ip_network
 import json
 import os
 from pathlib import Path
@@ -21,11 +22,79 @@ from uuid import uuid4
 from acceptance.private_pilot_conversation import run_ship_journey
 
 
-COMPOSE = ("docker", "compose", "-f", "ops/compose.private-pilot.yaml")
+COMPOSE = (
+    "docker",
+    "compose",
+    "-f",
+    "ops/compose.private-pilot.yaml",
+    "-f",
+    "ops/compose.private-pilot-acceptance.yaml",
+)
 TASK = "synthetic-private-pilot-ship-restart-mars"
 MODEL = "gpt-6-luna"
 APP_UID = 11022
 WORKER_UID = 11021
+
+
+class BackendConfigurationError(ValueError):
+    """Safe operator-facing network configuration failure."""
+
+
+class BackendReadinessError(ValueError):
+    """Safe operator-facing HTTPS route failure."""
+
+
+def _backend_network(subnet_text, address_text):
+    try:
+        subnet = ip_network(subnet_text, strict=True)
+        address = ip_address(address_text)
+    except ValueError:
+        raise BackendConfigurationError(
+            "invalid acceptance backend address or subnet"
+        ) from None
+    if (
+        subnet.version != 4
+        or address.version != 4
+        or not subnet.is_private
+        or address not in subnet
+        or address in {subnet.network_address, subnet.broadcast_address}
+        or address == subnet.network_address + 1
+    ):
+        raise BackendConfigurationError("invalid acceptance backend address or subnet")
+    return subnet, address
+
+
+def _check_backend_conflicts(subnet, env):
+    try:
+        network_ids = _command(("docker", "network", "ls", "-q"), env).splitlines()
+        if network_ids:
+            networks = json.loads(
+                _command(("docker", "network", "inspect", *network_ids), env)
+            )
+            for network in networks:
+                for config in network.get("IPAM", {}).get("Config") or []:
+                    existing = config.get("Subnet")
+                    if existing and subnet.overlaps(ip_network(existing, strict=False)):
+                        raise BackendConfigurationError(
+                            "acceptance backend subnet conflicts with Docker network"
+                        )
+        routes = json.loads(_command(("ip", "-j", "-4", "route", "show"), env))
+        for route in routes:
+            destination = route.get("dst")
+            if (
+                destination
+                and destination != "default"
+                and subnet.overlaps(ip_network(destination, strict=False))
+            ):
+                raise BackendConfigurationError(
+                    "acceptance backend subnet conflicts with host route"
+                )
+    except (RuntimeError, ValueError) as error:
+        if isinstance(error, BackendConfigurationError):
+            raise
+        raise BackendConfigurationError(
+            "cannot inspect Docker networks or host routes"
+        ) from error
 
 
 def _utc(value):
@@ -332,8 +401,9 @@ def _stop_file(path, active):
 
 
 class HTTPSParticipant:
-    def __init__(self, origin):
+    def __init__(self, origin, username):
         self.origin = origin
+        self.username = username
         self.jar = CookieJar()
         self.opener = build_opener(HTTPCookieProcessor(self.jar))
 
@@ -361,7 +431,7 @@ class HTTPSParticipant:
             cookie.value for cookie in self.jar if cookie.name == "ar_login_csrf"
         )
         data = urlencode(
-            {"username": "synthetic-a", "password": password, "csrf": csrf}
+            {"username": self.username, "password": password, "csrf": csrf}
         ).encode()
         self.opener.open(
             Request(
@@ -500,6 +570,8 @@ def run(args):
         or urlsplit(args.origin).hostname is None
     ):
         raise ValueError("an approved HTTPS origin is required")
+    backend_subnet, backend_ip = _backend_network(args.backend_subnet, args.backend_ip)
+    _check_backend_conflicts(backend_subnet, os.environ.copy())
     args.report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _protected_parents(args.report, os.geteuid())
     if args.report.exists() or args.report.is_symlink():
@@ -508,6 +580,8 @@ def run(args):
     if args.aggregate_ledger.exists() or args.aggregate_ledger.is_symlink():
         _protected(args.aggregate_ledger, 0o600, 0)
     run_id = uuid4().hex
+    participant_username = "synthetic-a-" + run_id[:12]
+    participant_id = "synthetic-participant-" + run_id[:12]
     socket_dir = args.state_root / "runs" / run_id / "ipc"
     worker_dir = args.state_root / "worker"
     control_dir = args.state_root / "control"
@@ -545,6 +619,8 @@ def run(args):
             "PILOT_SECRET_DIR": str(secret_dir),
             "PILOT_ALLOWED_HOST": urlsplit(args.origin).hostname,
             "PILOT_ALLOWED_ORIGIN": args.origin,
+            "PILOT_APP_SUBNET": str(backend_subnet),
+            "PILOT_APP_IP": str(backend_ip),
             "COMPOSE_PROJECT_NAME": "almost-reasonable-ship-" + run_id[:12],
         }
     )
@@ -584,9 +660,29 @@ def run(args):
         )
         _app_python(
             env,
-            "import sys; from app.private_web.auth import AuthStore; AuthStore('/var/lib/pilot-app/auth.db').provision_account('synthetic-a',sys.stdin.readline().rstrip('\\n'),'synthetic-participant-a')",
+            "import sys; from app.private_web.auth import AuthStore; "
+            f"AuthStore('/var/lib/pilot-app/auth.db').provision_account('{participant_username}',"
+            f"sys.stdin.readline().rstrip('\\n'),'{participant_id}')",
             participant_password + "\n",
         )
+        _owner_change(env, owner_password, True)
+        _compose(env, "up", "-d", "private-app")
+        participant = HTTPSParticipant(args.origin, participant_username)
+        try:
+            _wait_http_ready(participant)
+            participant.login(participant_password)
+        except OSError as error:
+            raise BackendReadinessError(
+                "acceptance HTTPS route unavailable before paid activation"
+            ) from error
+        if participant.request("GET", "/session") != {
+            "authenticated": True,
+            "username": participant_username,
+        }:
+            raise BackendReadinessError(
+                "HTTPS route does not reach this acceptance app"
+            )
+        report["backend_ready"] = True
         delay = (_utc(activation["not_before"]) - datetime.now(UTC)).total_seconds()
         if delay > 600:
             raise ValueError("activation window starts too far in the future")
@@ -626,9 +722,7 @@ def run(args):
         _owner_change(env, owner_password, False)
         _stop_file(stop, False)
         _compose(env, "up", "-d", "provider-worker", "private-app")
-        participant = HTTPSParticipant(args.origin)
         _wait_http_ready(participant)
-        participant.login(participant_password)
         participant.request(
             "POST", "/api/privacy/notice", {"version": "privacy-notice-ru-v1"}
         )
@@ -651,7 +745,17 @@ def run(args):
 
         def restart_app():
             _compose(env, "restart", "private-app")
-            _wait_http_ready(participant)
+            try:
+                _wait_http_ready(participant)
+            except OSError as error:
+                raise BackendReadinessError(
+                    "acceptance HTTPS route unavailable after app restart"
+                ) from error
+            if participant.request("GET", "/session") != {
+                "authenticated": True,
+                "username": participant_username,
+            }:
+                raise BackendReadinessError("HTTPS route changed after app restart")
 
         journey = run_ship_journey(
             send,
@@ -664,6 +768,8 @@ def run(args):
         report["status"] = "passed"
     except (Exception, KeyboardInterrupt) as error:
         report["error"] = type(error).__name__
+        if isinstance(error, BackendReadinessError):
+            report["backend_error"] = str(error)
         raise
     finally:
         try:
@@ -768,14 +874,21 @@ def main(argv=None):
         "state-root",
         "aggregate-ledger",
         "origin",
+        "backend-subnet",
+        "backend-ip",
         "report",
     ):
         parser.add_argument(
-            "--" + flag, required=True, type=str if flag == "origin" else Path
+            "--" + flag,
+            required=True,
+            type=str if flag in {"origin", "backend-subnet", "backend-ip"} else Path,
         )
     args = parser.parse_args(argv)
     try:
         run(args)
+    except (BackendConfigurationError, BackendReadinessError) as error:
+        print(f"Acceptance failed: {error}", file=sys.stderr)
+        return 1
     except (ValueError, RuntimeError, OSError, KeyboardInterrupt) as error:
         print(
             f"Acceptance failed: {type(error).__name__}; inspect protected report",
