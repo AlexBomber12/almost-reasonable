@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import shutil
+import socket
 import subprocess
 import stat
 import sys
@@ -89,6 +90,21 @@ def test_https_participant_rejects_non_json_session(body):
     participant.opener = SimpleNamespace(open=lambda *_args, **_kwargs: _response(body))
     with pytest.raises(json.JSONDecodeError):
         participant.request("GET", "/session")
+
+
+def test_worker_readiness_requires_connectable_socket(tmp_path, monkeypatch):
+    path = tmp_path / "worker.sock"
+    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        listener.bind(str(path))
+        listener.listen(1)
+        live._wait_worker_ready(path)
+    finally:
+        listener.close()
+    clock = iter((0, 16))
+    monkeypatch.setattr(live.time, "monotonic", lambda: next(clock))
+    with pytest.raises(live.BackendReadinessError, match="worker socket"):
+        live._wait_worker_ready(path)
 
 
 def test_effective_compose_keeps_static_backend_on_internal_network(tmp_path):
@@ -536,6 +552,7 @@ def attempt(
         "malformed_route",
         "restart_route_failure",
         "restart_malformed_route",
+        "worker_not_ready",
     ],
 )
 def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, case):
@@ -773,6 +790,15 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
             return _response({"model_state": "completed", "response": replies[index]})
 
     monkeypatch.setattr(live, "build_opener", FakeOpener)
+
+    def worker_ready(path):
+        assert path.name == "worker.sock"
+        assert path.parent.name == "ipc"
+        events.append(("worker_ready", case != "worker_not_ready"))
+        if case == "worker_not_ready":
+            raise live.BackendReadinessError("provider worker socket unavailable")
+
+    monkeypatch.setattr(live, "_wait_worker_ready", worker_ready)
     if case == "expired_mid_journey":
         original = live.validate_authorization
         count = 0
@@ -790,7 +816,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     else:
         with pytest.raises(
             (ValueError, RuntimeError),
-            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route|Expecting value",
+            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route|Expecting value|worker socket",
         ):
             live.run(args)
     report = json.loads(args.report.read_text())
@@ -813,11 +839,23 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
                 == "HTTPS route does not reach this acceptance app"
             )
         assert sends == []
+    elif case == "worker_not_ready":
+        assert owner_changes == [True, True]
+        assert ("reserve", None) not in events
+        assert ("worker_stop", False) not in events
+        assert events.index(("up", ("provider-worker", "private-app"))) < events.index(
+            ("worker_ready", False)
+        )
+        assert sends == []
     else:
         assert owner_changes == [True, False, True]
         assert events.index(("up", ("private-app",))) < events.index(("session", None))
         assert events.index(("session", None)) < events.index(("reserve", None))
+        assert events.index(("worker_ready", True)) < events.index(("reserve", None))
         assert events.index(("reserve", None)) < events.index(("worker_stop", False))
+        assert events.index(("up", ("provider-worker", "private-app"))) < events.index(
+            ("worker_stop", False)
+        )
         assert report["backend_ready"] is True
     assert any(parts[:2] == ("stop", "private-app") for parts in commands)
     assert Path(args.report).stat().st_mode & 0o777 == 0o600

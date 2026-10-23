@@ -10,6 +10,7 @@ from ipaddress import ip_address, ip_network
 import json
 import os
 from pathlib import Path
+import socket
 import sqlite3
 import stat
 import subprocess
@@ -463,6 +464,22 @@ def _wait_http_ready(participant):
             time.sleep(0.25)
 
 
+def _wait_worker_ready(path):
+    deadline = time.monotonic() + 15
+    while True:
+        try:
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.settimeout(1)
+                connection.connect(str(path))
+            return
+        except OSError as error:
+            if time.monotonic() >= deadline:
+                raise BackendReadinessError(
+                    "provider worker socket unavailable"
+                ) from error
+            time.sleep(0.25)
+
+
 def _usage(env):
     code = (
         "import json,sqlite3; "
@@ -692,10 +709,6 @@ def run(args):
             raise ValueError("activation window starts too far in the future")
         if delay > 0:
             time.sleep(delay)
-        validate_authorization(approval, activation, commit, datetime.now(UTC))
-        report["aggregate_remaining"] = reserve_aggregate(
-            args.aggregate_ledger, approval, run_id
-        )
         if not (worker_dir / "allowance.sqlite3").exists():
             _compose(
                 env,
@@ -723,10 +736,15 @@ def run(args):
         }
         expected = []
         _reconcile(env, baseline, expected, approval)
+        _compose(env, "up", "-d", "provider-worker", "private-app")
+        _wait_worker_ready(socket_dir / "worker.sock")
+        _wait_http_ready(participant)
+        validate_authorization(approval, activation, commit, datetime.now(UTC))
+        report["aggregate_remaining"] = reserve_aggregate(
+            args.aggregate_ledger, approval, run_id
+        )
         _owner_change(env, owner_password, False)
         _stop_file(stop, False)
-        _compose(env, "up", "-d", "provider-worker", "private-app")
-        _wait_http_ready(participant)
         participant.request(
             "POST", "/api/privacy/notice", {"version": "privacy-notice-ru-v1"}
         )
