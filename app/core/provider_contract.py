@@ -43,6 +43,8 @@ _NARRATIVE_REPLY_INSTRUCTIONS = (
 )
 _OPENAI_REQUEST_AUTHORITY = object()
 
+# Strict Structured Outputs supports minLength for these non-fine-tuned models.
+# Keep the byte bound and whitespace policy in the local proposal decoder.
 _PROPOSAL_SCHEMA = {
     "type": "object",
     "properties": {
@@ -63,9 +65,9 @@ _PROPOSAL_SCHEMA = {
                         "reason_category",
                         {"enum": [reason.value for reason in NoActionReason]},
                     ),
-                    (AgentDecision.REPLY, "content", {}),
-                    (AgentDecision.RESEARCH, "brief", {}),
-                    (AgentDecision.PROPOSE_PUBLICATION, "draft", {}),
+                    (AgentDecision.REPLY, "content", {"minLength": 1}),
+                    (AgentDecision.RESEARCH, "brief", {"minLength": 1}),
+                    (AgentDecision.PROPOSE_PUBLICATION, "draft", {"minLength": 1}),
                 )
             ]
         }

@@ -275,3 +275,68 @@ application policy and release path approve it; owner opinions are not
 privileged evidence. H/M semantic quality, human calibration, legal/privacy
 review, real processor behavior, production enrollment, deployment hardening
 and later-stage public activity remain release blockers.
+
+## Deferred one-command synthetic acceptance
+
+The repository includes an operator runner for the ship-name, restart and Mars
+journey. It is **not authorized for paid execution by this documentation or by
+CI**. On the approved host, first install a root-owned `0400` authorization JSON
+and activation JSON outside the checkout. The authorization must name the exact
+reviewed commit, task `synthetic-private-pilot-ship-restart-mars`, model
+`gpt-6-luna`, project and organization billing scope, UTC `valid_from` and
+`valid_until`, positive `billing_budget_usd`, `max_aggregate_operations`,
+`max_aggregate_input_tokens`, `max_aggregate_output_tokens`, and
+`max_requests_per_run` (at least three). Its project, organization and model
+must match the protected activation. The activation must have at least three
+operations and one attempt per operation. A separate explicit human approval
+must cover these values, the synthetic account, host and execution window.
+
+Before invoking the command, stage the worker-owned `0400` credential at
+`STATE_ROOT/secrets/openai-api-key` through the approved secret procedure and
+make the approved HTTPS origin route to the isolated Compose app's loopback
+port. Keep `STATE_ROOT` and `AGGREGATE_LEDGER` outside the working server state;
+retain both across run IDs and commits. The command prompts for synthetic owner
+and participant passwords before opening the activation window. The activation
+window can start up to ten minutes after preparation begins; provide enough
+time for image build and state initialization. The one command is:
+
+```sh
+sudo python -m acceptance.private_pilot_live \
+  --authorization /protected/ship-acceptance-authorization.json \
+  --activation /protected/ship-activation.json \
+  --state-root /srv/almost-reasonable/synthetic-ship-acceptance \
+  --aggregate-ledger /srv/almost-reasonable/synthetic-ship-aggregate.sqlite3 \
+  --origin https://approved-synthetic-host.example \
+  --report /protected/ship-acceptance-report.json
+```
+
+The runner builds the pinned app and worker images, creates a fresh synthetic
+application state, preserves worker state and allowance, provisions only the
+synthetic account, waits for the activation start, reserves three aggregate
+operation slots, and runs all three messages through authenticated HTTPS. It
+restarts only `private-app` between the recall and Mars turns. It stops the
+worker and application, sets worker and owner Stop, checks running container
+state, and writes a protected compact report with commit, image IDs, captured
+synthetic name, completed steps, provider attempts, token usage, safe rejection
+categories and remaining allowance. The fake-provider integration additionally
+inspects the actual serialized provider request after restart, including roles,
+trust labels and the earlier released assistant reply.
+
+The aggregate ledger reserves all three operations before contact. Failed or
+interrupted runs keep that reservation. The worker's separate SQLite allowance
+also consumes an operation before provider contact. A changed authorization
+policy, including a new commit, cannot reset either ledger: it requires review
+of the preserved state and a separately approved continuation. The runner
+checks observed token totals after the run; those checks cannot interrupt an
+in-flight provider request. The worker enforces 512 output tokens per request,
+the existing serialized input byte bound, one attempt and the 30-second attempt
+and 40-second overall timeouts. The dollar amount is an authorization ceiling
+for the operator and is **not** a guaranteed dollar cutoff: provider billing
+can differ from local estimates, and no exact dollar cutoff is enforced before
+each request. Confirm project-level billing controls separately before approval.
+
+On an ordinary Python exception or keyboard interruption, cleanup runs and the
+report records failures. SIGKILL, host loss, Docker daemon failure and a failed
+Stop write can defeat cleanup; inspect both Stops, containers and the preserved
+ledgers before any further run. Live-model acceptance remains pending until a
+separately approved execution succeeds.

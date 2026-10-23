@@ -988,6 +988,8 @@ def test_parser_rejects_non_transport_response():
     [
         ('{"proposal":{"decision":"no_action","reason_category":"low_value"}}'),
         ('{"proposal":{"decision":"research","brief":"Проверить факт"}}'),
+        ('{"proposal":{"decision":"reply","content":"Корабль\\nИскра"}}'),
+        ('{"proposal":{"decision":"reply","content":" "}}'),
         ('{"proposal":{"decision":"propose_publication","draft":"Черновик"}}'),
     ],
 )
@@ -1001,6 +1003,9 @@ def test_every_supported_proposal_shape_is_locally_validated(text):
     ("proposal", "reason"),
     [
         ({"decision": "reply", "content": None}, "invalid_field"),
+        ({"decision": "reply", "content": ""}, "invalid_field"),
+        ({"decision": "research", "brief": ""}, "invalid_field"),
+        ({"decision": "propose_publication", "draft": ""}, "invalid_field"),
         ({"decision": "no_action", "reason_category": None}, "invalid_field"),
         ({"decision": "reply", "content": "ok", "draft": "also"}, "conflicting_fields"),
         ({"decision": "reply", "content": 7}, "invalid_field"),

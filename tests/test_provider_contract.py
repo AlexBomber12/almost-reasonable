@@ -125,9 +125,10 @@ def test_generic_schema_independently_enforces_decision_fields():
     validator = Draft202012Validator(schema)
     valid = [
         {"decision": "no_action", "reason_category": "other"},
-        {"decision": "reply", "content": "Звездолёт"},
-        {"decision": "research", "brief": "Mars"},
-        {"decision": "propose_publication", "draft": "Draft"},
+        {"decision": "reply", "content": "Звездолёт\nлетит"},
+        {"decision": "research", "brief": "Исследуй\nЮпитер"},
+        {"decision": "propose_publication", "draft": "Черновик\nпубликации"},
+        {"decision": "reply", "content": " "},
     ]
     assert all(validator.is_valid({"proposal": item}) for item in valid)
     invalid = [
@@ -137,6 +138,9 @@ def test_generic_schema_independently_enforces_decision_fields():
         {"decision": "reply", "content": "ok", "draft": "also"},
         {"decision": "reply", "content": 3},
         {"decision": "reply", "content": "ok", "admin": True},
+        {"decision": "reply", "content": ""},
+        {"decision": "research", "brief": ""},
+        {"decision": "propose_publication", "draft": ""},
     ]
     assert all(not validator.is_valid({"proposal": item}) for item in invalid)
 

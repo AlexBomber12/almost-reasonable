@@ -10,8 +10,15 @@ from types import SimpleNamespace
 
 import pytest
 
+from acceptance.private_pilot_conversation import run_ship_journey
 from acceptance.guards import install
+from app.core.openai_worker_client import OpenAIWorkerClient
+from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore
+from app.private_web.privacy import ParticipantPrivacyControls
+from app.private_web.runtime import WorkerConversationRuntime
+from app.privacy.application import PrivacyReadGate
+from test_private_web_http import Clock
 from app.trusted.openai_transport import OpenAIResponsesTransport
 from app.trusted.private_pilot import PilotAllowance, load_activation
 from app.trusted import private_pilot_worker
@@ -55,6 +62,8 @@ def _worker(
                 entered.set()
                 if not release.wait(10):
                     raise RuntimeError("synthetic synchronization timed out")
+            if isinstance(raw, tuple):
+                return raw[len(self.calls) - 1]
             return documented_response() if raw is None else raw
 
     responses = Responses()
@@ -98,6 +107,73 @@ def _finish(process, pipe):
     process.join(timeout=5)
     assert process.exitcode == 0
     return calls
+
+
+def _reply(text):
+    payload = documented_response()
+    payload["output"][1]["content"][0]["text"] = json.dumps(
+        {"proposal": {"decision": "reply", "content": text}}, ensure_ascii=False
+    )
+    return payload
+
+
+def test_positive_ship_journey_keeps_worker_during_application_restart(tmp_path):
+    activation, _ = activation_file(tmp_path)
+    stop = activation.parent / "stop.json"
+    stop.write_text('{"version":"private-pilot-emergency-stop-v1","stop":false}')
+    stop.chmod(0o400)
+    worker_dir = tmp_path / "worker"
+    worker_dir.mkdir(mode=0o700)
+    allowance = worker_dir / "allowance.sqlite3"
+    PilotAllowance.initialize(allowance, load_activation(activation))
+    socket = worker_dir / "worker.sock"
+    provider = worker_dir / "provider.sqlite3"
+    auth, events, ledger, _gate, app, alice, _bob = _app(tmp_path, socket)
+    responses = (
+        _reply("Искра"),
+        _reply("Корабль Искра летит к Юпитеру."),
+        _reply("Корабль Искра теперь летит к Марсу: Марс — новая цель."),
+    )
+    process, pipe = _start(
+        (str(socket), str(provider), str(allowance), str(activation), str(stop)),
+        3,
+        raw=responses,
+    )
+    calls = []
+
+    def restart_app():
+        reopened = EventStore(events.database_path)
+        gate = PrivacyReadGate(ledger, reopened)
+        assert gate.reconcile()
+        app._conversations = WorkerConversationRuntime(
+            reopened,
+            gate,
+            OpenAIWorkerClient(socket, expected_worker_uid=os.getuid()),
+            provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
+            clock=Clock(),
+        )
+        app._privacy = ParticipantPrivacyControls(
+            auth, reopened, ledger, gate, clock=Clock()
+        )
+
+    def send(message_id, content):
+        return json.loads(alice.submit(message_id, content)[2])
+
+    def history():
+        return json.loads(alice.request("GET", "/api/history")[2])["messages"]
+
+    def inspect_request():
+        calls.extend(_finish(process, pipe))
+        return json.loads(calls[-1]["input"])
+
+    result = run_ship_journey(send, history, restart_app, inspect_request)
+    assert result["ship_name"] == "Искра"
+    assert len(calls) == 3
+    assert PilotAllowance(allowance, load_activation(activation)).remaining() == 2
+    with EventStore(provider)._open() as db:
+        assert db.execute(
+            "SELECT count(*) FROM provider_usage_attempts"
+        ).fetchone() == (3,)
 
 
 def test_authenticated_http_to_fake_sdk_reply_history_restart_and_quota(tmp_path):

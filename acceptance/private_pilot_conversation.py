@@ -1,0 +1,94 @@
+"""One synthetic conversation journey shared by offline and approved live runs."""
+
+import re
+from collections.abc import Callable
+
+
+FIRST = (
+    "Придумай однословное русское имя кораблю робота Маяк, летящего к Юпитеру. "
+    "Ответь только этим именем, одним словом."
+)
+ASK = "Как называется корабль и к какой планете он летит?"
+MARS = "Сохрани имя корабля, но измени пункт назначения на Марс."
+_NAME = re.compile(r"[А-ЯЁа-яё]+\Z")
+
+
+def run_ship_journey(
+    send: Callable[[str, str], dict],
+    history: Callable[[], list[dict]],
+    restart_app: Callable[[], None],
+    inspect_request: Callable[[], dict] | None = None,
+    record_step: Callable[[str], None] | None = None,
+    record_name: Callable[[str], None] | None = None,
+) -> dict:
+    """Require delivered answers and the actual post-restart provider transcript."""
+
+    first = send("ship-name", FIRST)
+    name = first.get("response")
+    if first.get("model_state") != "completed" or not isinstance(name, str):
+        raise AssertionError("ship naming was not delivered")
+    name = name.strip()
+    if _NAME.fullmatch(name) is None or name in FIRST:
+        raise AssertionError("ship name must be a new Russian word")
+    if record_name is not None:
+        record_name(name)
+    if record_step is not None:
+        record_step("name")
+
+    second = send("ship-check", ASK)
+    if (
+        second.get("model_state") != "completed"
+        or name not in second.get("response", "")
+        or "Юпитер" not in second["response"]
+    ):
+        raise AssertionError("ship name and Jupiter were not recalled")
+    if record_step is not None:
+        record_step("recall")
+
+    restart_app()
+    third = send("ship-mars", MARS)
+    if (
+        third.get("model_state") != "completed"
+        or name not in third.get("response", "")
+        or "Марс" not in third["response"]
+    ):
+        raise AssertionError("ship name and Mars were not delivered after restart")
+    if record_step is not None:
+        record_step("restart_mars")
+
+    if inspect_request is not None:
+        conversation = inspect_request()["conversation"]
+        assert [(part["role"], part["trust"]) for part in conversation] == [
+            ("participant", "untrusted_conversational_data"),
+            ("agent", "untrusted_conversational_data"),
+            ("participant", "untrusted_conversational_data"),
+            ("agent", "untrusted_conversational_data"),
+            ("participant", "untrusted_conversational_data"),
+        ]
+        assert [part["content"] for part in conversation] == [
+            FIRST,
+            first["response"],
+            ASK,
+            second["response"],
+            MARS,
+        ]
+    persisted = history()
+    assert [part["role"] for part in persisted] == [
+        "participant",
+        "agent",
+        "participant",
+        "agent",
+        "participant",
+        "agent",
+    ]
+    assert [part["content"] for part in persisted] == [
+        FIRST,
+        first["response"],
+        ASK,
+        second["response"],
+        MARS,
+        third["response"],
+    ]
+    if record_step is not None:
+        record_step("history")
+    return {"ship_name": name, "steps": ["name", "recall", "restart_mars", "history"]}
