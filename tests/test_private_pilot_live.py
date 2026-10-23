@@ -8,7 +8,9 @@ import json
 import os
 from pathlib import Path
 import shutil
+import signal
 import socket
+import sqlite3
 import subprocess
 import stat
 import sys
@@ -250,6 +252,393 @@ def test_aggregate_allowance_is_durable_across_run_ids_and_commit_changes(
     altered["commit"] = "new-commit"
     with pytest.raises(ValueError, match="policy changed"):
         reserve_aggregate(ledger, altered, "new-commit-run")
+
+
+@pytest.fixture
+def zero_call_state(tmp_path, monkeypatch):
+    old_run = "a" * 32
+    approved = approval()
+    approved.update(
+        commit="a" * 40,
+        max_aggregate_operations=3,
+        max_aggregate_input_tokens=6000,
+        max_aggregate_output_tokens=1536,
+        max_requests_per_run=3,
+        billing_budget_usd="0.10",
+    )
+    active = activation()
+    active["max_operations"] = 3
+    activation_bytes = json.dumps(active).encode()
+    root = tmp_path / "state"
+    app = root / "runs" / old_run / "app" / "owner"
+    app.mkdir(parents=True)
+    worker = root / "worker"
+    worker.mkdir()
+    control = root / "control"
+    control.mkdir()
+    (control / "activation.json").write_bytes(activation_bytes)
+    (control / "emergency-stop.json").write_text(
+        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": True})
+    )
+    with sqlite3.connect(app / "owner.sqlite") as db:
+        db.execute("CREATE TABLE owner_stop (singleton INTEGER, active INTEGER)")
+        db.execute("INSERT INTO owner_stop VALUES (1, 1)")
+    with sqlite3.connect(worker / "provider.sqlite3") as db:
+        db.execute("CREATE TABLE provider_usage_attempts (attempt_id TEXT)")
+        db.execute("CREATE TABLE provider_attempt_reservations (attempt_id TEXT)")
+    with sqlite3.connect(worker / "allowance.sqlite3") as db:
+        db.execute("CREATE TABLE authority (digest TEXT, max_operations INTEGER)")
+        db.execute("CREATE TABLE consumed (operation_id TEXT)")
+        db.execute(
+            "INSERT INTO authority VALUES (?, 3)",
+            (hashlib.sha256(activation_bytes).hexdigest(),),
+        )
+    ledger = tmp_path / "aggregate.sqlite3"
+    with sqlite3.connect(ledger) as db:
+        db.execute("CREATE TABLE policy (value TEXT NOT NULL)")
+        db.execute(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, slots INTEGER NOT NULL)"
+        )
+        db.execute(
+            "INSERT INTO policy VALUES (?)",
+            (json.dumps(approved, sort_keys=True, separators=(",", ":")),),
+        )
+        db.execute("INSERT INTO runs VALUES (?, 3)", (old_run,))
+    args = SimpleNamespace(
+        state_root=root,
+        aggregate_ledger=ledger,
+        previous_report=tmp_path / "old-report.json",
+        report=tmp_path / "new-report.json",
+        origin="https://chat.test",
+        backend_subnet="172.30.253.0/29",
+        backend_ip="172.30.253.3",
+    )
+    monkeypatch.setattr(live, "_protected", lambda *_: None)
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
+    monkeypatch.setattr(live, "_checked_directory", lambda *_: None)
+    monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+    monkeypatch.setattr(
+        live,
+        "_compose",
+        lambda _env, *parts: (
+            "private-app\nprovider-worker"
+            if parts == ("ps", "--all", "--services")
+            else ""
+        ),
+    )
+    return args, approved, activation_bytes, old_run
+
+
+def test_zero_call_continuation_reuses_only_original_reservation(zero_call_state):
+    args, approved, activation_bytes, old_run = zero_call_state
+    live._verify_zero_call_continuation(args, approved, activation_bytes, old_run)
+    receipt = live._claim_zero_call_continuation(
+        args.aggregate_ledger, approved, old_run, "b" * 32, "c" * 40, activation_bytes
+    )
+    assert receipt["original_run_id"] == old_run
+    assert receipt["continuation_run_id"] == "b" * 32
+    with sqlite3.connect(args.aggregate_ledger) as db:
+        assert db.execute("SELECT run_id, slots FROM runs").fetchall() == [(old_run, 3)]
+        assert db.execute(
+            "SELECT original_run_id, continuation_run_id FROM zero_call_continuations"
+        ).fetchall() == [(old_run, "b" * 32)]
+    with pytest.raises(ValueError, match="already continued"):
+        live._claim_zero_call_continuation(
+            args.aggregate_ledger,
+            approved,
+            old_run,
+            "d" * 32,
+            "c" * 40,
+            activation_bytes,
+        )
+    with pytest.raises(ValueError, match="zero-call continuation"):
+        live._verify_zero_call_continuation(args, approved, activation_bytes, old_run)
+
+
+def test_continuation_directory_check_rejects_symlink_and_open_mode(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
+    state = tmp_path / "state"
+    state.mkdir(mode=0o700)
+    live._checked_directory(state, os.geteuid(), 0o700)
+    state.chmod(0o755)
+    with pytest.raises(ValueError, match="unsafe state directory"):
+        live._checked_directory(state, os.geteuid(), 0o700)
+    alias = tmp_path / "alias"
+    alias.symlink_to(state, target_is_directory=True)
+    with pytest.raises(OSError):
+        live._checked_directory(alias, os.geteuid(), 0o700)
+
+
+def test_zero_call_continuation_accepts_consistent_interrupted_report(zero_call_state):
+    args, approved, activation_bytes, old_run = zero_call_state
+    args.previous_report.write_text(
+        json.dumps(
+            {
+                "run_id": old_run,
+                "status": "interrupted",
+                "error": "KeyboardInterrupt",
+                "provider_attempts": 0,
+                "worker_stop": True,
+                "owner_stop": True,
+                "running_services": [],
+            }
+        )
+    )
+    live._verify_zero_call_continuation(args, approved, activation_bytes, old_run)
+
+
+def test_continuation_rechecks_original_evidence_after_new_state_is_prepared(
+    zero_call_state,
+):
+    args, approved, activation_bytes, old_run = zero_call_state
+    new_run = "b" * 32
+    (args.state_root / "runs" / new_run).mkdir()
+    with pytest.raises(ValueError, match="zero-call continuation"):
+        live._verify_zero_call_continuation(args, approved, activation_bytes, old_run)
+    live._verify_zero_call_continuation(
+        args, approved, activation_bytes, old_run, new_run
+    )
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "attempt",
+        "provider_reservation",
+        "consumed",
+        "owner_open",
+        "worker_open",
+        "changed_activation",
+        "changed_allowance",
+        "other_run",
+        "contradictory_report",
+        "changed_approval",
+        "missing_provider_database",
+        "uncertain_sidecar",
+        "active_container",
+        "missing_container",
+    ],
+)
+def test_zero_call_continuation_refuses_uncertain_state(
+    zero_call_state, monkeypatch, change
+):
+    args, approved, activation_bytes, old_run = zero_call_state
+    if change == "attempt":
+        database, command = (
+            args.state_root / "worker" / "provider.sqlite3",
+            "INSERT INTO provider_usage_attempts VALUES ('attempt')",
+        )
+    elif change == "provider_reservation":
+        database, command = (
+            args.state_root / "worker" / "provider.sqlite3",
+            "INSERT INTO provider_attempt_reservations VALUES ('reservation')",
+        )
+    elif change == "consumed":
+        database, command = (
+            args.state_root / "worker" / "allowance.sqlite3",
+            "INSERT INTO consumed VALUES ('operation')",
+        )
+    elif change == "owner_open":
+        database, command = (
+            args.state_root / "runs" / old_run / "app" / "owner" / "owner.sqlite",
+            "UPDATE owner_stop SET active=0",
+        )
+    elif change == "other_run":
+        database, command = (
+            args.aggregate_ledger,
+            "INSERT INTO runs VALUES ('other', 3)",
+        )
+    else:
+        database = command = None
+    if database is not None:
+        with sqlite3.connect(database) as db:
+            db.execute(command)
+    if change == "worker_open":
+        (args.state_root / "control" / "emergency-stop.json").write_text(
+            json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": False})
+        )
+    if change == "changed_activation":
+        (args.state_root / "control" / "activation.json").write_text("changed")
+    if change == "changed_allowance":
+        with sqlite3.connect(args.state_root / "worker" / "allowance.sqlite3") as db:
+            db.execute("UPDATE authority SET digest='changed'")
+    if change == "contradictory_report":
+        args.previous_report.write_text(
+            json.dumps({"run_id": old_run, "status": "passed", "error": None})
+        )
+    if change == "changed_approval":
+        approved["billing_budget_usd"] = "0.09"
+    if change == "missing_provider_database":
+        (args.state_root / "worker" / "provider.sqlite3").unlink()
+    if change == "uncertain_sidecar":
+        (args.state_root / "worker" / "provider.sqlite3-wal").write_bytes(b"")
+    if change in {"active_container", "missing_container"}:
+        monkeypatch.setattr(
+            live,
+            "_compose",
+            (
+                lambda _env, *parts: "private-app"
+                if change == "active_container"
+                or parts == ("ps", "--all", "--services")
+                else ""
+            ),
+        )
+    with pytest.raises(ValueError, match="zero-call continuation"):
+        live._verify_zero_call_continuation(args, approved, activation_bytes, old_run)
+    with sqlite3.connect(args.aggregate_ledger) as db:
+        assert (
+            db.execute(
+                "SELECT name FROM sqlite_master WHERE name='zero_call_continuations'"
+            ).fetchall()
+            == []
+        )
+
+
+@pytest.mark.parametrize("protected", [False, True])
+def test_second_real_sigint_during_blocking_cleanup_keeps_report(tmp_path, protected):
+    report = tmp_path / "interrupted.json"
+    script = """
+import signal
+import subprocess
+import sys
+from contextlib import nullcontext
+from pathlib import Path
+from acceptance.private_pilot_live import _ignore_sigint
+report = Path(sys.argv[1])
+child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(30)'])
+print('child-started', flush=True)
+try:
+    child.wait()
+except KeyboardInterrupt:
+    with (_ignore_sigint() if sys.argv[2] == 'protected' else nullcontext()):
+        print('cleanup-started', flush=True)
+        try:
+            subprocess.run([sys.executable, '-c', 'import time; time.sleep(30)'], timeout=1)
+        except subprocess.TimeoutExpired:
+            pass
+        report.write_text('{"status":"interrupted"}')
+"""
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            script,
+            str(report),
+            "protected" if protected else "old",
+        ],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    try:
+        assert process.stdout.readline().strip() == "child-started"
+        os.killpg(process.pid, signal.SIGINT)
+        assert process.stdout.readline().strip() == "cleanup-started"
+        os.killpg(process.pid, signal.SIGINT)
+        process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+    if protected:
+        assert report.read_text() == '{"status":"interrupted"}'
+    else:
+        assert not report.exists()
+
+
+def test_first_sigint_during_cleanup_is_recorded_without_skipping_report(tmp_path):
+    report = tmp_path / "cleanup.json"
+    script = """
+import json
+import signal
+import subprocess
+import sys
+from pathlib import Path
+from acceptance.private_pilot_live import _ignore_sigint
+report = {'status': 'in_progress'}
+interrupted = [False]
+with _ignore_sigint(lambda: interrupted.__setitem__(0, True)):
+    print('cleanup-started', flush=True)
+    try:
+        subprocess.run([sys.executable, '-c', 'import time; time.sleep(30)'], timeout=2)
+    except subprocess.TimeoutExpired:
+        pass
+    if interrupted[0]:
+        report.update(status='interrupted', error='KeyboardInterrupt')
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    Path(sys.argv[1]).write_text(json.dumps(report))
+"""
+    process = subprocess.Popen(
+        [sys.executable, "-c", script, str(report)],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        start_new_session=True,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[1])},
+    )
+    try:
+        assert process.stdout.readline().strip() == "cleanup-started"
+        os.killpg(process.pid, signal.SIGINT)
+        process.communicate(timeout=5)
+    finally:
+        if process.poll() is None:
+            os.killpg(process.pid, signal.SIGKILL)
+            process.wait()
+    assert json.loads(report.read_text()) == {
+        "status": "interrupted",
+        "error": "KeyboardInterrupt",
+    }
+
+
+@pytest.mark.parametrize("case", ["commit_changed", "window_expired"])
+def test_continuation_rejects_unreviewed_commit_or_expired_window(
+    zero_call_state, monkeypatch, case
+):
+    args, approved, activation_bytes, old_run = zero_call_state
+    args.authorization = args.report.parent / "authorization.json"
+    args.activation = args.report.parent / "activation.json"
+    args.continue_zero_call = old_run
+    args.reviewed_commit = "d" * 40 if case == "commit_changed" else "c" * 40
+    if case == "window_expired":
+        now = datetime.now(UTC)
+        approved["valid_from"] = (now - timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        approved["valid_until"] = (now + timedelta(hours=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        active = json.loads(activation_bytes)
+        active["not_before"] = (now - timedelta(minutes=2)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        active["expires_at"] = (now - timedelta(minutes=1)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
+        activation_bytes = json.dumps(active).encode()
+    args.authorization.write_text(json.dumps(approved))
+    args.activation.write_bytes(activation_bytes)
+    monkeypatch.setattr(live.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        live,
+        "_command",
+        lambda parts, _env: "c" * 40 if parts[:2] == ("git", "rev-parse") else "",
+    )
+    monkeypatch.setattr(
+        live,
+        "_compose",
+        lambda *_args, **_kwargs: pytest.fail(
+            "preparation began before continuation approval"
+        ),
+    )
+    with pytest.raises(ValueError, match="reviewed commit|window expired"):
+        live.run(args)
+    assert not args.report.exists()
 
 
 def test_contradictory_mars_text_does_not_pass_destination_oracle():
@@ -553,9 +942,14 @@ def attempt(
         "restart_route_failure",
         "restart_malformed_route",
         "worker_not_ready",
+        "interrupted",
+        "cleanup_sigint",
+        "continued",
     ],
 )
-def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, case):
+def test_operator_reconciles_real_journey_and_cleans_up(
+    tmp_path, monkeypatch, capsys, case
+):
     current = datetime.now(UTC)
     approved = approval()
     approved["valid_from"] = (current - timedelta(minutes=1)).strftime(
@@ -568,6 +962,15 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
         approved["max_aggregate_input_tokens"] = 4
     if case == "exact_limit_final":
         approved["max_aggregate_input_tokens"] = 10
+    if case == "continued":
+        approved.update(
+            commit="b" * 40,
+            max_aggregate_operations=3,
+            max_aggregate_input_tokens=6000,
+            max_aggregate_output_tokens=1536,
+            max_requests_per_run=3,
+            billing_budget_usd="0.10",
+        )
     state_dir = tmp_path / "state"
     (state_dir / "secrets").mkdir(parents=True)
     (state_dir / "secrets" / "openai-api-key").write_text("offline-placeholder")
@@ -581,6 +984,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     active["expires_at"] = (current + timedelta(minutes=4)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
+    if case == "continued":
+        active["max_operations"] = 3
     activation_path.write_text(json.dumps(active))
     args = SimpleNamespace(
         authorization=authorization,
@@ -592,6 +997,10 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
         backend_ip="172.30.252.3",
         report=tmp_path / "report.json",
     )
+    if case == "continued":
+        args.continue_zero_call = "a" * 32
+        args.reviewed_commit = "c" * 40
+        args.previous_report = tmp_path / "old-report.json"
     commands = []
     owner_changes = []
     events = []
@@ -601,6 +1010,13 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
     monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
     monkeypatch.setattr(live, "_check_backend_conflicts", lambda *_: None)
+    if case == "continued":
+        reserve_aggregate(args.aggregate_ledger, approved, args.continue_zero_call)
+        monkeypatch.setattr(
+            live,
+            "_verify_zero_call_continuation",
+            lambda *_: events.append(("verified_zero_call", None)),
+        )
     monkeypatch.setattr(
         live,
         "_prepare_state_directory",
@@ -638,7 +1054,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
 
     def command(parts, _env):
         if parts[:2] == ("git", "rev-parse"):
-            return "synthetic-commit"
+            return "c" * 40 if case == "continued" else "synthetic-commit"
         if parts[:2] == ("git", "status"):
             return ""
         return "sha256:synthetic-image"
@@ -651,24 +1067,28 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
         commands.append(parts)
         if parts[:2] == ("up", "-d"):
             events.append(("up", parts[2:]))
+        if case == "cleanup_sigint" and parts[:2] == ("stop", "private-app"):
+            signal.raise_signal(signal.SIGINT)
         return ""
 
     monkeypatch.setattr(live, "_compose", compose)
     source = {}
 
-    def app_python(_env, code, input_text=None):
+    def app_python(_env, code, input_text=None, *, timeout=120):
+        assert timeout in {15, 120}
         if "FROM event_envelopes" in code:
             return json.dumps([source[input_text.rstrip("\n")]])
         return "True" if "print(OwnerStore" in code else ""
 
     monkeypatch.setattr(live, "_app_python", app_python)
     old = attempt("reply:historical", "historic", input_tokens=1, output_tokens=1)
-    rows = [old]
-    consumed = ["reply:historical"]
+    rows = [] if case == "continued" else [old]
+    consumed = [] if case == "continued" else ["reply:historical"]
     reservations = []
     history_seen = False
 
-    def worker_python(_env, code):
+    def worker_python(_env, code, *, timeout=120):
+        assert timeout in {15, 120}
         if "provider_usage_attempts" in code:
             observed = [old] if case == "empty_after_journey" and history_seen else rows
             return json.dumps({"attempts": observed, "reservations": reservations})
@@ -678,12 +1098,15 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
                 if case == "empty_after_journey" and history_seen
                 else consumed
             )
-            return json.dumps({"maximum": 5, "consumed": observed})
+            return json.dumps(
+                {"maximum": 3 if case == "continued" else 5, "consumed": observed}
+            )
         return ""
 
     monkeypatch.setattr(live, "_worker_python", worker_python)
 
-    def owner_change(_env, _password, active):
+    def owner_change(_env, _password, active, *, timeout=120):
+        assert timeout in {15, 120}
         owner_changes.append(active)
         events.append(("owner_stop", active))
 
@@ -744,6 +1167,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
                 return _response({"messages": transcript})
             if path != "/api/messages":
                 return _response({})
+            if case == "interrupted":
+                raise KeyboardInterrupt
             index = len(sends)
             assert request.get_header("X-csrf-token") == "synthetic-csrf"
             payload = json.loads(request.data)
@@ -811,8 +1236,11 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
             return original(*values)
 
         monkeypatch.setattr(live, "validate_authorization", validate)
-    if case in {"passed", "exact_limit_final", "pricing_unavailable"}:
+    if case in {"passed", "exact_limit_final", "pricing_unavailable", "continued"}:
         live.run(args)
+    elif case == "interrupted":
+        with pytest.raises(KeyboardInterrupt):
+            live.run(args)
     else:
         with pytest.raises(
             (ValueError, RuntimeError),
@@ -822,7 +1250,9 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     report = json.loads(args.report.read_text())
     assert report["status"] == (
         "passed"
-        if case in {"passed", "exact_limit_final", "pricing_unavailable"}
+        if case in {"passed", "exact_limit_final", "pricing_unavailable", "continued"}
+        else "interrupted"
+        if case in {"interrupted", "cleanup_sigint"}
         else "failed"
     )
     assert report["worker_stop"] is True
@@ -850,9 +1280,24 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     else:
         assert owner_changes == [True, False, True]
         assert events.index(("up", ("private-app",))) < events.index(("session", None))
-        assert events.index(("session", None)) < events.index(("reserve", None))
-        assert events.index(("worker_ready", True)) < events.index(("reserve", None))
-        assert events.index(("reserve", None)) < events.index(("worker_stop", False))
+        if case == "continued":
+            assert ("reserve", None) not in events
+            assert events.index(("verified_zero_call", None)) < events.index(
+                ("up", ("private-app",))
+            )
+            assert report["continuation_receipt"]["original_run_id"] == "a" * 32
+            with sqlite3.connect(args.aggregate_ledger) as db:
+                assert db.execute("SELECT run_id, slots FROM runs").fetchall() == [
+                    ("a" * 32, 3)
+                ]
+        else:
+            assert events.index(("session", None)) < events.index(("reserve", None))
+            assert events.index(("worker_ready", True)) < events.index(
+                ("reserve", None)
+            )
+            assert events.index(("reserve", None)) < events.index(
+                ("worker_stop", False)
+            )
         assert events.index(("up", ("provider-worker", "private-app"))) < events.index(
             ("worker_stop", False)
         )
@@ -861,16 +1306,27 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     assert Path(args.report).stat().st_mode & 0o777 == 0o600
     if case in {"limit_after_first", "unknown_after_first"}:
         assert len(sends) == 1
+    if case in {"interrupted", "cleanup_sigint"}:
+        assert report["error"] == "KeyboardInterrupt"
+    if case == "interrupted":
+        assert sends == []
+        assert report["provider_attempts"] == 0
+        assert report.get("accounting_error") is not True
     if case in {"restart_route_failure", "restart_malformed_route"}:
         assert len(sends) == 2
         if case == "restart_route_failure":
             assert report["backend_error"] == "HTTPS route changed after app restart"
-    if case in {"passed", "exact_limit_final", "pricing_unavailable"}:
+    if case in {"passed", "exact_limit_final", "pricing_unavailable", "continued"}:
         assert [item["content"] for item in sends] == [FIRST, ASK, MARS]
         assert report["provider_attempts"] == 3
-        assert report["remaining_allowance"] == 1
-        assert report["aggregate_input_tokens"] == 10
+        assert report["remaining_allowance"] == (0 if case == "continued" else 1)
+        assert report["aggregate_input_tokens"] == (9 if case == "continued" else 10)
         assert any(parts[:2] == ("restart", "private-app") for parts in commands)
     if case == "pricing_unavailable":
         assert report["estimated_cost_total"] is None
         assert report["cost_estimate_statuses"] == ["pricing_unavailable"]
+    output = capsys.readouterr().err
+    assert "Acceptance phase: cleanup" in output
+    assert "synthetic-password" not in output
+    assert FIRST not in output
+    assert replies[0] not in output

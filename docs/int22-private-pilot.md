@@ -390,7 +390,9 @@ sudo python -m acceptance.private_pilot_live \
   --report /protected/ship-acceptance-report.json
 ```
 
-The runner builds the pinned app and worker images, creates a fresh synthetic
+The runner prints only fixed phase names (`passwords`, `preparation`,
+`readiness`, `inference`, `restart`, `cleanup`) and builds the pinned app and
+worker images, creates a fresh synthetic
 application state, preserves worker state and allowance, provisions only the
 synthetic account, waits for the activation start, reserves three aggregate
 operation slots, and runs all three messages through authenticated HTTPS. It
@@ -409,7 +411,8 @@ containers or its network. Preserve the acceptance worker state and aggregate
 ledger for accounting review; leave the existing working pilot untouched.
 
 The aggregate ledger reserves all three operations before contact. Failed or
-interrupted runs keep that reservation. The worker's separate SQLite allowance
+interrupted runs keep that reservation; the narrow zero-call continuation below
+can use the original three slots once without creating more slots. The worker's separate SQLite allowance
 also consumes an operation before provider contact. A changed authorization
 policy, including a new commit, cannot reset either ledger: it requires review
 of the preserved state and a separately approved continuation. The runner
@@ -429,8 +432,81 @@ an in-flight call
 can still exceed an observed aggregate token limit before reconciliation.
 Confirm project-level billing controls separately before approval.
 
-On an ordinary Python exception or keyboard interruption, cleanup runs and the
-report records failures. SIGKILL, host loss, Docker daemon failure and a failed
-Stop write can defeat cleanup; inspect both Stops, containers and the preserved
-ledgers before any further run. Live-model acceptance remains pending until a
-separately approved execution succeeds.
+On an ordinary Ctrl+C, the runner writes an early sanitized `interrupted`
+report, ignores further SIGINT during cleanup, attempts each Stop and container
+action, and writes the final protected report. Each cleanup subprocess has a
+15-second timeout. This is best effort, not a wall-clock guarantee: SIGKILL,
+SIGTERM, host loss, filesystem stalls, Docker daemon failure, and a failed Stop
+or report write can still leave uncertain state. Inspect both Stops, containers,
+the report, and preserved ledgers before any further run. Live-model acceptance
+remains pending until a separately approved execution succeeds.
+
+### AI-Server: one explicit zero-call continuation
+
+Use this procedure only for an interrupted acceptance run whose aggregate
+ledger contains exactly one three-slot run and whose worker has **zero provider
+attempts, zero provider reservations, and zero consumed allowance**. Keep the
+original authorization, activation, run directory, app and worker databases,
+aggregate ledger, and any original report. Do not rerun the preparation block,
+overwrite the original authorization, delete state, edit SQLite, or extend the
+window. The command refuses an open worker or Owner Stop, running or missing
+acceptance containers, changed activation/allowance binding, extra run history,
+a contradictory old report, or any uncertain database state. A missing old
+report is allowed only with the other verified zero-call evidence. Any attempted
+or uncertain paid operation needs separate human review instead.
+
+Read the preserved run ID without changing the ledger:
+
+```sh
+sudo python - <<'PY'
+import sqlite3
+path = '/srv/almost-reasonable/synthetic-ship-aggregate.sqlite3'
+with sqlite3.connect(f'file:{path}?mode=ro', uri=True) as db:
+    print(db.execute('SELECT run_id, slots FROM runs').fetchall())
+PY
+```
+
+The original authorization and activation windows must still be live. If either
+has expired, stop; this procedure never renews them. If the reviewed checkout
+commit differs from the commit named by the original authorization, the human
+operator must explicitly review and approve that exact new full SHA for this
+zero-call continuation under the **same** three-call, one-attempt, 512-output-
+token-per-call, 6000-input-token, 1536-output-token, and $0.10 limits. Setting
+`REVIEWED_SHA` below records that explicit commit choice; it does not add paid
+capacity. Do not use this command without that review.
+
+Choose an unused acceptance subnet/IP and run the credential-free AI-Server
+backend probe above. An old stopped Compose project may still own its network,
+so choose a different unused subnet instead of deleting old state. On SERVER,
+point only the dedicated acceptance SSH forward at the new fixed IP, verify its
+loopback port is free, and keep the existing nginx HTTPS origin. Establish and
+verify this route before the paid window. Then on AI-Server, from the clean
+reviewed checkout, run **once** with the preserved files and a new report path:
+
+```sh
+export INTERRUPTED_RUN_ID=<32-character-run-id-from-ledger>
+export REVIEWED_SHA=<human-reviewed-full-current-commit-sha>
+sudo python -m acceptance.private_pilot_live \
+  --authorization /protected/ship-acceptance-authorization.json \
+  --activation /protected/ship-activation.json \
+  --state-root /srv/almost-reasonable/synthetic-ship-acceptance \
+  --aggregate-ledger /srv/almost-reasonable/synthetic-ship-aggregate.sqlite3 \
+  --origin https://approved-synthetic-host.example \
+  --backend-subnet "$ACCEPTANCE_SUBNET" \
+  --backend-ip "$ACCEPTANCE_IP" \
+  --report /protected/ship-acceptance-continuation-report.json \
+  --continue-zero-call "$INTERRUPTED_RUN_ID" \
+  --previous-report /protected/ship-acceptance-report.json \
+  --reviewed-commit "$REVIEWED_SHA"
+```
+
+The runner validates the original authorization and activation, the explicit
+current SHA, both Stops, stopped old containers, preserved original run and
+aggregate records, and zero worker use before creating a new run. It makes an
+atomic, one-use `zero_call_continuations` receipt in the original aggregate
+ledger; the new protected report also records that receipt. The original
+three-slot `runs` row remains unchanged; no new aggregate `runs` row or paid-call
+capacity is created. If this continuation fails or is interrupted, it cannot be retried
+under the same receipt; preserve the evidence for separate review. Stop only
+acceptance-owned containers and the dedicated acceptance SSH forward after the
+run. Leave the working pilot untouched.

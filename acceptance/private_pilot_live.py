@@ -1,6 +1,7 @@
 """Explicitly authorized, synthetic private-pilot acceptance on an approved host."""
 
 import argparse
+from contextlib import contextmanager
 import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
@@ -10,6 +11,8 @@ from ipaddress import ip_address, ip_network
 import json
 import os
 from pathlib import Path
+import re
+import signal
 import socket
 import sqlite3
 import stat
@@ -43,6 +46,31 @@ class BackendConfigurationError(ValueError):
 
 class BackendReadinessError(ValueError):
     """Safe operator-facing HTTPS route failure."""
+
+
+@contextmanager
+def _ignore_sigint(on_interrupt=None):
+    handler = (
+        signal.SIG_IGN
+        if on_interrupt is None
+        else lambda _signum, _frame: on_interrupt()
+    )
+    previous = signal.signal(signal.SIGINT, handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def _first_sigint(_signum, _frame):
+    signal.signal(signal.SIGINT, signal.SIG_IGN)
+    raise KeyboardInterrupt
+
+
+def _progress(path, report, phase):
+    report["phase"] = phase
+    print(f"Acceptance phase: {phase}", file=sys.stderr, flush=True)
+    _write_report(path, report)
 
 
 def _backend_network(subnet_text, address_text):
@@ -210,6 +238,17 @@ def _prepare_state_directory(path):
         os.close(fd)
 
 
+def _checked_directory(path, uid, mode):
+    _protected_parents(path, uid)
+    fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        entry = os.fstat(fd)
+        if entry.st_uid != uid or stat.S_IMODE(entry.st_mode) != mode:
+            raise ValueError("zero-call continuation has an unsafe state directory")
+    finally:
+        os.close(fd)
+
+
 def _prepare_service_directory(path, uid, gid, mode):
     path.mkdir(mode=mode, exist_ok=True)
     fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -328,6 +367,199 @@ def reserve_aggregate(path, approval, run_id):
     return approval["max_aggregate_operations"] - used - 3
 
 
+def _continuation_rows(path, uid, queries):
+    _protected(path, 0o600, uid)
+    if any(
+        Path(str(path) + suffix).exists() for suffix in ("-journal", "-wal", "-shm")
+    ):
+        raise ValueError("zero-call continuation has unresolved database state")
+    with sqlite3.connect(path.as_uri() + "?mode=ro&immutable=1", uri=True) as db:
+        if db.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+            raise ValueError("zero-call continuation database integrity is uncertain")
+        return [db.execute(query).fetchall() for query in queries]
+
+
+def _verify_zero_call_continuation(
+    args, approval, activation_bytes, old_run_id, new_run_id=None
+):
+    """Read only: require the one preserved, stopped, zero-call interrupted run."""
+
+    try:
+        if re.fullmatch(r"[0-9a-f]{32}", old_run_id) is None:
+            raise ValueError("invalid interrupted run ID")
+        if (
+            approval["max_aggregate_operations"] != 3
+            or approval["max_requests_per_run"] != 3
+            or approval["max_aggregate_input_tokens"] != 6000
+            or approval["max_aggregate_output_tokens"] != 1536
+            or Decimal(approval["billing_budget_usd"]) != Decimal("0.10")
+            or _unique_json(activation_bytes)["max_operations"] != 3
+        ):
+            raise ValueError("different paid limits")
+        if args.previous_report.absolute() == args.report.absolute():
+            raise ValueError("previous report would be overwritten")
+        root = args.state_root
+        old = root / "runs" / old_run_id
+        app = old / "app"
+        for path, uid, mode in (
+            (root, 0, 0o700),
+            (root / "runs", 0, 0o700),
+            (old, 0, 0o700),
+            (app, APP_UID, 0o700),
+            (app / "owner", APP_UID, 0o700),
+            (root / "worker", WORKER_UID, 0o700),
+            (root / "control", WORKER_UID, 0o700),
+        ):
+            _checked_directory(path, uid, mode)
+        expected_runs = {old_run_id} if new_run_id is None else {old_run_id, new_run_id}
+        if {path.name for path in (root / "runs").iterdir()} != expected_runs:
+            raise ValueError("another acceptance run exists")
+        control = root / "control"
+        if (
+            _read_protected(control / "activation.json", 0o400, WORKER_UID)
+            != activation_bytes
+        ):
+            raise ValueError("activation changed")
+        if _unique_json(
+            _read_protected(control / "emergency-stop.json", 0o400, WORKER_UID)
+        ) != {"version": "private-pilot-emergency-stop-v1", "stop": True}:
+            raise ValueError("worker Stop is open")
+        (owner,) = _continuation_rows(
+            app / "owner" / "owner.sqlite",
+            APP_UID,
+            ("SELECT singleton, active FROM owner_stop",),
+        )
+        if owner != [(1, 1)]:
+            raise ValueError("application Owner Stop is open")
+        attempts, reservations = _continuation_rows(
+            root / "worker" / "provider.sqlite3",
+            WORKER_UID,
+            (
+                "SELECT attempt_id FROM provider_usage_attempts",
+                "SELECT attempt_id FROM provider_attempt_reservations",
+            ),
+        )
+        authority, consumed = _continuation_rows(
+            root / "worker" / "allowance.sqlite3",
+            WORKER_UID,
+            (
+                "SELECT digest, max_operations FROM authority",
+                "SELECT operation_id FROM consumed",
+            ),
+        )
+        if (
+            attempts
+            or reservations
+            or consumed
+            or authority != [(hashlib.sha256(activation_bytes).hexdigest(), 3)]
+        ):
+            raise ValueError("provider or allowance is not verified zero-call")
+        policy, runs = _continuation_rows(
+            args.aggregate_ledger,
+            0,
+            ("SELECT value FROM policy", "SELECT run_id, slots FROM runs"),
+        )
+        if policy != [
+            (json.dumps(approval, sort_keys=True, separators=(",", ":")),)
+        ] or runs != [(old_run_id, 3)]:
+            raise ValueError("aggregate history differs from the interrupted run")
+        (existing_receipt,) = _continuation_rows(
+            args.aggregate_ledger,
+            0,
+            (
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='zero_call_continuations'",
+            ),
+        )
+        if existing_receipt:
+            raise ValueError("zero-call interruption was already continued")
+        _protected_parents(args.previous_report, 0)
+        if args.previous_report.is_symlink():
+            raise ValueError("unsafe previous report")
+        if args.previous_report.exists():
+            previous = _unique_json(_read_protected(args.previous_report, 0o600, 0))
+            if (
+                previous.get("run_id") != old_run_id
+                or previous.get("error") != "KeyboardInterrupt"
+                or previous.get("status") not in {"failed", "interrupted"}
+                or previous.get("provider_attempts") != 0
+                or previous.get("worker_stop") is not True
+                or previous.get("owner_stop") is not True
+                or previous.get("running_services") != []
+                or previous.get("accounting_error") is True
+            ):
+                raise ValueError("previous report contradicts zero-call state")
+        env = os.environ.copy()
+        env.update(
+            COMPOSE_PROJECT_NAME="almost-reasonable-ship-" + old_run_id[:12],
+            PILOT_SOCKET_DIR=str(old / "ipc"),
+            PILOT_WORKER_STATE_DIR=str(root / "worker"),
+            PILOT_APP_STATE_DIR=str(app),
+            PILOT_CONTROL_DIR=str(control),
+            PILOT_SECRET_DIR=str(root / "secrets"),
+            PILOT_ALLOWED_HOST=urlsplit(args.origin).hostname or "",
+            PILOT_ALLOWED_ORIGIN=args.origin,
+            PILOT_APP_SUBNET=args.backend_subnet,
+            PILOT_APP_IP=args.backend_ip,
+        )
+        services = _compose(env, "ps", "--all", "--services").splitlines()
+        running = _compose(env, "ps", "--status", "running", "--services").splitlines()
+        if (
+            set(services) != {"private-app", "provider-worker"}
+            or len(services) != 2
+            or running
+        ):
+            raise ValueError("acceptance containers are active or missing")
+    except (
+        OSError,
+        sqlite3.Error,
+        KeyError,
+        TypeError,
+        ValueError,
+        InvalidOperation,
+    ) as error:
+        raise ValueError(
+            "zero-call continuation evidence is missing or inconsistent"
+        ) from error
+
+
+def _claim_zero_call_continuation(
+    ledger, approval, old_run_id, new_run_id, commit, activation_bytes
+):
+    """Atomically bind one new run to the old three slots without adding capacity."""
+
+    _protected(ledger, 0o600, 0)
+    with sqlite3.connect(ledger) as db:
+        db.execute("PRAGMA synchronous=FULL")
+        db.execute("BEGIN IMMEDIATE")
+        if db.execute("SELECT value FROM policy").fetchall() != [
+            (json.dumps(approval, sort_keys=True, separators=(",", ":")),)
+        ] or db.execute("SELECT run_id, slots FROM runs").fetchall() != [
+            (old_run_id, 3)
+        ]:
+            raise ValueError("zero-call continuation aggregate history changed")
+        db.execute(
+            "CREATE TABLE IF NOT EXISTS zero_call_continuations ("
+            "original_run_id TEXT PRIMARY KEY, continuation_run_id TEXT UNIQUE NOT NULL, "
+            "authorized_commit TEXT NOT NULL, reviewed_commit TEXT NOT NULL, "
+            "activation_sha256 TEXT NOT NULL, created_at TEXT NOT NULL)"
+        )
+        if db.execute("SELECT 1 FROM zero_call_continuations").fetchone() is not None:
+            raise ValueError("zero-call interruption was already continued")
+        receipt = {
+            "original_run_id": old_run_id,
+            "continuation_run_id": new_run_id,
+            "authorized_commit": approval["commit"],
+            "reviewed_commit": commit,
+            "activation_sha256": hashlib.sha256(activation_bytes).hexdigest(),
+            "created_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        }
+        db.execute(
+            "INSERT INTO zero_call_continuations VALUES (?, ?, ?, ?, ?, ?)",
+            tuple(receipt.values()),
+        )
+    return receipt
+
+
 def _command(args, env, *, input_text=None, timeout=120):
     result = subprocess.run(
         args,
@@ -349,7 +581,7 @@ def _compose(env, *args, input_text=None, timeout=120):
     return _command((*COMPOSE, *args), env, input_text=input_text, timeout=timeout)
 
 
-def _app_python(env, code, input_text=None):
+def _app_python(env, code, input_text=None, *, timeout=120):
     return _compose(
         env,
         "run",
@@ -362,10 +594,11 @@ def _app_python(env, code, input_text=None):
         "-c",
         code,
         input_text=input_text,
+        timeout=timeout,
     )
 
 
-def _worker_python(env, code):
+def _worker_python(env, code, *, timeout=120):
     return _compose(
         env,
         "run",
@@ -376,10 +609,11 @@ def _worker_python(env, code):
         "-B",
         "-c",
         code,
+        timeout=timeout,
     )
 
 
-def _owner_change(env, password, active):
+def _owner_change(env, password, active, *, timeout=120):
     code = (
         "import sys; from app.owner_control.store import OwnerStore; "
         "from app.private_web.auth import LoginStatus; "
@@ -388,7 +622,7 @@ def _owner_change(env, password, active):
         "assert r.status is LoginStatus.SUCCESS; "
         f"assert s.change(r.session_token,s.issue(r.session_token),{active})=='applied'"
     )
-    _app_python(env, code, password + "\n")
+    _app_python(env, code, password + "\n", timeout=timeout)
 
 
 def _stop_file(path, active):
@@ -480,7 +714,7 @@ def _wait_worker_ready(path):
             time.sleep(0.25)
 
 
-def _usage(env):
+def _usage(env, *, timeout=120):
     code = (
         "import json,sqlite3; "
         "d=sqlite3.connect('file:/var/lib/pilot-worker/provider.sqlite3?mode=ro',uri=True); "
@@ -488,17 +722,17 @@ def _usage(env):
         "p=d.execute('SELECT attempt_id FROM provider_attempt_reservations').fetchall(); "
         "print(json.dumps({'attempts':r,'reservations':[x[0] for x in p]}))"
     )
-    return json.loads(_worker_python(env, code))
+    return json.loads(_worker_python(env, code, timeout=timeout))
 
 
-def _allowance(env):
+def _allowance(env, *, timeout=120):
     code = (
         "import json,sqlite3; "
         "d=sqlite3.connect('file:/var/lib/pilot-worker/allowance.sqlite3?mode=ro',uri=True); "
         "print(json.dumps({'maximum':d.execute('SELECT max_operations FROM authority').fetchone()[0],"
         "'consumed':[x[0] for x in d.execute('SELECT operation_id FROM consumed')]}))"
     )
-    return json.loads(_worker_python(env, code))
+    return json.loads(_worker_python(env, code, timeout=timeout))
 
 
 def _source(env, message_id):
@@ -514,9 +748,9 @@ def _source(env, message_id):
     return "reply:" + hashlib.sha256(rows[0][0].encode()).hexdigest(), rows[0][1]
 
 
-def _reconcile(env, baseline, expected, approval, *, final=False):
-    usage = _usage(env)
-    allowance = _allowance(env)
+def _reconcile(env, baseline, expected, approval, *, final=False, timeout=120):
+    usage = _usage(env, timeout=timeout)
+    allowance = _allowance(env, timeout=timeout)
     rows = usage["attempts"]
     ids = [row[0] for row in rows]
     consumed = allowance["consumed"]
@@ -585,7 +819,34 @@ def run(args):
     approval = _unique_json(_read_protected(args.authorization, 0o400, 0))
     activation_bytes = _read_protected(args.activation, 0o400, 0)
     activation = _unique_json(activation_bytes)
-    validate_authorization(approval, activation, commit, datetime.now(UTC))
+    continuation_of = getattr(args, "continue_zero_call", None)
+    reviewed_commit = getattr(args, "reviewed_commit", None)
+    previous_report = getattr(args, "previous_report", None)
+    if continuation_of is None:
+        if reviewed_commit is not None or previous_report is not None:
+            raise ValueError("continuation options must be used together")
+        authorized_commit = commit
+    else:
+        if (
+            reviewed_commit != commit
+            or re.fullmatch(r"[0-9a-f]{40}", reviewed_commit or "") is None
+            or previous_report is None
+        ):
+            raise ValueError(
+                "explicit current reviewed commit and previous report are required"
+            )
+        authorized_commit = approval.get("commit")
+    validate_authorization(approval, activation, authorized_commit, datetime.now(UTC))
+    if continuation_of is not None:
+        if (
+            not _utc(activation["not_before"])
+            <= datetime.now(UTC)
+            < _utc(activation["expires_at"])
+        ):
+            raise ValueError("zero-call continuation activation window expired")
+        _verify_zero_call_continuation(
+            args, approval, activation_bytes, continuation_of
+        )
     if (
         urlsplit(args.origin).scheme != "https"
         or urlsplit(args.origin).hostname is None
@@ -596,6 +857,8 @@ def run(args):
     args.report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     _protected_parents(args.report, os.geteuid())
     if args.report.exists() or args.report.is_symlink():
+        if continuation_of is not None:
+            raise ValueError("zero-call continuation needs a new report path")
         _protected(args.report, 0o600, os.geteuid())
     _prepare_state_directory(args.state_root)
     if args.aggregate_ledger.exists() or args.aggregate_ledger.is_symlink():
@@ -648,15 +911,20 @@ def run(args):
     report = {
         "commit": commit,
         "run_id": run_id,
-        "status": "failed",
+        "status": "in_progress",
         "steps": [],
         "images": {},
         "compose_project": env["COMPOSE_PROJECT_NAME"],
     }
+    if continuation_of is not None:
+        report["continuation_of"] = continuation_of
     owner_password = None
+    previous_sigint = signal.signal(signal.SIGINT, _first_sigint)
     try:
+        _progress(args.report, report, "passwords")
         owner_password = getpass("Synthetic owner password: ")
         participant_password = getpass("Synthetic participant password: ")
+        _progress(args.report, report, "preparation")
         _compose(env, "config", "--quiet")
         _compose(env, "build", timeout=600)
         for image in (
@@ -687,6 +955,7 @@ def run(args):
             participant_password + "\n",
         )
         _owner_change(env, owner_password, True)
+        _progress(args.report, report, "readiness")
         _compose(env, "up", "-d", "private-app")
         participant = HTTPSParticipant(args.origin, participant_username)
         try:
@@ -736,21 +1005,57 @@ def run(args):
         }
         expected = []
         _reconcile(env, baseline, expected, approval)
+        if continuation_of is not None:
+            _verify_zero_call_continuation(
+                args, approval, activation_bytes, continuation_of, run_id
+            )
         _compose(env, "up", "-d", "provider-worker", "private-app")
         _wait_worker_ready(socket_dir / "worker.sock")
         _wait_http_ready(participant)
-        validate_authorization(approval, activation, commit, datetime.now(UTC))
-        report["aggregate_remaining"] = reserve_aggregate(
-            args.aggregate_ledger, approval, run_id
+        validate_authorization(
+            approval, activation, authorized_commit, datetime.now(UTC)
         )
+        if continuation_of is not None and datetime.now(UTC) >= _utc(
+            activation["expires_at"]
+        ):
+            raise ValueError("zero-call continuation activation window expired")
+        if continuation_of is None:
+            report["aggregate_remaining"] = reserve_aggregate(
+                args.aggregate_ledger, approval, run_id
+            )
+        else:
+            current_usage = _usage(env)
+            if (
+                current_usage["attempts"]
+                or current_usage["reservations"]
+                or _allowance(env)["consumed"]
+            ):
+                raise ValueError("zero-call continuation provider state changed")
+            report["continuation_receipt"] = _claim_zero_call_continuation(
+                args.aggregate_ledger,
+                approval,
+                continuation_of,
+                run_id,
+                commit,
+                activation_bytes,
+            )
+            report["aggregate_remaining"] = 0
+            _write_report(args.report, report)
         _owner_change(env, owner_password, False)
         _stop_file(stop, False)
+        _progress(args.report, report, "inference")
         participant.request(
             "POST", "/api/privacy/notice", {"version": "privacy-notice-ru-v1"}
         )
 
         def send(message_id, content):
-            validate_authorization(approval, activation, commit, datetime.now(UTC))
+            validate_authorization(
+                approval, activation, authorized_commit, datetime.now(UTC)
+            )
+            if continuation_of is not None and datetime.now(UTC) >= _utc(
+                activation["expires_at"]
+            ):
+                raise ValueError("zero-call continuation activation window expired")
             _reconcile(env, baseline, expected, approval)
             source_id = run_id + "-" + message_id
             response = participant.request(
@@ -766,6 +1071,7 @@ def run(args):
             return participant.request("GET", "/api/history")["messages"]
 
         def restart_app():
+            _progress(args.report, report, "restart")
             _compose(env, "restart", "private-app")
             try:
                 _wait_http_ready(participant)
@@ -778,6 +1084,7 @@ def run(args):
                 "username": participant_username,
             }:
                 raise BackendReadinessError("HTTPS route changed after app restart")
+            _progress(args.report, report, "inference")
 
         journey = run_ship_journey(
             send,
@@ -787,103 +1094,137 @@ def run(args):
             record_name=lambda name: report.update(ship_name=name),
         )
         report.update(journey)
-        report["status"] = "passed"
+        report["journey_complete"] = True
     except (Exception, KeyboardInterrupt) as error:
         report["error"] = type(error).__name__
+        report["status"] = (
+            "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
+        )
         if isinstance(error, BackendReadinessError):
             report["backend_error"] = str(error)
+        if isinstance(error, KeyboardInterrupt):
+            _write_report(args.report, report)
         raise
     finally:
+        cleanup_interrupted = [False]
         try:
-            _stop_file(stop, True)
-            report["worker_stop"] = json.loads(stop.read_text())["stop"] is True
-        except Exception:
-            report["worker_stop"] = False
-        if owner_password is not None:
-            try:
-                _owner_change(env, owner_password, True)
-            except Exception:
-                report["owner_stop_error"] = True
-        try:
-            _compose(env, "stop", "private-app", "provider-worker")
-            report["running_services"] = _compose(
-                env, "ps", "--status", "running", "--services"
-            ).splitlines()
-        except Exception:
-            report["container_stop_error"] = True
-        try:
-            usage = _usage(env)
-            rows = usage["attempts"]
-            current = (
-                [row for row in rows if row[0] not in baseline["attempts"]]
-                if "baseline" in locals()
-                else rows
-            )
-            report["provider_attempts"] = len(current)
-            report["rejection_reasons"] = sorted({row[3] for row in current if row[3]})
-            final_allowance = _allowance(env)
-            report["remaining_allowance"] = final_allowance["maximum"] - len(
-                final_allowance["consumed"]
-            )
-            report["usage_unavailable"] = any(
-                row[4] is None or row[5] is None or row[6] is None for row in rows
-            )
-            if report["usage_unavailable"]:
-                report["input_tokens"] = None
-                report["output_tokens"] = None
-                report["total_tokens"] = None
-                report["aggregate_input_tokens"] = None
-                report["aggregate_output_tokens"] = None
-                report["accounting_error"] = True
-            else:
-                report["input_tokens"] = sum(row[4] for row in current)
-                report["output_tokens"] = sum(row[5] for row in current)
-                report["total_tokens"] = (
-                    None
-                    if any(row[6] is None for row in current)
-                    else sum(row[6] for row in current)
-                )
-                report["aggregate_input_tokens"] = sum(row[4] for row in rows)
-                report["aggregate_output_tokens"] = sum(row[5] for row in rows)
+            with _ignore_sigint(lambda: cleanup_interrupted.__setitem__(0, True)):
+                _progress(args.report, report, "cleanup")
+                try:
+                    _stop_file(stop, True)
+                    report["worker_stop"] = json.loads(stop.read_text())["stop"] is True
+                except Exception:
+                    report["worker_stop"] = False
+                if owner_password is not None:
+                    try:
+                        _owner_change(env, owner_password, True, timeout=15)
+                    except Exception:
+                        report["owner_stop_error"] = True
+                try:
+                    _compose(env, "stop", "private-app", "provider-worker", timeout=15)
+                    report["running_services"] = _compose(
+                        env, "ps", "--status", "running", "--services", timeout=15
+                    ).splitlines()
+                except Exception:
+                    report["container_stop_error"] = True
+                try:
+                    usage = _usage(env, timeout=15)
+                    rows = usage["attempts"]
+                    current = (
+                        [row for row in rows if row[0] not in baseline["attempts"]]
+                        if "baseline" in locals()
+                        else rows
+                    )
+                    report["provider_attempts"] = len(current)
+                    report["rejection_reasons"] = sorted(
+                        {row[3] for row in current if row[3]}
+                    )
+                    final_allowance = _allowance(env, timeout=15)
+                    report["remaining_allowance"] = final_allowance["maximum"] - len(
+                        final_allowance["consumed"]
+                    )
+                    report["usage_unavailable"] = any(
+                        row[4] is None or row[5] is None or row[6] is None
+                        for row in rows
+                    )
+                    if report["usage_unavailable"]:
+                        report["input_tokens"] = None
+                        report["output_tokens"] = None
+                        report["total_tokens"] = None
+                        report["aggregate_input_tokens"] = None
+                        report["aggregate_output_tokens"] = None
+                        report["accounting_error"] = True
+                    else:
+                        report["input_tokens"] = sum(row[4] for row in current)
+                        report["output_tokens"] = sum(row[5] for row in current)
+                        report["total_tokens"] = (
+                            None
+                            if any(row[6] is None for row in current)
+                            else sum(row[6] for row in current)
+                        )
+                        report["aggregate_input_tokens"] = sum(row[4] for row in rows)
+                        report["aggregate_output_tokens"] = sum(row[5] for row in rows)
+                        if (
+                            report["aggregate_input_tokens"]
+                            > approval["max_aggregate_input_tokens"]
+                            or report["aggregate_output_tokens"]
+                            > approval["max_aggregate_output_tokens"]
+                        ):
+                            report["token_limit_exceeded"] = True
+                    report["estimated_cost_total"] = (
+                        str(sum((Decimal(row[8]) for row in current), Decimal(0)))
+                        if current and all(row[8] is not None for row in current)
+                        else None
+                    )
+                    report["cost_estimate_statuses"] = sorted(
+                        {row[9] for row in current}
+                    )
+                    if "baseline" in locals():
+                        _reconcile(
+                            env,
+                            baseline,
+                            expected,
+                            approval,
+                            final=report.get("journey_complete", False),
+                            timeout=15,
+                        )
+                    else:
+                        report["accounting_error"] = True
+                except Exception:
+                    report["accounting_error"] = True
+                try:
+                    report["owner_stop"] = (
+                        _app_python(
+                            env,
+                            "from app.owner_control.store import OwnerStore; print(OwnerStore('/var/lib/pilot-app/owner').active())",
+                            timeout=15,
+                        )
+                        == "True"
+                    )
+                except Exception:
+                    report["owner_stop"] = False
                 if (
-                    report["aggregate_input_tokens"]
-                    > approval["max_aggregate_input_tokens"]
-                    or report["aggregate_output_tokens"]
-                    > approval["max_aggregate_output_tokens"]
+                    not report["worker_stop"]
+                    or not report["owner_stop"]
+                    or report.get("running_services")
+                    or report.get("container_stop_error")
+                    or report.get("accounting_error")
+                    or report.get("token_limit_exceeded")
                 ):
-                    report["token_limit_exceeded"] = True
-            report["estimated_cost_total"] = (
-                str(sum((Decimal(row[8]) for row in current), Decimal(0)))
-                if current and all(row[8] is not None for row in current)
-                else None
-            )
-            report["cost_estimate_statuses"] = sorted({row[9] for row in current})
-            if "baseline" in locals():
-                _reconcile(env, baseline, expected, approval, final=True)
-            else:
-                report["accounting_error"] = True
-        except Exception:
-            report["accounting_error"] = True
-        try:
-            report["owner_stop"] = (
-                _app_python(
-                    env,
-                    "from app.owner_control.store import OwnerStore; print(OwnerStore('/var/lib/pilot-app/owner').active())",
-                )
-                == "True"
-            )
-        except Exception:
-            report["owner_stop"] = False
-        if (
-            not report["worker_stop"]
-            or not report["owner_stop"]
-            or report.get("running_services")
-            or report.get("container_stop_error")
-            or report.get("accounting_error")
-            or report.get("token_limit_exceeded")
-        ):
-            report["status"] = "failed"
-        _write_report(args.report, report)
+                    if report["status"] != "interrupted":
+                        report["status"] = "failed"
+                elif (
+                    report.get("journey_complete") and report["status"] != "interrupted"
+                ):
+                    report["status"] = "passed"
+                elif report["status"] == "in_progress":
+                    report["status"] = "failed"
+                if cleanup_interrupted[0]:
+                    report.update(status="interrupted", error="KeyboardInterrupt")
+                signal.signal(signal.SIGINT, signal.SIG_IGN)
+                _write_report(args.report, report)
+        finally:
+            signal.signal(signal.SIGINT, previous_sigint)
     if report["status"] != "passed":
         raise RuntimeError("acceptance or cleanup failed")
 
@@ -905,6 +1246,9 @@ def main(argv=None):
             required=True,
             type=str if flag in {"origin", "backend-subnet", "backend-ip"} else Path,
         )
+    parser.add_argument("--continue-zero-call", metavar="INTERRUPTED_RUN_ID")
+    parser.add_argument("--previous-report", type=Path)
+    parser.add_argument("--reviewed-commit", metavar="FULL_CURRENT_SHA")
     args = parser.parse_args(argv)
     try:
         run(args)
@@ -912,8 +1256,13 @@ def main(argv=None):
         print(f"Acceptance failed: {error}", file=sys.stderr)
         return 1
     except (ValueError, RuntimeError, OSError, KeyboardInterrupt) as error:
+        report_hint = (
+            "inspect protected report"
+            if args.report.exists()
+            else "no report was written during preflight"
+        )
         print(
-            f"Acceptance failed: {type(error).__name__}; inspect protected report",
+            f"Acceptance failed: {type(error).__name__}; {report_hint}",
             file=sys.stderr,
         )
         return 1
