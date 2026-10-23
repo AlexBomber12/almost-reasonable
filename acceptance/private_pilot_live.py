@@ -423,7 +423,11 @@ class HTTPSParticipant:
             Request(self.origin + path, data=data, headers=headers, method=method),
             timeout=55,
         )
-        return json.loads(response.read()) if path.startswith("/api/") else None
+        return (
+            json.loads(response.read())
+            if path == "/session" or path.startswith("/api/")
+            else None
+        )
 
     def login(self, password):
         self.request("GET", "/login")

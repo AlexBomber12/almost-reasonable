@@ -2,6 +2,8 @@
 
 from datetime import UTC, datetime, timedelta
 import hashlib
+from http.cookiejar import Cookie
+from io import BytesIO
 import json
 import os
 from pathlib import Path
@@ -10,6 +12,7 @@ import subprocess
 import stat
 import sys
 from types import SimpleNamespace
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 
@@ -21,6 +24,71 @@ from acceptance.private_pilot_live import (
     reserve_aggregate,
     validate_authorization,
 )
+
+
+def _response(body):
+    return BytesIO(body if isinstance(body, bytes) else json.dumps(body).encode())
+
+
+def _cookie(jar, name, value):
+    jar.set_cookie(
+        Cookie(
+            version=0,
+            name=name,
+            value=value,
+            port=None,
+            port_specified=False,
+            domain="chat.test",
+            domain_specified=False,
+            domain_initial_dot=False,
+            path="/",
+            path_specified=True,
+            secure=True,
+            expires=None,
+            discard=True,
+            comment=None,
+            comment_url=None,
+            rest={},
+            rfc2109=False,
+        )
+    )
+
+
+def test_https_participant_decodes_session_and_api_but_not_login(monkeypatch):
+    responses = iter(
+        [
+            b"<html>login</html>",
+            {"authenticated": True, "username": "synthetic-user"},
+            {"messages": []},
+        ]
+    )
+    participant = live.HTTPSParticipant("https://chat.test", "synthetic-user")
+    requests = []
+
+    def open_request(request, *, timeout):
+        requests.append((request.full_url, request.get_method(), timeout))
+        return _response(next(responses))
+
+    participant.opener = SimpleNamespace(open=open_request)
+    assert participant.request("GET", "/login") is None
+    assert participant.request("GET", "/session") == {
+        "authenticated": True,
+        "username": "synthetic-user",
+    }
+    assert participant.request("GET", "/api/history") == {"messages": []}
+    assert requests == [
+        ("https://chat.test/login", "GET", 55),
+        ("https://chat.test/session", "GET", 55),
+        ("https://chat.test/api/history", "GET", 55),
+    ]
+
+
+@pytest.mark.parametrize("body", [b"<html>wrong route</html>", b"{broken"])
+def test_https_participant_rejects_non_json_session(body):
+    participant = live.HTTPSParticipant("https://chat.test", "synthetic-user")
+    participant.opener = SimpleNamespace(open=lambda *_args, **_kwargs: _response(body))
+    with pytest.raises(json.JSONDecodeError):
+        participant.request("GET", "/session")
 
 
 def test_effective_compose_keeps_static_backend_on_internal_network(tmp_path):
@@ -464,7 +532,10 @@ def attempt(
         "unresolved",
         "expired_mid_journey",
         "route_failure",
+        "wrong_username_route",
+        "malformed_route",
         "restart_route_failure",
+        "restart_malformed_route",
     ],
 )
 def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, case):
@@ -615,29 +686,50 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     transcript = []
     sends = []
 
-    class Participant:
-        def __init__(self, _origin, username):
-            self.username = username
+    class FakeOpener:
+        def __init__(self, processor):
+            self.jar = processor.cookiejar
 
-        def login(self, _password):
-            pass
-
-        def request(self, method, path, payload=None):
+        def open(self, request, *, timeout):
             nonlocal history_seen
+            assert timeout in {20, 55}
+            assert request.get_header("Origin") == args.origin
+            path = urlsplit(request.full_url).path
+            method = request.get_method()
+            if path == "/login":
+                if method == "GET":
+                    _cookie(self.jar, "ar_login_csrf", "synthetic-login-csrf")
+                    return _response(b"<html>login</html>")
+                form = parse_qs(request.data.decode())
+                assert form["csrf"] == ["synthetic-login-csrf"]
+                assert form["password"] == ["synthetic-password"]
+                self.username = form["username"][0]
+                _cookie(self.jar, "ar_csrf", "synthetic-csrf")
+                return _response(b"<html>signed in</html>")
             if path == "/session":
                 events.append(("session", None))
+                if case == "malformed_route" or (
+                    case == "restart_malformed_route"
+                    and ("restart", "private-app") in commands
+                ):
+                    return _response(b"<html>wrong route</html>")
                 if case == "route_failure" or (
                     case == "restart_route_failure"
                     and ("restart", "private-app") in commands
                 ):
-                    return {"authenticated": False}
-                return {"authenticated": True, "username": self.username}
+                    return _response({"authenticated": False})
+                if case == "wrong_username_route":
+                    return _response({"authenticated": True, "username": "other-user"})
+                assert request.data is None
+                return _response({"authenticated": True, "username": self.username})
             if path == "/api/history":
                 history_seen = True
-                return {"messages": transcript}
+                return _response({"messages": transcript})
             if path != "/api/messages":
-                return {}
+                return _response({})
             index = len(sends)
+            assert request.get_header("X-csrf-token") == "synthetic-csrf"
+            payload = json.loads(request.data)
             sends.append(payload)
             message_id = payload["message_id"]
             event_id = f"event-{index}"
@@ -678,10 +770,9 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
                     old[4] = 2
                 if case != "wrong_allowance_delta" or index != 2:
                     consumed.append(operation)
-            return {"model_state": "completed", "response": replies[index]}
+            return _response({"model_state": "completed", "response": replies[index]})
 
-    monkeypatch.setattr(live, "HTTPSParticipant", Participant)
-    monkeypatch.setattr(live, "_wait_http_ready", lambda _: None)
+    monkeypatch.setattr(live, "build_opener", FakeOpener)
     if case == "expired_mid_journey":
         original = live.validate_authorization
         count = 0
@@ -699,7 +790,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     else:
         with pytest.raises(
             (ValueError, RuntimeError),
-            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route",
+            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route|Expecting value",
         ):
             live.run(args)
     report = json.loads(args.report.read_text())
@@ -711,14 +802,16 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     assert report["worker_stop"] is True
     assert report["owner_stop"] is True
     assert report["running_services"] == []
-    if case == "route_failure":
+    if case in {"route_failure", "wrong_username_route", "malformed_route"}:
         assert owner_changes == [True, True]
         assert ("reserve", None) not in events
         assert ("worker_stop", False) not in events
         assert report.get("backend_ready") is None
-        assert (
-            report["backend_error"] == "HTTPS route does not reach this acceptance app"
-        )
+        if case != "malformed_route":
+            assert (
+                report["backend_error"]
+                == "HTTPS route does not reach this acceptance app"
+            )
         assert sends == []
     else:
         assert owner_changes == [True, False, True]
@@ -730,9 +823,10 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     assert Path(args.report).stat().st_mode & 0o777 == 0o600
     if case in {"limit_after_first", "unknown_after_first"}:
         assert len(sends) == 1
-    if case == "restart_route_failure":
+    if case in {"restart_route_failure", "restart_malformed_route"}:
         assert len(sends) == 2
-        assert report["backend_error"] == "HTTPS route changed after app restart"
+        if case == "restart_route_failure":
+            assert report["backend_error"] == "HTTPS route changed after app restart"
     if case in {"passed", "exact_limit_final", "pricing_unavailable"}:
         assert [item["content"] for item in sends] == [FIRST, ASK, MARS]
         assert report["provider_attempts"] == 3
