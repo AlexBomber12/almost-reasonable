@@ -9,7 +9,6 @@ import os
 from pathlib import Path
 import shutil
 import signal
-import socket
 import sqlite3
 import subprocess
 import stat
@@ -94,19 +93,67 @@ def test_https_participant_rejects_non_json_session(body):
         participant.request("GET", "/session")
 
 
-def test_worker_readiness_requires_connectable_socket(tmp_path, monkeypatch):
-    path = tmp_path / "worker.sock"
-    listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        listener.bind(str(path))
-        listener.listen(1)
-        live._wait_worker_ready(path)
-    finally:
-        listener.close()
-    clock = iter((0, 16))
+def test_worker_readiness_probes_short_socket_inside_running_app(tmp_path, monkeypatch):
+    host_path = (
+        tmp_path
+        / ("long-state-directory-" * 5)
+        / "runs"
+        / ("a" * 32)
+        / "ipc"
+        / "worker.sock"
+    )
+    assert len(os.fsencode(host_path)) > 107
+    calls = []
+
+    def app_python(_env, code, *, running, timeout):
+        calls.append((code, running, timeout))
+
+    monkeypatch.setattr(live, "_app_python", app_python)
+    live._wait_worker_ready({})
+    assert len(calls) == 1
+    assert "/run/pilot-ipc/worker.sock" in calls[0][0]
+    assert str(host_path) not in calls[0][0]
+    assert calls[0][1] is True
+    assert 0 < calls[0][2] <= 2
+
+    def unavailable(*_args, **_kwargs):
+        raise RuntimeError("private worker detail must not enter report")
+
+    monkeypatch.setattr(live, "_app_python", unavailable)
+    clock = iter((0, 0, 16))
     monkeypatch.setattr(live.time, "monotonic", lambda: next(clock))
     with pytest.raises(live.BackendReadinessError, match="worker socket"):
-        live._wait_worker_ready(path)
+        live._wait_worker_ready({})
+
+
+def test_app_python_uses_exec_only_for_running_fixed_ip_app(monkeypatch):
+    calls = []
+
+    def compose(_env, *args, **kwargs):
+        calls.append((args, kwargs))
+        return ""
+
+    monkeypatch.setattr(live, "_compose", compose)
+    live._app_python({}, "print('before')", running=False)
+    live._app_python({}, "print('during')", "secret\n", running=True)
+    live._app_python({}, "print('after')", running=False)
+    assert calls[0][0][:5] == ("run", "--rm", "--no-deps", "-i", "private-app")
+    assert calls[1][0][:3] == ("exec", "-T", "private-app")
+    assert calls[1][1]["input_text"] == "secret\n"
+    assert calls[2][0][:5] == calls[0][0][:5]
+
+
+def test_owner_change_passes_password_by_stdin_for_running_app(monkeypatch):
+    calls = []
+
+    def app_python(_env, code, input_text=None, *, running, timeout):
+        calls.append((code, input_text, running, timeout))
+
+    monkeypatch.setattr(live, "_app_python", app_python)
+    live._owner_change({}, "synthetic-password", False, running=True)
+    assert len(calls) == 1
+    assert calls[0][1:] == ("synthetic-password\n", True, 120)
+    assert "False" in calls[0][0]
 
 
 def test_effective_compose_keeps_static_backend_on_internal_network(tmp_path):
@@ -942,6 +989,8 @@ def attempt(
         "restart_route_failure",
         "restart_malformed_route",
         "worker_not_ready",
+        "worker_stop_failure",
+        "owner_stop_failure",
         "interrupted",
         "cleanup_sigint",
         "cleanup_progress_failure",
@@ -1056,6 +1105,12 @@ def test_operator_reconciles_real_journey_and_cleans_up(
 
     def stop(path, active):
         events.append(("worker_stop", active))
+        if (
+            case == "worker_stop_failure"
+            and active
+            and ("worker_stop", False) in events
+        ):
+            raise OSError("synthetic worker Stop write failed")
         if path.exists():
             path.chmod(0o600)
         real_stop(path, active)
@@ -1084,10 +1139,12 @@ def test_operator_reconciles_real_journey_and_cleans_up(
     monkeypatch.setattr(live, "_compose", compose)
     source = {}
 
-    def app_python(_env, code, input_text=None, *, timeout=120):
+    def app_python(_env, code, input_text=None, *, running=False, timeout=120):
         assert timeout in {15, 120}
         if "FROM event_envelopes" in code:
+            assert running is True
             return json.dumps([source[input_text.rstrip("\n")]])
+        assert running is False
         return "True" if "print(OwnerStore" in code else ""
 
     monkeypatch.setattr(live, "_app_python", app_python)
@@ -1115,10 +1172,13 @@ def test_operator_reconciles_real_journey_and_cleans_up(
 
     monkeypatch.setattr(live, "_worker_python", worker_python)
 
-    def owner_change(_env, _password, active, *, timeout=120):
+    def owner_change(_env, _password, active, *, running=False, timeout=120):
         assert timeout in {15, 120}
         owner_changes.append(active)
+        events.append(("owner_mode", active, running))
         events.append(("owner_stop", active))
+        if case == "owner_stop_failure" and active and len(owner_changes) > 1:
+            raise RuntimeError("synthetic owner Stop command failed")
 
     monkeypatch.setattr(live, "_owner_change", owner_change)
     original_reserve = live.reserve_aggregate
@@ -1226,9 +1286,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(
 
     monkeypatch.setattr(live, "build_opener", FakeOpener)
 
-    def worker_ready(path):
-        assert path.name == "worker.sock"
-        assert path.parent.name == "ipc"
+    def worker_ready(env):
+        assert env["PILOT_SOCKET_DIR"].endswith("ipc")
         events.append(("worker_ready", case != "worker_not_ready"))
         if case == "worker_not_ready":
             raise live.BackendReadinessError("provider worker socket unavailable")
@@ -1265,11 +1324,17 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         if case in {"interrupted", "cleanup_sigint"}
         else "failed"
     )
-    assert report["worker_stop"] is True
+    assert report["worker_stop"] is (case != "worker_stop_failure")
     assert report["owner_stop"] is True
+    if case != "owner_stop_failure":
+        assert report.get("owner_stop_error") is None
     assert report["running_services"] == []
     if case in {"route_failure", "wrong_username_route", "malformed_route"}:
         assert owner_changes == [True, True]
+        assert [entry[2] for entry in events if entry[0] == "owner_mode"] == [
+            False,
+            True,
+        ]
         assert ("reserve", None) not in events
         assert ("worker_stop", False) not in events
         assert report.get("backend_ready") is None
@@ -1281,6 +1346,9 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         assert sends == []
     elif case == "worker_not_ready":
         assert owner_changes == [True, True]
+        assert report.get("owner_stop_error") is None
+        assert report.get("worker_ready") is None
+        assert report["backend_error"] == ("provider worker socket unavailable")
         assert ("reserve", None) not in events
         assert ("worker_stop", False) not in events
         assert events.index(("up", ("provider-worker", "private-app"))) < events.index(
@@ -1289,6 +1357,12 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         assert sends == []
     else:
         assert owner_changes == [True, False, True]
+        assert report["worker_ready"] is True
+        assert [entry[2] for entry in events if entry[0] == "owner_mode"] == [
+            False,
+            True,
+            True,
+        ]
         assert events.index(("up", ("private-app",))) < events.index(("session", None))
         if case == "continued":
             assert ("reserve", None) not in events
@@ -1323,6 +1397,12 @@ def test_operator_reconciles_real_journey_and_cleans_up(
         assert ("worker_stop", True) in events
         assert ("owner_stop", True) in events
         assert len(sends) == 3
+    if case == "worker_stop_failure":
+        assert report["owner_stop"] is True
+        assert report.get("owner_stop_error") is None
+    if case == "owner_stop_failure":
+        assert report["owner_stop_error"] is True
+        assert report["worker_stop"] is True
     if case == "interrupted":
         assert sends == []
         assert report["provider_attempts"] == 0

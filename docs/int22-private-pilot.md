@@ -374,6 +374,18 @@ route after the application-only restart. A route failure is recorded as a
 bounded `backend_error` in the protected report; subnet conflicts are printed
 by the runner before it creates acceptance state or networks.
 
+Worker readiness is a bounded, credential-free connection to
+`/run/pilot-ipc/worker.sock` from the running `private-app` container, using
+its configured application user and IPC group. The host's longer bind-mount
+pathname is not a Unix socket address for this check. The runner prepares
+stores with a temporary app container before startup, uses `compose exec -T`
+for owner changes and event lookup while the fixed-IP app is running, then
+inspects owner state with a temporary app container only after shutdown. A
+worker-readiness failure keeps paid execution closed and still runs both Stop
+actions and container cleanup. Preserve the protected report and inspect the
+acceptance project's service state and logs; post-cleanup exit codes alone do
+not establish that the worker crashed.
+
 ### AI-Server: run only after separate paid authorization
 
 The one command is:

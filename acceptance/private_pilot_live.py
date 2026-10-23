@@ -13,7 +13,6 @@ import os
 from pathlib import Path
 import re
 import signal
-import socket
 import sqlite3
 import stat
 import subprocess
@@ -581,14 +580,15 @@ def _compose(env, *args, input_text=None, timeout=120):
     return _command((*COMPOSE, *args), env, input_text=input_text, timeout=timeout)
 
 
-def _app_python(env, code, input_text=None, *, timeout=120):
+def _app_python(env, code, input_text=None, *, running=False, timeout=120):
+    target = (
+        ("exec", "-T", "private-app")
+        if running
+        else ("run", "--rm", "--no-deps", "-i", "private-app")
+    )
     return _compose(
         env,
-        "run",
-        "--rm",
-        "--no-deps",
-        "-i",
-        "private-app",
+        *target,
         "python",
         "-B",
         "-c",
@@ -613,7 +613,7 @@ def _worker_python(env, code, *, timeout=120):
     )
 
 
-def _owner_change(env, password, active, *, timeout=120):
+def _owner_change(env, password, active, *, running=False, timeout=120):
     code = (
         "import sys; from app.owner_control.store import OwnerStore; "
         "from app.private_web.auth import LoginStatus; "
@@ -622,7 +622,7 @@ def _owner_change(env, password, active, *, timeout=120):
         "assert r.status is LoginStatus.SUCCESS; "
         f"assert s.change(r.session_token,s.issue(r.session_token),{active})=='applied'"
     )
-    _app_python(env, code, password + "\n", timeout=timeout)
+    _app_python(env, code, password + "\n", running=running, timeout=timeout)
 
 
 def _stop_file(path, active):
@@ -698,18 +698,26 @@ def _wait_http_ready(participant):
             time.sleep(0.25)
 
 
-def _wait_worker_ready(path):
+def _wait_worker_ready(env):
+    code = (
+        "import socket; "
+        "s=socket.socket(socket.AF_UNIX,socket.SOCK_STREAM); "
+        "s.settimeout(1); s.connect('/run/pilot-ipc/worker.sock'); s.close()"
+    )
     deadline = time.monotonic() + 15
     while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise BackendReadinessError(
+                "provider worker socket unavailable inside acceptance app"
+            )
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
-                connection.settimeout(1)
-                connection.connect(str(path))
+            _app_python(env, code, running=True, timeout=min(2, remaining))
             return
-        except OSError as error:
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as error:
             if time.monotonic() >= deadline:
                 raise BackendReadinessError(
-                    "provider worker socket unavailable"
+                    "provider worker socket unavailable inside acceptance app"
                 ) from error
             time.sleep(0.25)
 
@@ -742,7 +750,7 @@ def _source(env, message_id):
         "r=d.execute('SELECT event_id,correlation_id FROM event_envelopes WHERE source_message_id=?',"
         "(sys.stdin.readline().rstrip('\\n'),)).fetchall(); print(json.dumps(r))"
     )
-    rows = json.loads(_app_python(env, code, message_id + "\n"))
+    rows = json.loads(_app_python(env, code, message_id + "\n", running=True))
     if len(rows) != 1:
         raise ValueError("current message identity is unresolved")
     return "reply:" + hashlib.sha256(rows[0][0].encode()).hexdigest(), rows[0][1]
@@ -919,6 +927,7 @@ def run(args):
     if continuation_of is not None:
         report["continuation_of"] = continuation_of
     owner_password = None
+    app_started = False
     previous_sigint = signal.signal(signal.SIGINT, _first_sigint)
     try:
         _progress(args.report, report, "passwords")
@@ -956,6 +965,7 @@ def run(args):
         )
         _owner_change(env, owner_password, True)
         _progress(args.report, report, "readiness")
+        app_started = True
         _compose(env, "up", "-d", "private-app")
         participant = HTTPSParticipant(args.origin, participant_username)
         try:
@@ -1010,7 +1020,8 @@ def run(args):
                 args, approval, activation_bytes, continuation_of, run_id
             )
         _compose(env, "up", "-d", "provider-worker", "private-app")
-        _wait_worker_ready(socket_dir / "worker.sock")
+        _wait_worker_ready(env)
+        report["worker_ready"] = True
         _wait_http_ready(participant)
         validate_authorization(
             approval, activation, authorized_commit, datetime.now(UTC)
@@ -1041,7 +1052,7 @@ def run(args):
             )
             report["aggregate_remaining"] = 0
             _write_report(args.report, report)
-        _owner_change(env, owner_password, False)
+        _owner_change(env, owner_password, False, running=True)
         _stop_file(stop, False)
         _progress(args.report, report, "inference")
         participant.request(
@@ -1120,7 +1131,9 @@ def run(args):
                     report["worker_stop"] = False
                 if owner_password is not None:
                     try:
-                        _owner_change(env, owner_password, True, timeout=15)
+                        _owner_change(
+                            env, owner_password, True, running=app_started, timeout=15
+                        )
                     except Exception:
                         report["owner_stop_error"] = True
                 try:
@@ -1211,6 +1224,7 @@ def run(args):
                     or not report["owner_stop"]
                     or report.get("running_services")
                     or report.get("container_stop_error")
+                    or report.get("owner_stop_error")
                     or report.get("accounting_error")
                     or report.get("token_limit_exceeded")
                     or report.get("cleanup_progress_error")
