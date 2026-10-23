@@ -144,6 +144,19 @@ def test_protected_file_rejects_writable_parent_and_open_replacement(
         live._read_protected(protected, 0o400, os.geteuid())
 
 
+def test_compose_build_uses_separate_preparation_timeout(monkeypatch):
+    calls = []
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs["timeout"]))
+        return SimpleNamespace(returncode=0, stdout="")
+
+    monkeypatch.setattr(live.subprocess, "run", run)
+    live._compose({}, "build", timeout=600)
+    live._compose({}, "ps")
+    assert calls == [((*live.COMPOSE, "build"), 600), ((*live.COMPOSE, "ps"), 120)]
+
+
 def attempt(
     operation,
     correlation,
@@ -175,6 +188,7 @@ def attempt(
     "case",
     [
         "passed",
+        "pricing_unavailable",
         "exact_limit_final",
         "limit_after_first",
         "unknown_after_first",
@@ -254,6 +268,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     monkeypatch.setattr(live, "_command", command)
 
     def compose(_env, *parts, **_kwargs):
+        if parts == ("build",):
+            assert _kwargs["timeout"] == 600
         commands.append(parts)
         return ""
 
@@ -340,6 +356,9 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
                     row[7] = 1
                 if case == "wrong_correlation" and index == 2:
                     row[1] = "other-correlation"
+                if case == "pricing_unavailable":
+                    row[8] = None
+                    row[9] = "pricing_unavailable"
                 rows.append(row)
                 if case == "duplicate" and index == 2:
                     rows.append(row.copy())
@@ -367,7 +386,7 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
             return original(*values)
 
         monkeypatch.setattr(live, "validate_authorization", validate)
-    if case in {"passed", "exact_limit_final"}:
+    if case in {"passed", "exact_limit_final", "pricing_unavailable"}:
         live.run(args)
     else:
         with pytest.raises(
@@ -377,7 +396,9 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
             live.run(args)
     report = json.loads(args.report.read_text())
     assert report["status"] == (
-        "passed" if case in {"passed", "exact_limit_final"} else "failed"
+        "passed"
+        if case in {"passed", "exact_limit_final", "pricing_unavailable"}
+        else "failed"
     )
     assert report["worker_stop"] is True
     assert report["owner_stop"] is True
@@ -387,9 +408,12 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     assert Path(args.report).stat().st_mode & 0o777 == 0o600
     if case in {"limit_after_first", "unknown_after_first"}:
         assert len(sends) == 1
-    if case in {"passed", "exact_limit_final"}:
+    if case in {"passed", "exact_limit_final", "pricing_unavailable"}:
         assert [item["content"] for item in sends] == [FIRST, ASK, MARS]
         assert report["provider_attempts"] == 3
         assert report["remaining_allowance"] == 1
         assert report["aggregate_input_tokens"] == 10
         assert any(parts[:2] == ("restart", "private-app") for parts in commands)
+    if case == "pricing_unavailable":
+        assert report["estimated_cost_total"] is None
+        assert report["cost_estimate_statuses"] == ["pricing_unavailable"]

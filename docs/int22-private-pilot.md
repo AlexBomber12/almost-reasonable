@@ -300,7 +300,8 @@ port. Keep `STATE_ROOT` and `AGGREGATE_LEDGER` outside the working server state;
 retain both across run IDs and commits. The command prompts for synthetic owner
 and participant passwords before opening the activation window. The activation
 window can start up to ten minutes after preparation begins; provide enough
-time for image build and state initialization.
+time for image build and state initialization. Image builds have a separate
+ten-minute timeout.
 
 Place authorization, activation, credential, control, and aggregate-ledger
 files beneath directories owned by root or the file's service owner, without
@@ -347,7 +348,9 @@ the existing serialized input byte bound, one attempt and the 30-second attempt
 and 40-second overall timeouts. The dollar amount is an authorization ceiling
 for the operator and is **not** a guaranteed dollar cutoff: provider billing
 can differ from local estimates, and no exact dollar cutoff is enforced before
-each request. Missing provider token usage fails acceptance; an in-flight call
+each request. If provider pricing is unavailable, the report records a null
+estimated total instead of zero. Missing provider token usage fails acceptance;
+an in-flight call
 can still exceed an observed aggregate token limit before reconciliation.
 Confirm project-level billing controls separately before approval.
 

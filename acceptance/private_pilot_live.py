@@ -163,7 +163,7 @@ def reserve_aggregate(path, approval, run_id):
     return approval["max_aggregate_operations"] - used - 3
 
 
-def _command(args, env, *, input_text=None):
+def _command(args, env, *, input_text=None, timeout=120):
     result = subprocess.run(
         args,
         env=env,
@@ -171,7 +171,7 @@ def _command(args, env, *, input_text=None):
         text=True,
         capture_output=True,
         check=False,
-        timeout=120,
+        timeout=timeout,
     )
     if result.returncode:
         raise RuntimeError(
@@ -180,8 +180,8 @@ def _command(args, env, *, input_text=None):
     return result.stdout.strip()
 
 
-def _compose(env, *args, input_text=None):
-    return _command((*COMPOSE, *args), env, input_text=input_text)
+def _compose(env, *args, input_text=None, timeout=120):
+    return _command((*COMPOSE, *args), env, input_text=input_text, timeout=timeout)
 
 
 def _app_python(env, code, input_text=None):
@@ -462,7 +462,7 @@ def run(args):
         owner_password = getpass("Synthetic owner password: ")
         participant_password = getpass("Synthetic participant password: ")
         _compose(env, "config", "--quiet")
-        _compose(env, "build")
+        _compose(env, "build", timeout=600)
         for image in (
             "almost-reasonable-private-pilot-worker:local",
             "almost-reasonable-private-pilot-app:local",
@@ -625,11 +625,10 @@ def run(args):
                     > approval["max_aggregate_output_tokens"]
                 ):
                     report["token_limit_exceeded"] = True
-            report["estimated_cost_total"] = str(
-                sum(
-                    (Decimal(row[8]) for row in current if row[8] is not None),
-                    Decimal(0),
-                )
+            report["estimated_cost_total"] = (
+                str(sum((Decimal(row[8]) for row in current), Decimal(0)))
+                if current and all(row[8] is not None for row in current)
+                else None
             )
             report["cost_estimate_statuses"] = sorted({row[9] for row in current})
             if "baseline" in locals():
