@@ -157,6 +157,64 @@ def test_compose_build_uses_separate_preparation_timeout(monkeypatch):
     assert calls == [((*live.COMPOSE, "build"), 600), ((*live.COMPOSE, "ps"), 120)]
 
 
+def test_report_symlink_is_rejected_before_preparation(tmp_path, monkeypatch):
+    target = tmp_path / "target.txt"
+    target.write_text("keep")
+    report_path = tmp_path / "report.json"
+    report_path.symlink_to(target)
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
+    safe = tmp_path / "safe.json"
+    live._write_report(safe, {"status": "passed"})
+    assert json.loads(safe.read_text()) == {"status": "passed"}
+    assert safe.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(OSError):
+        live._write_report(report_path, {"status": "failed"})
+    assert target.read_text() == "keep"
+
+    current = datetime.now(UTC)
+    approved = approval()
+    approved["valid_from"] = (current - timedelta(minutes=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    approved["valid_until"] = (current + timedelta(minutes=5)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    active = activation()
+    active["not_before"] = (current - timedelta(seconds=1)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    active["expires_at"] = (current + timedelta(minutes=4)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    authorization = tmp_path / "authorization.json"
+    authorization.write_text(json.dumps(approved))
+    activation_path = tmp_path / "activation.json"
+    activation_path.write_text(json.dumps(active))
+    args = SimpleNamespace(
+        authorization=authorization,
+        activation=activation_path,
+        state_root=tmp_path / "state",
+        aggregate_ledger=tmp_path / "aggregate.sqlite3",
+        origin="https://chat.test",
+        report=report_path,
+    )
+    monkeypatch.setattr(live.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+
+    def command(parts, _env):
+        return "synthetic-commit" if parts[:2] == ("git", "rev-parse") else ""
+
+    monkeypatch.setattr(live, "_command", command)
+    monkeypatch.setattr(
+        live,
+        "_compose",
+        lambda *_args, **_kwargs: pytest.fail("paid preparation started"),
+    )
+    with pytest.raises(ValueError, match="unsafe protected file"):
+        live.run(args)
+    assert target.read_text() == "keep"
+
+
 def attempt(
     operation,
     correlation,
@@ -247,7 +305,14 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     monkeypatch.setattr(live.os, "geteuid", lambda: 0)
     monkeypatch.setattr(live.os, "chown", lambda *_: None)
     monkeypatch.setattr(live, "_protected", lambda *_: None)
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
     monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+
+    def write_report(path, report):
+        path.write_text(json.dumps(report))
+        path.chmod(0o600)
+
+    monkeypatch.setattr(live, "_write_report", write_report)
     monkeypatch.setattr(live, "getpass", lambda _: "synthetic-password")
     real_stop = live._stop_file
 

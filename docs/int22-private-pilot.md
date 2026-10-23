@@ -303,10 +303,10 @@ window can start up to ten minutes after preparation begins; provide enough
 time for image build and state initialization. Image builds have a separate
 ten-minute timeout.
 
-Place authorization, activation, credential, control, and aggregate-ledger
+Place authorization, activation, credential, control, aggregate-ledger, and report
 files beneath directories owned by root or the file's service owner, without
 group or world write permission. The runner verifies each parent directory
-and opens authorization and activation through checked file descriptors.
+and opens authorization, activation, and the report through checked descriptors.
 The one command is:
 
 ```sh

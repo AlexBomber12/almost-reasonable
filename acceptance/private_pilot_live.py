@@ -76,6 +76,27 @@ def _read_protected(path, mode, uid):
         os.close(fd)
 
 
+def _write_report(path, report):
+    _protected_parents(path, os.geteuid())
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    try:
+        entry = os.fstat(fd)
+        if (
+            not stat.S_ISREG(entry.st_mode)
+            or stat.S_IMODE(entry.st_mode) != 0o600
+            or entry.st_uid != os.geteuid()
+            or entry.st_nlink != 1
+        ):
+            raise ValueError(f"unsafe report file: {path}")
+        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "w", closefd=False) as output:
+            output.write(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
+            output.flush()
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def validate_authorization(approval, activation, commit, now):
     """Refuse missing or ambiguous approval before preparing paid controls."""
 
@@ -405,6 +426,10 @@ def run(args):
         raise ValueError("an approved HTTPS origin is required")
     if args.state_root.exists() and args.state_root.is_symlink():
         raise ValueError("state root cannot be a symlink")
+    args.report.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _protected_parents(args.report, os.geteuid())
+    if args.report.exists() or args.report.is_symlink():
+        _protected(args.report, 0o600, os.geteuid())
     args.state_root.mkdir(mode=0o700, parents=True, exist_ok=True)
     if args.aggregate_ledger.exists() or args.aggregate_ledger.is_symlink():
         _protected(args.aggregate_ledger, 0o600, 0)
@@ -656,9 +681,7 @@ def run(args):
             or report.get("token_limit_exceeded")
         ):
             report["status"] = "failed"
-        args.report.parent.mkdir(parents=True, exist_ok=True)
-        args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
-        args.report.chmod(0o600)
+        _write_report(args.report, report)
     if report["status"] != "passed":
         raise RuntimeError("acceptance or cleanup failed")
 
