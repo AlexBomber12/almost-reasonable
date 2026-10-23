@@ -107,7 +107,7 @@ def test_generic_schema_independently_enforces_decision_fields():
     ]["format"]["schema"]
     Draft202012Validator.check_schema(schema)
     assert schema["type"] == "object" and "anyOf" not in schema
-    forbidden = {"allOf", "not", "if", "then", "else", "dependentSchemas"}
+    forbidden = {"allOf", "not", "if", "then", "else", "dependentSchemas", "const"}
 
     def check_subset(node):
         if isinstance(node, dict):
@@ -122,6 +122,13 @@ def test_generic_schema_independently_enforces_decision_fields():
                 check_subset(value)
 
     check_subset(schema)
+    branches = schema["properties"]["proposal"]["anyOf"]
+    assert [branch["properties"]["decision"]["enum"] for branch in branches] == [
+        ["no_action"],
+        ["reply"],
+        ["research"],
+        ["propose_publication"],
+    ]
     validator = Draft202012Validator(schema)
     valid = [
         {"decision": "no_action", "reason_category": "other"},
@@ -257,14 +264,14 @@ def test_returned_sdk_payload_cannot_mutate_the_fixed_schema():
     first = built.to_sdk_kwargs()
     first["text"]["format"]["schema"]["properties"]["proposal"]["anyOf"][0][
         "properties"
-    ]["decision"]["const"] = "shell"
+    ]["decision"]["enum"][0] = "shell"
 
     second = built.to_sdk_kwargs()
 
     assert (
         second["text"]["format"]["schema"]["properties"]["proposal"]["anyOf"][0][
             "properties"
-        ]["decision"]["const"]
+        ]["decision"]["enum"][0]
         != "shell"
     )
 

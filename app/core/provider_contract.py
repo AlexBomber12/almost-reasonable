@@ -53,7 +53,7 @@ _PROPOSAL_SCHEMA = {
                 {
                     "type": "object",
                     "properties": {
-                        "decision": {"type": "string", "const": decision.value},
+                        "decision": {"type": "string", "enum": [decision.value]},
                         field: {"type": "string", **extra},
                     },
                     "required": ["decision", field],
