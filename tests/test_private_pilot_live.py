@@ -5,6 +5,8 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -215,6 +217,104 @@ def test_report_symlink_is_rejected_before_preparation(tmp_path, monkeypatch):
     assert target.read_text() == "keep"
 
 
+def test_duplicate_authorization_is_rejected_before_preparation(tmp_path, monkeypatch):
+    raw = json.dumps(approval())[:-1] + ',"commit":"synthetic-commit"}'
+    args = SimpleNamespace(
+        authorization=tmp_path / "authorization.json",
+        activation=tmp_path / "activation.json",
+        state_root=tmp_path / "state",
+        aggregate_ledger=tmp_path / "aggregate.sqlite3",
+        origin="https://chat.test",
+        report=tmp_path / "report.json",
+    )
+    monkeypatch.setattr(live.os, "geteuid", lambda: 0)
+    monkeypatch.setattr(
+        live,
+        "_command",
+        lambda parts, _env: "synthetic-commit" if parts[1] == "rev-parse" else "",
+    )
+    monkeypatch.setattr(
+        live,
+        "_read_protected",
+        lambda path, *_: raw.encode()
+        if path == args.authorization
+        else json.dumps(activation()).encode(),
+    )
+    monkeypatch.setattr(
+        live,
+        "_compose",
+        lambda *_args, **_kwargs: pytest.fail("paid preparation started"),
+    )
+    with pytest.raises(ValueError, match="duplicate JSON key: commit"):
+        live.run(args)
+
+
+def test_control_files_reject_symlinks_and_creation_race(tmp_path, monkeypatch):
+    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
+    target = tmp_path / "target.txt"
+    target.write_text("keep")
+    activation_path = tmp_path / "activation.json"
+    activation_path.symlink_to(target)
+    with pytest.raises(OSError):
+        live._write_control(
+            activation_path, b"activation", os.geteuid(), create_only=True
+        )
+    stop_path = tmp_path / "emergency-stop.json"
+    stop_path.symlink_to(target)
+    with pytest.raises(OSError):
+        live._write_control(stop_path, b"stop", os.geteuid())
+    assert target.read_text() == "keep"
+
+    stop_path.unlink()
+    os.mkfifo(stop_path)
+    with pytest.raises(OSError):
+        live._write_control(stop_path, b"stop", os.geteuid())
+    stop_path.unlink()
+    live._write_control(stop_path, b"stop", os.geteuid())
+    assert stop_path.read_bytes() == b"stop"
+    assert stop_path.stat().st_mode & 0o777 == 0o400
+
+    raced = tmp_path / "raced.json"
+    original_open = live.os.open
+
+    def install_symlink(path, flags, *args):
+        if path == raced:
+            raced.symlink_to(target)
+        return original_open(path, flags, *args)
+
+    monkeypatch.setattr(live.os, "open", install_symlink)
+    with pytest.raises(OSError):
+        live._write_control(raced, b"activation", os.geteuid(), create_only=True)
+    assert target.read_text() == "keep"
+
+
+@pytest.mark.parametrize("invalid", ["history", "transcript"])
+def test_journey_validation_survives_optimized_python(invalid):
+    script = f"""
+from acceptance.private_pilot_conversation import FIRST, ASK, MARS, run_ship_journey
+replies = iter(('Искра', 'Корабль: Искра; Назначение: Юпитер', 'Корабль: Искра; Назначение: Марс'))
+def send(_id, _content):
+    return {{'model_state': 'completed', 'response': next(replies)}}
+def history():
+    return []
+def inspect():
+    return {{'conversation': []}}
+try:
+    run_ship_journey(send, history, lambda: None, {"inspect" if invalid == "transcript" else "None"})
+except AssertionError:
+    raise SystemExit(0)
+raise SystemExit(1)
+"""
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+
+
 def attempt(
     operation,
     correlation,
@@ -307,6 +407,14 @@ def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, c
     monkeypatch.setattr(live, "_protected", lambda *_: None)
     monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
     monkeypatch.setattr(live, "_read_protected", lambda path, *_: path.read_bytes())
+
+    def write_control(path, payload, _uid, *, create_only=False):
+        if create_only and path.exists():
+            raise FileExistsError(path)
+        path.write_bytes(payload)
+        path.chmod(0o400)
+
+    monkeypatch.setattr(live, "_write_control", write_control)
 
     def write_report(path, report):
         path.write_text(json.dumps(report))

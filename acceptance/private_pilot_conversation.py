@@ -67,37 +67,41 @@ def run_ship_journey(
 
     if inspect_request is not None:
         conversation = inspect_request()["conversation"]
-        assert [(part["role"], part["trust"]) for part in conversation] == [
+        if [(part["role"], part["trust"]) for part in conversation] != [
             ("participant", "untrusted_conversational_data"),
             ("agent", "untrusted_conversational_data"),
             ("participant", "untrusted_conversational_data"),
             ("agent", "untrusted_conversational_data"),
             ("participant", "untrusted_conversational_data"),
-        ]
-        assert [part["content"] for part in conversation] == [
+        ]:
+            raise AssertionError("provider transcript roles or trust labels differ")
+        if [part["content"] for part in conversation] != [
             FIRST,
             first["response"],
             ASK,
             second["response"],
             MARS,
-        ]
+        ]:
+            raise AssertionError("provider transcript content differs")
     persisted = history()
-    assert [part["role"] for part in persisted] == [
+    if [part["role"] for part in persisted] != [
         "participant",
         "agent",
         "participant",
         "agent",
         "participant",
         "agent",
-    ]
-    assert [part["content"] for part in persisted] == [
+    ]:
+        raise AssertionError("persisted message roles differ")
+    if [part["content"] for part in persisted] != [
         FIRST,
         first["response"],
         ASK,
         second["response"],
         MARS,
         third["response"],
-    ]
+    ]:
+        raise AssertionError("persisted message content differs")
     if record_step is not None:
         record_step("history")
     return {"ship_name": name, "steps": ["name", "recall", "restart_mars", "history"]}

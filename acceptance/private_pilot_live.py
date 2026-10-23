@@ -76,6 +76,58 @@ def _read_protected(path, mode, uid):
         os.close(fd)
 
 
+def _unique_json(raw):
+    def unique(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise ValueError(f"duplicate JSON key: {key}")
+            result[key] = value
+        return result
+
+    return json.loads(raw, object_pairs_hook=unique)
+
+
+def _write_control(path, payload, uid, *, create_only=False):
+    _protected_parents(path, uid)
+    flags = os.O_WRONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+    try:
+        fd = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o600)
+        created = True
+    except FileExistsError:
+        if create_only:
+            raise
+        fd = os.open(path, flags)
+        created = False
+    try:
+        entry = os.fstat(fd)
+        if (
+            not stat.S_ISREG(entry.st_mode)
+            or entry.st_nlink != 1
+            or (
+                created
+                and (
+                    entry.st_uid != os.geteuid() or stat.S_IMODE(entry.st_mode) != 0o600
+                )
+            )
+            or (
+                not created
+                and (entry.st_uid != uid or stat.S_IMODE(entry.st_mode) != 0o400)
+            )
+        ):
+            raise ValueError(f"unsafe control file: {path}")
+        os.ftruncate(fd, 0)
+        with os.fdopen(fd, "wb", closefd=False) as output:
+            output.write(payload)
+            output.flush()
+        if entry.st_uid != uid:
+            os.fchown(fd, uid, uid)
+        os.fchmod(fd, 0o400)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _write_report(path, report):
     _protected_parents(path, os.geteuid())
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
@@ -248,11 +300,13 @@ def _owner_change(env, password, active):
 
 
 def _stop_file(path, active):
-    path.write_text(
-        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": active})
+    _write_control(
+        path,
+        json.dumps(
+            {"version": "private-pilot-emergency-stop-v1", "stop": active}
+        ).encode(),
+        WORKER_UID,
     )
-    os.chown(path, WORKER_UID, WORKER_UID)
-    path.chmod(0o400)
 
 
 class HTTPSParticipant:
@@ -415,9 +469,9 @@ def run(args):
     commit = _command(("git", "rev-parse", "HEAD"), os.environ.copy())
     if _command(("git", "status", "--porcelain"), os.environ.copy()):
         raise ValueError("checkout must be clean")
-    approval = json.loads(_read_protected(args.authorization, 0o400, 0))
+    approval = _unique_json(_read_protected(args.authorization, 0o400, 0))
     activation_bytes = _read_protected(args.activation, 0o400, 0)
-    activation = json.loads(activation_bytes)
+    activation = _unique_json(activation_bytes)
     validate_authorization(approval, activation, commit, datetime.now(UTC))
     if (
         urlsplit(args.origin).scheme != "https"
@@ -450,13 +504,13 @@ def run(args):
         os.chown(path, uid, gid)
         path.chmod(mode)
     activation_target = control_dir / "activation.json"
-    if activation_target.exists():
+    if activation_target.exists() or activation_target.is_symlink():
         if _read_protected(activation_target, 0o400, WORKER_UID) != activation_bytes:
             raise ValueError("existing allowance is bound to another activation")
     else:
-        activation_target.write_bytes(activation_bytes)
-        os.chown(activation_target, WORKER_UID, WORKER_UID)
-        activation_target.chmod(0o400)
+        _write_control(
+            activation_target, activation_bytes, WORKER_UID, create_only=True
+        )
     stop = control_dir / "emergency-stop.json"
     if stop.exists() or stop.is_symlink():
         _protected(stop, 0o400, WORKER_UID)
