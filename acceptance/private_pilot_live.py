@@ -1,6 +1,7 @@
 """Explicitly authorized, synthetic private-pilot acceptance on an approved host."""
 
 import argparse
+import hashlib
 from datetime import UTC, datetime
 from decimal import Decimal, InvalidOperation
 from getpass import getpass
@@ -263,20 +264,95 @@ def _usage(env):
     code = (
         "import json,sqlite3; "
         "d=sqlite3.connect('file:/var/lib/pilot-worker/provider.sqlite3?mode=ro',uri=True); "
-        "r=d.execute('SELECT outcome,rejection_reason,input_tokens,output_tokens,total_tokens,retry_count,estimated_cost,cost_estimate_status FROM provider_usage_attempts ORDER BY started_at,attempt_id').fetchall(); "
-        "print(json.dumps(r))"
+        "r=d.execute('SELECT attempt_id,correlation_id,outcome,rejection_reason,input_tokens,output_tokens,total_tokens,retry_count,estimated_cost,cost_estimate_status FROM provider_usage_attempts').fetchall(); "
+        "p=d.execute('SELECT attempt_id FROM provider_attempt_reservations').fetchall(); "
+        "print(json.dumps({'attempts':r,'reservations':[x[0] for x in p]}))"
     )
     return json.loads(_worker_python(env, code))
 
 
-def _remaining(env):
+def _allowance(env):
     code = (
-        "import sqlite3; "
+        "import json,sqlite3; "
         "d=sqlite3.connect('file:/var/lib/pilot-worker/allowance.sqlite3?mode=ro',uri=True); "
-        "print(d.execute('SELECT max_operations FROM authority').fetchone()[0]-"
-        "d.execute('SELECT count(*) FROM consumed').fetchone()[0])"
+        "print(json.dumps({'maximum':d.execute('SELECT max_operations FROM authority').fetchone()[0],"
+        "'consumed':[x[0] for x in d.execute('SELECT operation_id FROM consumed')]}))"
     )
-    return int(_worker_python(env, code))
+    return json.loads(_worker_python(env, code))
+
+
+def _source(env, message_id):
+    code = (
+        "import json,sqlite3,sys; "
+        "d=sqlite3.connect('file:/var/lib/pilot-app/events.db?mode=ro',uri=True); "
+        "r=d.execute('SELECT event_id,correlation_id FROM event_envelopes WHERE source_message_id=?',"
+        "(sys.stdin.readline().rstrip('\\n'),)).fetchall(); print(json.dumps(r))"
+    )
+    rows = json.loads(_app_python(env, code, message_id + "\n"))
+    if len(rows) != 1:
+        raise ValueError("current message identity is unresolved")
+    return "reply:" + hashlib.sha256(rows[0][0].encode()).hexdigest(), rows[0][1]
+
+
+def _reconcile(env, baseline, expected, approval, *, final=False):
+    usage = _usage(env)
+    allowance = _allowance(env)
+    rows = usage["attempts"]
+    ids = [row[0] for row in rows]
+    consumed = allowance["consumed"]
+    if len(ids) != len(set(ids)) or len(consumed) != len(set(consumed)):
+        raise ValueError("duplicate accounting identity")
+    if usage["reservations"]:
+        raise ValueError("unresolved provider reservation")
+    if any(row[4] is None or row[5] is None or row[6] is None for row in rows):
+        raise ValueError("provider token usage is unavailable")
+    totals = (sum(row[4] for row in rows), sum(row[5] for row in rows))
+    limits = (
+        approval["max_aggregate_input_tokens"],
+        approval["max_aggregate_output_tokens"],
+    )
+    if any(
+        value > limit if final else value >= limit
+        for value, limit in zip(totals, limits)
+    ):
+        raise ValueError("aggregate token allowance exhausted")
+    if not baseline["attempts"] <= set(ids) or not baseline["consumed"] <= set(
+        consumed
+    ):
+        raise ValueError("historical accounting changed")
+    if any(
+        tuple(row) != baseline["rows"][row[0]]
+        for row in rows
+        if row[0] in baseline["rows"]
+    ):
+        raise ValueError("historical accounting changed")
+    current = [row for row in rows if row[0] not in baseline["attempts"]]
+    current_consumed = set(consumed) - baseline["consumed"]
+    required = {operation + ":1": correlation for operation, correlation in expected}
+    if len(required) != len(expected):
+        raise ValueError("duplicate current operation")
+    if set(row[0] for row in current) != set(required) or current_consumed != {
+        operation for operation, _ in expected
+    }:
+        raise ValueError("current provider or allowance accounting does not match")
+    if any(
+        row[1] != required[row[0]]
+        or row[2] != "completed"
+        or row[3] is not None
+        or row[7] != 0
+        for row in current
+    ):
+        raise ValueError("current provider attempt is incomplete or retried")
+    if allowance["maximum"] != baseline["maximum"]:
+        raise ValueError("allowance authority changed")
+    remaining = allowance["maximum"] - len(consumed)
+    if remaining < (0 if final else 3 - len(expected)):
+        raise ValueError("worker allowance exhausted")
+    if final and (
+        len(expected) != 3 or len(current) != 3 or len(current_consumed) != 3
+    ):
+        raise ValueError("three current attempts are required")
+    return rows, current, remaining
 
 
 def run(args):
@@ -408,18 +484,16 @@ def run(args):
                 "--allowance",
                 "/var/lib/pilot-worker/allowance.sqlite3",
             )
-        if _remaining(env) < 3:
-            raise ValueError("worker allowance has fewer than three operations")
-        usage_before = _usage(env)
-        if any(row[2] is None or row[3] is None for row in usage_before):
-            raise ValueError("prior provider token usage is unavailable")
-        if (
-            sum(row[2] for row in usage_before)
-            >= approval["max_aggregate_input_tokens"]
-            or sum(row[3] for row in usage_before)
-            >= approval["max_aggregate_output_tokens"]
-        ):
-            raise ValueError("aggregate token allowance exhausted")
+        initial_usage = _usage(env)
+        initial_allowance = _allowance(env)
+        baseline = {
+            "attempts": {row[0] for row in initial_usage["attempts"]},
+            "rows": {row[0]: tuple(row) for row in initial_usage["attempts"]},
+            "consumed": set(initial_allowance["consumed"]),
+            "maximum": initial_allowance["maximum"],
+        }
+        expected = []
+        _reconcile(env, baseline, expected, approval)
         _owner_change(env, owner_password, False)
         _stop_file(stop, False)
         _compose(env, "up", "-d", "provider-worker", "private-app")
@@ -432,11 +506,16 @@ def run(args):
 
         def send(message_id, content):
             validate_authorization(approval, activation, commit, datetime.now(UTC))
-            return participant.request(
+            _reconcile(env, baseline, expected, approval)
+            source_id = run_id + "-" + message_id
+            response = participant.request(
                 "POST",
                 "/api/messages",
-                {"message_id": run_id + "-" + message_id, "content": content},
+                {"message_id": source_id, "content": content},
             )
+            expected.append(_source(env, source_id))
+            _reconcile(env, baseline, expected, approval, final=len(expected) == 3)
+            return response
 
         def history():
             return participant.request("GET", "/api/history")["messages"]
@@ -476,13 +555,21 @@ def run(args):
         except Exception:
             report["container_stop_error"] = True
         try:
-            rows = _usage(env)
-            current = rows[len(usage_before) :] if "usage_before" in locals() else rows
+            usage = _usage(env)
+            rows = usage["attempts"]
+            current = (
+                [row for row in rows if row[0] not in baseline["attempts"]]
+                if "baseline" in locals()
+                else rows
+            )
             report["provider_attempts"] = len(current)
-            report["rejection_reasons"] = sorted({row[1] for row in current if row[1]})
-            report["remaining_allowance"] = _remaining(env)
+            report["rejection_reasons"] = sorted({row[3] for row in current if row[3]})
+            final_allowance = _allowance(env)
+            report["remaining_allowance"] = final_allowance["maximum"] - len(
+                final_allowance["consumed"]
+            )
             report["usage_unavailable"] = any(
-                row[2] is None or row[3] is None for row in rows
+                row[4] is None or row[5] is None or row[6] is None for row in rows
             )
             if report["usage_unavailable"]:
                 report["input_tokens"] = None
@@ -492,15 +579,15 @@ def run(args):
                 report["aggregate_output_tokens"] = None
                 report["accounting_error"] = True
             else:
-                report["input_tokens"] = sum(row[2] for row in current)
-                report["output_tokens"] = sum(row[3] for row in current)
+                report["input_tokens"] = sum(row[4] for row in current)
+                report["output_tokens"] = sum(row[5] for row in current)
                 report["total_tokens"] = (
                     None
-                    if any(row[4] is None for row in current)
-                    else sum(row[4] for row in current)
+                    if any(row[6] is None for row in current)
+                    else sum(row[6] for row in current)
                 )
-                report["aggregate_input_tokens"] = sum(row[2] for row in rows)
-                report["aggregate_output_tokens"] = sum(row[3] for row in rows)
+                report["aggregate_input_tokens"] = sum(row[4] for row in rows)
+                report["aggregate_output_tokens"] = sum(row[5] for row in rows)
                 if (
                     report["aggregate_input_tokens"]
                     > approval["max_aggregate_input_tokens"]
@@ -510,11 +597,15 @@ def run(args):
                     report["token_limit_exceeded"] = True
             report["estimated_cost_total"] = str(
                 sum(
-                    (Decimal(row[6]) for row in current if row[6] is not None),
+                    (Decimal(row[8]) for row in current if row[8] is not None),
                     Decimal(0),
                 )
             )
-            report["cost_estimate_statuses"] = sorted({row[7] for row in current})
+            report["cost_estimate_statuses"] = sorted({row[9] for row in current})
+            if "baseline" in locals():
+                _reconcile(env, baseline, expected, approval, final=True)
+            else:
+                report["accounting_error"] = True
         except Exception:
             report["accounting_error"] = True
         try:

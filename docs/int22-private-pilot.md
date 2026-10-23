@@ -331,14 +331,18 @@ interrupted runs keep that reservation. The worker's separate SQLite allowance
 also consumes an operation before provider contact. A changed authorization
 policy, including a new commit, cannot reset either ledger: it requires review
 of the preserved state and a separately approved continuation. The runner
-checks observed token totals after the run; those checks cannot interrupt an
+reconciles cumulative provider usage and worker allowance before every request
+and after each response. It stops before another request if either observed
+aggregate token limit is reached or usage is unavailable. Success requires
+exactly three completed, correlated current-run attempts without retries and
+three matching allowance consumptions. These checks cannot interrupt an
 in-flight provider request. The worker enforces 512 output tokens per request,
 the existing serialized input byte bound, one attempt and the 30-second attempt
 and 40-second overall timeouts. The dollar amount is an authorization ceiling
 for the operator and is **not** a guaranteed dollar cutoff: provider billing
 can differ from local estimates, and no exact dollar cutoff is enforced before
-each request. Missing provider token usage fails acceptance; observed aggregate
-token limits are checked after contact and cannot stop an in-flight call.
+each request. Missing provider token usage fails acceptance; an in-flight call
+can still exceed an observed aggregate token limit before reconciliation.
 Confirm project-level billing controls separately before approval.
 
 On an ordinary Python exception or keyboard interruption, cleanup runs and the

@@ -1,6 +1,7 @@
-"""Credential-free checks for the deferred operator command."""
+"""Credential-free checks of the live operator flow and durable accounting."""
 
 from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -8,7 +9,7 @@ from types import SimpleNamespace
 import pytest
 
 from acceptance import private_pilot_live as live
-from acceptance.private_pilot_conversation import run_ship_journey
+from acceptance.private_pilot_conversation import ASK, FIRST, MARS, run_ship_journey
 from acceptance.private_pilot_live import (
     MODEL,
     TASK,
@@ -111,12 +112,56 @@ def test_contradictory_mars_text_does_not_pass_destination_oracle():
         run_ship_journey(send, lambda: [], lambda: None)
 
 
-@pytest.mark.parametrize(
-    "failure", ["none", "journey", "missing_usage", "expired_mid_journey"]
-)
-def test_operator_command_records_result_and_stops_on_completion_or_failure(
-    tmp_path, monkeypatch, failure
+def attempt(
+    operation,
+    correlation,
+    *,
+    input_tokens=3,
+    output_tokens=2,
+    outcome="completed",
+    rejection=None,
+    retry=0,
+    suffix=1,
 ):
+    return [
+        f"{operation}:{suffix}",
+        correlation,
+        outcome,
+        rejection,
+        input_tokens,
+        output_tokens,
+        None
+        if input_tokens is None or output_tokens is None
+        else input_tokens + output_tokens,
+        retry,
+        "0.01",
+        "estimated",
+    ]
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
+        "passed",
+        "exact_limit_final",
+        "limit_after_first",
+        "unknown_after_first",
+        "empty_ledger",
+        "empty_after_journey",
+        "historical_only",
+        "historical_mutation",
+        "duplicate",
+        "extra",
+        "incomplete",
+        "rejected",
+        "retries",
+        "wrong_allowance_delta",
+        "wrong_correlation",
+        "unresolved",
+        "expired_mid_journey",
+    ],
+)
+def test_operator_reconciles_real_journey_and_cleans_up(tmp_path, monkeypatch, case):
     current = datetime.now(UTC)
     approved = approval()
     approved["valid_from"] = (current - timedelta(minutes=1)).strftime(
@@ -125,9 +170,13 @@ def test_operator_command_records_result_and_stops_on_completion_or_failure(
     approved["valid_until"] = (current + timedelta(minutes=5)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
-    state = tmp_path / "state"
-    (state / "secrets").mkdir(parents=True)
-    (state / "secrets" / "openai-api-key").write_text("offline-placeholder")
+    if case == "limit_after_first":
+        approved["max_aggregate_input_tokens"] = 4
+    if case == "exact_limit_final":
+        approved["max_aggregate_input_tokens"] = 10
+    state_dir = tmp_path / "state"
+    (state_dir / "secrets").mkdir(parents=True)
+    (state_dir / "secrets" / "openai-api-key").write_text("offline-placeholder")
     authorization = tmp_path / "authorization.json"
     authorization.write_text(json.dumps(approved))
     activation_path = tmp_path / "activation.json"
@@ -142,7 +191,7 @@ def test_operator_command_records_result_and_stops_on_completion_or_failure(
     args = SimpleNamespace(
         authorization=authorization,
         activation=activation_path,
-        state_root=state,
+        state_root=state_dir,
         aggregate_ledger=tmp_path / "aggregate.sqlite3",
         origin="https://chat.test",
         report=tmp_path / "report.json",
@@ -150,28 +199,17 @@ def test_operator_command_records_result_and_stops_on_completion_or_failure(
     commands = []
     owner_changes = []
     monkeypatch.setattr(live.os, "geteuid", lambda: 0)
-    monkeypatch.setattr(live.os, "chown", lambda *_args: None)
-    monkeypatch.setattr(live, "_protected", lambda *_args: None)
-    monkeypatch.setattr(live, "getpass", lambda _prompt: "synthetic-password")
-    original_validate = live.validate_authorization
-    validation_calls = 0
-
-    def validate(*values):
-        nonlocal validation_calls
-        validation_calls += 1
-        if failure == "expired_mid_journey" and validation_calls == 4:
-            raise ValueError("authorization is outside its validity period")
-        return original_validate(*values)
-
-    monkeypatch.setattr(live, "validate_authorization", validate)
+    monkeypatch.setattr(live.os, "chown", lambda *_: None)
+    monkeypatch.setattr(live, "_protected", lambda *_: None)
+    monkeypatch.setattr(live, "getpass", lambda _: "synthetic-password")
     real_stop = live._stop_file
 
-    def simulated_root_stop(path, active):
+    def stop(path, active):
         if path.exists():
             path.chmod(0o600)
         real_stop(path, active)
 
-    monkeypatch.setattr(live, "_stop_file", simulated_root_stop)
+    monkeypatch.setattr(live, "_stop_file", stop)
 
     def command(parts, _env):
         if parts[:2] == ("git", "rev-parse"):
@@ -180,34 +218,53 @@ def test_operator_command_records_result_and_stops_on_completion_or_failure(
             return ""
         return "sha256:synthetic-image"
 
+    monkeypatch.setattr(live, "_command", command)
+
     def compose(_env, *parts, **_kwargs):
         commands.append(parts)
         return ""
 
-    monkeypatch.setattr(live, "_command", command)
     monkeypatch.setattr(live, "_compose", compose)
-    monkeypatch.setattr(
-        live,
-        "_app_python",
-        lambda _env, code, *_args: "True" if "print(OwnerStore" in code else "",
-    )
-    monkeypatch.setattr(live, "_worker_python", lambda *_args: "")
+    source = {}
+
+    def app_python(_env, code, input_text=None):
+        if "FROM event_envelopes" in code:
+            return json.dumps([source[input_text.rstrip("\n")]])
+        return "True" if "print(OwnerStore" in code else ""
+
+    monkeypatch.setattr(live, "_app_python", app_python)
+    old = attempt("reply:historical", "historic", input_tokens=1, output_tokens=1)
+    rows = [old]
+    consumed = ["reply:historical"]
+    reservations = []
+    history_seen = False
+
+    def worker_python(_env, code):
+        if "provider_usage_attempts" in code:
+            observed = [old] if case == "empty_after_journey" and history_seen else rows
+            return json.dumps({"attempts": observed, "reservations": reservations})
+        if "SELECT operation_id FROM consumed" in code:
+            observed = (
+                consumed[:1]
+                if case == "empty_after_journey" and history_seen
+                else consumed
+            )
+            return json.dumps({"maximum": 5, "consumed": observed})
+        return ""
+
+    monkeypatch.setattr(live, "_worker_python", worker_python)
     monkeypatch.setattr(
         live,
         "_owner_change",
         lambda _env, _password, active: owner_changes.append(active),
     )
-    usage_calls = 0
-
-    def usage(_env):
-        nonlocal usage_calls
-        usage_calls += 1
-        if failure == "missing_usage" and usage_calls == 2:
-            return [["completed", None, None, 3, None, 0, None, "usage_unavailable"]]
-        return []
-
-    monkeypatch.setattr(live, "_usage", usage)
-    monkeypatch.setattr(live, "_remaining", lambda _env: 5)
+    replies = (
+        "Искра",
+        "Корабль: Искра; Назначение: Юпитер",
+        "Корабль: Искра; Назначение: Марс",
+    )
+    transcript = []
+    sends = []
 
     class Participant:
         def __init__(self, _origin):
@@ -216,49 +273,90 @@ def test_operator_command_records_result_and_stops_on_completion_or_failure(
         def login(self, _password):
             pass
 
-        def request(self, *_args):
-            return {}
+        def request(self, method, path, payload=None):
+            nonlocal history_seen
+            if path == "/api/history":
+                history_seen = True
+                return {"messages": transcript}
+            if path != "/api/messages":
+                return {}
+            index = len(sends)
+            sends.append(payload)
+            message_id = payload["message_id"]
+            event_id = f"event-{index}"
+            correlation = f"correlation-{index}"
+            source[message_id] = [event_id, correlation]
+            operation = "reply:" + hashlib.sha256(event_id.encode()).hexdigest()
+            transcript.extend(
+                (
+                    {"role": "participant", "content": payload["content"]},
+                    {"role": "agent", "content": replies[index]},
+                )
+            )
+            if case not in {"empty_ledger", "historical_only"}:
+                row = attempt(operation, correlation)
+                if case == "limit_after_first" and index == 0:
+                    row[4] = 4
+                if case == "unknown_after_first" and index == 0:
+                    row[4] = None
+                if case == "incomplete" and index == 2:
+                    row[2] = "timeout"
+                if case == "rejected" and index == 2:
+                    row[3] = "project_spend_limit_exceeded"
+                if case == "retries" and index == 2:
+                    row[7] = 1
+                if case == "wrong_correlation" and index == 2:
+                    row[1] = "other-correlation"
+                rows.append(row)
+                if case == "duplicate" and index == 2:
+                    rows.append(row.copy())
+                if case == "extra" and index == 2:
+                    rows.append(attempt("reply:extra", "other"))
+                if case == "unresolved" and index == 2:
+                    reservations.append("reply:unresolved:1")
+                if case == "historical_mutation" and index == 2:
+                    old[4] = 2
+                if case != "wrong_allowance_delta" or index != 2:
+                    consumed.append(operation)
+            return {"model_state": "completed", "response": replies[index]}
 
     monkeypatch.setattr(live, "HTTPSParticipant", Participant)
-    monkeypatch.setattr(live, "_wait_http_ready", lambda _participant: None)
+    monkeypatch.setattr(live, "_wait_http_ready", lambda _: None)
+    if case == "expired_mid_journey":
+        original = live.validate_authorization
+        count = 0
 
-    def journey(_send, _history, restart, **_kwargs):
-        _send("first", "synthetic")
-        restart()
-        _send("second", "synthetic")
-        if failure == "journey":
-            raise AssertionError("offline failure")
-        _send("third", "synthetic")
-        return {
-            "ship_name": "Искра",
-            "steps": ["name", "recall", "restart_mars", "history"],
-        }
+        def validate(*values):
+            nonlocal count
+            count += 1
+            if count == 4:
+                raise ValueError("authorization is outside its validity period")
+            return original(*values)
 
-    monkeypatch.setattr(live, "run_ship_journey", journey)
-    if failure == "journey":
-        with pytest.raises(AssertionError, match="offline failure"):
-            live.run(args)
-    elif failure == "missing_usage":
-        with pytest.raises(RuntimeError, match="acceptance or cleanup failed"):
-            live.run(args)
-    elif failure == "expired_mid_journey":
-        with pytest.raises(ValueError, match="validity period"):
-            live.run(args)
-    else:
+        monkeypatch.setattr(live, "validate_authorization", validate)
+    if case in {"passed", "exact_limit_final"}:
         live.run(args)
+    else:
+        with pytest.raises(
+            (ValueError, RuntimeError),
+            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match",
+        ):
+            live.run(args)
     report = json.loads(args.report.read_text())
-    assert report["status"] == ("passed" if failure == "none" else "failed")
+    assert report["status"] == (
+        "passed" if case in {"passed", "exact_limit_final"} else "failed"
+    )
     assert report["worker_stop"] is True
     assert report["owner_stop"] is True
     assert report["running_services"] == []
-    assert report["remaining_allowance"] == 5
-    if failure == "missing_usage":
-        assert report["accounting_error"] is True
-        assert report["input_tokens"] is None
     assert owner_changes == [False, True]
-    assert any(parts[:2] == ("restart", "private-app") for parts in commands)
     assert any(parts[:2] == ("stop", "private-app") for parts in commands)
     assert Path(args.report).stat().st_mode & 0o777 == 0o600
-    assert validation_calls == (
-        4 if failure in {"journey", "expired_mid_journey"} else 5
-    )
+    if case in {"limit_after_first", "unknown_after_first"}:
+        assert len(sends) == 1
+    if case in {"passed", "exact_limit_final"}:
+        assert [item["content"] for item in sends] == [FIRST, ASK, MARS]
+        assert report["provider_attempts"] == 3
+        assert report["remaining_allowance"] == 1
+        assert report["aggregate_input_tokens"] == 10
+        assert any(parts[:2] == ("restart", "private-app") for parts in commands)
