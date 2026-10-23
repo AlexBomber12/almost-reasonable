@@ -66,6 +66,13 @@ def validate_authorization(approval, activation, commit, now):
         raise ValueError("commit or model is not authorized")
     if not _utc(approval["valid_from"]) <= now < _utc(approval["valid_until"]):
         raise ValueError("authorization is outside its validity period")
+    if not (
+        _utc(approval["valid_from"])
+        <= _utc(activation["not_before"])
+        < _utc(activation["expires_at"])
+        <= _utc(approval["valid_until"])
+    ):
+        raise ValueError("activation extends beyond the authorized period")
     if any(
         approval[key] != activation[key]
         for key in ("model", "project_id", "organization_id")
@@ -404,6 +411,15 @@ def run(args):
         if _remaining(env) < 3:
             raise ValueError("worker allowance has fewer than three operations")
         usage_before = _usage(env)
+        if any(row[2] is None or row[3] is None for row in usage_before):
+            raise ValueError("prior provider token usage is unavailable")
+        if (
+            sum(row[2] for row in usage_before)
+            >= approval["max_aggregate_input_tokens"]
+            or sum(row[3] for row in usage_before)
+            >= approval["max_aggregate_output_tokens"]
+        ):
+            raise ValueError("aggregate token allowance exhausted")
         _owner_change(env, owner_password, False)
         _stop_file(stop, False)
         _compose(env, "up", "-d", "provider-worker", "private-app")
@@ -415,6 +431,7 @@ def run(args):
         )
 
         def send(message_id, content):
+            validate_authorization(approval, activation, commit, datetime.now(UTC))
             return participant.request(
                 "POST",
                 "/api/messages",
@@ -462,12 +479,35 @@ def run(args):
             rows = _usage(env)
             current = rows[len(usage_before) :] if "usage_before" in locals() else rows
             report["provider_attempts"] = len(current)
-            report["input_tokens"] = sum(row[2] or 0 for row in current)
-            report["output_tokens"] = sum(row[3] or 0 for row in current)
-            report["total_tokens"] = sum(row[4] or 0 for row in current)
-            report["aggregate_input_tokens"] = sum(row[2] or 0 for row in rows)
-            report["aggregate_output_tokens"] = sum(row[3] or 0 for row in rows)
             report["rejection_reasons"] = sorted({row[1] for row in current if row[1]})
+            report["remaining_allowance"] = _remaining(env)
+            report["usage_unavailable"] = any(
+                row[2] is None or row[3] is None for row in rows
+            )
+            if report["usage_unavailable"]:
+                report["input_tokens"] = None
+                report["output_tokens"] = None
+                report["total_tokens"] = None
+                report["aggregate_input_tokens"] = None
+                report["aggregate_output_tokens"] = None
+                report["accounting_error"] = True
+            else:
+                report["input_tokens"] = sum(row[2] for row in current)
+                report["output_tokens"] = sum(row[3] for row in current)
+                report["total_tokens"] = (
+                    None
+                    if any(row[4] is None for row in current)
+                    else sum(row[4] for row in current)
+                )
+                report["aggregate_input_tokens"] = sum(row[2] for row in rows)
+                report["aggregate_output_tokens"] = sum(row[3] for row in rows)
+                if (
+                    report["aggregate_input_tokens"]
+                    > approval["max_aggregate_input_tokens"]
+                    or report["aggregate_output_tokens"]
+                    > approval["max_aggregate_output_tokens"]
+                ):
+                    report["token_limit_exceeded"] = True
             report["estimated_cost_total"] = str(
                 sum(
                     (Decimal(row[6]) for row in current if row[6] is not None),
@@ -475,14 +515,6 @@ def run(args):
                 )
             )
             report["cost_estimate_statuses"] = sorted({row[7] for row in current})
-            report["remaining_allowance"] = _remaining(env)
-            if (
-                sum(row[2] or 0 for row in rows)
-                > approval["max_aggregate_input_tokens"]
-                or sum(row[3] or 0 for row in rows)
-                > approval["max_aggregate_output_tokens"]
-            ):
-                report["token_limit_exceeded"] = True
         except Exception:
             report["accounting_error"] = True
         try:

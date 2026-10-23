@@ -131,8 +131,8 @@ def test_positive_ship_journey_keeps_worker_during_application_restart(tmp_path)
     auth, events, ledger, _gate, app, alice, _bob = _app(tmp_path, socket)
     responses = (
         _reply("Искра"),
-        _reply("Корабль Искра летит к Юпитеру."),
-        _reply("Корабль Искра теперь летит к Марсу: Марс — новая цель."),
+        _reply("Корабль: Искра; Назначение: Юпитер"),
+        _reply("Корабль: Искра; Назначение: Марс"),
     )
     process, pipe = _start(
         (str(socket), str(provider), str(allowance), str(activation), str(stop)),

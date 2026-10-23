@@ -288,7 +288,9 @@ reviewed commit, task `synthetic-private-pilot-ship-restart-mars`, model
 `max_aggregate_input_tokens`, `max_aggregate_output_tokens`, and
 `max_requests_per_run` (at least three). Its project, organization and model
 must match the protected activation. The activation must have at least three
-operations and one attempt per operation. A separate explicit human approval
+operations and one attempt per operation. Its entire window must fit within the
+authorization validity period; the runner rechecks approval before each
+message. A separate explicit human approval
 must cover these values, the synthetic account, host and execution window.
 
 Before invoking the command, stage the worker-owned `0400` credential at
@@ -320,7 +322,9 @@ state, and writes a protected compact report with commit, image IDs, captured
 synthetic name, completed steps, provider attempts, token usage, safe rejection
 categories and remaining allowance. The fake-provider integration additionally
 inspects the actual serialized provider request after restart, including roles,
-trust labels and the earlier released assistant reply.
+trust labels and the earlier released assistant reply. The destination answers
+must match the requested single-line `Корабль: <имя>; Назначение: <планета>`
+format exactly; merely mentioning Mars in a denial does not pass.
 
 The aggregate ledger reserves all three operations before contact. Failed or
 interrupted runs keep that reservation. The worker's separate SQLite allowance
@@ -333,7 +337,9 @@ the existing serialized input byte bound, one attempt and the 30-second attempt
 and 40-second overall timeouts. The dollar amount is an authorization ceiling
 for the operator and is **not** a guaranteed dollar cutoff: provider billing
 can differ from local estimates, and no exact dollar cutoff is enforced before
-each request. Confirm project-level billing controls separately before approval.
+each request. Missing provider token usage fails acceptance; observed aggregate
+token limits are checked after contact and cannot stop an in-flight call.
+Confirm project-level billing controls separately before approval.
 
 On an ordinary Python exception or keyboard interruption, cleanup runs and the
 report records failures. SIGKILL, host loss, Docker daemon failure and a failed
