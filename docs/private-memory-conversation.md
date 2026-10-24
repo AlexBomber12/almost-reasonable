@@ -7,7 +7,9 @@ That B03A contract accepts one new generic memory or no-change from only the
 initiating participant input. B03B adds a separate opt-in worker contract for
 bounded generic memory revision and consolidation; see the worker document for
 its authority and recovery rules. Neither path enables synthetic extraction
-in the worker runtime. The production store is now EventStore v9.
+in the worker runtime. B03D combines the separately metered generic and typed
+worker paths in one conversation; see the worker document for operation order
+and limits. The production store is now EventStore v10.
 
 Current synthetic integration and exact scenario status are documented in
 [integration-contracts.md](integration-contracts.md) and the validated

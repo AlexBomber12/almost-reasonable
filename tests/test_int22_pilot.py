@@ -2,6 +2,7 @@
 
 from datetime import UTC, datetime, timedelta
 from concurrent.futures import ThreadPoolExecutor
+from types import SimpleNamespace
 import json
 import os
 import sqlite3
@@ -13,7 +14,15 @@ from app.trusted.private_pilot import (
     PilotAllowance,
     load_activation,
 )
-from app.trusted.private_pilot_worker import PilotStop
+from app.trusted.private_pilot_worker import PilotRequestGate, PilotStop
+from app.trusted import private_pilot_worker
+from app.ops.private_pilot_ops import prepare
+from app.core.store import EventStore
+from app.cognition.worker_evolution import EvolutionModelRequest
+from app.cognition.worker_typed import TypedModelRequest
+from app.trusted.openai_transport import OpenAIResponsesTransport
+from app.trusted.openai_worker_protocol import InferenceRequest
+from app.ops import private_pilot_ops
 
 
 def activation_file(tmp_path):
@@ -37,6 +46,297 @@ def activation_file(tmp_path):
     path.write_text(json.dumps(value))
     path.chmod(0o400)
     return path, value
+
+
+def test_b03d_activation_is_opt_in_and_does_not_raise_ordinary_pilot_cap(tmp_path):
+    path, value = activation_file(tmp_path)
+    value.update(
+        version="private-pilot-activation-b03d-v1",
+        task="synthetic-private-robot-memory-b03d",
+        max_operations=27,
+    )
+    value["expires_at"] = (
+        datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=30)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    path.chmod(0o400)
+    with pytest.raises(PilotAuthorityError):
+        load_activation(path)
+    memory = load_activation(path, allow_memory_acceptance=True)
+    assert memory.max_operations == 27 and memory.memory_acceptance
+    allowance = PilotAllowance.initialize(tmp_path / "memory-allowance.db", memory)
+    gate = PilotRequestGate(
+        memory,
+        allowance,
+        activation_path=path,
+        stop=PilotStop(tmp_path / "unused-stop.json"),
+    )
+    assert gate.current()
+    for index in range(27):
+        assert allowance.reserve("reply:" + f"{index:064x}")
+    assert not allowance.reserve("reply:" + "f" * 64)
+    value["task"] = "different-task"
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    path.chmod(0o400)
+    with pytest.raises(PilotAuthorityError):
+        load_activation(path, allow_memory_acceptance=True)
+    assert not gate.current()
+
+
+@pytest.mark.parametrize("change", ["task", "cap", "window", "flag"])
+def test_b03d_activation_rejects_wrong_scope_and_bounds(tmp_path, change):
+    path, value = activation_file(tmp_path)
+    value.update(
+        version="private-pilot-activation-b03d-v1",
+        task="synthetic-private-robot-memory-b03d",
+        max_operations=27,
+    )
+    value["expires_at"] = (
+        datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=30)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    if change == "task":
+        value["task"] = "wrong-task"
+    elif change == "cap":
+        value["max_operations"] = 28
+    elif change == "window":
+        value["expires_at"] = (
+            datetime.now(UTC).replace(microsecond=0) + timedelta(hours=2)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    path.chmod(0o400)
+    with pytest.raises(PilotAuthorityError):
+        load_activation(
+            path,
+            allow_memory_acceptance=1 if change == "flag" else True,
+        )
+
+
+@pytest.mark.parametrize(
+    "scope",
+    [
+        "ordinary",
+        "missing_evolution",
+        "missing_typed",
+        "extraction",
+        "narrative",
+        "shared",
+    ],
+)
+def test_b03d_worker_scope_requires_both_only_memory_permissions(tmp_path, scope):
+    path, value = activation_file(tmp_path)
+    if scope != "ordinary":
+        value.update(
+            version="private-pilot-activation-b03d-v1",
+            task="synthetic-private-robot-memory-b03d",
+            max_operations=27,
+        )
+        value["expires_at"] = (
+            datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=30)
+        ).strftime("%Y-%m-%dT%H:%M:%SZ")
+        path.chmod(0o600)
+        path.write_text(json.dumps(value))
+        path.chmod(0o400)
+    selected = {
+        "evolution_permission_path": None if scope == "missing_evolution" else path,
+        "typed_permission_path": None if scope == "missing_typed" else path,
+    }
+    if scope in {"extraction", "narrative", "shared"}:
+        selected[
+            scope + "_permission_path"
+            if scope != "extraction"
+            else "extraction_permission_path"
+        ] = path
+    with pytest.raises(PilotAuthorityError, match="invalid memory acceptance scope"):
+        private_pilot_worker.build_worker(
+            socket_path=tmp_path / "unused.sock",
+            provider_database=tmp_path / "unused-provider.db",
+            allowance_database=tmp_path / "unused-allowance.db",
+            activation_path=path,
+            memory_acceptance=True,
+            **selected,
+        )
+
+
+def test_b03d_allowance_preparation_requires_explicit_opt_in(tmp_path):
+    path, value = activation_file(tmp_path)
+    with pytest.raises(
+        PilotAuthorityError, match="memory acceptance activation required"
+    ):
+        prepare(path, tmp_path / "uncreated.db", memory_acceptance=True)
+    value.update(
+        version="private-pilot-activation-b03d-v1",
+        task="synthetic-private-robot-memory-b03d",
+        max_operations=27,
+    )
+    value["expires_at"] = (
+        datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=30)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    path.chmod(0o400)
+    with pytest.raises(PilotAuthorityError):
+        prepare(path, tmp_path / "uncreated.db")
+    prepared = tmp_path / "prepared.db"
+    prepare(path, prepared, memory_acceptance=True)
+    assert (
+        PilotAllowance(
+            prepared, load_activation(path, allow_memory_acceptance=True)
+        ).remaining()
+        == 27
+    )
+
+
+def test_b03d_worker_cli_passes_explicit_scope_without_opening_credentials(
+    tmp_path, monkeypatch
+):
+    seen = []
+
+    class Worker:
+        def start(self):
+            seen.append("start")
+
+        def serve(self, *, should_stop):
+            assert not should_stop()
+            seen.append("serve")
+
+        def close(self):
+            seen.append("close")
+
+    def build_worker(**kwargs):
+        assert kwargs["memory_acceptance"] is True
+        assert kwargs["evolution_permission_path"] == tmp_path / "evolution.json"
+        assert kwargs["typed_permission_path"] == tmp_path / "typed.json"
+        return Worker()
+
+    monkeypatch.setattr(private_pilot_worker, "build_worker", build_worker)
+    assert (
+        private_pilot_worker.main(
+            [
+                "--socket",
+                str(tmp_path / "unused.sock"),
+                "--provider-database",
+                str(tmp_path / "provider.db"),
+                "--allowance-database",
+                str(tmp_path / "allowance.db"),
+                "--socket-group-gid",
+                "10",
+                "--memory-evolution-permission",
+                str(tmp_path / "evolution.json"),
+                "--typed-memory-permission",
+                str(tmp_path / "typed.json"),
+                "--memory-acceptance",
+            ]
+        )
+        == 0
+    )
+    assert seen == ["start", "serve", "close"]
+
+
+def test_b03d_prepare_cli_passes_opt_in_without_opening_credentials(
+    tmp_path, monkeypatch
+):
+    seen = []
+
+    def prepared(activation, allowance, *, memory_acceptance):
+        seen.append((activation, allowance, memory_acceptance))
+
+    monkeypatch.setattr(private_pilot_ops, "prepare", prepared)
+    activation = tmp_path / "activation.json"
+    allowance = tmp_path / "allowance.db"
+    assert (
+        private_pilot_ops.main(
+            [
+                "prepare",
+                "--activation",
+                str(activation),
+                "--allowance",
+                str(allowance),
+                "--memory-acceptance",
+            ]
+        )
+        == 0
+    )
+    assert seen == [(activation, allowance, True)]
+
+
+def test_b03d_worker_accepts_two_separately_permitted_operations(tmp_path, monkeypatch):
+    path, value = activation_file(tmp_path)
+    value.update(
+        version="private-pilot-activation-b03d-v1",
+        task="synthetic-private-robot-memory-b03d",
+        max_operations=27,
+    )
+    value["expires_at"] = (
+        datetime.now(UTC).replace(microsecond=0) + timedelta(minutes=30)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path.chmod(0o600)
+    path.write_text(json.dumps(value))
+    path.chmod(0o400)
+    activation = load_activation(path, allow_memory_acceptance=True)
+    allowance = tmp_path / "allowance.db"
+    PilotAllowance.initialize(allowance, activation)
+    provider = tmp_path / "provider.db"
+    EventStore(provider)
+    stop = path.parent / "stop.json"
+    stop.write_text(
+        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": False})
+    )
+    stop.chmod(0o400)
+    permissions = []
+    for name, version in (
+        ("evolution", "private-memory-evolution-permission-v1"),
+        ("typed", "private-typed-memory-permission-v1"),
+    ):
+        permission = path.parent / (name + ".json")
+        permission.write_text(
+            json.dumps(
+                {
+                    "version": version,
+                    "pilot_id": activation.pilot_id,
+                    "max_operations": 27,
+                }
+            )
+        )
+        permission.chmod(0o400)
+        permissions.append(permission)
+    monkeypatch.setattr(
+        private_pilot_worker,
+        "build_worker_openai_transport",
+        lambda **_scope: OpenAIResponsesTransport(SimpleNamespace(responses=object())),
+    )
+    worker = private_pilot_worker.build_worker(
+        socket_path=tmp_path / "worker.sock",
+        provider_database=provider,
+        allowance_database=allowance,
+        activation_path=path,
+        stop_path=stop,
+        evolution_permission_path=permissions[0],
+        typed_permission_path=permissions[1],
+        memory_acceptance=True,
+    )
+    assert worker._evolution_enabled and worker._typed_enabled
+    assert (
+        worker._request_guard(
+            InferenceRequest(
+                "evolution:" + "a" * 64,
+                "corr",
+                EvolutionModelRequest("Synthetic input", ()),
+            )
+        )
+        is None
+    )
+    assert (
+        worker._request_guard(
+            InferenceRequest(
+                "typed:" + "b" * 64, "corr", TypedModelRequest("Synthetic input", ())
+            )
+        )
+        is None
+    )
+    assert worker._evolution_commit_guard() and worker._typed_commit_guard()
 
 
 def test_allowance_is_reserved_before_contact_and_survives_restart(tmp_path):

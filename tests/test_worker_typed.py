@@ -72,6 +72,7 @@ from test_int22_pilot import activation_file
 from test_privacy_deletion import context as deletion_context
 from test_privacy_deletion import request as deletion_request
 from acceptance.guards import install
+from acceptance.private_memory_journey import FIRST, MAX_OPERATIONS, run_robot_journey
 from test_cognition_pipeline import NOW, append_event, principal
 from test_self_state import interest_change, revision
 from test_private_web_http import Clock
@@ -1506,8 +1507,9 @@ def test_source_deletion_during_typed_provider_attempt_blocks_commit(tmp_path):
 @pytest.mark.parametrize(
     "crash_point", ["after_extraction_receipt", "after_memory_store_commit"]
 )
+@pytest.mark.parametrize("combined", [False, True])
 def test_typed_received_reconciles_without_repeating_provider_or_revision(
-    tmp_path, crash_point
+    tmp_path, crash_point, combined
 ):
     events = EventStore(tmp_path / "events.db")
     provider = ProviderStateStore(EventStore(tmp_path / "ipc.db"))
@@ -1548,6 +1550,7 @@ def test_typed_received_reconciles_without_repeating_provider_or_revision(
         client,
         provider_state=provider,
         typed_memory_enabled=True,
+        memory_evolution_enabled=combined,
         checkpoint=checkpoint,
     )
     reply = "reply:" + "a" * 64
@@ -1561,7 +1564,12 @@ def test_typed_received_reconciles_without_repeating_provider_or_revision(
         == "received"
     )
     resumed = WorkerConversationRuntime(
-        events, gate, client, provider_state=provider, typed_memory_enabled=True
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        typed_memory_enabled=True,
+        memory_evolution_enabled=combined,
     )
     if crash_point == "after_extraction_receipt":
         resumed._evolve_worker_typed(who, source, "I plan to visit Rome", "corr", reply)
@@ -1924,15 +1932,258 @@ def test_typed_runtime_mode_flags_are_explicit(tmp_path):
         WorkerConversationRuntime(
             events, gate, client, provider_state=provider, typed_memory_enabled=1
         )
-    with pytest.raises(ValueError, match="typed memory mode must be selected alone"):
-        WorkerConversationRuntime(
-            events,
-            gate,
-            client,
-            provider_state=provider,
-            typed_memory_enabled=True,
+    combined = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        typed_memory_enabled=True,
+        memory_evolution_enabled=True,
+    )
+    assert combined._typed_audit is not None
+    assert combined._evolution_audit is not None
+    assert combined._worker_cognition._capabilities.private_state_write
+    assert combined._worker_cognition._capabilities.generic_memory_write
+    assert combined._worker_cognition._capabilities.private_consolidation
+    extracted = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        typed_memory_enabled=True,
+        memory_extraction_enabled=True,
+    )
+    assert extracted._extraction_audit is not None
+    assert extracted._typed_audit is not None
+    combined_with_extraction = WorkerConversationRuntime(
+        events,
+        gate,
+        client,
+        provider_state=provider,
+        typed_memory_enabled=True,
+        memory_evolution_enabled=True,
+        memory_extraction_enabled=True,
+    )
+    assert combined_with_extraction._evolution_audit is not None
+    assert combined_with_extraction._extraction_audit is None
+
+
+def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
+    worker_dir = tmp_path / "worker"
+    worker_dir.mkdir(mode=0o700)
+    socket_path = worker_dir / "worker.sock"
+    _auth, events, ledger, gate, app, a, b = _app(tmp_path, socket_path)
+    ipc_path = tmp_path / "ipc-state.db"
+
+    def runtime(current_events, current_gate):
+        return WorkerConversationRuntime(
+            current_events,
+            current_gate,
+            OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
+            provider_state=ProviderStateStore(EventStore(ipc_path)),
+            memory_extraction_enabled=True,
             memory_evolution_enabled=True,
+            typed_memory_enabled=True,
+            context_limits=ContextLimits(32000, 1),
         )
+
+    app._conversations = runtime(events, gate)
+
+    class SDK:
+        def __init__(self):
+            self.requests = []
+
+        def create(self, **kwargs):
+            self.requests.append(kwargs)
+            data = json.loads(kwargs["input"])
+            task = data["task"]
+            content = data.get("participant_input", "")
+            if task == "evolve_private_memory":
+                if "renamed" in content:
+                    proposal = {
+                        "decision": "revise_memory",
+                        "handles": [data["memories"][0]["handle"]],
+                        "kind": "candidate_useful_memory",
+                        "statement": "The fictional robot project is Cobalt",
+                        "confidence": 0.8,
+                    }
+                elif "Amber" in content:
+                    proposal = {
+                        "decision": "new_memory",
+                        "handles": [],
+                        "kind": "candidate_useful_memory",
+                        "statement": "The fictional robot project is Amber",
+                        "confidence": 0.8,
+                    }
+                else:
+                    proposal = {
+                        "decision": "no_change",
+                        "handles": [],
+                        "kind": None,
+                        "statement": None,
+                        "confidence": None,
+                    }
+            elif task == "evolve_private_typed_memory":
+                if "renamed" in content:
+                    decision = "revise_memory"
+                    handle = data["memories"][0]["handle"]
+                    topic = "silent gears"
+                elif "Amber" in content:
+                    decision = "new_memory"
+                    handle = None
+                    topic = "quiet motors"
+                else:
+                    decision = "no_change"
+                    handle = topic = None
+                proposal = {
+                    "decision": decision,
+                    "handle": handle,
+                    "kind": "durable_interest" if topic else None,
+                    "source_role": "supporting" if topic else None,
+                    "fields": {
+                        "topic": topic,
+                        "strength": 70,
+                        "status": "active",
+                        "reason_for_interest": "Fictional robot design preference",
+                    }
+                    if topic
+                    else None,
+                }
+            else:
+                proposal = {
+                    "proposal": {
+                        "decision": "reply",
+                        "content": "Текущий проект — Cobalt; мне нравятся silent gears.",
+                    }
+                }
+            return {
+                "id": "synthetic-response",
+                "status": "completed",
+                "output": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [
+                            {"type": "output_text", "text": json.dumps(proposal)}
+                        ],
+                    }
+                ],
+                "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+            }
+
+    sdk = SDK()
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(socket_path, frozenset({os.getuid()})),
+        TrustedOpenAIGateway(
+            store=ProviderStateStore(EventStore(tmp_path / "provider.db")),
+            transport=OpenAIResponsesTransport(SimpleNamespace(responses=sdk)),
+            config=replace(
+                default_openai_provider_config(),
+                deployment_stage=DeploymentStage.STAGE_1,
+                paid_calls_enabled=True,
+                max_attempts=1,
+            ),
+        ),
+        evolution_enabled=True,
+        typed_enabled=True,
+    )
+    server.start()
+    worker = Thread(
+        target=lambda: server.serve(max_connections=MAX_OPERATIONS + 3), daemon=True
+    )
+    worker.start()
+    try:
+        reopened = None
+
+        def send(message_id, content):
+            return json.loads(a.submit(message_id, content)[2])
+
+        def restart():
+            nonlocal reopened
+            reopened = EventStore(events.database_path)
+            reopened_gate = PrivacyReadGate(ledger, reopened)
+            assert reopened_gate.reconcile()
+            app._conversations = runtime(reopened, reopened_gate)
+
+        def inspect():
+            replies = [
+                json.loads(call["input"])
+                for call in sdk.requests
+                if json.loads(call["input"])["task"] == "private_conversation"
+            ]
+            return replies[-1]
+
+        def delete():
+            assert reopened is not None
+            with reopened._open() as db:
+                source = db.execute(
+                    "SELECT event_id FROM event_envelopes WHERE source_message_id='robot-revision'"
+                ).fetchone()[0]
+            backup = tmp_path / "before-deletion.db"
+            create_sqlite_backup(reopened.database_path, backup, 13, NOW)
+            disposition = (
+                DeletionCoordinator(ledger, EventStoreErasureAdapter(reopened))
+                .delete(deletion_context(), deletion_request(content_reference=source))
+                .disposition.value
+            )
+            assert app._conversations._gate.reconcile()
+            quarantine = tmp_path / "quarantine.db"
+            assert (
+                QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
+                .restore(backup, quarantine, NOW)
+                .activation_eligible
+            )
+            with sqlite3.connect(f"file:{quarantine}?immutable=1", uri=True) as db:
+                assert db.execute(
+                    "SELECT COUNT(*) FROM generic_memory_payloads WHERE statement LIKE '%Cobalt%'"
+                ).fetchone() == (0,)
+                assert db.execute(
+                    "SELECT COUNT(*) FROM state_revision_payloads WHERE topic='silent gears'"
+                ).fetchone() == (0,)
+            return {"status": disposition}
+
+        run_robot_journey(send, restart, inspect, delete)
+        assert a.submit("robot-original", FIRST)[0] == "200 OK"
+        assert len(sdk.requests) == MAX_OPERATIONS
+        assert [json.loads(call["input"])["task"] for call in sdk.requests] == [
+            "evolve_private_memory",
+            "evolve_private_typed_memory",
+            "private_conversation",
+        ] * (MAX_OPERATIONS // 3)
+        assert all(call["max_output_tokens"] == 512 for call in sdk.requests)
+        assert all(
+            len(call["input"].encode())
+            <= (
+                32000
+                if json.loads(call["input"])["task"] == "private_conversation"
+                else 16384
+            )
+            for call in sdk.requests
+        )
+        with EventStore(ipc_path)._open() as db:
+            assert db.execute(
+                "SELECT status,COUNT(*) FROM private_extraction_audit GROUP BY status"
+            ).fetchall() == [("accepted", 4), ("no_change", 14)]
+        assert (
+            json.loads(b.submit("other", "What is my robot project?")[2])["model_state"]
+            == "completed"
+        )
+        assert "Cobalt" not in sdk.requests[-1]["input"]
+        assert len(sdk.requests) == MAX_OPERATIONS + 3
+        with EventStore(tmp_path / "provider.db")._open() as db:
+            assert db.execute(
+                "SELECT COUNT(*),SUM(input_tokens),SUM(output_tokens),MAX(retry_count) "
+                "FROM provider_usage_attempts"
+            ).fetchone() == (
+                MAX_OPERATIONS + 3,
+                MAX_OPERATIONS + 3,
+                MAX_OPERATIONS + 3,
+                0,
+            )
+    finally:
+        worker.join(5)
+        server.close()
 
 
 def test_typed_receipt_rejects_identity_loss_and_duplicate_response(tmp_path):
@@ -2236,7 +2487,10 @@ def test_typed_receipt_bounds_and_source_roles_are_checked(tmp_path, monkeypatch
     assert audit.reserve("typed:oversized", who, source, "I moved the visit") is None
 
 
-def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monkeypatch):
+@pytest.mark.parametrize("combined", [False, True])
+def test_lost_typed_response_is_uncertain_without_retransmission(
+    tmp_path, monkeypatch, combined
+):
     worker_dir = tmp_path / "worker"
     worker_dir.mkdir(mode=0o700)
     socket_path = worker_dir / "worker.sock"
@@ -2247,6 +2501,7 @@ def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monke
         OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
         provider_state=ProviderStateStore(EventStore(tmp_path / "ipc-state.db")),
         typed_memory_enabled=True,
+        memory_evolution_enabled=combined,
     )
     proposal = {
         "decision": "no_change",
@@ -2264,7 +2519,24 @@ def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monke
         TrustedOpenAIGateway(
             store=provider,
             transport=FakeOpenAITransport(
-                [
+                (
+                    [
+                        provider_response(
+                            json.dumps(
+                                {
+                                    "decision": "no_change",
+                                    "handles": [],
+                                    "kind": None,
+                                    "statement": None,
+                                    "confidence": None,
+                                }
+                            )
+                        )
+                    ]
+                    if combined
+                    else []
+                )
+                + [
                     provider_response(json.dumps(proposal)),
                     provider_response(json.dumps(reply)),
                 ]
@@ -2277,6 +2549,7 @@ def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monke
             ),
         ),
         typed_enabled=True,
+        evolution_enabled=combined,
     )
 
     original_send = server_module.send_frame
@@ -2285,13 +2558,14 @@ def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monke
     def lost_response(*args, **kwargs):
         nonlocal sent
         sent += 1
-        if sent == 1:
+        if sent == (2 if combined else 1):
             raise OSError("synthetic response loss")
         return original_send(*args, **kwargs)
 
     monkeypatch.setattr(server_module, "send_frame", lost_response)
     server.start()
-    thread = Thread(target=lambda: server.serve(max_connections=2))
+    attempts = 3 if combined else 2
+    thread = Thread(target=lambda: server.serve(max_connections=attempts))
     thread.start()
     try:
         a.submit("lost", "I enjoy Italian art")
@@ -2300,7 +2574,7 @@ def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monke
         with provider._event_store._open() as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM provider_usage_attempts"
-            ).fetchone() == (2,)
+            ).fetchone() == (attempts,)
         with EventStore(tmp_path / "ipc-state.db")._open() as db:
             assert db.execute(
                 "SELECT status FROM private_extraction_audit WHERE operation_id LIKE 'typed:%'"
@@ -2309,7 +2583,7 @@ def test_lost_typed_response_is_uncertain_without_retransmission(tmp_path, monke
         with provider._event_store._open() as db:
             assert db.execute(
                 "SELECT COUNT(*) FROM provider_usage_attempts"
-            ).fetchone() == (2,)
+            ).fetchone() == (attempts,)
     finally:
         thread.join(5)
         server.close()

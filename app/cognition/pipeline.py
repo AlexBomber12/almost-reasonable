@@ -304,10 +304,7 @@ class CognitionEngine:
         self, context, source_event_id, operation_id, snapshot, proposal: TypedProposal
     ) -> CognitionOutcome:
         """Resolve a typed operation only against its original exposed heads."""
-        if (
-            not self._capabilities.private_state_write
-            or self._capabilities.generic_memory_write
-        ):
+        if not self._capabilities.private_state_write:
             return self._rejected(CognitionReason.CAPABILITY_DISABLED)
         if type(proposal) is not TypedProposal or not self._valid_token(operation_id):
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
@@ -595,11 +592,19 @@ class CognitionEngine:
             GenericMemoryProposal,
         }:
             return self._rejected(CognitionReason.INVALID_PROPOSAL)
-        if self._capabilities.generic_memory_write and type(proposal) in {
-            InterestMemoryProposal,
-            BeliefMemoryProposal,
-            GoalMemoryProposal,
-        }:
+        if (
+            self._capabilities.generic_memory_write
+            # The typed worker has its own closed proposal and source-bound
+            # snapshot. Synthetic generic extraction still cannot route a
+            # typed proposal through this authorization path.
+            and identity.prompt_version != "private-typed-v1"
+            and type(proposal)
+            in {
+                InterestMemoryProposal,
+                BeliefMemoryProposal,
+                GoalMemoryProposal,
+            }
+        ):
             return self._rejected(
                 CognitionReason.CAPABILITY_DISABLED, self._safe_kind(proposal)
             )

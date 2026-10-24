@@ -2,7 +2,7 @@
 
 The worker can propose one interest, belief or hypothesis, goal or intention
 creation or revision for the initiating private input. The application selects
-this mode only with `--enable-typed-memory`. It is off by default and cannot run
+this mode only with `--enable-typed-memory`. It is off by default and can run
 alongside generic extraction or generic evolution in the same runtime. The
 credential-owning pilot worker separately requires
 `--typed-memory-permission /protected/control/typed-memory.json`. This protected
