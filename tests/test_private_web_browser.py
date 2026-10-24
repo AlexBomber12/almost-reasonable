@@ -272,6 +272,24 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 page.get_by_role("link", name="Приватность").click()
                 page.wait_for_url(f"{origin}/privacy")
                 page.goto(f"{origin}/chat")
+                editor = page.get_by_label("Сообщение", exact=True)
+                expect(editor).to_be_enabled()
+                editor.fill("Черновик при проверке сеанса")
+                held_session = []
+                page.route("**/session", lambda route: held_session.append(route))
+                with page.expect_request("**/session"):
+                    page.reload()
+                expect(editor).to_be_disabled()
+                assert len(held_session) == 1
+                held_session[0].fulfill(
+                    status=200,
+                    content_type="application/json",
+                    body='{"authenticated":true,"username":"synthetic"}',
+                )
+                expect(editor).to_have_value("Черновик при проверке сеанса")
+                expect(editor).to_be_enabled()
+                editor.fill("")
+                page.unroute("**/session")
 
                 def lose_response(route):
                     observed_ids.append(route.request.post_data_json["message_id"])
@@ -281,7 +299,6 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     page.unroute("**/api/messages", lose_response)
 
                 page.route("**/api/messages", lose_response)
-                editor = page.get_by_label("Сообщение", exact=True)
                 editor.fill("Первый вопрос")
                 page.get_by_role("button", name="Отправить сообщение").click()
                 page.get_by_text(
@@ -391,6 +408,8 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 page.get_by_role("button", name="Отправить сообщение").click()
                 page.get_by_text("Не удалось отправить.", exact=False).wait_for()
                 assert editor.input_value() == "Черновик при ошибке"
+                editor.fill("")
+                expect(page.locator("#send-button")).to_have_text("Повторить отправку")
                 page.get_by_role("button", name="Отправить сообщение").click()
                 page.get_by_text("Черновик при ошибке", exact=True).wait_for()
                 assert observed_ids[-2] == observed_ids[-1]

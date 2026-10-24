@@ -16,6 +16,7 @@ let pendingMessage = null;
 let requestInFlight = false;
 let access = 'checking';
 sendButton.disabled = true;
+textarea.disabled = true;
 
 function announce(message, kind = '', action = '') {
   statusLine.textContent = message;
@@ -66,6 +67,7 @@ function retain() {
 }
 
 function updateControls() {
+  textarea.required = !pendingMessage;
   sendButton.disabled = access !== 'active' || requestInFlight ||
     (!pendingMessage && !textarea.value.trim());
   sendButton.textContent = pendingMessage ? 'Повторить отправку' : 'Отправить';
@@ -161,6 +163,7 @@ async function establishAccount() {
       textarea.focus();
     }
     access = 'active';
+    textarea.disabled = false;
     updateControls();
   } catch (_) {
     announce('Не удалось проверить сеанс. Обновите страницу.', 'error');
