@@ -125,17 +125,22 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                 browser = playwright.chromium.launch(headless=True)
                 try:
                     page = browser.new_page(ignore_https_errors=True)
-                    response = page.goto(f"{origin}/login")
+                    response = page.goto(f"{origin}/")
                     assert response.status == 200
+                    assert page.url == f"{origin}/login"
                     page.get_by_label("Имя пользователя").fill("synthetic")
                     page.get_by_label("Пароль").fill("synthetic test password")
                     page.get_by_role("button", name="Войти").click()
                     assert observed_origins == [origin]
                     page.wait_for_url(f"{origin}/chat")
+                    page.goto(f"{origin}/")
+                    page.wait_for_url(f"{origin}/chat")
                     assert page.get_by_role(
                         "heading", name="Начните разговор"
                     ).is_visible()
-                    assert observed_asset_referers == [None]
+                    assert observed_asset_referers and all(
+                        referer is None for referer in observed_asset_referers
+                    )
                     native = browser.new_page(
                         ignore_https_errors=True, java_script_enabled=False
                     )
@@ -222,7 +227,9 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
     auth.provision_account(
         "synthetic", "synthetic test password", "synthetic-participant"
     )
+    auth.provision_account("other", "other synthetic password", "other-participant")
     observed_ids = []
+    observed_contents = []
 
     def application(environ, start_response):
         return private_app(environ, start_response)
@@ -268,6 +275,7 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
 
                 def lose_response(route):
                     observed_ids.append(route.request.post_data_json["message_id"])
+                    observed_contents.append(route.request.post_data_json["content"])
                     route.fetch()
                     route.abort()
                     page.unroute("**/api/messages", lose_response)
@@ -281,20 +289,48 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 ).wait_for()
                 assert editor.input_value() == "Первый вопрос"
                 assert page.locator("#history li").count() == 0
+                assert len(fake.calls) == 1
+                session = next(
+                    cookie["value"]
+                    for cookie in page.context.cookies()
+                    if cookie["name"] == "ar_session"
+                )
+                auth.revoke(session)
+                page.goto(f"{origin}/chat")
+                page.wait_for_url(f"{origin}/login")
+                page.get_by_label("Имя пользователя").fill("synthetic")
+                page.get_by_label("Пароль").fill("synthetic test password")
+                page.get_by_role("button", name="Войти").click()
+                page.wait_for_url(f"{origin}/chat")
+                expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
+                    "Первый вопрос"
+                )
+                page.reload()
+                expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
+                    "Первый вопрос"
+                )
+                assert len(fake.calls) == 1
+                assert observed_ids == [observed_ids[0]]
 
                 def record_request(route):
                     observed_ids.append(route.request.post_data_json["message_id"])
+                    observed_contents.append(route.request.post_data_json["content"])
                     route.continue_()
 
                 page.route("**/api/messages", record_request)
+                editor.fill("Новый черновик после неизвестной отправки")
                 page.get_by_role("button", name="Отправить сообщение").click()
                 page.get_by_text(
                     "Синтетический ответ <script>текст</script>"
                 ).wait_for()
                 assert observed_ids[0] == observed_ids[1]
+                assert observed_contents == ["Первый вопрос", "Первый вопрос"]
                 assert len(fake.calls) == 1
                 assert page.locator("#history li").count() == 2
                 assert page.locator("#history script").count() == 0
+                assert (
+                    editor.input_value() == "Новый черновик после неизвестной отправки"
+                )
 
                 editor.fill("Второй вопрос")
                 before_composition = len(observed_ids)
@@ -431,15 +467,67 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     for cookie in page.context.cookies()
                     if cookie["name"] == "ar_session"
                 )
-                auth.revoke(session)
                 page.get_by_label("Сообщение", exact=True).fill(
                     "Несохранённый черновик"
                 )
+                expect(
+                    page.get_by_role("button", name="Отправить сообщение")
+                ).to_be_enabled()
+                auth.revoke(session)
                 page.get_by_role("button", name="Отправить сообщение").click()
                 page.get_by_text("Сеанс завершён.", exact=False).wait_for()
                 assert (
                     page.get_by_label("Сообщение", exact=True).input_value()
                     == "Несохранённый черновик"
                 )
+                page.get_by_role("link", name="Войти снова").click()
+                page.wait_for_url(f"{origin}/login")
+                page.get_by_label("Имя пользователя").fill("synthetic")
+                page.get_by_label("Пароль").fill("synthetic test password")
+                page.get_by_role("button", name="Войти").click()
+                page.wait_for_url(f"{origin}/chat")
+                expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
+                    "Несохранённый черновик"
+                )
+                assert page.get_by_role(
+                    "button", name="Отправить сообщение"
+                ).is_enabled()
+                page.evaluate(
+                    "document.querySelector('#message-form').dataset.csrf = 'wrong'"
+                )
+                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_text("Доступ отклонён.", exact=False).wait_for()
+                assert not page.get_by_text("Сеанс завершён.", exact=False).is_visible()
+                expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
+                    "Несохранённый черновик"
+                )
+                page.reload()
+                expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
+                    "Несохранённый черновик"
+                )
+                expect(page.locator("#send-button")).to_have_text("Повторить отправку")
+                session = next(
+                    cookie["value"]
+                    for cookie in page.context.cookies()
+                    if cookie["name"] == "ar_session"
+                )
+                auth.revoke(session)
+                page.goto(f"{origin}/chat")
+                page.wait_for_url(f"{origin}/login")
+                page.get_by_label("Имя пользователя").fill("other")
+                page.get_by_label("Пароль").fill("other synthetic password")
+                page.get_by_role("button", name="Войти").click()
+                page.wait_for_url(f"{origin}/privacy")
+                page.get_by_role("button", name="Подтвердить уведомление").click()
+                page.get_by_text("Подтверждено", exact=False).wait_for()
+                page.goto(f"{origin}/chat")
+                expect(page.get_by_label("Сообщение", exact=True)).to_have_value("")
+                assert page.evaluate("sessionStorage.length") == 0
+                page.get_by_label("Сообщение", exact=True).fill(
+                    "Черновик другого аккаунта"
+                )
+                page.get_by_role("button", name="Выйти").click()
+                page.wait_for_url(f"{origin}/login")
+                assert page.evaluate("sessionStorage.length") == 0
             finally:
                 browser.close()

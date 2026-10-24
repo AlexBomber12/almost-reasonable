@@ -126,6 +126,7 @@ The standard-library WSGI application exposes:
 
 | Route | Purpose |
 |---|---|
+| `GET /` | route to chat or sign-in according to the current session |
 | `GET /login`, `POST /login` | CSRF-protected sign-in |
 | `POST /logout` | authenticated revocation |
 | `GET /session` | minimal authentication status |
@@ -156,6 +157,21 @@ assembly or inference. The browser retains one pending ID across network and
 server-error retries, then creates a new ID only after an acknowledged success.
 HTML renders participant content with escaping; JSON is served only as
 `application/json`.
+
+Protected HTML navigation redirects an expired session to Russian sign-in;
+API errors keep their status and JSON body. A 403 denial is shown separately
+from session expiry. The chat saves a draft and uncertain message ID/content
+in this tab's `sessionStorage` for at most 30 minutes. It contains no credential
+or session token. After navigation or sign-in, the chat checks `/session`
+before restoring only for the same account. A different account and confirmed
+logout clear the retained data. An uncertain submission is never resent
+automatically: the user must press **Повторить отправку**, which uses the
+original ID and content. The current history API does not expose source
+message IDs, so a history refresh alone cannot conclusively resolve an
+uncertain submission. A successful retry uses server idempotency to confirm
+acceptance without a second inference. Composer widths are exercised in
+browser viewport emulation at 360, 390, 768, and 1280 CSS pixels. Physical
+phone keyboard behavior remains a manual check.
 
 ## Disabled default and explicit worker mode
 

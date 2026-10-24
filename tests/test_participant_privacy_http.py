@@ -283,7 +283,7 @@ def test_request_guards_and_pending_status_access(journey):
     assert a.request("GET", "/api/privacy/status")[0] == "200 OK"
     assert acknowledge(a)[0] == "200 OK"
     auth.revoke(a.cookies["ar_session"])
-    assert a.request("GET", "/privacy")[0] == "401 Unauthorized"
+    assert a.request("GET", "/privacy")[0] == "303 See Other"
     clock.timestamp += int(timedelta(hours=1).total_seconds())
 
 
@@ -871,7 +871,7 @@ def test_source_selection_and_logout_stay_available_when_notice_unacknowledged(j
         )[0]
         == "303 See Other"
     )
-    assert a.request("GET", "/privacy")[0] == "401 Unauthorized"
+    assert a.request("GET", "/privacy")[0] == "303 See Other"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
@@ -904,6 +904,7 @@ async function scenario(endpoint, response, expectedAlert, expectedLocation) {
     FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
     crypto: {randomUUID() { return 'operation'; }},
     fetch: async () => typeof response === 'function' ? response() : response,
+    sessionStorage: {removeItem() {}},
     alert(message) { alerts.push(message); },
     location
   };
@@ -1499,7 +1500,7 @@ def test_privacy_page_and_history_revalidate_before_response(journey, monkeypatc
     assert a.request("GET", "/api/history")[0] == "401 Unauthorized"
     a.login("alice", "synthetic-password-a")
     a.cookies.pop("ar_csrf")
-    assert a.request("GET", "/privacy")[0] == "401 Unauthorized"
+    assert a.request("GET", "/privacy")[0] == "303 See Other"
 
 
 def test_initial_session_recheck_precedes_privacy_and_history_reads(

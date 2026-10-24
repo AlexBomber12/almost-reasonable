@@ -1472,8 +1472,10 @@ def test_current_session_revalidated_before_history_and_html_research_release(
             return result
 
         monkeypatch.setattr(Stage0ConversationRuntime, "history", revoke_after)
-    status, _, body = browser.request("GET", path)
-    assert status == "401 Unauthorized"
+    status, headers, body = browser.request("GET", path)
+    assert status == ("303 See Other" if path == "/chat" else "401 Unauthorized")
+    if path == "/chat":
+        assert ("Location", "/login") in headers
     assert "Синтетический результат".encode() not in body
     assert b"CANARY-HISTORY-11" not in body
 
