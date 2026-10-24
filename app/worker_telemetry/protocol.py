@@ -139,6 +139,7 @@ def decode_diagnostics(body):
                 "stopped",
                 "uncertain",
                 "reservation",
+                "rate_limited",
                 "unknown",
             }
             or (row["reason"] is not None and type(row["reason"]) is not str)
@@ -152,6 +153,7 @@ def decode_diagnostics(body):
                 "spend_limit",
                 "authorization",
                 "provider_error",
+                "rate_limit",
                 "incomplete_usage",
                 "unknown",
             }

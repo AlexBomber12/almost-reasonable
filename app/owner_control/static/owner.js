@@ -17,8 +17,8 @@ function show(name, value) {
   const detail = document.createElement('dd'); detail.textContent = value;
   byId('status').append(key, detail);
 }
-const outcomes = {completed: 'Успешно', no_action: 'Ответ не требовался', failed: 'Сбой или неизвестный итог', invalid: 'Предложение отклонено', unsupported: 'Действие не разрешено', skipped: 'Пропущено', unavailable: 'Недоступно (причина не записана)', stopped: 'Остановлено', rejected: 'Предложение отклонено', spend_suspended: 'Расходы приостановлены', reservation: 'Резервирование без результата', uncertain: 'Итог неизвестен', unknown: 'Итог неизвестен'};
-const reasons = {invalid_proposal: 'Недопустимое предложение модели', invalid_response: 'Недопустимый ответ провайдера', refused: 'Отказ провайдера', timeout: 'Истекло время ожидания', spend_limit: 'Лимит расходов', authorization: 'Нет разрешения', provider_error: 'Ошибка провайдера', incomplete_usage: 'Учет токенов неполный', unknown: 'Причина неизвестна'};
+const outcomes = {completed: 'Успешно', no_action: 'Ответ не требовался', failed: 'Сбой или неизвестный итог', invalid: 'Предложение отклонено', unsupported: 'Действие не разрешено', skipped: 'Пропущено', unavailable: 'Недоступно (причина не записана)', stopped: 'Остановлено', rejected: 'Предложение отклонено', spend_suspended: 'Расходы приостановлены', reservation: 'Резервирование без результата', rate_limited: 'Запрос ограничен провайдером', uncertain: 'Итог неизвестен', unknown: 'Итог неизвестен'};
+const reasons = {invalid_proposal: 'Недопустимое предложение модели', invalid_response: 'Недопустимый ответ провайдера', refused: 'Отказ провайдера', timeout: 'Истекло время ожидания', spend_limit: 'Лимит расходов', authorization: 'Нет разрешения', provider_error: 'Ошибка провайдера', rate_limit: 'Ограничение частоты запросов провайдера', incomplete_usage: 'Учет токенов неполный', unknown: 'Причина неизвестна'};
 function recentList(id, source, label) {
   const list = byId(id); list.replaceChildren();
   if (!source || !source.available) {

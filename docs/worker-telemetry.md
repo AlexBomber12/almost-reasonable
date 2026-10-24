@@ -47,6 +47,8 @@ short one-way correlation reference. The reference is computed only from the
 stored correlation identity; matching references are exact identity evidence,
 not a guess from row order or time. Arbitrary error codes and identifiers are
 never displayed. An unresolved reservation proves only that work was reserved.
+Recorded provider rate limiting is labeled separately from confirmed spending
+limits and billing quota outcomes; a rate limit does not set spend suspension.
 
 The service reads the current Stop pathname on every request, so atomic
 replacement is visible. A missing, unsafe, or malformed Stop file is shown as

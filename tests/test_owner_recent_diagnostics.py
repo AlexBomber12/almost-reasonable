@@ -6,7 +6,7 @@ import json
 import os
 import socket
 import sqlite3
-from threading import Thread
+from threading import Event, Thread
 
 import pytest
 
@@ -22,6 +22,7 @@ from app.ops.int26_owner_pilot import build_application
 from app.trusted.worker_telemetry import WorkerTelemetryServer, _diagnostics
 from app.trusted.openai_gateway import GatewayOutcome
 from app.worker_telemetry.protocol import (
+    DIAGNOSTICS_VERSION,
     decode_diagnostics,
     MAX_DIAGNOSTICS_RESPONSE,
     encode,
@@ -30,7 +31,9 @@ from app.worker_telemetry.protocol import (
     DIAGNOSTICS_REQUEST,
 )
 from test_int26_owner_console import call, login, settings
+from test_openai_gateway import config, gateway, request
 from test_worker_telemetry import attempt, sources
+from app.trusted.openai_transport import OpenAITransportError
 
 
 CANARY = "PRIVATE-CANARY-DO-NOT-SHOW"
@@ -235,6 +238,75 @@ def test_owner_http_exact_worker_correlation_with_real_ipc(tmp_path):
         server.close()
 
 
+def test_gateway_rate_limit_reaches_authenticated_owner_without_spend_suspension(
+    tmp_path,
+):
+    args = settings(tmp_path)
+    _, stop, path = sources(tmp_path)
+    gateway_instance, transport, provider = gateway(
+        tmp_path,
+        [
+            OpenAITransportError(
+                status_code=429,
+                error_type="rate_limit_error",
+                error_code="rate_limit_exceeded",
+            )
+        ],
+        provider_config=config(max_attempts=1),
+    )
+    result = gateway_instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+    assert result.outcome is GatewayOutcome.RATE_LIMIT
+    assert result.attempts == 1
+    assert len(transport.calls) == 1
+    record = provider.usage_attempt("operation-a:1")
+    assert record.outcome == GatewayOutcome.RATE_LIMIT.value
+    assert provider.suspension() is None
+
+    worker_db = tmp_path / "events.sqlite3"
+    projected = _diagnostics(worker_db)
+    assert projected["available"] is True
+    assert len(projected["rows"]) == 1
+    assert (projected["rows"][0]["outcome"], projected["rows"][0]["reason"]) == (
+        "rate_limited",
+        "rate_limit",
+    )
+    framed = encode(
+        {"version": DIAGNOSTICS_VERSION, **projected}, MAX_DIAGNOSTICS_RESPONSE
+    )
+    assert decode_diagnostics(framed[4:])["rows"] == projected["rows"]
+
+    args.worker_telemetry_socket = str(path)
+    args.worker_telemetry_uid = os.geteuid()
+    app = build_application(args)
+    stop_before = stop.read_bytes()
+    application_stop_before = app.store.active()
+    server = WorkerTelemetryServer(path, worker_db, stop, frozenset({os.geteuid()}))
+    server.start()
+    stopped = Event()
+    thread = Thread(target=server.serve, kwargs={"should_stop": stopped.is_set})
+    thread.start()
+    try:
+        cookie, _ = login(app)
+        status, body, _ = call(app, cookie=cookie)
+        assert status == 200
+        assert body["worker"]["provider"]["spend_suspended"] is False
+        assert body["worker"]["provider"]["attempt_count"] == 1
+        assert body["recent"]["worker"]["rows"] == projected["rows"]
+        assert "rate_limit_exceeded" not in json.dumps(body)
+        assert CANARY not in json.dumps(body)
+    finally:
+        stopped.set()
+        thread.join(timeout=2)
+        server.close()
+    assert len(transport.calls) == 1
+    assert provider.usage_attempt_count() == 1
+    assert provider.suspension() is None
+    assert stop.read_bytes() == stop_before
+    assert app.store.active() == application_stop_before
+
+
 def test_malformed_worker_diagnostics_are_unavailable(tmp_path):
     db, _, _ = sources(tmp_path)
     with sqlite3.connect(db) as connection:
@@ -326,6 +398,7 @@ def test_application_rejects_replaced_symlink(tmp_path):
         (GatewayOutcome.SERVER_ERROR.value, "uncertain", "provider_error"),
         ("spend_suspended", "stopped", "spend_limit"),
         (GatewayOutcome.SPEND_LIMIT_CONFIRMED.value, "stopped", "spend_limit"),
+        (GatewayOutcome.BILLING_QUOTA.value, "stopped", "spend_limit"),
         ("unrecognized", "unknown", "unknown"),
     ],
 )

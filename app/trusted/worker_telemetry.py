@@ -107,6 +107,8 @@ def _diagnostics(path):
                 category, safe_reason = "rejected", "authorization"
             elif outcome == "server_error":
                 category, safe_reason = "uncertain", "provider_error"
+            elif outcome == "rate_limit":
+                category, safe_reason = "rate_limited", "rate_limit"
             elif outcome in {
                 "spend_suspended",
                 "spend_limit_confirmed",
