@@ -159,3 +159,21 @@ oversized bodies, durable audit and stop, fail-closed files, numeric provider
 inspection, privacy readiness and guarded synthetic execution. Run
 `scripts/ci.sh` for the full 100% line/branch coverage gate. No paid API, external
 network, Threads operation, enrollment, publishing or deployment is required.
+
+# Recent operation diagnostics
+
+The private pilot owner panel shows the latest ten application reply
+operations and latest ten worker provider attempts or unresolved reservations
+in an expandable area. The application time is the initiating message time,
+not the completion time. Outcome and reason labels come from fixed allowlists;
+private text, stored identifiers, provider bodies, and arbitrary errors are
+excluded. The short correlation reference is a one-way digest of the exact
+stored correlation identity. Equal references establish exact correlation;
+different or absent references do not support an inferred match.
+
+Application reply results, application-observed IPC accounting, and worker
+provider records are distinct evidence. An unresolved reservation may never
+have contacted the provider. Recorded token usage is incomplete when marked
+so and is never provider billing authority. Unavailable diagnostics do not
+indicate an empty store or readiness to run: activation and allowance are not
+observed by this panel. Diagnostics have no repair or retry control.

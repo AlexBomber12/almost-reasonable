@@ -7,6 +7,7 @@ from importlib.resources import files
 import secrets
 
 from app.core.provider_spend import ProviderStateStore
+from app.owner_control.diagnostics import application_replies
 from app.worker_telemetry.protocol import unavailable
 from app.private_web.auth import LoginStatus
 from app.private_web.wsgi import PrivateWebApplication, _RequestError, _canonical_ip
@@ -203,6 +204,15 @@ class OwnerApplication:
                         if self.worker_telemetry is not None
                         else unavailable()
                     ),
+                    "recent": {
+                        "application": application_replies(self.events),
+                        "worker": (
+                            self.worker_telemetry.read_diagnostics()
+                            if self.worker_telemetry is not None
+                            and hasattr(self.worker_telemetry, "read_diagnostics")
+                            else {"available": False, "rows": []}
+                        ),
+                    },
                     "emergency_operation": self.store.latest_worker_stop(token),
                     "event_store": {
                         "scope": "conversation_event_store",

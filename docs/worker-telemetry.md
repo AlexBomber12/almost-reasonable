@@ -36,6 +36,18 @@ recorded token totals, count of finalized attempts with incomplete usage,
 count of unresolved attempt reservations, and spend
 suspension. The service does not clear Stop, spend suspension, or allowance.
 
+The same socket accepts a second fixed diagnostics request. It returns at most
+ten newest worker provider attempts or unresolved reservations, with a strict
+8 KiB response limit. The owner continues to request aggregate status
+independently. Older workers close the unknown diagnostics request; the owner
+then shows recent worker activity as unavailable while keeping aggregate status
+and Stop usable. Each row contains a canonical time, fixed operation family,
+mapped outcome and reason category, recorded total tokens when known, and a
+short one-way correlation reference. The reference is computed only from the
+stored correlation identity; matching references are exact identity evidence,
+not a guess from row order or time. Arbitrary error codes and identifiers are
+never displayed. An unresolved reservation proves only that work was reserved.
+
 The service reads the current Stop pathname on every request, so atomic
 replacement is visible. A missing, unsafe, or malformed Stop file is shown as
 **unavailable**, not as a verified Stop state. Provider data is read through a

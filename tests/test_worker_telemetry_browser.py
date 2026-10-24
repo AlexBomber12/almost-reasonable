@@ -49,11 +49,51 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
                         "spend_suspended": True,
                     },
                 }
+                data["recent"] = {
+                    "application": {
+                        "available": True,
+                        "rows": [
+                            {
+                                "time": "2026-10-20T00:00:00.000000Z",
+                                "family": "private_reply",
+                                "outcome": "rejected",
+                                "reason": "<script>PRIVATE-CANARY</script>",
+                                "tokens": None,
+                                "reference": "abcdef0123456789abcdef01",
+                            }
+                        ],
+                    },
+                    "worker": {
+                        "available": True,
+                        "rows": [
+                            {
+                                "time": "2026-10-20T00:00:00.000000Z",
+                                "family": "provider_attempt",
+                                "outcome": "reservation",
+                                "reason": None,
+                                "tokens": None,
+                                "reference": "abcdef0123456789abcdef01",
+                            }
+                        ],
+                    },
+                }
                 route.fulfill(response=response, json=data)
 
             page.route("**/status", status_with_worker)
             page.get_by_role("button", name="Обновить").click()
             expect(page.locator("#status")).to_contain_text("Stop воркераВыключен")
+            expect(page.locator("#latest-outcome")).to_contain_text(
+                "Предложение отклонено"
+            )
+            page.locator("#recent-activity summary").click()
+            expect(page.locator("#recent-application")).to_contain_text(
+                "Предложение отклонено"
+            )
+            expect(page.locator("#recent-worker")).to_contain_text(
+                "Резервирование без результата"
+            )
+            assert "PRIVATE-CANARY" not in page.locator("#recent-activity").inner_text()
+            assert page.locator("#recent-activity script").count() == 0
             expect(page.locator("#status")).to_contain_text(
                 "Попытки провайдера, записанные воркером0"
             )

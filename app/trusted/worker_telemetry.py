@@ -16,6 +16,7 @@ from time import monotonic
 from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT, require_identifier
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES
 from app.core.store import EventStore, EventStoreError
+from app.owner_control.diagnostics import reference, safe_time
 from app.trusted.openai_credential_files import TrustedTransportConfigurationError
 from app.trusted.private_pilot import (
     PilotAuthorityError,
@@ -29,9 +30,128 @@ from app.worker_telemetry.protocol import (
     VERSION,
     encode,
     unavailable,
+    DIAGNOSTICS_REQUEST,
+    DIAGNOSTICS_VERSION,
+    MAX_DIAGNOSTICS_RESPONSE,
 )
 
 STOP_VERSION = "private-pilot-emergency-stop-v1"
+
+
+def _diagnostics(path):
+    empty = {"available": False, "rows": []}
+    connection = None
+    try:
+        identity = protected_state_identity(path)
+        sidecars = _sidecar_identities(path)
+        deadline = monotonic() + 0.5
+        connection = sqlite3.connect(
+            path.as_uri() + "?mode=ro", uri=True, timeout=0.2, isolation_level=None
+        )
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA busy_timeout=200")
+        connection.set_progress_handler(
+            lambda: 1 if monotonic() > deadline else 0, 1000
+        )
+        connection.execute("BEGIN")
+        EventStore._verify_current_schema(connection)
+        rows = connection.execute(
+            """SELECT started_at, correlation_id, outcome, rejection_reason,
+                      total_tokens, cost_estimate_status, 0 AS reservation
+               FROM provider_usage_attempts
+               UNION ALL
+               SELECT r.reserved_at, r.correlation_id, NULL, NULL, NULL, NULL, 1
+               FROM provider_attempt_reservations AS r
+               WHERE NOT EXISTS (SELECT 1 FROM provider_usage_attempts AS u
+                                 WHERE u.attempt_id=r.attempt_id)
+               ORDER BY 1 DESC, 2 DESC LIMIT 10"""
+        ).fetchall()
+        connection.execute("ROLLBACK")
+        if protected_state_identity(path) != identity or any(
+            before is not None and before != after
+            for before, after in zip(sidecars, _sidecar_identities(path), strict=True)
+        ):
+            raise ValueError("provider source changed")
+        result = []
+        for time, correlation, outcome, reason, tokens, usage, reservation in rows:
+            if reservation:
+                category, safe_reason = "reservation", None
+            elif outcome == "completed":
+                category, safe_reason = "completed", None
+            elif outcome == "emergency_stop":
+                category, safe_reason = "stopped", None
+            elif outcome in {
+                "invalid_proposal",
+                "invalid_response",
+                "incomplete",
+                "refused",
+                "missing_output",
+                "unsupported_output",
+                "oversized_output",
+                "invalid_request",
+            }:
+                category = "rejected"
+                safe_reason = (
+                    "invalid_proposal"
+                    if outcome == "invalid_proposal"
+                    else "refused"
+                    if outcome == "refused"
+                    else "invalid_response"
+                )
+            elif outcome in {"timeout", "connection_error", "persistence_failure"}:
+                category, safe_reason = (
+                    "uncertain",
+                    "timeout" if outcome == "timeout" else "unknown",
+                )
+            elif outcome in {
+                "spend_suspended",
+                "confirmed_spend_limit",
+                "billing_quota",
+            }:
+                category, safe_reason = "stopped", "spend_limit"
+            else:
+                category, safe_reason = "unknown", "unknown"
+            if reason is not None and outcome == "invalid_proposal":
+                safe_reason = "invalid_proposal"  # Never echo arbitrary stored reasons.
+            if tokens is not None and (
+                type(tokens) is not int or not 0 <= tokens <= MAX_PROVIDER_TOKEN_COUNT
+            ):
+                raise ValueError("invalid token count")
+            if usage not in (
+                None,
+                "estimated",
+                "usage_unavailable",
+                "usage_incomplete",
+                "pricing_unavailable",
+            ):
+                raise ValueError("invalid usage state")
+            if usage in {"usage_unavailable", "usage_incomplete"}:
+                safe_reason = (
+                    "incomplete_usage" if category == "completed" else safe_reason
+                )
+            result.append(
+                {
+                    "time": safe_time(time),
+                    "family": "provider_attempt",
+                    "outcome": category,
+                    "reason": safe_reason,
+                    "tokens": str(tokens) if tokens is not None else None,
+                    "reference": reference(correlation),
+                }
+            )
+        return {"available": True, "rows": result}
+    except (
+        OSError,
+        sqlite3.Error,
+        EventStoreError,
+        PilotAuthorityError,
+        TypeError,
+        ValueError,
+    ):
+        return empty
+    finally:
+        if connection is not None:
+            connection.close()
 
 
 def _peer_uid(connection):
@@ -416,16 +536,24 @@ class WorkerTelemetryServer:
                     return True
                 deadline = monotonic() + 0.5
                 request = bytearray()
-                while len(request) <= len(REQUEST):
+                maximum_request = max(len(REQUEST), len(DIAGNOSTICS_REQUEST))
+                while len(request) <= maximum_request:
                     remaining = deadline - monotonic()
                     if remaining <= 0:
                         raise TimeoutError("telemetry request deadline exceeded")
                     connection.settimeout(remaining)
-                    chunk = connection.recv(len(REQUEST) + 1 - len(request))
+                    chunk = connection.recv(maximum_request + 1 - len(request))
                     if not chunk:
                         break
                     request.extend(chunk)
-                if request != REQUEST:
+                if request not in (REQUEST, DIAGNOSTICS_REQUEST):
+                    return True
+                if request == DIAGNOSTICS_REQUEST:
+                    response = {
+                        "version": DIAGNOSTICS_VERSION,
+                        **_diagnostics(self.provider_db),
+                    }
+                    connection.sendall(encode(response, MAX_DIAGNOSTICS_RESPONSE))
                     return True
                 response = {
                     "version": VERSION,
