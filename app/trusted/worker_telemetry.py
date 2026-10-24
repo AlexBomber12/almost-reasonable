@@ -103,6 +103,10 @@ def _diagnostics(path):
                     "uncertain",
                     "timeout" if outcome == "timeout" else "unknown",
                 )
+            elif outcome in {"authentication_error", "permission_error"}:
+                category, safe_reason = "rejected", "authorization"
+            elif outcome == "server_error":
+                category, safe_reason = "uncertain", "provider_error"
             elif outcome in {
                 "spend_suspended",
                 "spend_limit_confirmed",
