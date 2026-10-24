@@ -699,7 +699,7 @@ class _DurableConversationRuntime(ConversationService):
                     and self._narrative_reply_permitted(reply.operation)
                     and self._research_evidence(reply.operation.operation_id) is None
                     and self._historical_research_permitted(principal, reply),
-                    include_memories=getattr(self, "_narrative_audit", None) is None,
+                    include_memories=True,
                     include_narrative=getattr(self, "_narrative_audit", None)
                     is not None,
                     reserve_narrative_slot=reserve_narrative_slot,
@@ -2441,13 +2441,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("shared_proposals_enabled must be bool")
         if shared_proposals_enabled and kwargs.get("shared_intelligence") is None:
             raise ValueError("shared proposals require shared intelligence")
-        if narrative_enabled and (
-            memory_extraction_enabled
-            or memory_evolution_enabled
-            or typed_memory_enabled
-            or shared_proposals_enabled
-        ):
-            raise ValueError("narrative mode must be selected alone")
+        if narrative_enabled and shared_proposals_enabled:
+            raise ValueError("narrative mode cannot combine with shared proposals")
         if narrative_enabled and (
             kwargs.get("shared_intelligence") is not None
             or kwargs.get("research_bridge") is not None
