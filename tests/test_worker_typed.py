@@ -1984,7 +1984,7 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
             memory_extraction_enabled=True,
             memory_evolution_enabled=True,
             typed_memory_enabled=True,
-            context_limits=ContextLimits(32000, 1),
+            context_limits=ContextLimits(32000, 5),
         )
 
     app._conversations = runtime(events, gate)
@@ -2053,7 +2053,12 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
                 proposal = {
                     "proposal": {
                         "decision": "reply",
-                        "content": "Текущий проект — Cobalt; мне нравятся silent gears.",
+                        "content": (
+                            "OK"
+                            if "unrelated garden inventory"
+                            in data["conversation"][-1]["content"]
+                            else "Текущий проект — Cobalt; мне нравятся silent gears."
+                        ),
                     }
                 }
             return {

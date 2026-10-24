@@ -47,6 +47,8 @@ services:
       - /run/pilot-ipc/worker.sock
       - --worker-uid
       - "${PILOT_WORKER_UID:-11021}"
+      - --worker-history-events
+      - "5"
       - --enable-memory-evolution
       - --enable-typed-memory
       - --listen-host

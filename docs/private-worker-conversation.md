@@ -254,6 +254,10 @@ The combined fake-provider HTTP/IPC regression checks both family writes,
 revision, restart, bounded history, participant isolation, duplicate requests,
 the serialized reply projection and source deletion. Live semantic acceptance
 remains separately authorized and pending.
+The acceptance-only application command caps the projection at five dialogue
+events, matching the offline journey. Five short filler turns then displace
+the earlier robot wording without triggering the byte-budget behavior that
+could skip large fillers and select older short entries.
 
 The opt-in acceptance path is `python -m acceptance.private_pilot_live
 --memory-journey` with the existing protected authorization, activation,

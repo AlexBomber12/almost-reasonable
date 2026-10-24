@@ -7,7 +7,7 @@ import sys
 import pytest
 
 from app.private_web.auth import AuthStore
-from app.private_web.cli import main
+from app.private_web.cli import _parser, main
 from app.private_web.wsgi import PrivateWebApplication
 
 
@@ -100,6 +100,25 @@ def test_serve_builds_disabled_local_application(tmp_path):
     assert observed["served"] is True
     assert isinstance(observed["application"], PrivateWebApplication)
     assert Path(event_path).exists()
+
+
+def test_worker_history_limit_accepts_the_memory_journey_bound():
+    args = _parser().parse_args(
+        [
+            "serve",
+            "--auth-db",
+            "auth.db",
+            "--event-db",
+            "events.db",
+            "--allowed-host",
+            "chat.example",
+            "--allowed-origin",
+            "https://chat.example",
+            "--worker-history-events",
+            "5",
+        ]
+    )
+    assert args.worker_history_events == 5
 
 
 @pytest.mark.parametrize(

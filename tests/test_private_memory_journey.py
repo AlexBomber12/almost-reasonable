@@ -1,6 +1,7 @@
 """The opt-in live journey uses the same closed synthetic assertions offline."""
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -68,6 +69,11 @@ def test_robot_journey_requires_actual_persistent_projection_after_eviction():
         QUESTION,
     ]
     assert MAX_OPERATIONS == len(sent) * 3 == 27
+
+
+def test_live_compose_uses_the_offline_journey_history_bound():
+    compose = Path("ops/compose.private-pilot-memory-acceptance.yaml").read_text()
+    assert '      - --worker-history-events\n      - "5"' in compose
 
 
 @pytest.mark.parametrize("missing", ["Cobalt", "silent gears"])

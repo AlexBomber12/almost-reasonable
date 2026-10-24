@@ -11,7 +11,9 @@ QUESTION = (
     "предпочтение в конструкции? Используй сохранённые названия без перевода."
 )
 FILLERS = tuple(
-    f"Synthetic unrelated garden inventory {index}: " + "clover " * 1050
+    f"Synthetic unrelated garden inventory {index}: "
+    + "clover " * 80
+    + " Acknowledge this inventory with only OK."
     for index in range(5)
 )
 MAX_OPERATIONS = 3 * (len(FILLERS) + 4)
