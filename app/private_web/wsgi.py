@@ -163,17 +163,31 @@ class PrivateWebApplication:
         try:
             response = self._dispatch(environ)
         except _RequestError as error:
-            response = self._error(error.status, error.message)
+            if (
+                error.status == HTTPStatus.UNAUTHORIZED
+                and environ.get("REQUEST_METHOD") == "GET"
+                and environ.get("PATH_INFO") in {"/chat", "/privacy", "/privacy/source"}
+            ):
+                response = self._redirect("/login", [])
+            else:
+                response = self._error(
+                    error.status,
+                    error.message,
+                    api=environ.get("PATH_INFO", "").startswith("/api/"),
+                )
         except PrivacyReadBlocked:
             response = self._error(
                 HTTPStatus.SERVICE_UNAVAILABLE
                 if self._privacy is not None
                 else HTTPStatus.INTERNAL_SERVER_ERROR,
                 "Privacy reconciliation required.",
+                api=environ.get("PATH_INFO", "").startswith("/api/"),
             )
         except Exception:
             response = self._error(
-                HTTPStatus.INTERNAL_SERVER_ERROR, "The request could not be completed."
+                HTTPStatus.INTERNAL_SERVER_ERROR,
+                "The request could not be completed.",
+                api=environ.get("PATH_INFO", "").startswith("/api/"),
             )
         status, headers, body = response
         referrer_policy = (
@@ -196,6 +210,7 @@ class PrivateWebApplication:
         method = environ.get("REQUEST_METHOD", "")
         path = environ.get("PATH_INFO", "")
         known_paths = {
+            "/",
             "/login",
             "/logout",
             "/session",
@@ -222,6 +237,7 @@ class PrivateWebApplication:
         if path not in known_paths:
             raise _RequestError(HTTPStatus.NOT_FOUND, "Not found.")
         allowed_methods = {
+            "/": {"GET"},
             "/login": {"GET", "POST"},
             "/logout": {"POST"},
             "/session": {"GET"},
@@ -263,7 +279,11 @@ class PrivateWebApplication:
         session = self._auth_store.authenticate(session_token)
         if method == "GET" and path == "/session":
             return self._session_status(session)
+        if method == "GET" and path == "/":
+            return self._redirect("/chat" if session is not None else "/login", [])
         if session is None:
+            if method == "GET" and path in {"/chat", "/privacy", "/privacy/source"}:
+                return self._redirect("/login", [])
             raise _RequestError(
                 HTTPStatus.UNAUTHORIZED,
                 "Your session is invalid or expired. Please sign in again.",
@@ -440,12 +460,15 @@ class PrivateWebApplication:
             "</div></main>"
             '<div class="composer-area"><div class="composer-inner">'
             '<p role="status" aria-live="polite" id="model-status" class="status"></p>'
+            '<a id="status-action" class="status-action" href="/login" hidden></a>'
             f'<form id="message-form" method="post" action="/api/messages" data-csrf="{escape(csrf)}">'
             '<label for="message-content" class="visually-hidden">Сообщение</label>'
             '<textarea id="message-content" name="content" required maxlength="8192" '
             'rows="2" placeholder="Напишите сообщение…" aria-label="Сообщение"></textarea>'
             '<button type="submit" id="send-button" aria-label="Отправить сообщение">'
             "Отправить</button></form>"
+            '<button type="button" id="discard-pending" class="discard-pending" hidden>'
+            "Отменить повтор</button>"
             '<p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>'
             '</div></div></div><script src="/assets/chat.js"></script></body></html>'
         ).encode()
@@ -645,7 +668,10 @@ if (logout) logout.addEventListener('click', async () => {
   try {
     const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
       headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
-    if (response.ok) location.href = '/login';
+    if (response.ok) {
+      try { sessionStorage.removeItem('ar-chat-recovery-v1'); } catch (_) { /* storage unavailable */ }
+      location.href = '/login';
+    }
     else alert('Не удалось выйти. Сессия может быть активна.');
   } catch (error) {
     alert('Выход не подтверждён. Проверьте сеанс перед уходом.');
@@ -854,7 +880,12 @@ if (logout) logout.addEventListener('click', async () => {
         status: HTTPStatus,
         message: str,
         headers: list[tuple[str, str]] | None = None,
+        *,
+        api: bool = False,
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
+        if api:
+            result = PrivateWebApplication._json(status, {"error": message})
+            return result[0], [*result[1], *(headers or [])], result[2]
         body = (
             "<!doctype html><html lang=en><meta charset=utf-8>"
             f"<title>{status.value} {escape(status.phrase)}</title>"

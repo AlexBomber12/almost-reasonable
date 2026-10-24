@@ -218,6 +218,39 @@ def test_authenticated_chat_session_status_and_logout(web):
     assert "ar_session" not in browser.cookies
 
 
+def test_root_navigation_and_expired_html_pages_keep_api_errors(web):
+    clock, _, _, _, app = web
+    browser = Browser(app)
+    assert header_values(browser.request("GET", "/")[1], "Location") == ["/login"]
+    browser.login("alice", "correct horse battery")
+    assert header_values(browser.request("GET", "/")[1], "Location") == ["/chat"]
+    clock.timestamp += 61
+    for path in ("/chat",):
+        status, headers, _ = browser.request("GET", path)
+        assert status == "303 See Other"
+        assert header_values(headers, "Location") == ["/login"]
+    for method, path in (("GET", "/api/history"), ("POST", "/api/messages")):
+        status, headers, body = browser.request(method, path)
+        assert status == "401 Unauthorized"
+        assert header_values(headers, "Content-Type") == [
+            "application/json; charset=utf-8"
+        ]
+        assert json.loads(body)["error"]
+
+
+def test_authenticated_csrf_denial_is_json_403_not_session_expiry(web):
+    *_, app = web
+    browser = Browser(app)
+    browser.login("alice", "correct horse battery")
+    status, headers, body = browser.submit(
+        "csrf-denied", "synthetic message", extra_environ={"HTTP_X_CSRF_TOKEN": "wrong"}
+    )
+    assert status == "403 Forbidden"
+    assert header_values(headers, "Content-Type") == ["application/json; charset=utf-8"]
+    assert json.loads(body) == {"error": "CSRF validation failed."}
+    assert json.loads(browser.request("GET", "/session")[2])["authenticated"]
+
+
 def test_two_browser_http_scenario_is_private_and_ignores_forged_principal(web):
     *_, app = web
     alice = Browser(app)
@@ -382,7 +415,7 @@ def test_expired_session_has_clear_states(web):
     browser.login("alice", "correct horse battery")
     clock.timestamp += 60
 
-    assert browser.request("GET", "/chat", origin=False)[0] == "401 Unauthorized"
+    assert browser.request("GET", "/chat", origin=False)[0] == "303 See Other"
     status, _, body = browser.request("GET", "/session", origin=False)
     assert status == "200 OK"
     assert json.loads(body) == {"authenticated": False}
@@ -595,7 +628,7 @@ def test_missing_routes_methods_cookie_tampering_and_static_asset(web):
     assert browser.request("GET", "/missing", origin=False)[0] == "404 Not Found"
     assert browser.request("PUT", "/login", origin=False)[0] == "405 Method Not Allowed"
     browser.cookies["ar_session"] = "forged"
-    assert browser.request("GET", "/chat", origin=False)[0] == "401 Unauthorized"
+    assert browser.request("GET", "/chat", origin=False)[0] == "303 See Other"
     status, headers, body = browser.request("GET", "/assets/chat.js", origin=False)
     assert status == "200 OK"
     assert header_values(headers, "Content-Type") == ["text/javascript; charset=utf-8"]
@@ -699,7 +732,7 @@ def test_login_request_validation_and_chat_csrf_cookie(web):
         == "303 See Other"
     )
     browser.cookies.pop("ar_csrf")
-    assert browser.request("GET", "/chat", origin=False)[0] == "401 Unauthorized"
+    assert browser.request("GET", "/chat", origin=False)[0] == "303 See Other"
 
 
 @pytest.mark.parametrize(
@@ -785,7 +818,7 @@ def test_duplicate_cookie_is_not_accepted(web):
         origin=False,
         extra_environ={"HTTP_COOKIE": f"ar_session={token}; ar_session={token}"},
     )
-    assert status == "401 Unauthorized"
+    assert status == "303 See Other"
 
 
 def test_insecure_local_configuration_omits_secure_cookie_attribute(web):
