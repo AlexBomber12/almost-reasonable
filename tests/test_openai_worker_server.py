@@ -75,8 +75,7 @@ def gateway(
 def response(proposal=None):
     if proposal is None:
         proposal = (
-            '{"decision":"no_action","reason_category":"not_warranted",'
-            '"content":null,"brief":null,"draft":null}'
+            '{"proposal":{"decision":"no_action","reason_category":"not_warranted"}}'
         )
     return ProviderResponse(
         response_id="resp_synthetic",
@@ -293,12 +292,7 @@ def test_server_returns_validated_untrusted_proposal_without_executing_it(tmp_pa
     directory = secure_directory(tmp_path)
     instance, transport = gateway(
         directory,
-        [
-            response(
-                '{"decision":"reply","reason_category":null,'
-                '"content":"Черновик ответа.","brief":null,"draft":null}'
-            )
-        ],
+        [response('{"proposal":{"decision":"reply","content":"Черновик ответа."}}')],
         stage=DeploymentStage.STAGE_1,
     )
     server = OpenAIWorkerServer(
@@ -326,12 +320,7 @@ def test_invalid_provider_proposal_returns_sanitized_outcome_without_validation(
     directory = secure_directory(tmp_path)
     instance, transport = gateway(
         directory,
-        [
-            response(
-                '{"decision":"reply","reason_category":null,'
-                '"content":7,"brief":null,"draft":null}'
-            )
-        ],
+        [response('{"proposal":{"decision":"reply","content":7}}')],
         stage=DeploymentStage.STAGE_1,
     )
     server = OpenAIWorkerServer(

@@ -207,6 +207,17 @@ def _provider(path):
                         OR valid_identifier(outcome) != 1
                         OR (provider_response_id IS NOT NULL AND valid_identifier(provider_response_id) != 1)
                         OR (provider_error_code IS NOT NULL AND valid_identifier(provider_error_code) != 1)
+                        OR (rejection_reason IS NOT NULL AND rejection_reason NOT IN (
+                            'incomplete', 'refused', 'missing_output', 'unsupported_output',
+                            'oversized_output', 'invalid_response', 'timeout',
+                            'invalid_envelope', 'invalid_json', 'conflicting_fields',
+                            'invalid_container', 'invalid_decision', 'unknown_decision',
+                            'unknown_fields', 'invalid_field', 'oversized_field',
+                            'invalid_purpose_proposal'))
+                        OR (rejection_reason IS NOT NULL AND outcome NOT IN (
+                            'invalid_proposal', 'invalid_response', 'incomplete',
+                            'refused', 'missing_output', 'unsupported_output',
+                            'oversized_output', 'timeout'))
                         OR valid_stored_time(started_at) != 1
                         OR typeof(duration_ms) != 'integer' OR duration_ms < 0
                         OR typeof(retry_count) != 'integer' OR retry_count < 0

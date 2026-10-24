@@ -1,0 +1,12 @@
+services:
+  private-app:
+    ports: !reset []
+    networks:
+      app-local:
+        ipv4_address: ${PILOT_APP_IP:?set unused acceptance backend IP}
+
+networks:
+  app-local:
+    ipam:
+      config:
+        - subnet: ${PILOT_APP_SUBNET:?set unused acceptance backend subnet}

@@ -66,10 +66,7 @@ def documented_response():
                 "content": [
                     {
                         "type": "output_text",
-                        "text": (
-                            '{"decision":"reply","reason_category":null,'
-                            '"content":"Здравствуйте","brief":null,"draft":null}'
-                        ),
+                        "text": '{"proposal":{"decision":"reply","content":"Здравствуйте"}}',
                         "annotations": [],
                     }
                 ],

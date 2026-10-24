@@ -17,7 +17,7 @@ The trusted application configuration is:
 
 - model `gpt-6-luna`;
 - provider configuration `openai-stage1-smoke-config-v1`;
-- prompt `agent-proposal-v1` and the repository's approved Core Self;
+- prompt `agent-proposal-v2` and the repository's approved Core Self;
 - maximum 512 output tokens;
 - one logical operation and one transport attempt;
 - 30-second attempt timeout and 40-second overall timeout;

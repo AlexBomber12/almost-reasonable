@@ -124,11 +124,10 @@ def _worker(
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
-                                        "decision": "reply",
-                                        "reason_category": None,
-                                        "content": answer,
-                                        "brief": None,
-                                        "draft": None,
+                                        "proposal": {
+                                            "decision": "reply",
+                                            "content": answer,
+                                        }
                                     }
                                 ),
                             }
@@ -536,9 +535,9 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
     worker_dir.mkdir(mode=0o700)
     socket_path = worker_dir / "worker.sock"
     auth, events, ledger, _gate, app, a, b = _app(tmp_path, socket_path)
-    token = "СИНТЕТИЧЕСКИЙ-ОТВЕТ-Z7Q"
+    token = "Звездолёт"
 
-    def run_turns(count, turns):
+    def run_turns(count, turns, *, answer=token, expected_state="completed"):
         parent, child = multiprocessing.Pipe(duplex=False)
         process = multiprocessing.Process(
             target=_worker,
@@ -547,7 +546,7 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
                 str(tmp_path / "worker-provider.db"),
                 child,
                 count,
-                token,
+                answer,
                 True,
             ),
         )
@@ -559,7 +558,7 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
                 json.loads(browser.submit(identity, content)[2])
                 for browser, identity, content in turns
             ]
-            assert all(result["model_state"] == "completed" for result in results)
+            assert all(result["model_state"] == expected_state for result in results)
             assert parent.poll(5)
             inputs = [json.loads(item) for item in parent.recv()]
             process.join(5)
@@ -574,8 +573,8 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
     first, inputs = run_turns(
         3,
         [
-            (a, "a-one", "Первый вопрос Алисы"),
-            (a, "a-two", "Что ты ответил ранее?"),
+            (a, "a-one", "Назови наш корабль Звездолёт, курс на Юпитер"),
+            (a, "a-two", "Как называется корабль и куда летим?"),
             (b, "b-one", "Первый вопрос Боба"),
         ],
     )
@@ -590,7 +589,7 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
         "trust": "untrusted_conversational_data",
         "content": token,
     }
-    assert token not in json.dumps(inputs[0], ensure_ascii=False)
+    assert all(part["role"] != "agent" for part in inputs[0]["conversation"])
     assert [part["role"] for part in inputs[2]["conversation"]] == ["participant"]
     assert all("participant-a" not in json.dumps(item) for item in inputs)
 
@@ -607,11 +606,11 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
     app._privacy = ParticipantPrivacyControls(
         auth, reopened_events, ledger, reopened_gate, clock=Clock()
     )
-    replay = json.loads(a.submit("a-two", "Что ты ответил ранее?")[2])
+    replay = json.loads(a.submit("a-two", "Как называется корабль и куда летим?")[2])
     assert replay["message_status"] == "duplicate"
     assert replay["response"] == token
     _result, restarted_inputs = run_turns(
-        1, [(a, "a-three", "Повтори синтетический ответ")]
+        1, [(a, "a-three", "Как назывался корабль после перезапуска?")]
     )
     assert [part["role"] for part in restarted_inputs[0]["conversation"]] == [
         "participant",
@@ -625,6 +624,25 @@ def test_released_answer_reaches_provider_as_untrusted_agent_after_worker_restar
         for part in restarted_inputs[0]["conversation"]
         if part["role"] == "agent"
     ] == [token, token]
+    assert "Юпитер" in restarted_inputs[0]["conversation"][0]["content"]
+    rejected, rejected_inputs = run_turns(
+        1,
+        [(a, "a-four", "Сохрани имя Звездолёт и измени курс на Марс")],
+        answer=None,
+        expected_state="rejected",
+    )
+    assert rejected[0]["response"] == "Ответ модели отклонён проверкой безопасности."
+    assert "Звездолёт" in json.dumps(rejected_inputs[0], ensure_ascii=False)
+    assert "Марс" in rejected_inputs[0]["conversation"][-1]["content"]
+    history = json.loads(a.request("GET", "/api/history")[2])["messages"]
+    assert [item["role"] for item in history].count("agent") == 3
+    with EventStore(tmp_path / "worker-provider.db")._open() as db:
+        assert db.execute(
+            "SELECT count(*), max(retry_count) FROM provider_usage_attempts WHERE outcome='invalid_proposal'"
+        ).fetchone() == (1, 0)
+        assert db.execute(
+            "SELECT rejection_reason, provider_error_code FROM provider_usage_attempts WHERE outcome='invalid_proposal'"
+        ).fetchone() == ("invalid_field", None)
     with reopened_events._open() as db:
         assert {
             row[0]

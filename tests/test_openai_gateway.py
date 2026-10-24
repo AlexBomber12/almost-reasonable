@@ -1,6 +1,7 @@
 from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
+import json
 from threading import Event, Thread
 
 import pytest
@@ -79,10 +80,7 @@ def config(**changes):
 
 def response(text=None, *, status="completed", output=None, usage=True):
     if text is None:
-        text = (
-            '{"decision":"reply","reason_category":null,'
-            '"content":"Синтетический ответ","brief":null,"draft":null}'
-        )
+        text = '{"proposal":{"decision":"reply","content":"Синтетический ответ"}}'
     if output is None:
         output = (
             ProviderOutput("reasoning", ()),
@@ -267,12 +265,7 @@ def test_default_stage_zero_and_environment_key_do_not_enable_transport(
             GatewayOutcome.INVALID_RESPONSE,
         ),
         (
-            response(
-                text=(
-                    '{"decision":"shell","reason_category":null,'
-                    '"content":null,"brief":null,"draft":null}'
-                )
-            ),
+            response(text=('{"proposal":{"decision":"shell"}}')),
             GatewayOutcome.INVALID_PROPOSAL,
         ),
         (
@@ -313,6 +306,14 @@ def test_untrusted_provider_outputs_fail_closed_without_retry(
     assert result.validation is None or result.validation.valid is False
     assert len(transport.calls) == 1
     assert store.usage_attempt_count() == 1
+    attempt = store.usage_attempt("operation-a:1")
+    assert attempt.rejection_reason in {
+        outcome.value,
+        "invalid_json",
+        "invalid_envelope",
+        "unknown_decision",
+    }
+    assert attempt.provider_error_code is None
 
 
 @pytest.mark.parametrize(
@@ -387,6 +388,11 @@ def test_provider_error_classification_and_retry_bounds(
     assert store.usage_attempt_count() == calls
     assert len(sleeps) == calls - 1
     assert all(delay <= 4.25 for delay in sleeps)
+    if outcome is GatewayOutcome.TIMEOUT:
+        assert all(
+            store.usage_attempt(f"operation-a:{number}").rejection_reason == "timeout"
+            for number in range(1, calls + 1)
+        )
 
 
 def test_transient_failure_can_retry_then_succeed(tmp_path):
@@ -718,6 +724,7 @@ def test_response_at_overall_deadline_is_recorded_as_timeout(tmp_path):
     assert len(transport.calls) == 1
     record = store.usage_attempt("operation-a:1")
     assert record.outcome == "timeout"
+    assert record.rejection_reason == "timeout"
     assert record.provider_response_id == "resp_synthetic"
     assert record.total_tokens == 120
 
@@ -749,6 +756,8 @@ def test_error_at_overall_deadline_preserves_only_confirmed_spend_limit(
     assert result.outcome is expected
     assert len(transport.calls) == 1
     assert store.usage_attempt("operation-a:1").outcome == expected.value
+    if expected is GatewayOutcome.TIMEOUT:
+        assert store.usage_attempt("operation-a:1").rejection_reason == "timeout"
     assert store.is_spend_suspended() is suspended
 
 
@@ -763,6 +772,7 @@ def test_reservation_that_consumes_deadline_blocks_provider_call(tmp_path):
     assert result.attempts == 0
     assert transport.calls == []
     assert store.usage_attempt("operation-a:1").outcome == "timeout"
+    assert store.usage_attempt("operation-a:1").rejection_reason == "timeout"
 
 
 def test_pre_call_deadline_persistence_failure_fails_closed(tmp_path, monkeypatch):
@@ -952,20 +962,12 @@ def test_additional_documented_error_shapes(tmp_path, error, expected):
         (response(text="bad\ud800"), GatewayOutcome.INVALID_RESPONSE),
         (
             response(
-                text=(
-                    '{"decision":"reply","reason_category":null,'
-                    '"content":"ok","brief":"also","draft":null}'
-                )
+                text=('{"proposal":{"decision":"reply","content":"ok","brief":"also"}}')
             ),
             GatewayOutcome.INVALID_PROPOSAL,
         ),
         (
-            response(
-                text=(
-                    '{"decision":"reply","reason_category":null,'
-                    '"content":null,"brief":null,"draft":null}'
-                )
-            ),
+            response(text=('{"proposal":{"decision":"reply","content":null}}')),
             GatewayOutcome.INVALID_PROPOSAL,
         ),
     ],
@@ -984,21 +986,67 @@ def test_parser_rejects_non_transport_response():
 @pytest.mark.parametrize(
     "text",
     [
-        (
-            '{"decision":"no_action","reason_category":"low_value",'
-            '"content":null,"brief":null,"draft":null}'
-        ),
-        (
-            '{"decision":"research","reason_category":null,'
-            '"content":null,"brief":"Проверить факт","draft":null}'
-        ),
-        (
-            '{"decision":"propose_publication","reason_category":null,'
-            '"content":null,"brief":null,"draft":"Черновик"}'
-        ),
+        ('{"proposal":{"decision":"no_action","reason_category":"low_value"}}'),
+        ('{"proposal":{"decision":"research","brief":"Проверить факт"}}'),
+        ('{"proposal":{"decision":"reply","content":"Корабль\\nИскра"}}'),
+        ('{"proposal":{"decision":"reply","content":" "}}'),
+        ('{"proposal":{"decision":"propose_publication","draft":"Черновик"}}'),
     ],
 )
 def test_every_supported_proposal_shape_is_locally_validated(text):
     parsed = gateway_module._parse_response(response(text=text))
     assert parsed.outcome is GatewayOutcome.COMPLETED
     assert parsed.validation.valid is True
+
+
+@pytest.mark.parametrize(
+    ("proposal", "reason"),
+    [
+        ({"decision": "reply", "content": None}, "invalid_field"),
+        ({"decision": "reply", "content": ""}, "invalid_field"),
+        ({"decision": "research", "brief": ""}, "invalid_field"),
+        ({"decision": "propose_publication", "draft": ""}, "invalid_field"),
+        ({"decision": "no_action", "reason_category": None}, "invalid_field"),
+        ({"decision": "reply", "content": "ok", "draft": "also"}, "conflicting_fields"),
+        ({"decision": "reply", "content": 7}, "invalid_field"),
+        ({"decision": "reply", "content": "ok", "admin": True}, "unknown_fields"),
+        ({"decision": "reply", "content": "я" * 2049}, "oversized_field"),
+        ({"decision": "shell", "content": "ok"}, "unknown_decision"),
+        ({"decision": "remember"}, "unknown_decision"),
+        ({"decision": "remember", "content": "ok"}, "unknown_fields"),
+        ({"decision": []}, "invalid_decision"),
+        ([], "invalid_container"),
+    ],
+)
+def test_invalid_generic_proposal_reason_is_persisted_without_retry(
+    tmp_path, proposal, reason
+):
+    instance, transport, store = gateway(
+        tmp_path,
+        [response(text=json.dumps({"proposal": proposal}, ensure_ascii=False))],
+    )
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+    attempt = store.usage_attempt("operation-a:1")
+    assert result.outcome is GatewayOutcome.INVALID_PROPOSAL
+    assert attempt.rejection_reason == reason
+    assert attempt.provider_error_code is None
+    assert attempt.retry_count == 0
+    assert len(transport.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("text", "reason"),
+    [("{", "invalid_json"), ('{"unexpected":"reply"}', "invalid_envelope")],
+)
+def test_malformed_response_diagnostic_stays_worker_side(tmp_path, text, reason):
+    instance, transport, store = gateway(tmp_path, [response(text=text)])
+    result = instance.submit(
+        request(), correlation_id="correlation-a", operation_id="operation-a"
+    )
+    assert result.outcome is GatewayOutcome.INVALID_RESPONSE
+    assert result.validation is None
+    assert store.usage_attempt("operation-a:1").rejection_reason == reason
+    assert store.usage_attempt("operation-a:1").provider_error_code is None
+    assert len(transport.calls) == 1

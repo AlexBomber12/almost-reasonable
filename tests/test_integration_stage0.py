@@ -200,6 +200,12 @@ def provider_response(decision="reply", **changes):
     elif decision == "propose_publication":
         payload["draft"] = "Синтетический черновик"
     payload.update(changes)
+    if set(changes) <= {"decision", "reason_category", "content", "brief", "draft"}:
+        payload = {
+            "proposal": {
+                key: value for key, value in payload.items() if value is not None
+            }
+        }
     return ProviderResponse(
         "resp_synthetic",
         "completed",

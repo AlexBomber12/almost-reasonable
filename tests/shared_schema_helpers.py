@@ -14,6 +14,7 @@ def remove_v11(db):
 
 
 def remove_v12(db):
+    db.execute("ALTER TABLE provider_usage_attempts DROP COLUMN rejection_reason")
     db.execute("DROP INDEX narrative_sources_event")
     for table in (
         "private_narrative_receipts",

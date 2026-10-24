@@ -101,6 +101,26 @@ class GatewayOutcome(StrEnum):
     PERSISTENCE_FAILURE = "persistence_failure"
 
 
+class RejectionReason(StrEnum):
+    INCOMPLETE = "incomplete"
+    REFUSED = "refused"
+    MISSING_OUTPUT = "missing_output"
+    UNSUPPORTED_OUTPUT = "unsupported_output"
+    OVERSIZED_OUTPUT = "oversized_output"
+    INVALID_RESPONSE = "invalid_response"
+    TIMEOUT = "timeout"
+    INVALID_ENVELOPE = "invalid_envelope"
+    INVALID_JSON = "invalid_json"
+    CONFLICTING_FIELDS = "conflicting_fields"
+    INVALID_CONTAINER = "invalid_container"
+    INVALID_DECISION = "invalid_decision"
+    UNKNOWN_DECISION = "unknown_decision"
+    UNKNOWN_FIELDS = "unknown_fields"
+    INVALID_FIELD = "invalid_field"
+    OVERSIZED_FIELD = "oversized_field"
+    INVALID_PURPOSE_PROPOSAL = "invalid_purpose_proposal"
+
+
 @dataclass(frozen=True, slots=True)
 class GatewayResult:
     outcome: GatewayOutcome
@@ -124,6 +144,7 @@ class _ParsedResponse:
     typed: TypedProposal | None = None
     shared: SharedSuggestion | None = None
     narrative: NarrativeProposal | None = None
+    rejection_reason: RejectionReason | None = None
 
 
 class TrustedOpenAIGateway:
@@ -374,6 +395,22 @@ class TrustedOpenAIGateway:
                 usage=response.usage,
                 error_code=None,
                 suspend=None,
+                rejection_reason=(
+                    parsed.rejection_reason
+                    if parsed.rejection_reason is not None
+                    else RejectionReason(parsed.outcome.value)
+                    if parsed.outcome
+                    in {
+                        GatewayOutcome.INCOMPLETE,
+                        GatewayOutcome.REFUSED,
+                        GatewayOutcome.MISSING_OUTPUT,
+                        GatewayOutcome.UNSUPPORTED_OUTPUT,
+                        GatewayOutcome.OVERSIZED_OUTPUT,
+                        GatewayOutcome.INVALID_RESPONSE,
+                        GatewayOutcome.TIMEOUT,
+                    }
+                    else None
+                ),
             )
             if not persisted:
                 return self._result(
@@ -425,11 +462,14 @@ class TrustedOpenAIGateway:
         usage: ProviderUsage | None,
         error_code: str | None,
         suspend: str | None,
+        rejection_reason: RejectionReason | None = None,
     ) -> bool:
         duration = ended_monotonic - started_monotonic
         if not math.isfinite(duration) or duration < 0:
             self._persistence_failed = True
             return False
+        if outcome is GatewayOutcome.TIMEOUT and rejection_reason is None:
+            rejection_reason = RejectionReason.TIMEOUT
         estimate = estimate_cost(usage, self._pricing, self._config.model)
         record = ProviderAttemptRecord(
             attempt_id=attempt_id,
@@ -483,6 +523,7 @@ class TrustedOpenAIGateway:
             currency=estimate.currency,
             cost_estimate_status=estimate.status,
             provider_error_code=error_code,
+            rejection_reason=rejection_reason.value if rejection_reason else None,
         )
         try:
             created = self._store.record_attempt(
@@ -683,18 +724,30 @@ def _parse_response(
     try:
         payload = json.loads(text)
     except (ValueError, UnicodeDecodeError):
-        return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
+        return _ParsedResponse(
+            GatewayOutcome.INVALID_RESPONSE,
+            None,
+            rejection_reason=RejectionReason.INVALID_JSON,
+        )
     if extraction:
         try:
             parsed = parse_extraction_proposal(text)
         except ValueError:
-            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+            )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, parsed)
     if evolution:
         try:
             parsed_evolution = parse_evolution_proposal(text)
         except ValueError:
-            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+            )
         return _ParsedResponse(
             GatewayOutcome.COMPLETED, None, evolution=parsed_evolution
         )
@@ -702,13 +755,21 @@ def _parse_response(
         try:
             parsed_typed = parse_typed_proposal(text)
         except ValueError:
-            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+            )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
     if narrative:
         try:
             parsed_narrative = parse_narrative_proposal(text)
         except ValueError:
-            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+            )
         return _ParsedResponse(
             GatewayOutcome.COMPLETED, None, narrative=parsed_narrative
         )
@@ -716,38 +777,48 @@ def _parse_response(
         try:
             parsed_shared = parse_shared_suggestion(text)
         except ValueError:
-            return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+            )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, shared=parsed_shared)
-    if type(payload) is not dict or set(payload) != {
-        "decision",
-        "reason_category",
-        "content",
-        "brief",
-        "draft",
-    }:
-        return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
-    decision = payload["decision"]
-    if not isinstance(decision, str):
-        return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
-    fields = {
-        "no_action": "reason_category",
-        "reply": "content",
-        "research": "brief",
-        "propose_publication": "draft",
-    }
-    selected = fields.get(decision)
-    if selected is None:
-        validation = parse_agent_proposal({"decision": decision})
-        return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, validation)
-    if any(
-        payload[field] is not None
-        for field in ("reason_category", "content", "brief", "draft")
-        if field != selected
-    ):
-        return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, None)
-    validation = parse_agent_proposal(
-        {"decision": decision, selected: payload[selected]}
-    )
+    if type(payload) is not dict or set(payload) != {"proposal"}:
+        return _ParsedResponse(
+            GatewayOutcome.INVALID_RESPONSE,
+            None,
+            rejection_reason=RejectionReason.INVALID_ENVELOPE,
+        )
+    proposal = payload["proposal"]
+    validation = parse_agent_proposal(proposal)
     if not validation.valid:
-        return _ParsedResponse(GatewayOutcome.INVALID_PROPOSAL, validation)
+        reason = RejectionReason(validation.invalid_reason.value)
+        if reason is RejectionReason.UNKNOWN_FIELDS and type(proposal) is dict:
+            selected = {
+                "no_action": "reason_category",
+                "reply": "content",
+                "research": "brief",
+                "propose_publication": "draft",
+            }.get(proposal["decision"])
+            if selected and (set(proposal) - {"decision", selected}) & {
+                "reason_category",
+                "content",
+                "brief",
+                "draft",
+            }:
+                reason = RejectionReason.CONFLICTING_FIELDS
+        return _ParsedResponse(
+            GatewayOutcome.INVALID_PROPOSAL, validation, rejection_reason=reason
+        )
+    if proposal["decision"] not in {
+        "no_action",
+        "reply",
+        "research",
+        "propose_publication",
+    }:
+        return _ParsedResponse(
+            GatewayOutcome.INVALID_PROPOSAL,
+            validation,
+            rejection_reason=RejectionReason.UNKNOWN_DECISION,
+        )
     return _ParsedResponse(GatewayOutcome.COMPLETED, validation)

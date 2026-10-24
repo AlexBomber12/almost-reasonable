@@ -76,12 +76,12 @@ def test_v1_migrates_atomically_and_preserves_event_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == 12
-    assert reopened.diagnostics().schema_version == 12
+    assert store.diagnostics().schema_version == 13
+    assert reopened.diagnostics().schema_version == 13
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (12,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
         assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
-            12,
+            13,
         )
         assert connection.execute(
             "SELECT content, audience_principal_id FROM private_payloads"
@@ -125,7 +125,7 @@ def test_failed_v1_migration_leaves_recoverable_v1_database(tmp_path):
         assert "state_items" not in tables
 
     recovered = EventStore(database)
-    assert recovered.diagnostics().schema_version == 12
+    assert recovered.diagnostics().schema_version == 13
 
 
 def test_failed_v3_step_rolls_back_the_combined_v1_migration(tmp_path):
@@ -162,11 +162,11 @@ def test_failed_v3_step_rolls_back_the_combined_v1_migration(tmp_path):
 def test_migration_rejects_future_versions(tmp_path):
     database = tmp_path / "future.sqlite3"
     with sqlite3.connect(database) as connection:
-        connection.execute("PRAGMA user_version = 13")
+        connection.execute("PRAGMA user_version = 14")
 
     with pytest.raises(
         UnsupportedSchemaVersionError,
-        match="unsupported event store schema version: 13",
+        match="unsupported event store schema version: 14",
     ):
         EventStore(database)
 
@@ -230,9 +230,9 @@ def test_concurrent_v1_initialization_serializes_one_migration(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [12, 12]
+    assert outcomes == [13, 13]
     with sqlite3.connect(database) as connection:
         assert connection.execute("SELECT version FROM schema_metadata").fetchone() == (
-            12,
+            13,
         )
         assert connection.execute("SELECT COUNT(*) FROM state_items").fetchone() == (0,)

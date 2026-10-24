@@ -110,10 +110,10 @@ def test_v2_to_v3_migration_is_atomic_and_preserves_existing_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == SCHEMA_VERSION == 12
-    assert reopened.diagnostics().schema_version == 12
+    assert store.diagnostics().schema_version == SCHEMA_VERSION == 13
+    assert reopened.diagnostics().schema_version == 13
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (12,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
         assert connection.execute(
             "SELECT event_id FROM event_envelopes"
         ).fetchone() == ("event-v2",)
@@ -162,7 +162,7 @@ def test_failed_v3_migration_rolls_back_to_recoverable_v2(tmp_path):
             "WHERE type = 'table' AND name = 'provider_usage_attempts'"
         ).fetchone() == (0,)
 
-    assert EventStore(database).diagnostics().schema_version == 12
+    assert EventStore(database).diagnostics().schema_version == 13
 
 
 def test_concurrent_v2_initialization_is_safe(tmp_path):
@@ -185,7 +185,7 @@ def test_concurrent_v2_initialization_is_safe(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [12, 12]
+    assert outcomes == [13, 13]
 
 
 def test_confirmed_spend_suspension_and_telemetry_are_atomic_and_durable(tmp_path):
@@ -211,6 +211,37 @@ def test_confirmed_spend_suspension_and_telemetry_are_atomic_and_durable(tmp_pat
     assert suspension.provider == "openai"
     assert suspension.provider_error_code == "project_spend_limit_exceeded"
     assert suspension.attempt_id == "operation-a:1"
+
+
+def test_v12_usage_and_spend_controls_survive_reason_migration(tmp_path):
+    database = tmp_path / "events.sqlite3"
+    state = ProviderStateStore(EventStore(database))
+    assert state.record_attempt(
+        attempt(outcome="confirmed_spend_limit"),
+        confirmed_spend_limit_code="project_spend_limit_exceeded",
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "ALTER TABLE provider_usage_attempts DROP COLUMN rejection_reason"
+        )
+        connection.execute("UPDATE schema_metadata SET version=12")
+        connection.execute("PRAGMA user_version=12")
+    migrated = ProviderStateStore(EventStore(database))
+    assert migrated.usage_attempt_count() == 1
+    assert migrated.usage_attempt("operation-a:1").rejection_reason is None
+    assert migrated.suspension().attempt_id == "operation-a:1"
+    assert (
+        migrated.reserve_attempt("operation-b:1", "correlation-b", NOW)
+        is AttemptReservationStatus.SPEND_SUSPENDED
+    )
+
+
+def test_rejection_reason_rejects_arbitrary_text(tmp_path):
+    state = ProviderStateStore(EventStore(tmp_path / "events.sqlite3"))
+    with pytest.raises(ValueError, match="rejection reason"):
+        state.record_attempt(replace(attempt(), rejection_reason="raw model output"))
+    with pytest.raises(ValueError, match="rejected outcome"):
+        state.record_attempt(replace(attempt(), rejection_reason="invalid_field"))
 
 
 def test_attempt_reservation_is_atomic_and_finalized_with_telemetry(tmp_path):

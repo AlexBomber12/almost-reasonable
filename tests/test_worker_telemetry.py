@@ -791,6 +791,23 @@ def test_unavailable_cost_cannot_retain_estimate(tmp_path):
     assert _provider(db)["available"] is False
 
 
+def test_worker_telemetry_rejects_unbounded_rejection_reason(tmp_path):
+    db, _stop_path, _path = sources(tmp_path)
+    ProviderStateStore(EventStore(db)).record_attempt(attempt("synthetic:1"))
+    with sqlite3.connect(db) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE provider_usage_attempts SET rejection_reason='raw participant text'"
+        )
+    assert _provider(db)["available"] is False
+    with sqlite3.connect(db) as connection:
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "UPDATE provider_usage_attempts SET rejection_reason='invalid_field'"
+        )
+    assert _provider(db)["available"] is False
+
+
 def test_spend_suspension_requires_valid_record(tmp_path):
     db, _stop_path, _path = sources(tmp_path)
     code = "project_spend_limit_exceeded"

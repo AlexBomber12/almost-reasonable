@@ -206,7 +206,7 @@ def test_related_consent_cascades_chain_receipts_and_replies_only(
             "SELECT operation_id FROM protected_reply_shared LIMIT 1"
         ).fetchone()[0]
     backup = tmp_path / "before-consent-revocation.db"
-    create_sqlite_backup(events.database_path, backup, 12, NOW)
+    create_sqlite_backup(events.database_path, backup, 13, NOW)
     revoke(ledger, values[6], "participant-a", "participant-b", existing=grant)
     assert gate.reconcile()
     assert gate.reconcile()
@@ -245,7 +245,7 @@ def test_related_consent_cascades_chain_receipts_and_replies_only(
         ).fetchone() == ("quarantined",)
     restored = tmp_path / "restored.db"
     assert (
-        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
         .restore(backup, restored, NOW)
         .activation_eligible
     )
@@ -283,7 +283,7 @@ def test_review_revocation_follows_actual_model_inputs_and_restore(
         runtime, "c", control_source, control_text, "sharedgen:independent-review", True
     )
     backup = tmp_path / "before-review-revocation.db"
-    create_sqlite_backup(events.database_path, backup, 12, NOW)
+    create_sqlite_backup(events.database_path, backup, 13, NOW)
     assert (
         shared.revoke_review(parent.proposal.operation_id, "revoke-parent") == "revoked"
     )
@@ -303,7 +303,7 @@ def test_review_revocation_follows_actual_model_inputs_and_restore(
         ).fetchone() == ("invalidated",)
     restored = tmp_path / "restored-review.db"
     assert (
-        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
         .restore(backup, restored, NOW)
         .activation_eligible
     )
@@ -325,7 +325,7 @@ def test_future_consent_revocation_keeps_pending_work_until_effective(
     runtime._propose_shared(principal("a"), source, content, "corr", reply)
     pending(runtime, "a", source, content, "sharedgen:future-receipt", True)
     backup = tmp_path / "future.db"
-    create_sqlite_backup(events.database_path, backup, 12, NOW)
+    create_sqlite_backup(events.database_path, backup, 13, NOW)
     revoke(
         ledger,
         source,
@@ -337,7 +337,7 @@ def test_future_consent_revocation_keeps_pending_work_until_effective(
     assert gate.reconcile()
     restored = tmp_path / "future-restored.db"
     assert (
-        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
         .restore(backup, restored, NOW)
         .activation_eligible
     )
@@ -503,14 +503,14 @@ def test_legacy_receipts_are_unavailable_and_quarantined_and_legacy_scope_is_exa
             "sharedgen:legacy", "participant-a", source
         )
     backup = tmp_path / "legacy.db"
-    create_sqlite_backup(events.database_path, backup, 12, NOW)
+    create_sqlite_backup(events.database_path, backup, 13, NOW)
     revoke(ledger, source, "participant-a", "participant-b")
     assert gate.reconcile()
     with events._open() as db:
         assert db.execute("SELECT COUNT(*) FROM shared_payloads").fetchone() == (0,)
     restored = tmp_path / "legacy-restored.db"
     assert (
-        QuarantinedRestore(ledger, 12, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
         .restore(backup, restored, NOW)
         .activation_eligible
     )
