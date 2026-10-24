@@ -430,16 +430,16 @@ class _DurableConversationRuntime(ConversationService):
             or getattr(self, "_evolution_audit", None) is not None
             or getattr(self, "_typed_audit", None) is not None
         ):
-            if getattr(self, "_typed_audit", None) is not None:
-                self._reconcile_worker_typed(principal, event_id, content, operation_id)
-            elif getattr(self, "_evolution_audit", None) is not None:
+            if getattr(self, "_evolution_audit", None) is not None:
                 self._reconcile_worker_evolution(
                     principal, event_id, content, operation_id
                 )
-            else:
+            elif getattr(self, "_extraction_audit", None) is not None:
                 self._reconcile_worker_extraction(
                     principal, event_id, content, operation_id
                 )
+            if getattr(self, "_typed_audit", None) is not None:
+                self._reconcile_worker_typed(principal, event_id, content, operation_id)
         if existing is None:
             self._checkpoint("before_reservation")
 
@@ -536,13 +536,13 @@ class _DurableConversationRuntime(ConversationService):
                             principal, event_id, content, correlation, operation_id
                         )
                         caps = self._gate.authorized(preflight)
-                    elif getattr(self, "_typed_audit", None) is not None:
-                        self._evolve_worker_typed(
+                    elif getattr(self, "_extraction_audit", None) is not None:
+                        self._extract_worker_memory(
                             principal, event_id, content, correlation, operation_id
                         )
                         caps = self._gate.authorized(preflight)
-                    elif getattr(self, "_extraction_audit", None) is not None:
-                        self._extract_worker_memory(
+                    if getattr(self, "_typed_audit", None) is not None:
+                        self._evolve_worker_typed(
                             principal, event_id, content, correlation, operation_id
                         )
                         caps = self._gate.authorized(preflight)
@@ -2441,10 +2441,6 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("shared_proposals_enabled must be bool")
         if shared_proposals_enabled and kwargs.get("shared_intelligence") is None:
             raise ValueError("shared proposals require shared intelligence")
-        if typed_memory_enabled and (
-            memory_extraction_enabled or memory_evolution_enabled
-        ):
-            raise ValueError("typed memory mode must be selected alone")
         if narrative_enabled and (
             memory_extraction_enabled
             or memory_evolution_enabled
@@ -2511,7 +2507,9 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
                 capabilities=CognitionCapabilities(
                     private_state_write=typed_memory_enabled,
                     shared_abstraction_screening=False,
-                    generic_memory_write=not typed_memory_enabled,
+                    generic_memory_write=(
+                        memory_extraction_enabled or memory_evolution_enabled
+                    ),
                     private_consolidation=memory_evolution_enabled,
                 ),
                 clock=self._clock,

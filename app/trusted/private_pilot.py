@@ -17,10 +17,14 @@ from app.trusted.openai_credential_files import (
 
 
 ACTIVATION_VERSION = "private-pilot-activation-v1"
+MEMORY_ACTIVATION_VERSION = "private-pilot-activation-b03d-v1"
+MEMORY_TASK = "synthetic-private-robot-memory-b03d"
 PROVIDER_CONFIG_VERSION = "openai-private-pilot-v1"
 MODEL = "gpt-6-luna"
 MAX_OPERATIONS = 5
+MAX_MEMORY_ACCEPTANCE_OPERATIONS = 27
 MAX_WINDOW_SECONDS = 600
+MAX_MEMORY_ACCEPTANCE_WINDOW_SECONDS = 3600
 _FIELDS = frozenset(
     {
         "version",
@@ -113,6 +117,7 @@ class PilotActivation:
     expires_at: datetime
     max_operations: int
     digest: str
+    memory_acceptance: bool = False
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -130,13 +135,23 @@ def _utc_second(value: object) -> datetime:
     return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
 
 
-def load_activation(path: Path, *, now: datetime | None = None) -> PilotActivation:
+def load_activation(
+    path: Path, *, now: datetime | None = None, allow_memory_acceptance: bool = False
+) -> PilotActivation:
     """Read an exact worker-owned 0400 artifact on every authorization check."""
 
     try:
         payload = read_pilot_control(path, maximum_bytes=4096)
         value = json.loads(payload, object_pairs_hook=_unique)
-        if type(value) is not dict or value.keys() != _FIELDS:
+        if type(value) is not dict or type(allow_memory_acceptance) is not bool:
+            raise ValueError("invalid activation fields")
+        memory_acceptance = (
+            allow_memory_acceptance
+            and set(value) == _FIELDS | {"task"}
+            and value.get("version") == MEMORY_ACTIVATION_VERSION
+            and value.get("task") == MEMORY_TASK
+        )
+        if not memory_acceptance and value.keys() != _FIELDS:
             raise ValueError("invalid activation fields")
         start = _utc_second(value["not_before"])
         end = _utc_second(value["expires_at"])
@@ -144,7 +159,8 @@ def load_activation(path: Path, *, now: datetime | None = None) -> PilotActivati
         if type(current) is not datetime or current.tzinfo is None:
             raise ValueError("invalid current time")
         valid = (
-            value["version"] == ACTIVATION_VERSION
+            value["version"]
+            == (MEMORY_ACTIVATION_VERSION if memory_acceptance else ACTIVATION_VERSION)
             and type(value["pilot_id"]) is str
             and _IDENTIFIER.fullmatch(value["pilot_id"]) is not None
             and type(value["application_peer_uid"]) is int
@@ -158,10 +174,22 @@ def load_activation(path: Path, *, now: datetime | None = None) -> PilotActivati
             and value["organization_id"].startswith("org-")
             and _IDENTIFIER.fullmatch(value["organization_id"]) is not None
             and type(value["max_operations"]) is int
-            and 1 <= value["max_operations"] <= MAX_OPERATIONS
+            and 1
+            <= value["max_operations"]
+            <= (
+                MAX_MEMORY_ACCEPTANCE_OPERATIONS
+                if memory_acceptance
+                else MAX_OPERATIONS
+            )
             and value["max_attempts_per_operation"] == 1
             and type(value["max_attempts_per_operation"]) is int
-            and 0 < (end - start).total_seconds() <= MAX_WINDOW_SECONDS
+            and 0
+            < (end - start).total_seconds()
+            <= (
+                MAX_MEMORY_ACCEPTANCE_WINDOW_SECONDS
+                if memory_acceptance
+                else MAX_WINDOW_SECONDS
+            )
             and start <= current.astimezone(UTC) < end
         )
         if not valid:
@@ -175,6 +203,7 @@ def load_activation(path: Path, *, now: datetime | None = None) -> PilotActivati
             end,
             value["max_operations"],
             sha256(payload).hexdigest(),
+            memory_acceptance,
         )
     except (
         PilotAuthorityError,

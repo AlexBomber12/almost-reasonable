@@ -14,8 +14,15 @@ from app.trusted.private_pilot import (
 from app.trusted.private_pilot_worker import PilotStop, _require_provider_database
 
 
-def prepare(activation_path: Path, allowance_path: Path) -> None:
-    PilotAllowance.initialize(allowance_path, load_activation(activation_path))
+def prepare(
+    activation_path: Path, allowance_path: Path, *, memory_acceptance: bool = False
+) -> None:
+    activation = load_activation(
+        activation_path, allow_memory_acceptance=memory_acceptance
+    )
+    if memory_acceptance and not activation.memory_acceptance:
+        raise PilotAuthorityError("memory acceptance activation required")
+    PilotAllowance.initialize(allowance_path, activation)
 
 
 def inspect(
@@ -51,13 +58,19 @@ def main(argv: list[str] | None = None) -> int:
         command = commands.add_parser(name)
         command.add_argument("--activation", required=True, type=Path)
         command.add_argument("--allowance", required=True, type=Path)
+        if name == "prepare":
+            command.add_argument("--memory-acceptance", action="store_true")
         if name == "inspect":
             command.add_argument("--stop", required=True, type=Path)
             command.add_argument("--provider-database", required=True, type=Path)
     args = parser.parse_args(argv)
     try:
         if args.command == "prepare":
-            prepare(args.activation, args.allowance)
+            prepare(
+                args.activation,
+                args.allowance,
+                memory_acceptance=args.memory_acceptance,
+            )
             print("Pilot allowance prepared; worker stop unchanged.")
         else:
             print(

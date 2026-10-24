@@ -23,6 +23,8 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 from uuid import uuid4
 
 from acceptance.private_pilot_conversation import run_ship_journey
+from acceptance.private_memory_journey import MAX_OPERATIONS, run_robot_journey
+from app.trusted.private_pilot import MEMORY_ACTIVATION_VERSION
 
 
 COMPOSE = (
@@ -34,6 +36,7 @@ COMPOSE = (
     "ops/compose.private-pilot-acceptance.yaml",
 )
 TASK = "synthetic-private-pilot-ship-restart-mars"
+MEMORY_TASK = "synthetic-private-robot-memory-b03d"
 MODEL = "gpt-6-luna"
 APP_UID = 11022
 WORKER_UID = 11021
@@ -279,7 +282,7 @@ def _write_report(path, report):
         os.close(fd)
 
 
-def validate_authorization(approval, activation, commit, now):
+def validate_authorization(approval, activation, commit, now, *, memory=False):
     """Refuse missing or ambiguous approval before preparing paid controls."""
 
     required = {
@@ -296,10 +299,17 @@ def validate_authorization(approval, activation, commit, now):
         "max_aggregate_output_tokens",
         "max_requests_per_run",
     }
-    if set(approval) != required or approval["task"] != TASK:
+    if set(approval) != required or approval["task"] != (
+        MEMORY_TASK if memory else TASK
+    ):
         raise ValueError("explicit task authorization is missing")
     if approval["commit"] != commit or approval["model"] != MODEL:
         raise ValueError("commit or model is not authorized")
+    if memory and (
+        activation.get("version") != MEMORY_ACTIVATION_VERSION
+        or activation.get("task") != MEMORY_TASK
+    ):
+        raise ValueError("memory acceptance activation is missing")
     if not _utc(approval["valid_from"]) <= now < _utc(approval["valid_until"]):
         raise ValueError("authorization is outside its validity period")
     if not (
@@ -324,8 +334,12 @@ def validate_authorization(approval, activation, commit, now):
     ):
         if type(approval[key]) is not int or approval[key] <= 0:
             raise ValueError(f"invalid authorization limit: {key}")
-    if approval["max_requests_per_run"] < 3 or activation["max_operations"] < 3:
-        raise ValueError("three distinct operations are required")
+    minimum = MAX_OPERATIONS if memory else 3
+    if (
+        approval["max_requests_per_run"] < minimum
+        or activation["max_operations"] < minimum
+    ):
+        raise ValueError("distinct operation allowance is insufficient")
     try:
         budget = Decimal(approval["billing_budget_usd"])
     except (InvalidOperation, TypeError):
@@ -334,8 +348,8 @@ def validate_authorization(approval, activation, commit, now):
         raise ValueError("invalid billing budget")
 
 
-def reserve_aggregate(path, approval, run_id):
-    """Durable conservative reservation; crashes and failed runs consume three slots."""
+def reserve_aggregate(path, approval, run_id, *, slots=3):
+    """Durable conservative reservation; crashes and failed runs consume slots."""
 
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if not path.exists():
@@ -359,11 +373,11 @@ def reserve_aggregate(path, approval, run_id):
         elif existing != [(policy,)]:
             raise ValueError("aggregate policy changed; preserve and review ledger")
         used = db.execute("SELECT COALESCE(SUM(slots),0) FROM runs").fetchone()[0]
-        if used + 3 > approval["max_aggregate_operations"]:
+        if used + slots > approval["max_aggregate_operations"]:
             raise ValueError("aggregate operation allowance exhausted")
-        db.execute("INSERT INTO runs VALUES (?,3)", (run_id,))
+        db.execute("INSERT INTO runs VALUES (?,?)", (run_id, slots))
     os.chmod(path, 0o600)
-    return approval["max_aggregate_operations"] - used - 3
+    return approval["max_aggregate_operations"] - used - slots
 
 
 def _continuation_rows(path, uid, queries):
@@ -577,7 +591,14 @@ def _command(args, env, *, input_text=None, timeout=120):
 
 
 def _compose(env, *args, input_text=None, timeout=120):
-    return _command((*COMPOSE, *args), env, input_text=input_text, timeout=timeout)
+    command = COMPOSE
+    if env.get("PILOT_MEMORY_JOURNEY") == "1":
+        command = (
+            *COMPOSE,
+            "-f",
+            "ops/compose.private-pilot-memory-acceptance.yaml",
+        )
+    return _command((*command, *args), env, input_text=input_text, timeout=timeout)
 
 
 def _app_python(env, code, input_text=None, *, running=False, timeout=120):
@@ -756,7 +777,9 @@ def _source(env, message_id):
     return "reply:" + hashlib.sha256(rows[0][0].encode()).hexdigest(), rows[0][1]
 
 
-def _reconcile(env, baseline, expected, approval, *, final=False, timeout=120):
+def _reconcile(
+    env, baseline, expected, approval, *, final=False, timeout=120, required=3
+):
     usage = _usage(env, timeout=timeout)
     allowance = _allowance(env, timeout=timeout)
     rows = usage["attempts"]
@@ -790,15 +813,17 @@ def _reconcile(env, baseline, expected, approval, *, final=False, timeout=120):
         raise ValueError("historical accounting changed")
     current = [row for row in rows if row[0] not in baseline["attempts"]]
     current_consumed = set(consumed) - baseline["consumed"]
-    required = {operation + ":1": correlation for operation, correlation in expected}
-    if len(required) != len(expected):
+    required_ids = {
+        operation + ":1": correlation for operation, correlation in expected
+    }
+    if len(required_ids) != len(expected):
         raise ValueError("duplicate current operation")
-    if set(row[0] for row in current) != set(required) or current_consumed != {
+    if set(row[0] for row in current) != set(required_ids) or current_consumed != {
         operation for operation, _ in expected
     }:
         raise ValueError("current provider or allowance accounting does not match")
     if any(
-        row[1] != required[row[0]]
+        row[1] != required_ids[row[0]]
         or row[2] != "completed"
         or row[3] is not None
         or row[7] != 0
@@ -808,16 +833,20 @@ def _reconcile(env, baseline, expected, approval, *, final=False, timeout=120):
     if allowance["maximum"] != baseline["maximum"]:
         raise ValueError("allowance authority changed")
     remaining = allowance["maximum"] - len(consumed)
-    if remaining < (0 if final else 3 - len(expected)):
+    if remaining < (0 if final else required - len(expected)):
         raise ValueError("worker allowance exhausted")
     if final and (
-        len(expected) != 3 or len(current) != 3 or len(current_consumed) != 3
+        len(expected) != required
+        or len(current) != required
+        or len(current_consumed) != required
     ):
-        raise ValueError("three current attempts are required")
+        raise ValueError("required current attempts are missing")
     return rows, current, remaining
 
 
 def run(args):
+    memory = getattr(args, "memory_journey", False)
+    required = MAX_OPERATIONS if memory else 3
     repo = Path(__file__).resolve().parents[1]
     if os.geteuid() != 0 or Path.cwd().resolve() != repo:
         raise ValueError("run as root from the reviewed repository checkout")
@@ -828,6 +857,8 @@ def run(args):
     activation_bytes = _read_protected(args.activation, 0o400, 0)
     activation = _unique_json(activation_bytes)
     continuation_of = getattr(args, "continue_zero_call", None)
+    if memory and continuation_of is not None:
+        raise ValueError("memory journey does not support zero-call continuation")
     reviewed_commit = getattr(args, "reviewed_commit", None)
     previous_report = getattr(args, "previous_report", None)
     if continuation_of is None:
@@ -844,7 +875,18 @@ def run(args):
                 "explicit current reviewed commit and previous report are required"
             )
         authorized_commit = approval.get("commit")
-    validate_authorization(approval, activation, authorized_commit, datetime.now(UTC))
+
+    def validate_current():
+        if memory:
+            validate_authorization(
+                approval, activation, authorized_commit, datetime.now(UTC), memory=True
+            )
+        else:
+            validate_authorization(
+                approval, activation, authorized_commit, datetime.now(UTC)
+            )
+
+    validate_current()
     if continuation_of is not None:
         if (
             not _utc(activation["not_before"])
@@ -901,6 +943,27 @@ def run(args):
     if stop.exists() or stop.is_symlink():
         _protected(stop, 0o400, WORKER_UID)
     _stop_file(stop, True)
+    if memory:
+        for name, version in (
+            ("memory-evolution.json", "private-memory-evolution-permission-v1"),
+            ("typed-memory.json", "private-typed-memory-permission-v1"),
+        ):
+            path = control_dir / name
+            if path.exists() or path.is_symlink():
+                raise ValueError("memory acceptance requires fresh permission files")
+            _write_control(
+                path,
+                json.dumps(
+                    {
+                        "version": version,
+                        "pilot_id": activation["pilot_id"],
+                        "max_operations": required,
+                    },
+                    separators=(",", ":"),
+                ).encode(),
+                WORKER_UID,
+                create_only=True,
+            )
     env = os.environ.copy()
     env.update(
         {
@@ -916,6 +979,8 @@ def run(args):
             "COMPOSE_PROJECT_NAME": "almost-reasonable-ship-" + run_id[:12],
         }
     )
+    if memory:
+        env["PILOT_MEMORY_JOURNEY"] = "1"
     report = {
         "commit": commit,
         "run_id": run_id,
@@ -989,8 +1054,7 @@ def run(args):
         if delay > 0:
             time.sleep(delay)
         if not (worker_dir / "allowance.sqlite3").exists():
-            _compose(
-                env,
+            command = (
                 "run",
                 "--rm",
                 "--no-deps",
@@ -1005,6 +1069,11 @@ def run(args):
                 "--allowance",
                 "/var/lib/pilot-worker/allowance.sqlite3",
             )
+            _compose(
+                env,
+                *command,
+                *(("--memory-acceptance",) if memory else ()),
+            )
         initial_usage = _usage(env)
         initial_allowance = _allowance(env)
         baseline = {
@@ -1014,7 +1083,7 @@ def run(args):
             "maximum": initial_allowance["maximum"],
         }
         expected = []
-        _reconcile(env, baseline, expected, approval)
+        _reconcile(env, baseline, expected, approval, required=required)
         if continuation_of is not None:
             _verify_zero_call_continuation(
                 args, approval, activation_bytes, continuation_of, run_id
@@ -1023,16 +1092,18 @@ def run(args):
         _wait_worker_ready(env)
         report["worker_ready"] = True
         _wait_http_ready(participant)
-        validate_authorization(
-            approval, activation, authorized_commit, datetime.now(UTC)
-        )
+        validate_current()
         if continuation_of is not None and datetime.now(UTC) >= _utc(
             activation["expires_at"]
         ):
             raise ValueError("zero-call continuation activation window expired")
         if continuation_of is None:
-            report["aggregate_remaining"] = reserve_aggregate(
-                args.aggregate_ledger, approval, run_id
+            report["aggregate_remaining"] = (
+                reserve_aggregate(
+                    args.aggregate_ledger, approval, run_id, slots=required
+                )
+                if memory
+                else reserve_aggregate(args.aggregate_ledger, approval, run_id)
             )
         else:
             current_usage = _usage(env)
@@ -1060,22 +1131,34 @@ def run(args):
         )
 
         def send(message_id, content):
-            validate_authorization(
-                approval, activation, authorized_commit, datetime.now(UTC)
-            )
+            validate_current()
             if continuation_of is not None and datetime.now(UTC) >= _utc(
                 activation["expires_at"]
             ):
                 raise ValueError("zero-call continuation activation window expired")
-            _reconcile(env, baseline, expected, approval)
+            _reconcile(env, baseline, expected, approval, required=required)
             source_id = run_id + "-" + message_id
             response = participant.request(
                 "POST",
                 "/api/messages",
                 {"message_id": source_id, "content": content},
             )
-            expected.append(_source(env, source_id))
-            _reconcile(env, baseline, expected, approval, final=len(expected) == 3)
+            reply_id, correlation = _source(env, source_id)
+            if memory:
+                suffix = reply_id.removeprefix("reply:")
+                expected.extend(
+                    (kind + ":" + suffix, correlation)
+                    for kind in ("evolution", "typed")
+                )
+            expected.append((reply_id, correlation))
+            _reconcile(
+                env,
+                baseline,
+                expected,
+                approval,
+                final=len(expected) == required,
+                required=required,
+            )
             return response
 
         def history():
@@ -1097,13 +1180,54 @@ def run(args):
                 raise BackendReadinessError("HTTPS route changed after app restart")
             _progress(args.report, report, "inference")
 
-        journey = run_ship_journey(
-            send,
-            history,
-            restart_app,
-            record_step=report["steps"].append,
-            record_name=lambda name: report.update(ship_name=name),
-        )
+        if memory:
+
+            def inspect_request():
+                capture = worker_dir / "robot-projections.jsonl"
+                _protected(capture, 0o600, WORKER_UID)
+                lines = capture.read_text().splitlines()
+                if not lines:
+                    raise ValueError("actual provider projection is unavailable")
+                return json.loads(json.loads(lines[-1])["input"])
+
+            def delete_revision():
+                source_id = run_id + "-robot-revision"
+                code = (
+                    "import json,sqlite3,sys; "
+                    "d=sqlite3.connect('file:/var/lib/pilot-app/events.db?mode=ro',uri=True); "
+                    "r=d.execute('SELECT event_id FROM event_envelopes WHERE source_message_id=?',"
+                    "(sys.stdin.readline().rstrip('\\n'),)).fetchall(); print(json.dumps(r))"
+                )
+                rows = json.loads(
+                    _app_python(env, code, source_id + "\n", running=True)
+                )
+                if len(rows) != 1:
+                    raise ValueError("revision source is unresolved")
+                return participant.request(
+                    "POST",
+                    "/api/privacy/deletions",
+                    {
+                        "operation_id": run_id + "-robot-delete",
+                        "source": rows[0][0],
+                        "confirm": "delete",
+                    },
+                )
+
+            journey = run_robot_journey(
+                send,
+                restart_app,
+                inspect_request,
+                delete_revision,
+                record_step=report["steps"].append,
+            )
+        else:
+            journey = run_ship_journey(
+                send,
+                history,
+                restart_app,
+                record_step=report["steps"].append,
+                record_name=lambda name: report.update(ship_name=name),
+            )
         report.update(journey)
         report["journey_complete"] = True
     except (Exception, KeyboardInterrupt) as error:
@@ -1203,6 +1327,7 @@ def run(args):
                             approval,
                             final=report.get("journey_complete", False),
                             timeout=15,
+                            required=required,
                         )
                     else:
                         report["accounting_error"] = True
@@ -1267,6 +1392,7 @@ def main(argv=None):
     parser.add_argument("--continue-zero-call", metavar="INTERRUPTED_RUN_ID")
     parser.add_argument("--previous-report", type=Path)
     parser.add_argument("--reviewed-commit", metavar="FULL_CURRENT_SHA")
+    parser.add_argument("--memory-journey", action="store_true")
     args = parser.parse_args(argv)
     try:
         run(args)

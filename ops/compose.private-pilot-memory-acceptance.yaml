@@ -1,0 +1,61 @@
+services:
+  provider-worker:
+    command:
+      - python
+      - -B
+      - -m
+      - acceptance.private_memory_worker
+      - --memory-acceptance
+      - --socket
+      - /run/pilot-ipc/worker.sock
+      - --provider-database
+      - /var/lib/pilot-worker/provider.sqlite3
+      - --allowance-database
+      - /var/lib/pilot-worker/allowance.sqlite3
+      - --socket-group-gid
+      - "${PILOT_IPC_GID:-11020}"
+      - --memory-evolution-permission
+      - /run/almost-reasonable-private-pilot/control/memory-evolution.json
+      - --typed-memory-permission
+      - /run/almost-reasonable-private-pilot/control/typed-memory.json
+    environment:
+      PILOT_MEMORY_CAPTURE: /var/lib/pilot-worker/robot-projections.jsonl
+    volumes:
+      - type: bind
+        source: ../acceptance
+        target: /opt/almost-reasonable/acceptance
+        read_only: true
+        bind: {create_host_path: false}
+  private-app:
+    command:
+      - python
+      - -B
+      - -m
+      - app.private_web.cli
+      - serve
+      - --auth-db
+      - /var/lib/pilot-app/auth.db
+      - --event-db
+      - /var/lib/pilot-app/events.db
+      - --privacy-ledger
+      - /var/lib/pilot-app/ledger.db
+      - --owner-directory
+      - /var/lib/pilot-app/owner
+      - --ipc-state-db
+      - /var/lib/pilot-app/ipc-state.db
+      - --worker-socket
+      - /run/pilot-ipc/worker.sock
+      - --worker-uid
+      - "${PILOT_WORKER_UID:-11021}"
+      - --worker-history-events
+      - "5"
+      - --enable-memory-evolution
+      - --enable-typed-memory
+      - --listen-host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --allowed-host
+      - "${PILOT_ALLOWED_HOST:?set approved HTTPS host}"
+      - --allowed-origin
+      - "${PILOT_ALLOWED_ORIGIN:?set approved HTTPS origin}"

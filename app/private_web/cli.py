@@ -59,6 +59,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--event-db", required=True)
     serve.add_argument("--worker-socket")
     serve.add_argument("--worker-uid", type=int)
+    serve.add_argument("--worker-history-events", type=int, default=99)
     serve.add_argument("--ipc-state-db")
     serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-memory-evolution", action="store_true")
@@ -333,6 +334,7 @@ def main(
             else None,
             shared_proposals_enabled=args.enable_shared_proposals,
             shared_proposal_audience=tuple(sorted(set(args.shared_proposal_audience))),
+            context_limits=ContextLimits(32_000, args.worker_history_events),
         )
         privacy = ParticipantPrivacyControls(
             auth, event_store, ledger, gate, clock=conversations._clock

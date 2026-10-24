@@ -178,7 +178,13 @@ class PilotRequestGate:
 
     def current(self) -> bool:
         try:
-            return load_activation(self.activation_path) == self.activation
+            return (
+                load_activation(
+                    self.activation_path,
+                    allow_memory_acceptance=self.activation.memory_acceptance,
+                )
+                == self.activation
+            )
         except PilotAuthorityError:
             return False
 
@@ -283,10 +289,27 @@ def build_worker(
     typed_permission_path: Path | None = None,
     narrative_permission_path: Path | None = None,
     shared_permission_path: Path | None = None,
+    memory_acceptance: bool = False,
 ) -> OpenAIWorkerServer:
     """Live entry point; only the protected credential-file factory creates SDK."""
 
-    activation = load_activation(activation_path)
+    activation = load_activation(
+        activation_path, allow_memory_acceptance=memory_acceptance
+    )
+    if memory_acceptance and (
+        not activation.memory_acceptance
+        or evolution_permission_path is None
+        or typed_permission_path is None
+        or any(
+            path is not None
+            for path in (
+                extraction_permission_path,
+                narrative_permission_path,
+                shared_permission_path,
+            )
+        )
+    ):
+        raise PilotAuthorityError("invalid memory acceptance scope")
     allowance = PilotAllowance(allowance_database, activation)
     provider_identity = _require_provider_database(provider_database)
 
@@ -360,6 +383,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--typed-memory-permission", type=Path)
     parser.add_argument("--narrative-permission", type=Path)
     parser.add_argument("--shared-proposal-permission", type=Path)
+    parser.add_argument("--memory-acceptance", action="store_true")
     args = parser.parse_args(argv)
     worker = build_worker(
         socket_path=args.socket,
@@ -371,6 +395,7 @@ def main(argv: list[str] | None = None) -> int:
         typed_permission_path=args.typed_memory_permission,
         narrative_permission_path=args.narrative_permission,
         shared_permission_path=args.shared_proposal_permission,
+        memory_acceptance=args.memory_acceptance,
     )
     stopping = False
 

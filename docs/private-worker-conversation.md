@@ -215,8 +215,67 @@ behavior, deployment and live semantic evaluation remain separate work.
 The separate default-off interest, belief/hypothesis and goal/intention worker
 path is documented in [private typed worker memory](private-typed-worker-memory.md).
 It uses EventStore v10 contextual typed provenance, the existing SelfStateStore,
-and its own application flag and protected worker permission. The B03A and B03B
-generic modes remain separate. `complete_mvp=BLOCKED` remains unchanged.
+and its own application flag and protected worker permission. `complete_mvp=BLOCKED`
+remains unchanged.
+
+## B03D: combined participant-private memory
+
+The application may enable typed memory with generic extraction or generic
+evolution in one ordinary worker conversation. The worker still requires each
+operation's separate protected permission. Generic evolution takes precedence
+over extraction when both generic flags are set; no input incurs both generic
+operations. For each admitted turn the finite order is generic evolution (or
+extraction), typed evolution, then the reply. The reply uses the context and
+dependencies reserved before these writes. Newly written memories become
+eligible on later turns, including after restart. At most three provider
+operations occur per turn with only combined memory enabled; extraction and
+typed memory without generic evolution have the same bound. A separately
+enabled shared proposal adds its existing fourth operation and permission.
+Each operation has its own durable identity,
+attempt, receipt, permission check and shared allowance charge. An uncertain
+operation is never automatically retried.
+The worker requests at most 512 output tokens per operation, hence at most
+1,536 requested output tokens for the three memory-and-reply operations.
+Generic and typed evolution
+projections each fit 16 KiB; the reserved reply projection fits 32,000 UTF-8
+bytes, for a maximum 64,768 serialized input bytes across a turn. Actual
+provider token usage is recorded and constrained by the pilot allowance.
+
+Generic and typed model operations see only their own family's selected heads
+and the initiating input. Their receipts bind the complete exposed source set;
+the reply projection can select both families and binds all selected sources
+and generic operation dependencies. No-change is allowed for either family.
+Statements, interpretations, interests, beliefs and goals remain unverified
+data without authority to instruct, publish, use tools or confer consent.
+Source deletion and old-backup reconciliation use the existing protected
+provenance graph, receipts and dependent reply invalidation. No schema migration
+is needed because the graph already represents both families independently.
+The combined fake-provider HTTP/IPC regression checks both family writes,
+revision, restart, bounded history, participant isolation, duplicate requests,
+the serialized reply projection and source deletion. Live semantic acceptance
+remains separately authorized and pending.
+The acceptance-only application command caps the projection at five dialogue
+events, matching the offline journey. Five short filler turns then displace
+the earlier robot wording without triggering the byte-budget behavior that
+could skip large fillers and select older short entries.
+
+The opt-in acceptance path is `python -m acceptance.private_pilot_live
+--memory-journey` with the existing protected authorization, activation,
+state-root, aggregate-ledger, HTTPS origin, backend subnet/IP and report
+arguments. It requires the separate task string
+`synthetic-private-robot-memory-b03d`, the reviewed commit, and the separate
+`private-pilot-activation-b03d-v1` artifact with exactly 27 authorized
+operations and a validity window of at most one hour. The ordinary v1 pilot
+remains capped at five operations and ten minutes; its loader rejects the B03D
+artifact. The journey uses nine synthetic turns:
+project and preference creation, revision, five bounded-history fillers,
+post-restart recall, and recall after source deletion. It checks the actual
+serialized provider reply input captured by the opt-in worker adapter, the
+answer, operation and token ledgers, and erasure. The acceptance-only Compose
+override enables both memory flags and two separately protected worker
+permissions; ordinary deployment files remain unchanged. The runner cannot
+issue an activation or API credential and performs no paid work without a
+matching time-bounded operator authorization. No live B03D result exists yet.
 
 ## B04B: reviewed shared proposal generation
 
