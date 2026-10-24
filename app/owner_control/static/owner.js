@@ -17,6 +17,26 @@ function show(name, value) {
   const detail = document.createElement('dd'); detail.textContent = value;
   byId('status').append(key, detail);
 }
+const outcomes = {completed: 'Успешно', no_action: 'Ответ не требовался', failed: 'Сбой или неизвестный итог', invalid: 'Предложение отклонено', unsupported: 'Действие не разрешено', skipped: 'Пропущено', unavailable: 'Недоступно (причина не записана)', stopped: 'Остановлено', rejected: 'Предложение отклонено', spend_suspended: 'Расходы приостановлены', reservation: 'Резервирование без результата', rate_limited: 'Запрос ограничен провайдером', uncertain: 'Итог неизвестен', unknown: 'Итог неизвестен'};
+const reasons = {invalid_proposal: 'Недопустимое предложение модели', invalid_response: 'Недопустимый ответ провайдера', refused: 'Отказ провайдера', timeout: 'Истекло время ожидания', spend_limit: 'Лимит расходов', authorization: 'Нет разрешения', provider_error: 'Ошибка провайдера', rate_limit: 'Ограничение частоты запросов провайдера', incomplete_usage: 'Учет токенов неполный', unknown: 'Причина неизвестна'};
+function recentList(id, source, label) {
+  const list = byId(id); list.replaceChildren();
+  if (!source || !source.available) {
+    const item = document.createElement('li'); item.textContent = 'Недоступно'; list.append(item); return;
+  }
+  if (!source.rows.length) {
+    const item = document.createElement('li'); item.textContent = 'Записей нет'; list.append(item); return;
+  }
+  for (const row of source.rows.slice(0, 10)) {
+    const item = document.createElement('li');
+    const outcome = outcomes[row.outcome] || outcomes.unknown;
+    const reason = row.reason === null ? '' : `; ${reasons[row.reason] || reasons.unknown}`;
+    const tokens = row.tokens === null ? '; токены неизвестны' : `; записано токенов: ${row.tokens}`;
+    const reference = row.reference ? `; ссылка ${row.reference}` : '';
+    item.textContent = `${row.time}: ${label}: ${outcome}${reason}${tokens}${reference}`;
+    list.append(item);
+  }
+}
 async function refresh() {
   const data = await api('/status', 'POST');
   byId('status').replaceChildren(); byId('audit').replaceChildren();
@@ -29,6 +49,11 @@ async function refresh() {
     show('Оценка стоимости', usage.estimated_cost === null ? 'Нет данных' : `${usage.estimated_cost} ${usage.currency || ''}`);
   }
   const worker = data.worker;
+  const recent = data.recent || {};
+  recentList('recent-application', recent.application, 'Ответ приложения');
+  recentList('recent-worker', recent.worker, 'Попытка воркера');
+  const latest = recent.application && recent.application.available && recent.application.rows[0];
+  byId('latest-outcome').textContent = latest ? `Последний наблюдаемый ответ приложения: ${outcomes[latest.outcome] || outcomes.unknown}. Время относится к исходному сообщению.` : 'Последний ответ приложения: недоступен или не записан.';
   show('Наблюдение воркера', worker.available ? `Собрано ${worker.collected_at}` : 'Недоступно');
   show('Stop воркера', worker.stop.valid ? (worker.stop.active ? 'Включён' : 'Выключен') : 'Недоступен');
   if (data.emergency_operation) {
@@ -51,6 +76,7 @@ async function refresh() {
     show('Фактическое использование провайдера', 'Недоступно');
   }
   show('Биллинг провайдера', 'Не является источником данных этой панели');
+  show('Активация и разрешённый лимит', 'Недоступны этой панели; готовность не подтверждена');
   show('Хранилище разговоров', data.event_store.health === 'read_interface_ok' ? 'Диагностика чтения доступна' : 'Недоступно');
   show('Версия схемы разговоров', String(data.event_store.schema_version));
   show('Режим журнала', data.event_store.journal_mode);
