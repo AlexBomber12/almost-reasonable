@@ -904,7 +904,7 @@ async function scenario(endpoint, response, expectedAlert, expectedLocation) {
     FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
     crypto: {randomUUID() { return 'operation'; }},
     fetch: async () => typeof response === 'function' ? response() : response,
-    sessionStorage: {removeItem() {}},
+    sessionStorage: {removeItem() { throw Error('blocked'); }},
     alert(message) { alerts.push(message); },
     location
   };

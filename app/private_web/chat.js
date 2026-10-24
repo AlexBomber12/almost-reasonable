@@ -244,7 +244,7 @@ if (logout) logout.addEventListener('submit', async (event) => {
     const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
       headers: {'X-CSRF-Token': form.dataset.csrf}});
     if (response.ok) {
-      sessionStorage.removeItem(storageKey);
+      try { sessionStorage.removeItem(storageKey); } catch (_) { /* storage unavailable */ }
       window.location.assign('/login');
     } else announce('Не удалось выйти. Сеанс может быть активен.', 'error');
   } catch (_) {

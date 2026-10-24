@@ -669,7 +669,7 @@ if (logout) logout.addEventListener('click', async () => {
     const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
       headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
     if (response.ok) {
-      sessionStorage.removeItem('ar-chat-recovery-v1');
+      try { sessionStorage.removeItem('ar-chat-recovery-v1'); } catch (_) { /* storage unavailable */ }
       location.href = '/login';
     }
     else alert('Не удалось выйти. Сессия может быть активна.');

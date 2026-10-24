@@ -181,6 +181,9 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                     page.wait_for_url(destination)
                     assert referers == [None]
                     page.goto(f"{origin}/chat")
+                    page.evaluate(
+                        "() => { Storage.prototype.removeItem = () => { throw new Error('blocked'); }; }"
+                    )
                     page.get_by_role("button", name="Выйти").click()
                     page.wait_for_url(f"{origin}/login")
                     assert page.goto(f"{origin}/session").json() == {
