@@ -994,6 +994,7 @@ def attempt(
         "interrupted",
         "cleanup_sigint",
         "cleanup_progress_failure",
+        "journey_outcome_failure",
         "continued",
     ],
 )
@@ -1285,6 +1286,14 @@ def test_operator_reconciles_real_journey_and_cleans_up(
             return _response({"model_state": "completed", "response": replies[index]})
 
     monkeypatch.setattr(live, "build_opener", FakeOpener)
+    if case == "journey_outcome_failure":
+        from acceptance.private_memory_journey import JourneyOutcomeError
+
+        def fail_after_first(send, *_args, **_kwargs):
+            send("ship-name", FIRST)
+            raise JourneyOutcomeError("robot-filler-0", "no_action")
+
+        monkeypatch.setattr(live, "run_ship_journey", fail_after_first)
 
     def worker_ready(env):
         assert env["PILOT_SOCKET_DIR"].endswith("ipc")
@@ -1312,8 +1321,8 @@ def test_operator_reconciles_real_journey_and_cleans_up(
             live.run(args)
     else:
         with pytest.raises(
-            (ValueError, RuntimeError),
-            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route|Expecting value|worker socket",
+            (ValueError, RuntimeError, AssertionError),
+            match="allowance|usage|accounting|reservation|attempt|identity|period|exhausted|cleanup|match|HTTPS route|Expecting value|worker socket|robot-filler",
         ):
             live.run(args)
     report = json.loads(args.report.read_text())
@@ -1326,6 +1335,11 @@ def test_operator_reconciles_real_journey_and_cleans_up(
     )
     assert report["worker_stop"] is (case != "worker_stop_failure")
     assert report["owner_stop"] is True
+    if case == "journey_outcome_failure":
+        assert report["failure_step"] == "robot-filler-0"
+        assert report["failure_model_state"] == "no_action"
+        assert report["error"] == "JourneyOutcomeError"
+        assert len(sends) == 1
     if case != "owner_stop_failure":
         assert report.get("owner_stop_error") is None
     assert report["running_services"] == []

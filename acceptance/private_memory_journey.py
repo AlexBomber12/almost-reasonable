@@ -4,26 +4,62 @@ from collections.abc import Callable
 import json
 
 
-FIRST = "My fictional robot project is Amber. I prefer quiet motors."
-REVISION = "I renamed my fictional robot project to Cobalt and now prefer silent gears."
+FIRST = "Мой вымышленный проект робота называется Янтарь. Я предпочитаю моторы вымышленной серии Шелест."
+REVISION = "Я переименовал вымышленный проект робота в Кобальт и теперь предпочитаю шестерни вымышленной серии Ладога."
 QUESTION = (
-    "Как называется мой текущий вымышленный проект робота и какое у меня "
-    "предпочтение в конструкции? Используй сохранённые названия без перевода."
+    "Как называется мой текущий вымышленный проект робота и какую вымышленную "
+    "серию деталей я предпочитаю? Назови оба названия по-русски."
 )
 FILLERS = tuple(
-    f"Synthetic unrelated garden inventory {index}: "
-    + "clover " * 80
-    + " Acknowledge this inventory with only OK."
+    f"Вымышленная опись сада {index}: "
+    + "клевер " * 80
+    + " Если нужен ответ, кратко подтверди получение по-русски."
     for index in range(5)
 )
 MAX_OPERATIONS = 3 * (len(FILLERS) + 4)
 
 
+class JourneyOutcomeError(AssertionError):
+    """A bounded, text-free diagnosis of a failed journey turn."""
+
+    def __init__(self, step, state):
+        self.step = step
+        self.model_state = (
+            state
+            if isinstance(state, str)
+            and state.isascii()
+            and state.replace("_", "").isalnum()
+            and len(state) <= 32
+            else "<invalid>"
+        )
+        super().__init__(f"{step}: invalid model_state={self.model_state}")
+
+
 def _complete(send, message_id, content):
     result = send(message_id, content)
-    if result.get("model_state") != "completed":
-        raise AssertionError("synthetic conversation was not completed")
+    if (
+        not isinstance(result, dict)
+        or result.get("model_state") != "completed"
+        or not isinstance(result.get("response"), str)
+        or not result["response"].strip()
+    ):
+        raise JourneyOutcomeError(
+            message_id, result.get("model_state") if isinstance(result, dict) else None
+        )
     return result
+
+
+def _filler(send, message_id, content):
+    result = send(message_id, content)
+    if not isinstance(result, dict):
+        raise JourneyOutcomeError(message_id, None)
+    state = result.get("model_state")
+    response = result.get("response")
+    if (state == "completed" and isinstance(response, str) and response.strip()) or (
+        state == "no_action" and response is None
+    ):
+        return
+    raise JourneyOutcomeError(message_id, state)
 
 
 def _reply_projection(inspect_request):
@@ -51,7 +87,7 @@ def run_robot_journey(
     _complete(send, "robot-original", FIRST)
     _complete(send, "robot-revision", REVISION)
     for index, filler in enumerate(FILLERS):
-        _complete(send, f"robot-filler-{index}", filler)
+        _filler(send, f"robot-filler-{index}", filler)
     if record_step is not None:
         record_step("created_and_revised")
     restart_app()
@@ -64,19 +100,16 @@ def run_robot_journey(
     }:
         raise AssertionError("both private memory families are not in the reply")
     if (
-        "Amber" in conversation
-        or "Cobalt" in conversation
-        or "silent gears" in conversation
+        "Янтарь" in conversation
+        or "Кобальт" in conversation
+        or "Шелест" in conversation
+        or "Ладога" in conversation
     ):
         raise AssertionError("bounded recent dialogue still contains the answer")
-    if "Cobalt" not in remembered or "silent gears" not in remembered:
+    if "Кобальт" not in remembered or "Ладога" not in remembered:
         raise AssertionError("persistent memories did not supply the answer")
     answer = recalled.get("response")
-    if (
-        not isinstance(answer, str)
-        or "Cobalt" not in answer
-        or "silent gears" not in answer
-    ):
+    if not isinstance(answer, str) or "Кобальт" not in answer or "Ладога" not in answer:
         raise AssertionError("current robot project was not recalled")
     if record_step is not None:
         record_step("recalled_after_restart")
@@ -84,7 +117,7 @@ def run_robot_journey(
         raise AssertionError("revision source was not deleted")
     _complete(send, "robot-after-delete", QUESTION)
     after = _reply_projection(inspect_request)
-    if "Cobalt" in _remembered(after) or "silent gears" in _remembered(after):
+    if "Кобальт" in _remembered(after) or "Ладога" in _remembered(after):
         raise AssertionError("deleted revision still influences persistent memory")
     if record_step is not None:
         record_step("deleted_source_excluded")
