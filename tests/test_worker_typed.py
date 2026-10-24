@@ -1999,15 +1999,15 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
             task = data["task"]
             content = data.get("participant_input", "")
             if task == "evolve_private_memory":
-                if "renamed" in content:
+                if "переименовал" in content:
                     proposal = {
                         "decision": "revise_memory",
                         "handles": [data["memories"][0]["handle"]],
                         "kind": "candidate_useful_memory",
-                        "statement": "The fictional robot project is Cobalt",
+                        "statement": "The fictional robot project is Кобальт",
                         "confidence": 0.8,
                     }
-                elif "Amber" in content:
+                elif "Янтарь" in content:
                     proposal = {
                         "decision": "new_memory",
                         "handles": [],
@@ -2024,14 +2024,14 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
                         "confidence": None,
                     }
             elif task == "evolve_private_typed_memory":
-                if "renamed" in content:
+                if "переименовал" in content:
                     decision = "revise_memory"
                     handle = data["memories"][0]["handle"]
-                    topic = "silent gears"
-                elif "Amber" in content:
+                    topic = "Ладога"
+                elif "Янтарь" in content:
                     decision = "new_memory"
                     handle = None
-                    topic = "quiet motors"
+                    topic = "Шелест"
                 else:
                     decision = "no_change"
                     handle = topic = None
@@ -2054,10 +2054,10 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
                     "proposal": {
                         "decision": "reply",
                         "content": (
-                            "OK"
-                            if "unrelated garden inventory"
+                            "Получено."
+                            if "Вымышленная опись сада"
                             in data["conversation"][-1]["content"]
-                            else "Текущий проект — Cobalt; мне нравятся silent gears."
+                            else "Текущий проект — Кобальт; мне нравятся Ладога."
                         ),
                     }
                 }
@@ -2141,10 +2141,10 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
             )
             with sqlite3.connect(f"file:{quarantine}?immutable=1", uri=True) as db:
                 assert db.execute(
-                    "SELECT COUNT(*) FROM generic_memory_payloads WHERE statement LIKE '%Cobalt%'"
+                    "SELECT COUNT(*) FROM generic_memory_payloads WHERE statement LIKE '%Кобальт%'"
                 ).fetchone() == (0,)
                 assert db.execute(
-                    "SELECT COUNT(*) FROM state_revision_payloads WHERE topic='silent gears'"
+                    "SELECT COUNT(*) FROM state_revision_payloads WHERE topic='Ладога'"
                 ).fetchone() == (0,)
             return {"status": disposition}
 
@@ -2174,7 +2174,7 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
             json.loads(b.submit("other", "What is my robot project?")[2])["model_state"]
             == "completed"
         )
-        assert "Cobalt" not in sdk.requests[-1]["input"]
+        assert "Кобальт" not in sdk.requests[-1]["input"]
         assert len(sdk.requests) == MAX_OPERATIONS + 3
         with EventStore(tmp_path / "provider.db")._open() as db:
             assert db.execute(

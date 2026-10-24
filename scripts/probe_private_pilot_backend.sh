@@ -11,7 +11,7 @@ probe_ip=$2
 probe_image=${3:-almost-reasonable-private-pilot-app:local}
 probe_name="almost-reasonable-acceptance-probe-$$"
 
-python - "$probe_subnet" "$probe_ip" <<'PY'
+python3 - "$probe_subnet" "$probe_ip" <<'PY'
 import os
 import sys
 from acceptance.private_pilot_live import _backend_network, _check_backend_conflicts

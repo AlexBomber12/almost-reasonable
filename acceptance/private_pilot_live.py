@@ -23,7 +23,11 @@ from urllib.request import HTTPCookieProcessor, Request, build_opener
 from uuid import uuid4
 
 from acceptance.private_pilot_conversation import run_ship_journey
-from acceptance.private_memory_journey import MAX_OPERATIONS, run_robot_journey
+from acceptance.private_memory_journey import (
+    JourneyOutcomeError,
+    MAX_OPERATIONS,
+    run_robot_journey,
+)
 from app.trusted.private_pilot import MEMORY_ACTIVATION_VERSION
 
 
@@ -1232,6 +1236,9 @@ def run(args):
         report["journey_complete"] = True
     except (Exception, KeyboardInterrupt) as error:
         report["error"] = type(error).__name__
+        if isinstance(error, JourneyOutcomeError):
+            report["failure_step"] = error.step
+            report["failure_model_state"] = error.model_state
         report["status"] = (
             "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
         )
@@ -1399,7 +1406,13 @@ def main(argv=None):
     except (BackendConfigurationError, BackendReadinessError) as error:
         print(f"Acceptance failed: {error}", file=sys.stderr)
         return 1
-    except (ValueError, RuntimeError, OSError, KeyboardInterrupt) as error:
+    except (
+        ValueError,
+        RuntimeError,
+        OSError,
+        KeyboardInterrupt,
+        AssertionError,
+    ) as error:
         report_hint = (
             "inspect protected report"
             if args.report.exists()
