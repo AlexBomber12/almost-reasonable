@@ -17,13 +17,44 @@ FILLERS = tuple(
     for index in range(5)
 )
 MAX_OPERATIONS = 3 * (len(FILLERS) + 4)
+_FIXED_STEPS = frozenset(
+    {
+        "robot-original",
+        "robot-revision",
+        "robot-recall",
+        "robot-after-delete",
+        "ship-name",
+        "ship-check",
+        "ship-mars",
+    }
+    | {f"robot-filler-{index}" for index in range(len(FILLERS))}
+)
 
 
 class JourneyOutcomeError(AssertionError):
     """A bounded, text-free diagnosis of a failed journey turn."""
 
-    def __init__(self, step, state):
-        self.step = step
+    def __init__(self, step, state, *, operation_family=None, diagnostic_code=None):
+        self.step = (
+            step if isinstance(step, str) and step in _FIXED_STEPS else "<invalid>"
+        )
+        self.operation_family = (
+            operation_family
+            if operation_family in {"evolution", "typed", "reply", "unknown"}
+            else "unknown"
+            if operation_family is not None
+            else None
+        )
+        if diagnostic_code is None:
+            self.diagnostic_code = None
+        else:
+            from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
+
+            self.diagnostic_code = (
+                diagnostic_code
+                if diagnostic_code in TYPED_DIAGNOSTIC_CODES
+                else "unknown"
+            )
         self.model_state = (
             state
             if isinstance(state, str)
@@ -32,7 +63,7 @@ class JourneyOutcomeError(AssertionError):
             and len(state) <= 32
             else "<invalid>"
         )
-        super().__init__(f"{step}: invalid model_state={self.model_state}")
+        super().__init__(f"{self.step}: invalid model_state={self.model_state}")
 
 
 def _complete(send, message_id, content):

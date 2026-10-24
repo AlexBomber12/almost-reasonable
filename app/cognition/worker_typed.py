@@ -36,6 +36,23 @@ _STATUSES = {
     "belief_or_hypothesis": {"active", "suspended", "abandoned"},
     "goal_or_intention": {"active", "suspended", "completed", "abandoned"},
 }
+TYPED_DIAGNOSTIC_CODES = frozenset(
+    {
+        "typed_invalid_size",
+        "typed_duplicate_key",
+        "typed_invalid_shape",
+        "typed_invalid_decision",
+        "typed_invalid_handle",
+        "typed_invalid_source_role",
+        "typed_invalid_fields",
+        "typed_invalid_status",
+        "typed_invalid_number",
+        "typed_invalid_stance",
+        "typed_invalid_list",
+        "typed_invalid_json",
+        "typed_invalid_envelope",
+    }
+)
 
 
 def _text(value: object) -> bool:
@@ -48,11 +65,14 @@ def _text(value: object) -> bool:
 
 def _fields(kind: object, fields: object) -> None:
     if (
-        kind not in _FIELDS
+        not isinstance(kind, str)
+        or kind not in _FIELDS
         or type(fields) is not dict
         or set(fields) != set(_FIELDS[kind])
     ):
         raise ValueError("invalid typed fields")
+    if not isinstance(fields["status"], str) or fields["status"] not in _STATUSES[kind]:
+        raise ValueError("invalid typed status")
     if any(
         not _text(fields[key])
         for key in _FIELDS[kind]
@@ -60,8 +80,6 @@ def _fields(kind: object, fields: object) -> None:
         not in {"strength", "priority", "confidence", "alternatives", "constraints"}
     ):
         raise ValueError("invalid typed fields")
-    if fields["status"] not in _STATUSES[kind]:
-        raise ValueError("invalid typed status")
     if kind == "durable_interest":
         if type(fields["strength"]) is not int or not 0 <= fields["strength"] <= 100:
             raise ValueError("invalid interest strength")
@@ -71,9 +89,14 @@ def _fields(kind: object, fields: object) -> None:
             type(confidence) not in {int, float}
             or not math.isfinite(confidence)
             or not 0 <= confidence <= 1
-            or fields["stance"] not in {"supports", "opposes", "uncertain"}
         ):
-            raise ValueError("invalid belief confidence or stance")
+            raise ValueError("invalid belief confidence")
+        if not isinstance(fields["stance"], str) or fields["stance"] not in {
+            "supports",
+            "opposes",
+            "uncertain",
+        }:
+            raise ValueError("invalid belief stance")
         _string_list(fields["alternatives"])
     else:
         if type(fields["priority"]) is not int or not 0 <= fields["priority"] <= 100:
@@ -164,17 +187,25 @@ class TypedProposal:
     source_role: str | None
 
 
+class TypedValidationError(ValueError):
+    """Fixed diagnostic category without untrusted content."""
+
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__("invalid typed proposal")
+
+
 def parse_typed_proposal(text: str) -> TypedProposal:
     """Parse an untrusted single operation without accepting authority fields."""
     try:
         if type(text) is not str or len(text.encode("utf-8")) > MAX_OUTPUT_BYTES:
-            raise ValueError
+            raise TypedValidationError("typed_invalid_size")
 
         def unique(pairs):
             value = {}
             for key, item in pairs:
                 if key in value:
-                    raise ValueError
+                    raise TypedValidationError("typed_duplicate_key")
                 value[key] = item
             return value
 
@@ -190,24 +221,62 @@ def parse_typed_proposal(text: str) -> TypedProposal:
             "fields",
             "source_role",
         }:
-            raise ValueError
+            raise TypedValidationError("typed_invalid_shape")
         decision, handle, kind, fields, role = (
             data[key] for key in ("decision", "handle", "kind", "fields", "source_role")
         )
         if decision == "no_change" and (handle, kind, fields, role) == (None,) * 4:
             return TypedProposal(decision, None, None, None, None)
+        if type(decision) is not str or decision not in {"new_memory", "revise_memory"}:
+            raise TypedValidationError("typed_invalid_decision")
         if (
-            decision not in {"new_memory", "revise_memory"}
-            or (
-                handle is not None
-                if decision == "new_memory"
-                else type(handle) is not str or _HANDLE.fullmatch(handle) is None
-            )
+            handle is not None
+            if decision == "new_memory"
+            else type(handle) is not str or _HANDLE.fullmatch(handle) is None
+        ):
+            raise TypedValidationError("typed_invalid_handle")
+        if (
+            type(role) is not str
             or role not in {"supporting", "counterevidence"}
             or (role == "counterevidence" and kind != "belief_or_hypothesis")
         ):
-            raise ValueError
+            raise TypedValidationError("typed_invalid_source_role")
         _fields(kind, fields)
         return TypedProposal(decision, handle, kind, fields, role)
+    except TypedValidationError:
+        raise
+    except (TypeError, UnicodeError, ValueError, OverflowError) as error:
+        code = {
+            "invalid typed fields": "typed_invalid_fields",
+            "invalid typed status": "typed_invalid_status",
+            "invalid interest strength": "typed_invalid_number",
+            "invalid belief confidence": "typed_invalid_number",
+            "invalid belief stance": "typed_invalid_stance",
+            "invalid goal priority": "typed_invalid_number",
+            "invalid typed list": "typed_invalid_list",
+        }.get(error.args[0] if error.args else None, "typed_invalid_json")
+        raise TypedValidationError(code) from None
+
+
+def parse_typed_provider_response(text: str) -> TypedProposal:
+    """Read the provider envelope without dropping duplicate keys."""
+    try:
+        if type(text) is not str or len(text.encode("utf-8")) > MAX_OUTPUT_BYTES:
+            raise TypedValidationError("typed_invalid_size")
+
+        def unique(pairs):
+            value = {}
+            for key, item in pairs:
+                if key in value:
+                    raise TypedValidationError("typed_duplicate_key")
+                value[key] = item
+            return value
+
+        data = json.loads(text, object_pairs_hook=unique)
+        if type(data) is not dict or set(data) != {"proposal"}:
+            raise TypedValidationError("typed_invalid_envelope")
+        return parse_typed_proposal(json.dumps(data["proposal"], ensure_ascii=False))
+    except TypedValidationError:
+        raise
     except (TypeError, UnicodeError, ValueError, OverflowError):
-        raise ValueError("invalid typed proposal") from None
+        raise TypedValidationError("typed_invalid_json") from None

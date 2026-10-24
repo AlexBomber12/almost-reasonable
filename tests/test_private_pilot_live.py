@@ -1291,7 +1291,12 @@ def test_operator_reconciles_real_journey_and_cleans_up(
 
         def fail_after_first(send, *_args, **_kwargs):
             send("ship-name", FIRST)
-            raise JourneyOutcomeError("robot-filler-0", "no_action")
+            raise JourneyOutcomeError(
+                "robot-filler-0",
+                "invalid_proposal",
+                operation_family="typed",
+                diagnostic_code="typed_invalid_number",
+            )
 
         monkeypatch.setattr(live, "run_ship_journey", fail_after_first)
 
@@ -1337,7 +1342,9 @@ def test_operator_reconciles_real_journey_and_cleans_up(
     assert report["owner_stop"] is True
     if case == "journey_outcome_failure":
         assert report["failure_step"] == "robot-filler-0"
-        assert report["failure_model_state"] == "no_action"
+        assert report["failure_model_state"] == "invalid_proposal"
+        assert report["failure_operation_family"] == "typed"
+        assert report["failure_diagnostic_code"] == "typed_invalid_number"
         assert report["error"] == "JourneyOutcomeError"
         assert len(sends) == 1
     if case != "owner_stop_failure":

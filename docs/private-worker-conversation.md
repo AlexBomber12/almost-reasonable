@@ -275,7 +275,17 @@ answer, operation and token ledgers, and erasure. The acceptance-only Compose
 override enables both memory flags and two separately protected worker
 permissions; ordinary deployment files remain unchanged. The runner cannot
 issue an activation or API credential and performs no paid work without a
-matching time-bounded operator authorization. No live B03D result exists yet.
+matching time-bounded operator authorization. The B03D live run
+`0f31eadff07048ec8f51f7482efa9b9f` failed on its first turn: the typed
+proposal was rejected, while all three billed attempts and allowance charges
+reconciled and both Stops were enabled. The rejected provider text was not
+retained, so the exact invalid field is unknown. This contract correction is
+validated offline; live B03D remains failed until a separately authorized live
+run passes. The versioned `private_typed_memory_proposal_v2` provider envelope
+now constrains static decision, kind,
+field, handle, role and numeric combinations. Local validation still checks
+shown-handle membership, provenance, whitespace and UTF-8 byte bounds. Fixed
+typed diagnostic codes are stored with billed attempts without model text.
 
 ## B04B: reviewed shared proposal generation
 
