@@ -27,6 +27,7 @@ from app.trusted.worker_telemetry import (
     _safe_socket_directory,
     _stop,
 )
+from app.trusted.openai_gateway import GatewayOutcome
 from app.worker_telemetry.protocol import REQUEST, VERSION, decode, encode
 from test_int26_owner_console import call, login, settings
 from test_openai_gateway import gateway, request, response
@@ -813,7 +814,7 @@ def test_spend_suspension_requires_valid_record(tmp_path):
     code = "project_spend_limit_exceeded"
     record = replace(
         attempt("synthetic:1"),
-        outcome="confirmed_spend_limit",
+        outcome=GatewayOutcome.SPEND_LIMIT_CONFIRMED.value,
         provider_error_code=code,
     )
     ProviderStateStore(EventStore(db)).record_attempt(
@@ -848,7 +849,7 @@ def test_spend_suspension_requires_matching_usage(tmp_path, column, invalid):
     ProviderStateStore(EventStore(db)).record_attempt(
         replace(
             attempt("synthetic:1"),
-            outcome="confirmed_spend_limit",
+            outcome=GatewayOutcome.SPEND_LIMIT_CONFIRMED.value,
             provider_error_code=code,
         ),
         confirmed_spend_limit_code=code,
@@ -866,7 +867,7 @@ def test_suspension_timestamp_overflow_keeps_telemetry_available(tmp_path):
     ProviderStateStore(EventStore(db)).record_attempt(
         replace(
             attempt("synthetic:1"),
-            outcome="confirmed_spend_limit",
+            outcome=GatewayOutcome.SPEND_LIMIT_CONFIRMED.value,
             provider_error_code=code,
         ),
         confirmed_spend_limit_code=code,

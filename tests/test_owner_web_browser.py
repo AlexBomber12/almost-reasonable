@@ -19,7 +19,7 @@ from test_private_web_browser import running
 
 
 @contextmanager
-def owner_server(tmp_path, *, worker_result=None):
+def owner_server(tmp_path, *, worker_result=None, worker_telemetry=None):
     cert = Path(tmp_path, "cert.pem")
     key = Path(tmp_path, "key.pem")
     subprocess.run(
@@ -67,6 +67,7 @@ def owner_server(tmp_path, *, worker_result=None):
                 frozenset({f"localhost:{server.server_port}"}), frozenset({origin})
             ),
             pilot_provider_events=provider,
+            worker_telemetry=worker_telemetry,
             worker_stop=(
                 SimpleNamespace(assert_stop=lambda: worker_result)
                 if worker_result is not None
