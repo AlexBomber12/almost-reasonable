@@ -20,6 +20,7 @@ from app.owner_control.diagnostics import (
 )
 from app.ops.int26_owner_pilot import build_application
 from app.trusted.worker_telemetry import WorkerTelemetryServer, _diagnostics
+from app.trusted.openai_gateway import GatewayOutcome
 from app.worker_telemetry.protocol import (
     decode_diagnostics,
     MAX_DIAGNOSTICS_RESPONSE,
@@ -321,6 +322,7 @@ def test_application_rejects_replaced_symlink(tmp_path):
         ("timeout", "uncertain", "timeout"),
         ("connection_error", "uncertain", "unknown"),
         ("spend_suspended", "stopped", "spend_limit"),
+        (GatewayOutcome.SPEND_LIMIT_CONFIRMED.value, "stopped", "spend_limit"),
         ("unrecognized", "unknown", "unknown"),
     ],
 )

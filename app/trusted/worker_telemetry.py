@@ -105,7 +105,7 @@ def _diagnostics(path):
                 )
             elif outcome in {
                 "spend_suspended",
-                "confirmed_spend_limit",
+                "spend_limit_confirmed",
                 "billing_quota",
             }:
                 category, safe_reason = "stopped", "spend_limit"
@@ -407,7 +407,7 @@ def _provider(path):
                 or not _valid_identifier(attempt_id)
                 or not _valid_stored_time(confirmed_at)
                 or (usage_provider, started_at, usage_code, usage_config, usage_outcome)
-                != (provider, confirmed_at, code, config, "confirmed_spend_limit")
+                != (provider, confirmed_at, code, config, "spend_limit_confirmed")
             ):
                 raise ValueError("invalid spend suspension")
         current_sidecars = _sidecar_identities(path)
