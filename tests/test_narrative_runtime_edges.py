@@ -326,7 +326,8 @@ def test_active_narrative_operation_is_not_entered_twice(tmp_path):
             {
                 "narrative_enabled": True,
                 "narrative_permission_current": lambda: True,
-                "memory_extraction_enabled": True,
+                "shared_proposals_enabled": True,
+                "shared_intelligence": object(),
             },
             ValueError,
         ),
