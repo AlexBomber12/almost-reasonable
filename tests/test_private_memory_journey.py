@@ -1,8 +1,6 @@
-"""The opt-in live journey uses the same closed synthetic assertions offline."""
+"""Offline memory journey, worker diagnostics and accounting regressions."""
 
 import json
-from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
@@ -15,14 +13,10 @@ from acceptance.private_memory_journey import (
     REVISION,
     run_robot_journey,
 )
-from acceptance import private_memory_worker
-from acceptance import private_pilot_live as live
-from app.trusted.openai_transport import OpenAIResponsesTransport
+from test_openai_gateway import proposal_failure, reconcile_usage
 
 
-def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error(
-    monkeypatch,
-):
+def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error():
     operations = [
         ("evolution:abc", "corr"),
         ("typed:abc", "corr"),
@@ -44,17 +38,11 @@ def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error
         ]
         for name, _ in operations
     ]
-    monkeypatch.setattr(
-        live, "_usage", lambda *_args, **_kwargs: {"attempts": rows, "reservations": []}
-    )
-    monkeypatch.setattr(
-        live,
-        "_allowance",
-        lambda *_args, **_kwargs: {
-            "maximum": MAX_OPERATIONS,
-            "consumed": [name for name, _ in operations],
-        },
-    )
+    usage = {"attempts": rows, "reservations": []}
+    allowance = {
+        "maximum": MAX_OPERATIONS,
+        "consumed": [name for name, _ in operations],
+    }
     baseline = {
         "attempts": set(),
         "rows": {},
@@ -63,8 +51,9 @@ def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error
     }
     assert (
         len(
-            live._reconcile(
-                {},
+            reconcile_usage(
+                usage,
+                allowance,
                 baseline,
                 operations,
                 {"max_aggregate_input_tokens": 100, "max_aggregate_output_tokens": 100},
@@ -73,20 +62,19 @@ def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error
         )
         == 3
     )
-    failure = live._proposal_failure(rows, "robot-original")
+    failure = proposal_failure(rows, "robot-original")
     assert failure.step == "robot-original"
     assert failure.operation_family == "typed"
     assert failure.diagnostic_code == "typed_invalid_number"
     other = list(rows[2])
     other[2:4] = ["invalid_proposal", "invalid_purpose_proposal"]
     other[10] = "typed_invalid_number"
-    assert (
-        live._proposal_failure([other], "robot-original").diagnostic_code == "unknown"
-    )
+    assert proposal_failure([other], "robot-original").diagnostic_code == "unknown"
     rows[1][4] = None
     with pytest.raises(ValueError, match="usage is unavailable"):
-        live._reconcile(
-            {},
+        reconcile_usage(
+            usage,
+            allowance,
             baseline,
             operations,
             {"max_aggregate_input_tokens": 100, "max_aggregate_output_tokens": 100},
@@ -104,7 +92,7 @@ def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error
     assert "private_canary" not in str(unsafe)
 
 
-def test_rejected_narrative_keeps_billed_usage_and_conservative_reply_hold(monkeypatch):
+def test_rejected_narrative_keeps_billed_usage_and_conservative_reply_hold():
     suffix = "a" * 64
     operations = [
         (family + ":" + suffix, "corr")
@@ -126,23 +114,18 @@ def test_rejected_narrative_keeps_billed_usage_and_conservative_reply_hold(monke
         ]
         for operation, _ in operations
     ]
-    monkeypatch.setattr(
-        live, "_usage", lambda *_args, **_kwargs: {"attempts": rows, "reservations": []}
-    )
-    monkeypatch.setattr(
-        live,
-        "_allowance",
-        lambda *_args, **_kwargs: {
-            "maximum": 20,
-            "consumed": [operation for operation, _ in operations]
-            + ["reply_hold:" + suffix],
-        },
-    )
+    usage = {"attempts": rows, "reservations": []}
+    allowance = {
+        "maximum": 20,
+        "consumed": [operation for operation, _ in operations]
+        + ["reply_hold:" + suffix],
+    }
     baseline = {"attempts": set(), "rows": {}, "consumed": set(), "maximum": 20}
     assert (
         len(
-            live._reconcile(
-                {},
+            reconcile_usage(
+                usage,
+                allowance,
                 baseline,
                 operations,
                 {"max_aggregate_input_tokens": 100, "max_aggregate_output_tokens": 100},
@@ -151,7 +134,7 @@ def test_rejected_narrative_keeps_billed_usage_and_conservative_reply_hold(monke
         )
         == 3
     )
-    failure = live._proposal_failure(rows, "combined-story")
+    failure = proposal_failure(rows, "combined-story")
     assert failure.operation_family == "narrative"
     assert failure.diagnostic_code == "narrative_invalid_handle"
     assert failure.step == "combined-story"
@@ -342,7 +325,6 @@ def test_mandatory_answer_turn_rejects_no_action(step):
 def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accounting(
     tmp_path,
     reject_typed,
-    monkeypatch,
 ):
     from dataclasses import replace
     import os
@@ -564,23 +546,16 @@ def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accoun
             )
             assert len({row[0] for row in rows}) == 3
             operations = [(row[0].removesuffix(":1"), row[1]) for row in rows]
-            monkeypatch.setattr(
-                live,
-                "_usage",
-                lambda *_args, **_kwargs: {"attempts": rows, "reservations": []},
-            )
-            monkeypatch.setattr(
-                live,
-                "_allowance",
-                lambda *_args, **_kwargs: {
-                    "maximum": MAX_OPERATIONS,
-                    "consumed": [name for name, _ in operations],
-                },
-            )
+            usage = {"attempts": rows, "reservations": []}
+            allowance = {
+                "maximum": MAX_OPERATIONS,
+                "consumed": [name for name, _ in operations],
+            }
             assert (
                 len(
-                    live._reconcile(
-                        {},
+                    reconcile_usage(
+                        usage,
+                        allowance,
                         {
                             "attempts": set(),
                             "rows": {},
@@ -603,7 +578,7 @@ def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accoun
             assert (
                 SelfStateStore(events).retrieve_private_candidates(principal("a")) == ()
             )
-            failure = live._proposal_failure(rows, "robot-original")
+            failure = proposal_failure(rows, "robot-original")
             assert failure.operation_family == "typed"
             assert failure.diagnostic_code == "typed_invalid_number"
             assert failure.model_state == "invalid_proposal"
@@ -628,54 +603,6 @@ def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accoun
         server.close()
 
 
-def test_live_compose_uses_the_offline_journey_history_bound():
-    compose = Path("ops/compose.private-pilot-memory-acceptance.yaml").read_text()
-    assert '      - --worker-history-events\n      - "5"' in compose
-
-
-@pytest.mark.parametrize(
-    "error",
-    [
-        JourneyOutcomeError("robot-filler-0", "pending"),
-        AssertionError("memory proof failed"),
-    ],
-)
-def test_cli_returns_nonzero_for_journey_assertion_and_keeps_protected_report(
-    tmp_path, monkeypatch, capsys, error
-):
-    report = tmp_path / "report.json"
-    report.write_text('{"status":"failed","failure_step":"robot-filler-0"}')
-    report.chmod(0o600)
-
-    def fail(_args):
-        raise error
-
-    monkeypatch.setattr(live, "run", fail)
-    argv = [
-        "--authorization",
-        str(tmp_path / "auth"),
-        "--activation",
-        str(tmp_path / "activation"),
-        "--state-root",
-        str(tmp_path / "state"),
-        "--aggregate-ledger",
-        str(tmp_path / "ledger"),
-        "--origin",
-        "https://chat.test",
-        "--backend-subnet",
-        "172.30.252.0/29",
-        "--backend-ip",
-        "172.30.252.3",
-        "--report",
-        str(report),
-        "--memory-journey",
-    ]
-    assert live.main(argv) == 1
-    assert report.stat().st_mode & 0o777 == 0o600
-    assert json.loads(report.read_text())["failure_step"] == "robot-filler-0"
-    assert "inspect protected report" in capsys.readouterr().err
-
-
 @pytest.mark.parametrize("missing", ["Кобальт", "Ладога"])
 def test_robot_journey_rejects_missing_persistent_memory(missing):
     def send(_message_id, _content):
@@ -694,122 +621,3 @@ def test_robot_journey_rejects_missing_persistent_memory(missing):
 
     with pytest.raises(AssertionError, match="persistent memories"):
         run_robot_journey(send, lambda: None, inspect, lambda: {"status": "applied"})
-
-
-def test_synthetic_worker_capture_records_exact_reply_input(tmp_path, monkeypatch):
-    capture = tmp_path / "capture.jsonl"
-    monkeypatch.setenv("PILOT_MEMORY_CAPTURE", str(capture))
-    original = OpenAIResponsesTransport.call
-    seen = []
-
-    def fake_call(_transport, request, *, timeout_seconds):
-        seen.append((request, timeout_seconds))
-        return "synthetic-result"
-
-    def fake_main(_argv):
-        request = SimpleNamespace(
-            purpose="agent", input_text='{"task":"private_conversation"}'
-        )
-        assert (
-            OpenAIResponsesTransport.call(object(), request, timeout_seconds=5)
-            == "synthetic-result"
-        )
-        return 0
-
-    monkeypatch.setattr(OpenAIResponsesTransport, "call", fake_call)
-    monkeypatch.setattr(private_memory_worker.private_pilot_worker, "main", fake_main)
-    assert private_memory_worker.main([]) == 0
-    assert json.loads(capture.read_text()) == {
-        "purpose": "agent",
-        "input": '{"task":"private_conversation"}',
-    }
-    assert len(seen) == 1
-    assert OpenAIResponsesTransport.call is fake_call
-    assert original is not fake_call
-
-
-def test_memory_live_opt_in_has_distinct_task_and_reserved_operation_bound(
-    tmp_path, monkeypatch
-):
-    from datetime import UTC, datetime, timedelta
-
-    now = datetime(2030, 1, 1, tzinfo=UTC)
-    approval = {
-        "task": live.MEMORY_TASK,
-        "commit": "synthetic-commit",
-        "model": live.MODEL,
-        "project_id": "proj_synthetic",
-        "organization_id": "org_synthetic",
-        "valid_from": (now - timedelta(minutes=1)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "valid_until": (now + timedelta(minutes=10)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "billing_budget_usd": "1.00",
-        "max_aggregate_operations": 54,
-        "max_aggregate_input_tokens": 200000,
-        "max_aggregate_output_tokens": 12288,
-        "max_requests_per_run": MAX_OPERATIONS,
-    }
-    activation = {
-        "version": "private-pilot-activation-b03d-v1",
-        "task": live.MEMORY_TASK,
-        "model": live.MODEL,
-        "project_id": "proj_synthetic",
-        "organization_id": "org_synthetic",
-        "not_before": now.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "expires_at": (now + timedelta(minutes=5)).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "max_attempts_per_operation": 1,
-        "max_operations": MAX_OPERATIONS,
-    }
-    live.validate_authorization(
-        approval, activation, "synthetic-commit", now, memory=True
-    )
-    with pytest.raises(ValueError, match="task authorization"):
-        live.validate_authorization(approval, activation, "synthetic-commit", now)
-    monkeypatch.setattr(live, "_protected_parents", lambda *_: None)
-    ledger = tmp_path / "aggregate.sqlite3"
-    assert (
-        live.reserve_aggregate(ledger, approval, "first", slots=MAX_OPERATIONS)
-        == MAX_OPERATIONS
-    )
-    assert live.reserve_aggregate(ledger, approval, "second", slots=MAX_OPERATIONS) == 0
-    with pytest.raises(ValueError, match="exhausted"):
-        live.reserve_aggregate(ledger, approval, "third", slots=MAX_OPERATIONS)
-    commands = []
-    monkeypatch.setattr(
-        live,
-        "_command",
-        lambda command, _env, **_kwargs: commands.append(command) or "",
-    )
-    live._compose({"PILOT_MEMORY_JOURNEY": "1"}, "config", "--quiet")
-    assert "ops/compose.private-pilot-memory-acceptance.yaml" in commands[0]
-    expected = [(f"evolution:{index:064x}", "corr") for index in range(MAX_OPERATIONS)]
-    rows = [
-        [operation + ":1", "corr", "completed", None, 1, 1, 2, 0, "0", "estimated"]
-        for operation, _ in expected
-    ]
-    monkeypatch.setattr(
-        live,
-        "_usage",
-        lambda _env, **_kwargs: {"attempts": rows, "reservations": []},
-    )
-    monkeypatch.setattr(
-        live,
-        "_allowance",
-        lambda _env, **_kwargs: {
-            "maximum": MAX_OPERATIONS,
-            "consumed": [operation for operation, _ in expected],
-        },
-    )
-    baseline = {
-        "attempts": set(),
-        "rows": {},
-        "consumed": set(),
-        "maximum": MAX_OPERATIONS,
-    }
-    assert (
-        len(
-            live._reconcile(
-                {}, baseline, expected, approval, final=True, required=MAX_OPERATIONS
-            )[1]
-        )
-        == MAX_OPERATIONS
-    )

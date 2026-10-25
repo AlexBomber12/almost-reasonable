@@ -252,40 +252,24 @@ provenance graph, receipts and dependent reply invalidation. No schema migration
 is needed because the graph already represents both families independently.
 The combined fake-provider HTTP/IPC regression checks both family writes,
 revision, restart, bounded history, participant isolation, duplicate requests,
-the serialized reply projection and source deletion. Live semantic acceptance
-remains separately authorized and pending.
-The acceptance-only application command caps the projection at five dialogue
-events, matching the offline journey. Five short filler turns then displace
-the earlier robot wording without triggering the byte-budget behavior that
-could skip large fillers and select older short entries.
+the serialized reply projection and source deletion. The offline robot journey
+uses five dialogue events and five short filler turns to force persistent recall
+beyond recent history. Its nine synthetic turns cover creation, revision,
+fillers, post-restart recall and recall after source deletion, with 27 fake
+provider operations and accounting checks.
 
-The opt-in acceptance path is `python -m acceptance.private_pilot_live
---memory-journey` with the existing protected authorization, activation,
-state-root, aggregate-ledger, HTTPS origin, backend subnet/IP and report
-arguments. It requires the separate task string
-`synthetic-private-robot-memory-b03d`, the reviewed commit, and the separate
-`private-pilot-activation-b03d-v1` artifact with exactly 27 authorized
-operations and a validity window of at most one hour. The ordinary v1 pilot
-remains capped at five operations and ten minutes; its loader rejects the B03D
-artifact. The journey uses nine synthetic turns:
-project and preference creation, revision, five bounded-history fillers,
-post-restart recall, and recall after source deletion. It checks the actual
-serialized provider reply input captured by the opt-in worker adapter, the
-answer, operation and token ledgers, and erasure. The acceptance-only Compose
-override enables both memory flags and two separately protected worker
-permissions; ordinary deployment files remain unchanged. The runner cannot
-issue an activation or API credential and performs no paid work without a
-matching time-bounded operator authorization. The B03D live run
-`0f31eadff07048ec8f51f7482efa9b9f` failed on its first turn: the typed
-proposal was rejected, while all three billed attempts and allowance charges
-reconciled and both Stops were enabled. The rejected provider text was not
-retained, so the exact invalid field is unknown. This contract correction is
-validated offline; live B03D remains failed until a separately authorized live
-run passes. The versioned `private_typed_memory_proposal_v2` provider envelope
-now constrains static decision, kind,
-field, handle, role and numeric combinations. Local validation still checks
-shown-handle membership, provenance, whitespace and UTF-8 byte bounds. Fixed
-typed diagnostic codes are stored with billed attempts without model text.
+The separate live deployment is retired. Successful B03D/B03E technical evidence
+is historical; outstanding browser and broader product validation use the
+ordinary application and existing domain. See the
+[historical evidence note](b03e-combined-acceptance.md).
+The earlier B03D run `0f31eadff07048ec8f51f7482efa9b9f` rejected a typed
+proposal on its first turn; all three billed attempts and allowance charges
+reconciled. The rejected provider text was not retained, so its exact invalid
+field remains unknown. The subsequent typed provider contract and diagnostic
+fixes remain: `private_typed_memory_proposal_v2` constrains static decision,
+kind, field, handle, role and numeric combinations; local validation checks
+shown handles, provenance, whitespace and UTF-8 bounds. Bounded diagnostic
+codes retain billed usage without storing model text.
 
 ## B04B: reviewed shared proposal generation
 

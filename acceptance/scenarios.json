@@ -202,6 +202,69 @@
             "tests/test_int22_paths.py::test_control_ancestry_becoming_unsafe_closes_authority",
             "tests/test_int22_paths.py::test_provider_state_change_after_admission_is_detected"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Authenticated WSGI -> memory runtime -> AF_UNIX worker -> fake provider",
+          "components": [
+            "WorkerConversationRuntime",
+            "OpenAIWorkerServer",
+            "TrustedOpenAIGateway",
+            "PilotAllowance",
+            "NarrativeStore",
+            "PrivacyReadGate"
+          ],
+          "sink": "20-operation combined journey or 14-attempt rejected recall; durable memory, deletion and bounded usage diagnostics",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Offline synthetic B03E scenarios only; separate live deployment retired. No paid calls, credentials or live semantic approval.",
+          "node_ids": [
+            "tests/test_combined_narrative_memory.py::test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance[False]",
+            "tests/test_combined_narrative_memory.py::test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance[True]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Authenticated WSGI -> combined generic/typed memory -> AF_UNIX fake-provider worker",
+          "components": [
+            "WorkerConversationRuntime",
+            "OpenAIWorkerServer",
+            "EventStore",
+            "PrivacyReadGate",
+            "ProviderStateStore"
+          ],
+          "sink": "27 correlated attempts after history eviction, restart and source deletion; billed typed rejection with fixed diagnostics",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "Offline synthetic robot journey only; ordinary application behavior with fake transport, no deployment or live authority.",
+          "node_ids": [
+            "tests/test_private_memory_journey.py::test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accounting[False]",
+            "tests/test_private_memory_journey.py::test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accounting[True]"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Ship journey oracle and provider schema/decoder audit",
+          "components": [
+            "run_ship_journey",
+            "Structured Outputs schemas",
+            "TrustedOpenAIGateway"
+          ],
+          "sink": "Contradictory destination and invalid history/transcript rejected, including optimized Python; valid provider envelopes audited",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Credential-free synthetic regression checks relocated or preserved after live deployment retirement; no semantic quality claim.",
+          "node_ids": [
+            "tests/test_int22_rehearsal.py::test_contradictory_mars_text_does_not_pass_destination_oracle",
+            "tests/test_int22_rehearsal.py::test_journey_validation_survives_optimized_python[history]",
+            "tests/test_int22_rehearsal.py::test_journey_validation_survives_optimized_python[transcript]",
+            "tests/test_provider_proposal_drift.py::test_all_provider_purpose_schema_decoder_pairs_are_audited"
+          ]
         }
       ],
       "missing_connections": [],

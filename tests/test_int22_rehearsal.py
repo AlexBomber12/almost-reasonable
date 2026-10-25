@@ -428,3 +428,49 @@ def test_inflight_controls_block_release_after_fake_sdk_contact(tmp_path, change
     if change != "spend":
         history = json.loads(alice.request("GET", "/api/history")[2])
         assert not any(item["role"] == "agent" for item in history["messages"])
+
+
+def test_contradictory_mars_text_does_not_pass_destination_oracle():
+    replies = iter(
+        (
+            "Искра",
+            "Корабль: Искра; Назначение: Юпитер",
+            "Корабль Искра всё ещё летит к Юпитеру, а не к Марсу. Марс не выбран.",
+        )
+    )
+
+    def send(_message_id, _content):
+        return {"model_state": "completed", "response": next(replies)}
+
+    with pytest.raises(AssertionError, match="Mars"):
+        run_ship_journey(send, lambda: [], lambda: None)
+
+
+@pytest.mark.parametrize("invalid", ["history", "transcript"])
+def test_journey_validation_survives_optimized_python(invalid):
+    import subprocess
+    import sys
+
+    script = f"""
+from acceptance.private_pilot_conversation import FIRST, ASK, MARS, run_ship_journey
+replies = iter(('Искра', 'Корабль: Искра; Назначение: Юпитер', 'Корабль: Искра; Назначение: Марс'))
+def send(_id, _content):
+    return {{'model_state': 'completed', 'response': next(replies)}}
+def history():
+    return []
+def inspect():
+    return {{'conversation': []}}
+try:
+    run_ship_journey(send, history, lambda: None, {"inspect" if invalid == "transcript" else "None"})
+except AssertionError:
+    raise SystemExit(0)
+raise SystemExit(1)
+"""
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", script],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr

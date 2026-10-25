@@ -11,7 +11,7 @@ from threading import Thread
 import pytest
 
 from acceptance.private_combined_journey import run_combined_journey
-from acceptance.private_pilot_live import _proposal_failure
+from test_openai_gateway import proposal_failure, reconcile_usage
 
 from app.cognition.narrative_store import NarrativeStore
 from app.core.context import ContextLimits
@@ -120,7 +120,6 @@ class _B03ETransport(FakeOpenAITransport):
 def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
     tmp_path,
     rejected_recall,
-    monkeypatch,
 ):
     activation_path, authority = activation_file(tmp_path)
     authority.update(
@@ -370,7 +369,7 @@ def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
             assert reservations == 0
             assert all(row[7] == 0 for row in rows)
             assert all(row[4:7] == (100, 20, 120) for row in rows)
-            failure = _proposal_failure(rows, "combined-recall")
+            failure = proposal_failure(rows, "combined-recall")
             assert failure.step == "combined-recall"
             assert failure.model_state == "invalid_proposal"
             assert failure.operation_family == "evolution"
@@ -385,18 +384,9 @@ def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
                 consumed = [
                     item[0] for item in db.execute("SELECT operation_id FROM consumed")
                 ]
-            from acceptance import private_pilot_live as live
 
-            monkeypatch.setattr(
-                live,
-                "_usage",
-                lambda *_args, **_kwargs: {"attempts": rows, "reservations": []},
-            )
-            monkeypatch.setattr(
-                live,
-                "_allowance",
-                lambda *_args, **_kwargs: {"maximum": 20, "consumed": consumed},
-            )
+            usage = {"attempts": rows, "reservations": []}
+            allowance = {"maximum": 20, "consumed": consumed}
             expected = []
             with current["events"]._open() as db:
                 for index, step in enumerate(STEPS[:4]):
@@ -413,8 +403,9 @@ def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
                     expected.extend(
                         (family + ":" + suffix, source[1]) for family in families
                     )
-            _, reconciled, remaining = live._reconcile(
-                {},
+            _, reconciled, remaining = reconcile_usage(
+                usage,
+                allowance,
                 {"attempts": set(), "rows": {}, "consumed": set(), "maximum": 20},
                 expected,
                 {
