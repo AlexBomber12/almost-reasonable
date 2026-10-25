@@ -2302,7 +2302,7 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     proposal
-                                    if task != "evolve_private_typed_memory"
+                                    if task == "private_conversation"
                                     else {"proposal": proposal}
                                 ),
                             }

@@ -224,7 +224,7 @@ def test_evolution_codec_builder_and_gateway_account_for_invalid_output(tmp_path
         request, default_openai_provider_config()
     ).to_sdk_kwargs()
     assert sdk["tools"] == [] and sdk["store"] is False
-    assert sdk["text"]["format"]["name"] == "private_memory_evolution_proposal"
+    assert sdk["text"]["format"]["name"] == "private_memory_evolution_proposal_v2"
     assert "Italian in 2027" in sdk["input"]
     assert "untrusted data" in sdk["instructions"]
     with pytest.raises(TypeError):
@@ -332,7 +332,9 @@ def test_evolution_worker_rechecks_commit_guard_after_provider(tmp_path):
             "confidence": None,
         }
     )
-    transport = FakeOpenAITransport([provider_response(proposal)])
+    transport = FakeOpenAITransport(
+        [provider_response(json.dumps({"proposal": json.loads(proposal)}))]
+    )
     gateway = TrustedOpenAIGateway(
         store=ProviderStateStore(EventStore(tmp_path / "provider.db")),
         transport=transport,
@@ -373,7 +375,7 @@ def test_evolution_worker_rechecks_commit_guard_after_provider(tmp_path):
     )
     assert (
         _parse_response(provider_response(huge), evolution=True).outcome
-        is GatewayOutcome.INVALID_RESPONSE
+        is GatewayOutcome.INVALID_PROPOSAL
     )
 
 
@@ -635,7 +637,14 @@ def _evolution_worker(
                         "role": "assistant",
                         "status": "completed",
                         "content": [
-                            {"type": "output_text", "text": json.dumps(proposal)}
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {"proposal": proposal}
+                                    if data["task"] == "evolve_private_memory"
+                                    else proposal
+                                ),
+                            }
                         ],
                     }
                 ],
@@ -750,7 +759,7 @@ def test_authenticated_http_worker_revises_consolidates_and_restart_retrieves(tm
                 assert "untrusted data" in item["instructions"]
                 assert (
                     item["text"]["format"]["name"]
-                    == "private_memory_evolution_proposal"
+                    == "private_memory_evolution_proposal_v2"
                 )
                 assert "principal_id" not in item["input"]
                 assert "source_event_id" not in item["input"]

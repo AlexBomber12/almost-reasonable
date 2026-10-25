@@ -2,11 +2,16 @@
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+import hashlib
 import json
 import os
+import sqlite3
 from threading import Thread
 
+import pytest
+
 from acceptance.private_combined_journey import run_combined_journey
+from acceptance.private_pilot_live import _proposal_failure
 
 from app.cognition.narrative_store import NarrativeStore
 from app.core.context import ContextLimits
@@ -37,10 +42,7 @@ from test_int22_pilot import activation_file, _rewrite
 
 
 def _result(value):
-    if ("fields" in value and "source_role" in value) or value.get("decision") in {
-        "create",
-        "revise",
-    }:
+    if "proposal" not in value:
         value = {"proposal": value}
     return response(text=json.dumps(value))
 
@@ -114,8 +116,11 @@ class _B03ETransport(FakeOpenAITransport):
         return super().call(request, timeout_seconds=timeout_seconds)
 
 
+@pytest.mark.parametrize("rejected_recall", [False, True])
 def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
     tmp_path,
+    rejected_recall,
+    monkeypatch,
 ):
     activation_path, authority = activation_file(tmp_path)
     authority.update(
@@ -251,6 +256,17 @@ def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
             _reply(),
         ]
     )
+    if rejected_recall:
+        # Synthetic provider response: the unavailable live payload is not inferred.
+        fake._outcomes[11] = _result(
+            {
+                "decision": "revise_memory",
+                "handles": [],
+                "kind": "candidate_useful_memory",
+                "statement": "Synthetic recall",
+                "confidence": 0.8,
+            }
+        )
     server = OpenAIWorkerServer(
         WorkerServerConfig(socket_path, frozenset({os.getuid()})),
         TrustedOpenAIGateway(
@@ -272,7 +288,10 @@ def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
         narrative_commit_guard=gate.narrative_commit_allowed,
     )
     server.start()
-    worker = Thread(target=lambda: server.serve(max_connections=20), daemon=True)
+    worker = Thread(
+        target=lambda: server.serve(max_connections=14 if rejected_recall else 20),
+        daemon=True,
+    )
     worker.start()
     try:
 
@@ -323,11 +342,94 @@ def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
             assert status == "200 OK"
             return json.loads(body)
 
-        result = run_combined_journey(send, restart, records, heads, delete)
-        assert result["technical_journey"] == "passed"
-        assert result["human_semantic_review"] == "pending"
-        assert allowance.remaining() == 0
-        assert len(fake.calls) == 20
+        if rejected_recall:
+            from acceptance.private_combined_journey import MESSAGES, STEPS
+
+            for step, message in zip(STEPS[:3], MESSAGES[:3]):
+                assert send(step, message)["model_state"] == "completed"
+            restart()
+            assert send(STEPS[3], MESSAGES[3])["model_state"] == "completed"
+            assert len(fake.calls) == 14
+            assert [call.request.purpose for call in fake.calls[-3:]] == [
+                "memory_evolution",
+                "typed_memory_evolution",
+                "narrative_reply",
+            ]
+            assert allowance.remaining() == 6
+            with provider._open() as db:
+                rows = db.execute(
+                    "SELECT attempt_id, correlation_id, outcome, rejection_reason, "
+                    "input_tokens, output_tokens, total_tokens, retry_count, "
+                    "estimated_cost, cost_estimate_status, provider_error_code "
+                    "FROM provider_usage_attempts ORDER BY started_at, attempt_id"
+                ).fetchall()
+                reservations = db.execute(
+                    "SELECT COUNT(*) FROM provider_attempt_reservations"
+                ).fetchone()[0]
+            assert len(rows) == 14
+            assert reservations == 0
+            assert all(row[7] == 0 for row in rows)
+            assert all(row[4:7] == (100, 20, 120) for row in rows)
+            failure = _proposal_failure(rows, "combined-recall")
+            assert failure.step == "combined-recall"
+            assert failure.model_state == "invalid_proposal"
+            assert failure.operation_family == "evolution"
+            assert failure.diagnostic_code == "evolution_invalid_handle"
+            assert sum(row[2] == "invalid_proposal" for row in rows) == 1
+            assert all(
+                row[2] == "completed"
+                for row in rows
+                if row[0].startswith(("typed:", "reply:"))
+            )
+            with sqlite3.connect(allowance.path) as db:
+                consumed = [
+                    item[0] for item in db.execute("SELECT operation_id FROM consumed")
+                ]
+            from acceptance import private_pilot_live as live
+
+            monkeypatch.setattr(
+                live,
+                "_usage",
+                lambda *_args, **_kwargs: {"attempts": rows, "reservations": []},
+            )
+            monkeypatch.setattr(
+                live,
+                "_allowance",
+                lambda *_args, **_kwargs: {"maximum": 20, "consumed": consumed},
+            )
+            expected = []
+            with current["events"]._open() as db:
+                for index, step in enumerate(STEPS[:4]):
+                    source = db.execute(
+                        "SELECT event_id, correlation_id FROM event_envelopes "
+                        "WHERE source_message_id=?",
+                        (step,),
+                    ).fetchone()
+                    suffix = hashlib.sha256(source[0].encode()).hexdigest()
+                    families = ["evolution", "typed"]
+                    if index in {1, 2}:
+                        families.append("narrative")
+                    families.append("reply")
+                    expected.extend(
+                        (family + ":" + suffix, source[1]) for family in families
+                    )
+            _, reconciled, remaining = live._reconcile(
+                {},
+                {"attempts": set(), "rows": {}, "consumed": set(), "maximum": 20},
+                expected,
+                {
+                    "max_aggregate_input_tokens": 10000,
+                    "max_aggregate_output_tokens": 10000,
+                },
+                required=20,
+            )
+            assert len(reconciled) == 14 and remaining == 6
+        else:
+            result = run_combined_journey(send, restart, records, heads, delete)
+            assert result["technical_journey"] == "passed"
+            assert result["human_semantic_review"] == "pending"
+            assert allowance.remaining() == 0
+            assert len(fake.calls) == 20
     finally:
         stop_path.chmod(0o600)
         stop_path.write_text(

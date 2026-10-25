@@ -57,11 +57,20 @@ class JourneyOutcomeError(AssertionError):
         else:
             from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
             from app.cognition.worker_narrative import NARRATIVE_DIAGNOSTIC_CODES
+            from app.cognition.worker_evolution import EVOLUTION_DIAGNOSTIC_CODES
+            from app.cognition.worker_extraction import EXTRACTION_DIAGNOSTIC_CODES
+            from app.cognition.worker_shared import SHARED_DIAGNOSTIC_CODES
 
             self.diagnostic_code = (
                 diagnostic_code
                 if diagnostic_code
-                in TYPED_DIAGNOSTIC_CODES | NARRATIVE_DIAGNOSTIC_CODES
+                in (
+                    TYPED_DIAGNOSTIC_CODES
+                    | NARRATIVE_DIAGNOSTIC_CODES
+                    | EVOLUTION_DIAGNOSTIC_CODES
+                    | EXTRACTION_DIAGNOSTIC_CODES
+                    | SHARED_DIAGNOSTIC_CODES
+                )
                 else "unknown"
             )
         self.model_state = (
