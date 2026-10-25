@@ -852,7 +852,10 @@ def test_source_selection_and_logout_stay_available_when_notice_unacknowledged(j
     page = a.request("GET", "/privacy")[2]
     assert quote(source, safe="").encode() not in page
     assert "Прежде чем начать".encode() in page
-    assert "Выйти".encode() not in page
+    assert (
+        '<button id="privacy-logout" class="secondary" type="button">Выйти</button>'.encode()
+        in page
+    )
     assert (
         a.request(
             "GET", "/privacy/source", extra_environ={"QUERY_STRING": f"ref={source}"}

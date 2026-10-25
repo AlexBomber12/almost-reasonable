@@ -151,7 +151,8 @@ class ParticipantPrivacyControls:
                     '<p id="privacy-feedback" role="status" aria-live="polite"></p>'
                     '<form method="post" action="/api/privacy/notice" data-endpoint="/api/privacy/notice">'
                     f'<input type="hidden" name="version" value="{escape(NOTICE_VERSION)}">'
-                    "<button>Понятно, к разговору</button></form></main>"
+                    "<button>Понятно, к разговору</button></form>"
+                    '<button id="privacy-logout" class="secondary" type="button">Выйти</button></main>'
                 ),
             )
         with closing(self.ledger._open()) as db:

@@ -111,6 +111,59 @@ def contrast_pairs(page):
     }""")
 
 
+def test_onboarding_logout_without_notice_or_privacy_reads(
+    journey, tmp_path, monkeypatch
+):
+    from app.privacy.notice import NOTICE_VERSION
+
+    _clock, auth, _store, ledger, gate, fake, _config, _a, _b = journey
+
+    def unavailable(*args, **kwargs):
+        raise AssertionError(
+            "Onboarding logout must not read or reconcile conversations"
+        )
+
+    monkeypatch.setattr(gate, "authorized", unavailable)
+    monkeypatch.setattr(gate, "reconcile", unavailable)
+    with ui_server(journey, tmp_path) as origin, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(
+                ignore_https_errors=True, viewport={"width": 390, "height": 800}
+            )
+            page.goto(origin + "/login")
+            page.get_by_label("Имя пользователя").fill("alice")
+            page.get_by_label("Пароль", exact=True).fill("synthetic-password-a")
+            page.get_by_role("button", name="Войти", exact=True).click()
+            page.wait_for_url(origin + "/privacy")
+            expect(
+                page.get_by_role("heading", name="Прежде чем начать")
+            ).to_be_visible()
+            expect(page.get_by_role("heading", name="Мои сообщения")).to_have_count(0)
+            logout = page.get_by_role("button", name="Выйти", exact=True)
+            expect(logout).to_be_visible()
+            assert_layout(page)
+            token = next(
+                c["value"] for c in page.context.cookies() if c["name"] == "ar_session"
+            )
+            assert auth.authenticate(token) is not None
+            assert not ledger.has_notice("participant-a", NOTICE_VERSION)
+            page.evaluate(
+                "() => {Storage.prototype.removeItem = () => {throw Error('blocked')};}"
+            )
+            with page.expect_response(origin + "/logout") as reply:
+                logout.click()
+            assert reply.value.request.method == "POST"
+            assert reply.value.status == 303
+            page.wait_for_url(origin + "/login")
+            assert auth.authenticate(token) is None
+            assert all(c["name"] != "ar_session" for c in page.context.cookies())
+            assert not ledger.has_notice("participant-a", NOTICE_VERSION)
+            assert fake.calls == []
+        finally:
+            browser.close()
+
+
 def test_participant_screens_themes_login_and_dialogs(journey, tmp_path):
     with ui_server(journey, tmp_path) as origin, sync_playwright() as playwright:
         browser = playwright.chromium.launch()
