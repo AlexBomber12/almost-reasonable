@@ -112,14 +112,40 @@ _NARRATIVE_INSTRUCTIONS = (
     "credentials, purchases, citations, or tests. Repetition does not verify an "
     "event. Return only the required JSON."
 )
+
+
+def _narrative_variant(decision, handle, episode):
+    properties = {
+        "decision": {"type": "string", "enum": [decision]},
+        "handle": handle,
+        "episode": episode,
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": list(properties),
+        "additionalProperties": False,
+    }
+
+
 _NARRATIVE_SCHEMA = {
     "type": "object",
     "properties": {
-        "decision": {"type": "string", "enum": ["create", "revise", "no_change"]},
-        "handle": {"type": ["string", "null"]},
-        "episode": {"type": ["string", "null"]},
+        "proposal": {
+            "anyOf": [
+                _narrative_variant("no_change", {"type": "null"}, {"type": "null"}),
+                _narrative_variant(
+                    "create", {"type": "null"}, {"type": "string", "minLength": 1}
+                ),
+                _narrative_variant(
+                    "revise",
+                    {"type": "string", "pattern": "^h[0-9a-f]{16}$"},
+                    {"type": "string", "minLength": 1},
+                ),
+            ]
+        }
     },
-    "required": ["decision", "handle", "episode"],
+    "required": ["proposal"],
     "additionalProperties": False,
 }
 _SHARED_INSTRUCTIONS = (
@@ -429,7 +455,7 @@ class OpenAIRequest:
             "text": {
                 "format": {
                     "type": "json_schema",
-                    "name": "private_narrative_proposal"
+                    "name": "private_narrative_proposal_v2"
                     if narrative
                     else "private_typed_memory_proposal_v2"
                     if typed

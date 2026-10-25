@@ -28,7 +28,15 @@ from acceptance.private_memory_journey import (
     MAX_OPERATIONS,
     run_robot_journey,
 )
-from app.trusted.private_pilot import MEMORY_ACTIVATION_VERSION
+from acceptance.private_combined_journey import (
+    MAX_OPERATIONS as COMBINED_OPERATIONS,
+    run_combined_journey,
+)
+from app.trusted.private_pilot import (
+    COMBINED_ACTIVATION_VERSION,
+    COMBINED_TASK,
+    MEMORY_ACTIVATION_VERSION,
+)
 
 
 COMPOSE = (
@@ -286,7 +294,9 @@ def _write_report(path, report):
         os.close(fd)
 
 
-def validate_authorization(approval, activation, commit, now, *, memory=False):
+def validate_authorization(
+    approval, activation, commit, now, *, memory=False, combined=False
+):
     """Refuse missing or ambiguous approval before preparing paid controls."""
 
     required = {
@@ -304,14 +314,15 @@ def validate_authorization(approval, activation, commit, now, *, memory=False):
         "max_requests_per_run",
     }
     if set(approval) != required or approval["task"] != (
-        MEMORY_TASK if memory else TASK
+        COMBINED_TASK if combined else MEMORY_TASK if memory else TASK
     ):
         raise ValueError("explicit task authorization is missing")
     if approval["commit"] != commit or approval["model"] != MODEL:
         raise ValueError("commit or model is not authorized")
-    if memory and (
-        activation.get("version") != MEMORY_ACTIVATION_VERSION
-        or activation.get("task") != MEMORY_TASK
+    if (memory or combined) and (
+        activation.get("version")
+        != (COMBINED_ACTIVATION_VERSION if combined else MEMORY_ACTIVATION_VERSION)
+        or activation.get("task") != (COMBINED_TASK if combined else MEMORY_TASK)
     ):
         raise ValueError("memory acceptance activation is missing")
     if not _utc(approval["valid_from"]) <= now < _utc(approval["valid_until"]):
@@ -338,10 +349,17 @@ def validate_authorization(approval, activation, commit, now, *, memory=False):
     ):
         if type(approval[key]) is not int or approval[key] <= 0:
             raise ValueError(f"invalid authorization limit: {key}")
-    minimum = MAX_OPERATIONS if memory else 3
+    minimum = COMBINED_OPERATIONS if combined else MAX_OPERATIONS if memory else 3
     if (
         approval["max_requests_per_run"] < minimum
         or activation["max_operations"] < minimum
+        or (
+            combined
+            and (
+                approval["max_requests_per_run"] != minimum
+                or activation["max_operations"] != minimum
+            )
+        )
     ):
         raise ValueError("distinct operation allowance is insufficient")
     try:
@@ -602,6 +620,8 @@ def _compose(env, *args, input_text=None, timeout=120):
             "-f",
             "ops/compose.private-pilot-memory-acceptance.yaml",
         )
+    if env.get("PILOT_COMBINED_JOURNEY") == "1":
+        command = (*command, "-f", "ops/compose.private-pilot-combined-acceptance.yaml")
     return _command((*command, *args), env, input_text=input_text, timeout=timeout)
 
 
@@ -822,9 +842,17 @@ def _reconcile(
     }
     if len(required_ids) != len(expected):
         raise ValueError("duplicate current operation")
-    if set(row[0] for row in current) != set(required_ids) or current_consumed != {
-        operation for operation, _ in expected
-    }:
+    expected_consumed = {operation for operation, _ in expected}
+    expected_consumed.update(
+        "reply_hold:" + operation.removeprefix("narrative:")
+        for operation in tuple(expected_consumed)
+        if operation.startswith("narrative:")
+        and "reply:" + operation.removeprefix("narrative:") not in expected_consumed
+    )
+    if (
+        set(row[0] for row in current) != set(required_ids)
+        or current_consumed != expected_consumed
+    ):
         raise ValueError("current provider or allowance accounting does not match")
     if any(
         row[1] != required_ids[row[0]]
@@ -837,7 +865,7 @@ def _reconcile(
     if allowance["maximum"] != baseline["maximum"]:
         raise ValueError("allowance authority changed")
     remaining = allowance["maximum"] - len(consumed)
-    if remaining < (0 if final else required - len(expected)):
+    if remaining < (0 if final else required - len(expected_consumed)):
         raise ValueError("worker allowance exhausted")
     if final and (
         len(expected) != required
@@ -851,16 +879,26 @@ def _reconcile(
 def _proposal_failure(rows, step):
     """Return only fixed evidence for a rejected billed operation."""
     from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
+    from app.cognition.worker_narrative import NARRATIVE_DIAGNOSTIC_CODES
 
     for row in rows:
         if row[2] == "invalid_proposal":
             family = row[0].split(":", 1)[0]
-            family = family if family in {"evolution", "typed", "reply"} else "unknown"
+            family = (
+                family
+                if family in {"evolution", "typed", "narrative", "reply"}
+                else "unknown"
+            )
             code = (
                 row[10]
-                if family == "typed"
+                if family in {"typed", "narrative"}
                 and len(row) > 10
-                and row[10] in TYPED_DIAGNOSTIC_CODES
+                and row[10]
+                in (
+                    TYPED_DIAGNOSTIC_CODES
+                    if family == "typed"
+                    else NARRATIVE_DIAGNOSTIC_CODES
+                )
                 else "unknown"
             )
             return JourneyOutcomeError(
@@ -871,7 +909,10 @@ def _proposal_failure(rows, step):
 
 def run(args):
     memory = getattr(args, "memory_journey", False)
-    required = MAX_OPERATIONS if memory else 3
+    combined = getattr(args, "combined_journey", False)
+    if memory and combined:
+        raise ValueError("choose one acceptance journey")
+    required = COMBINED_OPERATIONS if combined else MAX_OPERATIONS if memory else 3
     repo = Path(__file__).resolve().parents[1]
     if os.geteuid() != 0 or Path.cwd().resolve() != repo:
         raise ValueError("run as root from the reviewed repository checkout")
@@ -882,7 +923,7 @@ def run(args):
     activation_bytes = _read_protected(args.activation, 0o400, 0)
     activation = _unique_json(activation_bytes)
     continuation_of = getattr(args, "continue_zero_call", None)
-    if memory and continuation_of is not None:
+    if (memory or combined) and continuation_of is not None:
         raise ValueError("memory journey does not support zero-call continuation")
     reviewed_commit = getattr(args, "reviewed_commit", None)
     previous_report = getattr(args, "previous_report", None)
@@ -902,9 +943,14 @@ def run(args):
         authorized_commit = approval.get("commit")
 
     def validate_current():
-        if memory:
+        if memory or combined:
             validate_authorization(
-                approval, activation, authorized_commit, datetime.now(UTC), memory=True
+                approval,
+                activation,
+                authorized_commit,
+                datetime.now(UTC),
+                memory=memory,
+                combined=combined,
             )
         else:
             validate_authorization(
@@ -968,7 +1014,7 @@ def run(args):
     if stop.exists() or stop.is_symlink():
         _protected(stop, 0o400, WORKER_UID)
     _stop_file(stop, True)
-    if memory:
+    if memory or combined:
         for name, version in (
             ("memory-evolution.json", "private-memory-evolution-permission-v1"),
             ("typed-memory.json", "private-typed-memory-permission-v1"),
@@ -989,6 +1035,21 @@ def run(args):
                 WORKER_UID,
                 create_only=True,
             )
+    if combined:
+        permission = json.dumps(
+            {
+                "version": "private-narrative-permission-v2",
+                "pilot_id": activation["pilot_id"],
+                "max_operations": required,
+            },
+            separators=(",", ":"),
+        ).encode()
+        _write_control(
+            control_dir / "narrative.json", permission, WORKER_UID, create_only=True
+        )
+        _write_control(
+            app_dir / "narrative-permission.json", permission, APP_UID, create_only=True
+        )
     env = os.environ.copy()
     env.update(
         {
@@ -1004,8 +1065,11 @@ def run(args):
             "COMPOSE_PROJECT_NAME": "almost-reasonable-ship-" + run_id[:12],
         }
     )
-    if memory:
+    if memory or combined:
         env["PILOT_MEMORY_JOURNEY"] = "1"
+    if combined:
+        env["PILOT_COMBINED_JOURNEY"] = "1"
+        env["PILOT_ID"] = activation["pilot_id"]
     report = {
         "commit": commit,
         "run_id": run_id,
@@ -1097,7 +1161,7 @@ def run(args):
             _compose(
                 env,
                 *command,
-                *(("--memory-acceptance",) if memory else ()),
+                *(("--memory-acceptance",) if memory or combined else ()),
             )
         initial_usage = _usage(env)
         initial_allowance = _allowance(env)
@@ -1127,7 +1191,7 @@ def run(args):
                 reserve_aggregate(
                     args.aggregate_ledger, approval, run_id, slots=required
                 )
-                if memory
+                if memory or combined
                 else reserve_aggregate(args.aggregate_ledger, approval, run_id)
             )
         else:
@@ -1169,13 +1233,23 @@ def run(args):
                 {"message_id": source_id, "content": content},
             )
             reply_id, correlation = _source(env, source_id)
-            if memory:
+            planned = []
+            if memory or combined:
                 suffix = reply_id.removeprefix("reply:")
-                expected.extend(
+                planned.extend(
                     (kind + ":" + suffix, correlation)
                     for kind in ("evolution", "typed")
                 )
-            expected.append((reply_id, correlation))
+            if combined and message_id in {"combined-story", "combined-continuation"}:
+                planned.append(("narrative:" + suffix, correlation))
+            planned.append((reply_id, correlation))
+            observed = {
+                row[0].removesuffix(":1")
+                for row in _usage(env)["attempts"]
+                if row[0] not in baseline["attempts"]
+            }
+            attempted = [item for item in planned if item[0] in observed]
+            expected.extend(attempted)
             _, current, _ = _reconcile(
                 env,
                 baseline,
@@ -1187,6 +1261,16 @@ def run(args):
             failure = _proposal_failure(current, message_id)
             if failure is not None:
                 raise failure
+            if attempted != planned:
+                if (
+                    isinstance(response, dict)
+                    and response.get("model_state") == "completed"
+                ):
+                    raise ValueError("current provider accounting does not match")
+                raise JourneyOutcomeError(
+                    message_id,
+                    response.get("model_state") if isinstance(response, dict) else None,
+                )
             return response
 
         def history():
@@ -1208,7 +1292,7 @@ def run(args):
                 raise BackendReadinessError("HTTPS route changed after app restart")
             _progress(args.report, report, "inference")
 
-        if memory:
+        if memory or combined:
 
             def inspect_request():
                 capture = worker_dir / "robot-projections.jsonl"
@@ -1241,13 +1325,76 @@ def run(args):
                     },
                 )
 
-            journey = run_robot_journey(
-                send,
-                restart_app,
-                inspect_request,
-                delete_revision,
-                record_step=report["steps"].append,
-            )
+            if combined:
+
+                def inspect_records():
+                    capture = worker_dir / "robot-projections.jsonl"
+                    _protected(capture, 0o600, WORKER_UID)
+                    return [
+                        json.loads(line) for line in capture.read_text().splitlines()
+                    ]
+
+                def episode_heads():
+                    code = (
+                        "import json,sqlite3; d=sqlite3.connect('file:/var/lib/pilot-app/events.db?mode=ro',uri=True); "
+                        'print(json.dumps(d.execute("SELECT i.item_id,i.current_revision FROM narrative_items i '
+                        "JOIN narrative_operations o ON o.principal_id=i.principal_id AND o.item_id=i.item_id "
+                        "AND o.revision=i.current_revision WHERE o.status='active'\").fetchall()))"
+                    )
+                    return json.loads(_app_python(env, code, running=True))
+
+                def delete_narrative_source():
+                    source_id = run_id + "-combined-story"
+                    code = (
+                        "import json,sqlite3,sys; d=sqlite3.connect('file:/var/lib/pilot-app/events.db?mode=ro',uri=True); "
+                        "print(json.dumps(d.execute('SELECT event_id FROM event_envelopes WHERE source_message_id=?',"
+                        "(sys.stdin.readline().rstrip('\\n'),)).fetchall()))"
+                    )
+                    rows = json.loads(
+                        _app_python(env, code, source_id + "\n", running=True)
+                    )
+                    if len(rows) != 1:
+                        raise ValueError("narrative source is unresolved")
+                    return participant.request(
+                        "POST",
+                        "/api/privacy/deletions",
+                        {
+                            "operation_id": run_id + "-combined-delete",
+                            "source": rows[0][0],
+                            "confirm": "delete",
+                        },
+                    )
+
+                journey = run_combined_journey(
+                    send,
+                    restart_app,
+                    inspect_records,
+                    episode_heads,
+                    delete_narrative_source,
+                    record_step=report["steps"].append,
+                )
+                transcript = journey.pop("transcript")
+                transcript_path = (
+                    args.state_root / "runs" / run_id / "synthetic-transcript.json"
+                )
+                _write_report(
+                    transcript_path,
+                    {
+                        "username": participant_username,
+                        "messages": transcript,
+                        "human_semantic_review": "pending",
+                    },
+                )
+                report["transcript_path"] = str(transcript_path)
+                report["synthetic_username"] = participant_username
+            else:
+                journey = run_robot_journey(
+                    send,
+                    restart_app,
+                    inspect_request,
+                    delete_revision,
+                    record_step=report["steps"].append,
+                )
         else:
             journey = run_ship_journey(
                 send,
@@ -1427,6 +1574,7 @@ def main(argv=None):
     parser.add_argument("--previous-report", type=Path)
     parser.add_argument("--reviewed-commit", metavar="FULL_CURRENT_SHA")
     parser.add_argument("--memory-journey", action="store_true")
+    parser.add_argument("--combined-journey", action="store_true")
     args = parser.parse_args(argv)
     try:
         run(args)

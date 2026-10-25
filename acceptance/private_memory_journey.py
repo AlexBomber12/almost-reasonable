@@ -26,6 +26,12 @@ _FIXED_STEPS = frozenset(
         "ship-name",
         "ship-check",
         "ship-mars",
+        "combined-memory",
+        "combined-story",
+        "combined-continuation",
+        "combined-recall",
+        "combined-reality",
+        "combined-after-delete",
     }
     | {f"robot-filler-{index}" for index in range(len(FILLERS))}
 )
@@ -40,7 +46,8 @@ class JourneyOutcomeError(AssertionError):
         )
         self.operation_family = (
             operation_family
-            if operation_family in {"evolution", "typed", "reply", "unknown"}
+            if operation_family
+            in {"evolution", "typed", "narrative", "reply", "unknown"}
             else "unknown"
             if operation_family is not None
             else None
@@ -49,10 +56,12 @@ class JourneyOutcomeError(AssertionError):
             self.diagnostic_code = None
         else:
             from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
+            from app.cognition.worker_narrative import NARRATIVE_DIAGNOSTIC_CODES
 
             self.diagnostic_code = (
                 diagnostic_code
-                if diagnostic_code in TYPED_DIAGNOSTIC_CODES
+                if diagnostic_code
+                in TYPED_DIAGNOSTIC_CODES | NARRATIVE_DIAGNOSTIC_CODES
                 else "unknown"
             )
         self.model_state = (

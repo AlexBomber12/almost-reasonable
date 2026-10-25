@@ -28,7 +28,8 @@ from app.cognition.worker_typed import (
 from app.cognition.worker_narrative import (
     NarrativeModelRequest,
     NarrativeProposal,
-    parse_narrative_proposal,
+    parse_narrative_provider_response,
+    NarrativeValidationError,
 )
 from app.cognition.worker_shared import (
     SharedProposalRequest,
@@ -484,7 +485,7 @@ class TrustedOpenAIGateway:
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
-                else "private-narrative-v1"
+                else "private-narrative-v2"
                 if type(request) is NarrativeModelRequest
                 else "shared-proposal-v1"
                 if type(request) is SharedProposalRequest
@@ -499,7 +500,7 @@ class TrustedOpenAIGateway:
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
-                else "private-narrative-v1"
+                else "private-narrative-v2"
                 if type(request) is NarrativeModelRequest
                 else "shared-proposal-v1"
                 if type(request) is SharedProposalRequest
@@ -723,6 +724,19 @@ def _parse_response(
         return _ParsedResponse(GatewayOutcome.INVALID_RESPONSE, None)
     if size > MAX_PROVIDER_OUTPUT_UTF8_BYTES:
         return _ParsedResponse(GatewayOutcome.OVERSIZED_OUTPUT, None)
+    if narrative:
+        try:
+            parsed_narrative = parse_narrative_provider_response(text)
+        except NarrativeValidationError as error:
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+                diagnostic_code=error.code,
+            )
+        return _ParsedResponse(
+            GatewayOutcome.COMPLETED, None, narrative=parsed_narrative
+        )
     try:
         payload = json.loads(text)
     except (ValueError, UnicodeDecodeError):
@@ -764,18 +778,6 @@ def _parse_response(
                 diagnostic_code=error.code,
             )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
-    if narrative:
-        try:
-            parsed_narrative = parse_narrative_proposal(text)
-        except ValueError:
-            return _ParsedResponse(
-                GatewayOutcome.INVALID_PROPOSAL,
-                None,
-                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
-            )
-        return _ParsedResponse(
-            GatewayOutcome.COMPLETED, None, narrative=parsed_narrative
-        )
     if shared:
         try:
             parsed_shared = parse_shared_suggestion(text)

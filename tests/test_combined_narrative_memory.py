@@ -1,9 +1,12 @@
 """One authenticated conversation carries factual memory and fictional continuity."""
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from threading import Thread
+
+from acceptance.private_combined_journey import run_combined_journey
 
 from app.cognition.narrative_store import NarrativeStore
 from app.core.context import ContextLimits
@@ -12,6 +15,8 @@ from app.core.provider_contract import DeploymentStage, default_openai_provider_
 from app.core.provider_spend import ProviderStateStore
 from app.core.store import EventStore
 from app.private_web.runtime import WorkerConversationRuntime
+from app.private_web.privacy import ParticipantPrivacyControls
+from app.private_web.cli import _narrative_permission_current
 from app.privacy.application import EventStoreErasureAdapter, PrivacyReadGate
 from app.privacy.deletion import DeletionCoordinator
 from app.privacy.recovery import QuarantinedRestore, create_sqlite_backup
@@ -19,6 +24,8 @@ from app.privacy.application import EventStoreRestoreAdapter
 from app.trusted.openai_gateway import TrustedOpenAIGateway
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_server import OpenAIWorkerServer, WorkerServerConfig
+from app.trusted.private_pilot import PilotAllowance, load_activation
+from app.trusted.private_pilot_worker import PilotRequestGate, PilotStop
 from test_cognition_pipeline import NOW, principal
 from test_int19_worker_runtime import _app
 from test_openai_gateway import response
@@ -26,10 +33,14 @@ from test_privacy_deletion import (
     context as deletion_context,
     request as deletion_request,
 )
+from test_int22_pilot import activation_file, _rewrite
 
 
 def _result(value):
-    if "fields" in value and "source_role" in value:
+    if ("fields" in value and "source_role" in value) or value.get("decision") in {
+        "create",
+        "revise",
+    }:
         value = {"proposal": value}
     return response(text=json.dumps(value))
 
@@ -86,6 +97,246 @@ class _ScenarioTransport(FakeOpenAITransport):
                 }
             )
         return super().call(request, timeout_seconds=timeout_seconds)
+
+
+class _B03ETransport(FakeOpenAITransport):
+    def call(self, request, *, timeout_seconds):
+        if len(self.calls) == 9:
+            shown = json.loads(request.input_text)["episodes"]
+            assert len(shown) == 1
+            self._outcomes[0] = _result(
+                {
+                    "decision": "revise",
+                    "handle": shown[0]["handle"],
+                    "episode": "На вымышленном маяке я нашёл медный ключ «Искра», которым открыл дверь «Волна».",
+                }
+            )
+        return super().call(request, timeout_seconds=timeout_seconds)
+
+
+def test_b03e_six_turn_http_worker_journey_uses_real_permissions_and_allowance(
+    tmp_path,
+):
+    activation_path, authority = activation_file(tmp_path)
+    authority.update(
+        version="private-pilot-activation-b03e-v1",
+        task="synthetic-private-combined-memory-b03e",
+        max_operations=20,
+    )
+    authority["expires_at"] = (datetime.now(UTC) + timedelta(minutes=30)).strftime(
+        "%Y-%m-%dT%H:%M:%SZ"
+    )
+    _rewrite(activation_path, authority)
+    activation = load_activation(activation_path, allow_memory_acceptance=True)
+
+    def control(path, version, limit):
+        path.write_text(
+            json.dumps(
+                {
+                    "version": version,
+                    "pilot_id": activation.pilot_id,
+                    "max_operations": limit,
+                }
+            )
+        )
+        path.chmod(0o400)
+        return path
+
+    evolution = control(
+        activation_path.parent / "evolution.json",
+        "private-memory-evolution-permission-v1",
+        20,
+    )
+    typed = control(
+        activation_path.parent / "typed.json", "private-typed-memory-permission-v1", 20
+    )
+    narrative = control(
+        activation_path.parent / "narrative.json", "private-narrative-permission-v2", 20
+    )
+    app_control = tmp_path / "app-control"
+    app_control.mkdir(mode=0o700)
+    app_narrative = control(
+        app_control / "narrative.json", "private-narrative-permission-v2", 20
+    )
+    stop_path = activation_path.parent / "stop.json"
+    stop_path.write_text(
+        json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": False})
+    )
+    stop_path.chmod(0o400)
+    stop = PilotStop(stop_path)
+    allowance = PilotAllowance.initialize(tmp_path / "allowance.db", activation)
+    provider = ProviderStateStore(EventStore(tmp_path / "provider.db"))
+    gate = PilotRequestGate(
+        activation,
+        allowance,
+        activation_path=activation_path,
+        stop=stop,
+        provider_spend_suspended=provider.is_spend_suspended,
+        evolution_permission_path=evolution,
+        typed_permission_path=typed,
+        narrative_permission_path=narrative,
+    )
+    worker_dir = tmp_path / "worker"
+    worker_dir.mkdir(mode=0o700)
+    socket_path = worker_dir / "worker.sock"
+    auth, events, ledger, privacy, app, browser, _other = _app(tmp_path, socket_path)
+    ipc_path = tmp_path / "ipc.db"
+    current = {"events": events}
+
+    def runtime(store, privacy_gate):
+        return WorkerConversationRuntime(
+            store,
+            privacy_gate,
+            OpenAIWorkerClient(socket_path, expected_worker_uid=os.getuid()),
+            provider_state=ProviderStateStore(EventStore(ipc_path)),
+            memory_evolution_enabled=True,
+            typed_memory_enabled=True,
+            narrative_enabled=True,
+            narrative_permission_current=lambda: _narrative_permission_current(
+                app_narrative, activation.pilot_id
+            ),
+            emergency_stop=stop.active,
+            context_limits=ContextLimits(32000, 1),
+        )
+
+    app._conversations = runtime(events, privacy)
+    fake = _B03ETransport(
+        [
+            _result(
+                {
+                    "decision": "new_memory",
+                    "handles": [],
+                    "kind": "candidate_useful_memory",
+                    "statement": "Проект Кобальт",
+                    "confidence": 0.8,
+                }
+            ),
+            _result(
+                {
+                    "decision": "new_memory",
+                    "handle": None,
+                    "kind": "durable_interest",
+                    "source_role": "supporting",
+                    "fields": {
+                        "topic": "Шестерни серии Ладога",
+                        "strength": 80,
+                        "status": "active",
+                        "reason_for_interest": "Синтетическое предпочтение",
+                    },
+                }
+            ),
+            _reply(),
+            _generic_no_change(),
+            _typed_no_change(),
+            _result(
+                {
+                    "decision": "create",
+                    "handle": None,
+                    "episode": "На вымышленном маяке я нашёл медный ключ «Искра».",
+                }
+            ),
+            _reply(),
+            _generic_no_change(),
+            _typed_no_change(),
+            _result({"decision": "no_change", "handle": None, "episode": None}),
+            _reply(),
+            _generic_no_change(),
+            _typed_no_change(),
+            _reply(),
+            _generic_no_change(),
+            _typed_no_change(),
+            _reply(),
+            _generic_no_change(),
+            _typed_no_change(),
+            _reply(),
+        ]
+    )
+    server = OpenAIWorkerServer(
+        WorkerServerConfig(socket_path, frozenset({os.getuid()})),
+        TrustedOpenAIGateway(
+            store=provider,
+            transport=fake,
+            config=replace(
+                default_openai_provider_config(),
+                deployment_stage=DeploymentStage.STAGE_1,
+                paid_calls_enabled=True,
+                max_attempts=1,
+            ),
+        ),
+        request_guard=gate.authorize,
+        evolution_enabled=True,
+        evolution_commit_guard=gate.evolution_commit_allowed,
+        typed_enabled=True,
+        typed_commit_guard=gate.typed_commit_allowed,
+        narrative_enabled=True,
+        narrative_commit_guard=gate.narrative_commit_allowed,
+    )
+    server.start()
+    worker = Thread(target=lambda: server.serve(max_connections=20), daemon=True)
+    worker.start()
+    try:
+
+        def send(step, content):
+            return json.loads(browser.submit(step, content)[2])
+
+        def restart():
+            reopened = EventStore(events.database_path)
+            fresh = PrivacyReadGate(ledger, reopened)
+            assert fresh.reconcile()
+            current["events"] = reopened
+            app._conversations = runtime(reopened, fresh)
+            app._privacy = ParticipantPrivacyControls(
+                auth, reopened, ledger, fresh, clock=app._privacy.clock
+            )
+
+        def records():
+            return [
+                {"purpose": call.request.purpose, "input": call.request.input_text}
+                for call in fake.calls
+            ]
+
+        def heads():
+            return [
+                (episode.item_id, episode.revision)
+                for episode in NarrativeStore(current["events"]).current(principal("a"))
+            ]
+
+        def delete():
+            with current["events"]._open() as db:
+                source = db.execute(
+                    "SELECT event_id FROM event_envelopes WHERE source_message_id=?",
+                    ("combined-story",),
+                ).fetchone()[0]
+            status, _, body = browser.request(
+                "POST",
+                "/api/privacy/deletions",
+                body=json.dumps(
+                    {
+                        "operation_id": "combined-delete",
+                        "source": source,
+                        "confirm": "delete",
+                    }
+                ).encode(),
+                content_type="application/json",
+                extra_environ={"HTTP_X_CSRF_TOKEN": browser.cookies["ar_csrf"]},
+            )
+            assert status == "200 OK"
+            return json.loads(body)
+
+        result = run_combined_journey(send, restart, records, heads, delete)
+        assert result["technical_journey"] == "passed"
+        assert result["human_semantic_review"] == "pending"
+        assert allowance.remaining() == 0
+        assert len(fake.calls) == 20
+    finally:
+        stop_path.chmod(0o600)
+        stop_path.write_text(
+            json.dumps({"version": "private-pilot-emergency-stop-v1", "stop": True})
+        )
+        stop_path.chmod(0o400)
+        worker.join(10)
+        server.close()
+    assert stop.active()
 
 
 def test_http_worker_combines_memory_and_fiction_across_restart_and_deletion(tmp_path):

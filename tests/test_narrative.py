@@ -129,7 +129,7 @@ def test_narrative_proposal_is_closed_and_fiction_is_explicit():
         ),
     )
     kwargs = provider.to_sdk_kwargs()
-    assert kwargs["text"]["format"]["name"] == "private_narrative_proposal"
+    assert kwargs["text"]["format"]["name"] == "private_narrative_proposal_v2"
     assert "actual actions" in kwargs["instructions"]
     with pytest.raises(TypeError, match="narrative request"):
         build_worker_narrative_request(object(), default_openai_provider_config())
@@ -816,6 +816,10 @@ def _reply(text):
     )
 
 
+def _narrative_provider(proposal):
+    return response(text=json.dumps({"proposal": proposal}))
+
+
 def test_worker_narrative_continuity_across_restart_and_a_b_isolation(tmp_path):
     worker_dir = tmp_path / "worker"
     worker_dir.mkdir(mode=0o700)
@@ -823,20 +827,16 @@ def test_worker_narrative_continuity_across_restart_and_a_b_isolation(tmp_path):
     provider = ProviderStateStore(EventStore(tmp_path / "provider.db"))
     fake = FakeOpenAITransport(
         [
-            response(
-                text=json.dumps(
-                    {
-                        "decision": "create",
-                        "handle": None,
-                        "episode": "Я видел вымышленный маяк.",
-                    }
-                )
+            _narrative_provider(
+                {
+                    "decision": "create",
+                    "handle": None,
+                    "episode": "Я видел вымышленный маяк.",
+                }
             ),
             _reply("Синтетический ответ."),
-            response(
-                text=json.dumps(
-                    {"decision": "no_change", "handle": None, "episode": None}
-                )
+            _narrative_provider(
+                {"decision": "no_change", "handle": None, "episode": None}
             ),
             _reply("Продолжим историю."),
             _reply("Другой собеседник."),
@@ -978,14 +978,12 @@ def test_control_changed_during_provider_call_withholds_episode_and_reply(
     socket_path = worker_dir / "worker.sock"
     fake = FakeOpenAITransport(
         [
-            response(
-                text=json.dumps(
-                    {
-                        "decision": "create",
-                        "handle": None,
-                        "episode": "Я видел вымышленный маяк.",
-                    }
-                )
+            _narrative_provider(
+                {
+                    "decision": "create",
+                    "handle": None,
+                    "episode": "Я видел вымышленный маяк.",
+                }
             )
         ]
     )
@@ -1074,6 +1072,29 @@ def test_control_changed_during_provider_call_withholds_episode_and_reply(
 def test_malformed_narrative_proposals_fail_closed(value):
     with pytest.raises(ValueError):
         parse_narrative_proposal(json.dumps(value))
+
+
+def test_narrative_parsers_bound_invalid_json_unicode_and_size():
+    from app.cognition.worker_narrative import (
+        NarrativeValidationError,
+        parse_narrative_provider_response,
+    )
+
+    cases = (
+        (parse_narrative_proposal, "{bad", "narrative_invalid_json"),
+        (parse_narrative_proposal, "\ud800", "narrative_invalid_size"),
+        (
+            parse_narrative_proposal,
+            json.dumps({"decision": "create", "handle": None, "episode": "\ud800"}),
+            "narrative_invalid_episode",
+        ),
+        (parse_narrative_provider_response, "x" * 8193, "narrative_invalid_size"),
+        (parse_narrative_provider_response, "\ud800", "narrative_invalid_size"),
+    )
+    for parser, raw, code in cases:
+        with pytest.raises(NarrativeValidationError) as failure:
+            parser(raw)
+        assert failure.value.code == code
 
 
 @pytest.mark.parametrize(
@@ -1249,15 +1270,13 @@ def test_narrative_gateway_rejects_malformed_model_output(tmp_path):
     )
     fake = FakeOpenAITransport(
         [
-            response(
-                text=json.dumps(
-                    {
-                        "decision": "create",
-                        "handle": None,
-                        "episode": "История",
-                        "consent": True,
-                    }
-                )
+            _narrative_provider(
+                {
+                    "decision": "create",
+                    "handle": None,
+                    "episode": "История",
+                    "consent": True,
+                }
             )
         ]
     )
@@ -1276,6 +1295,108 @@ def test_narrative_gateway_rejects_malformed_model_output(tmp_path):
     )
     assert result.outcome.value == "invalid_proposal"
     assert result.narrative is None
+
+
+@pytest.mark.parametrize(
+    "proposal,code",
+    [
+        (
+            {"decision": "create", "handle": "h0123456789abcdef", "episode": "x"},
+            "narrative_invalid_handle",
+        ),
+        (
+            {"decision": "revise", "handle": None, "episode": "x"},
+            "narrative_invalid_handle",
+        ),
+        (
+            {"decision": "no_change", "handle": None, "episode": "x"},
+            "narrative_invalid_shape",
+        ),
+        (
+            {"decision": ["create"], "handle": None, "episode": "x"},
+            "narrative_invalid_decision",
+        ),
+    ],
+)
+def test_invalid_narrative_provider_response_keeps_usage_and_diagnostic(
+    tmp_path, proposal, code
+):
+    request = NarrativeModelRequest(
+        (
+            ConversationSegment(
+                ContextRole.PARTICIPANT,
+                ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,
+                "Синтетическая история",
+            ),
+        ),
+        (),
+    )
+    store = ProviderStateStore(EventStore(tmp_path / "provider.db"))
+    gateway = TrustedOpenAIGateway(
+        store=store,
+        transport=FakeOpenAITransport([_narrative_provider(proposal)]),
+        config=replace(
+            default_openai_provider_config(),
+            deployment_stage=DeploymentStage.STAGE_1,
+            paid_calls_enabled=True,
+            max_attempts=1,
+        ),
+    )
+    result = gateway.submit_narrative(
+        request, correlation_id="corr", operation_id="narrative:" + "a" * 64
+    )
+    assert result.outcome.value == "invalid_proposal"
+    attempt = store.usage_attempt("narrative:" + "a" * 64 + ":1")
+    assert attempt.outcome == "invalid_proposal"
+    assert attempt.provider_error_code == code
+    assert attempt.input_tokens is not None and attempt.output_tokens is not None
+
+
+@pytest.mark.parametrize(
+    "raw,code",
+    [
+        ("{bad", "narrative_invalid_json"),
+        (
+            '{"proposal":{"decision":"no_change","decision":"no_change","handle":null,"episode":null}}',
+            "narrative_duplicate_key",
+        ),
+        (
+            '{"decision":"no_change","handle":null,"episode":null}',
+            "narrative_invalid_envelope",
+        ),
+    ],
+)
+def test_narrative_malformed_provider_envelope_keeps_usage(tmp_path, raw, code):
+    request = NarrativeModelRequest(
+        (
+            ConversationSegment(
+                ContextRole.PARTICIPANT,
+                ContextTrust.UNTRUSTED_CONVERSATIONAL_DATA,
+                "Синтетическая история",
+            ),
+        ),
+        (),
+    )
+    store = ProviderStateStore(EventStore(tmp_path / "provider.db"))
+    gateway = TrustedOpenAIGateway(
+        store=store,
+        transport=FakeOpenAITransport([response(text=raw)]),
+        config=replace(
+            default_openai_provider_config(),
+            deployment_stage=DeploymentStage.STAGE_1,
+            paid_calls_enabled=True,
+            max_attempts=1,
+        ),
+    )
+    assert (
+        gateway.submit_narrative(
+            request, correlation_id="corr", operation_id="narrative:" + "a" * 64
+        ).outcome.value
+        == "invalid_proposal"
+    )
+    attempt = store.usage_attempt("narrative:" + "a" * 64 + ":1")
+    assert attempt.provider_error_code == code
+    assert attempt.input_tokens is not None and attempt.output_tokens is not None
 
 
 def test_application_permission_file_requires_exact_current_authority(tmp_path):
@@ -1433,20 +1554,16 @@ def test_worker_revises_only_a_shown_current_episode(tmp_path, monkeypatch):
     socket_path = worker_dir / "worker.sock"
     fake = FakeOpenAITransport(
         [
-            response(
-                text=json.dumps(
-                    {
-                        "decision": "create",
-                        "handle": None,
-                        "episode": "Я видел вымышленный маяк.",
-                    }
-                )
+            _narrative_provider(
+                {
+                    "decision": "create",
+                    "handle": None,
+                    "episode": "Я видел вымышленный маяк.",
+                }
             ),
             _reply("Первая сцена."),
-            response(
-                text=json.dumps(
-                    {"decision": "no_change", "handle": None, "episode": None}
-                )
+            _narrative_provider(
+                {"decision": "no_change", "handle": None, "episode": None}
             ),
             _reply("Вторая сцена."),
         ]
@@ -1457,14 +1574,12 @@ def test_worker_revises_only_a_shown_current_episode(tmp_path, monkeypatch):
         scheduled = original(transport, request, timeout_seconds=timeout_seconds)
         data = json.loads(request.input_text)
         if data["task"] == "propose_private_narrative" and data["episodes"]:
-            return response(
-                text=json.dumps(
-                    {
-                        "decision": "revise",
-                        "handle": data["episodes"][0]["handle"],
-                        "episode": "Я видел вымышленный маяк и берег.",
-                    }
-                )
+            return _narrative_provider(
+                {
+                    "decision": "revise",
+                    "handle": data["episodes"][0]["handle"],
+                    "episode": "Я видел вымышленный маяк и берег.",
+                }
             )
         return scheduled
 
