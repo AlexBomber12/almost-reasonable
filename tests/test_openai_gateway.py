@@ -1050,3 +1050,108 @@ def test_malformed_response_diagnostic_stays_worker_side(tmp_path, text, reason)
     assert store.usage_attempt("operation-a:1").rejection_reason == reason
     assert store.usage_attempt("operation-a:1").provider_error_code is None
     assert len(transport.calls) == 1
+
+
+def reconcile_usage(
+    usage, allowance, baseline, expected, approval, *, final=False, required=3
+):
+    """Check fake-provider usage against the durable worker allowance."""
+    rows = usage["attempts"]
+    ids = [row[0] for row in rows]
+    consumed = allowance["consumed"]
+    if len(ids) != len(set(ids)) or len(consumed) != len(set(consumed)):
+        raise ValueError("duplicate accounting identity")
+    if usage["reservations"]:
+        raise ValueError("unresolved provider reservation")
+    if any(row[4] is None or row[5] is None or row[6] is None for row in rows):
+        raise ValueError("provider token usage is unavailable")
+    totals = (sum(row[4] for row in rows), sum(row[5] for row in rows))
+    limits = (
+        approval["max_aggregate_input_tokens"],
+        approval["max_aggregate_output_tokens"],
+    )
+    if any(
+        value > limit if final else value >= limit
+        for value, limit in zip(totals, limits)
+    ):
+        raise ValueError("aggregate token allowance exhausted")
+    if not baseline["attempts"] <= set(ids) or not baseline["consumed"] <= set(
+        consumed
+    ):
+        raise ValueError("historical accounting changed")
+    if any(
+        tuple(row) != baseline["rows"][row[0]]
+        for row in rows
+        if row[0] in baseline["rows"]
+    ):
+        raise ValueError("historical accounting changed")
+    current = [row for row in rows if row[0] not in baseline["attempts"]]
+    current_consumed = set(consumed) - baseline["consumed"]
+    required_ids = {
+        operation + ":1": correlation for operation, correlation in expected
+    }
+    if len(required_ids) != len(expected):
+        raise ValueError("duplicate current operation")
+    expected_consumed = {operation for operation, _ in expected}
+    expected_consumed.update(
+        "reply_hold:" + operation.removeprefix("narrative:")
+        for operation in tuple(expected_consumed)
+        if operation.startswith("narrative:")
+        and "reply:" + operation.removeprefix("narrative:") not in expected_consumed
+    )
+    if (
+        set(row[0] for row in current) != set(required_ids)
+        or current_consumed != expected_consumed
+    ):
+        raise ValueError("current provider or allowance accounting does not match")
+    if any(
+        row[1] != required_ids[row[0]]
+        or row[2] not in {"completed", "invalid_proposal"}
+        or (row[3] is None) != (row[2] == "completed")
+        or row[7] != 0
+        for row in current
+    ):
+        raise ValueError("current provider attempt is incomplete or retried")
+    if allowance["maximum"] != baseline["maximum"]:
+        raise ValueError("allowance authority changed")
+    remaining = allowance["maximum"] - len(consumed)
+    if remaining < (0 if final else required - len(expected_consumed)):
+        raise ValueError("worker allowance exhausted")
+    if final and (
+        len(expected) != required
+        or len(current) != required
+        or len(current_consumed) != required
+    ):
+        raise ValueError("required current attempts are missing")
+    return rows, current, remaining
+
+
+def proposal_failure(rows, step):
+    """Return only fixed evidence for a rejected billed operation."""
+    from acceptance.private_memory_journey import JourneyOutcomeError
+    from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
+    from app.cognition.worker_narrative import NARRATIVE_DIAGNOSTIC_CODES
+    from app.cognition.worker_evolution import EVOLUTION_DIAGNOSTIC_CODES
+
+    codes_by_family = {
+        "evolution": EVOLUTION_DIAGNOSTIC_CODES,
+        "typed": TYPED_DIAGNOSTIC_CODES,
+        "narrative": NARRATIVE_DIAGNOSTIC_CODES,
+    }
+    for row in rows:
+        if row[2] == "invalid_proposal":
+            family = row[0].split(":", 1)[0]
+            family = (
+                family
+                if family in {"evolution", "typed", "narrative", "reply"}
+                else "unknown"
+            )
+            code = (
+                row[10]
+                if len(row) > 10 and row[10] in codes_by_family.get(family, ())
+                else "unknown"
+            )
+            return JourneyOutcomeError(
+                step, "invalid_proposal", operation_family=family, diagnostic_code=code
+            )
+    return None

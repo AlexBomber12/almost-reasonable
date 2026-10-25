@@ -62,6 +62,8 @@ def acceptance_offline(request, monkeypatch):
                     "tests/test_int19_worker_runtime.py::",
                     "tests/test_int20_public_research.py::",
                     "tests/test_int22_rehearsal.py::",
+                    "tests/test_combined_narrative_memory.py::",
+                    "tests/test_private_memory_journey.py::",
                     "tests/test_int23_connected.py::test_authenticated_wsgi_two_workers_and_durable_reply",
                     "tests/test_int23_controls.py::test_unapproved_question_never_crosses_boundary",
                     "tests/test_int23_controls.py::test_stop_and_spend_block_contact",
