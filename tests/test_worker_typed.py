@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from dataclasses import replace
 
 import pytest
+from jsonschema import Draft202012Validator
 
 from app.cognition.contracts import (
     CognitionCapabilities,
@@ -23,6 +24,8 @@ from app.cognition.worker_typed import (
     TypedModelRequest,
     TypedProposal,
     parse_typed_proposal,
+    parse_typed_provider_response,
+    TypedValidationError,
 )
 from app.core.events import VerificationStatus
 from app.core.provider_spend import AttemptReservationStatus, ProviderStateStore
@@ -124,6 +127,215 @@ def test_typed_parser_rejects_authority_and_bad_numbers():
         parse_typed_proposal('{"decision":"no_change","decision":"no_change"}')
 
 
+def test_provider_typed_schema_matches_static_parser_decisions_and_bounds():
+    schema = build_worker_typed_request(
+        TypedModelRequest("Synthetic input", ()), default_openai_provider_config()
+    ).to_sdk_kwargs()["text"]["format"]["schema"]
+    Draft202012Validator.check_schema(schema)
+    validate = Draft202012Validator(schema).is_valid
+    fields = {
+        "topic": "Synthetic interest",
+        "strength": 100,
+        "status": "active",
+        "reason_for_interest": "Synthetic reason",
+    }
+    base = {
+        "decision": "new_memory",
+        "handle": None,
+        "kind": "durable_interest",
+        "fields": fields,
+        "source_role": "supporting",
+    }
+    assert validate({"proposal": base})
+    assert validate(
+        {
+            "proposal": {
+                **base,
+                "decision": "revise_memory",
+                "handle": "h0123456789abcdef",
+            }
+        }
+    )
+    belief = {
+        **base,
+        "kind": "belief_or_hypothesis",
+        "fields": {
+            "proposition": "Synthetic hypothesis",
+            "stance": "uncertain",
+            "confidence": 1,
+            "status": "active",
+            "alternatives": [],
+        },
+        "source_role": "counterevidence",
+    }
+    goal = {
+        **base,
+        "kind": "goal_or_intention",
+        "fields": {
+            "description": "Synthetic plan",
+            "rationale": "Synthetic reason",
+            "priority": 0,
+            "status": "active",
+            "constraints": [],
+            "review_condition": "Synthetic review",
+        },
+    }
+    assert validate({"proposal": belief})
+    assert validate({"proposal": goal})
+    assert parse_typed_proposal(json.dumps(belief)).kind == "belief_or_hypothesis"
+    assert parse_typed_proposal(json.dumps(goal)).kind == "goal_or_intention"
+    assert validate(
+        {
+            "proposal": {
+                "decision": "no_change",
+                "handle": None,
+                "kind": None,
+                "fields": None,
+                "source_role": None,
+            }
+        }
+    )
+    for invalid in (
+        {**base, "fields": {**fields, "strength": 101}},
+        {**base, "kind": "belief_or_hypothesis"},
+        {**base, "handle": "h0123456789abcdef"},
+        {**base, "source_role": "counterevidence"},
+        {**base, "decision": "no_change"},
+        {**base, "decision": "revise_memory"},
+        {**base, "fields": {**fields, "strength": -1}},
+        {**belief, "fields": {**belief["fields"], "confidence": 1.01}},
+        {**goal, "fields": {**goal["fields"], "priority": 101}},
+        {**goal, "fields": {**goal["fields"], "constraints": ["x"] * 21}},
+    ):
+        assert not validate({"proposal": invalid})
+        with pytest.raises(ValueError, match="invalid typed proposal"):
+            parse_typed_proposal(json.dumps(invalid))
+
+
+@pytest.mark.parametrize(
+    ("raw", "code"),
+    [
+        (None, "typed_invalid_size"),
+        ("x" * 8193, "typed_invalid_size"),
+        (
+            '{"proposal":{"decision":"no_change","decision":"no_change"}}',
+            "typed_duplicate_key",
+        ),
+        ('{"proposal":', "typed_invalid_json"),
+        (
+            '{"proposal":{"decision":"no_change","handle":null,"kind":null,"fields":null,"source_role":null},"private_canary":"secret"}',
+            "typed_invalid_envelope",
+        ),
+        (
+            json.dumps(
+                {
+                    "proposal": {
+                        "decision": "new_memory",
+                        "handle": None,
+                        "kind": "durable_interest",
+                        "fields": {
+                            "topic": "private_canary",
+                            "strength": 101,
+                            "status": "active",
+                            "reason_for_interest": "private_canary",
+                        },
+                        "source_role": "supporting",
+                    }
+                }
+            ),
+            "typed_invalid_number",
+        ),
+        (
+            json.dumps(
+                {
+                    "proposal": {
+                        "decision": "new_memory",
+                        "handle": None,
+                        "kind": "belief_or_hypothesis",
+                        "fields": {
+                            "proposition": "Synthetic hypothesis",
+                            "stance": "private_canary",
+                            "confidence": 0.5,
+                            "status": "active",
+                            "alternatives": [],
+                        },
+                        "source_role": "supporting",
+                    }
+                }
+            ),
+            "typed_invalid_stance",
+        ),
+        (
+            json.dumps(
+                {
+                    "proposal": {
+                        "decision": [],
+                        "handle": None,
+                        "kind": None,
+                        "fields": None,
+                        "source_role": None,
+                    }
+                }
+            ),
+            "typed_invalid_decision",
+        ),
+        (
+            json.dumps(
+                {
+                    "proposal": {
+                        "decision": "new_memory",
+                        "handle": None,
+                        "kind": [],
+                        "fields": {},
+                        "source_role": "supporting",
+                    }
+                }
+            ),
+            "typed_invalid_fields",
+        ),
+        (
+            json.dumps(
+                {
+                    "proposal": {
+                        "decision": "new_memory",
+                        "handle": None,
+                        "kind": "durable_interest",
+                        "fields": {
+                            "topic": "Synthetic",
+                            "strength": 1,
+                            "status": {},
+                            "reason_for_interest": "Synthetic",
+                        },
+                        "source_role": "supporting",
+                    }
+                }
+            ),
+            "typed_invalid_status",
+        ),
+        (
+            json.dumps(
+                {
+                    "proposal": {
+                        "decision": "new_memory",
+                        "handle": None,
+                        "kind": "durable_interest",
+                        "fields": {},
+                        "source_role": [],
+                    }
+                }
+            ),
+            "typed_invalid_source_role",
+        ),
+    ],
+)
+def test_typed_provider_diagnostics_are_fixed_and_text_free(raw, code):
+    with pytest.raises(TypedValidationError) as failure:
+        parse_typed_provider_response(raw)
+    assert failure.value.code == code
+    assert str(failure.value) == "invalid typed proposal"
+    assert "private_canary" not in repr(failure.value)
+
+
 def test_typed_request_and_field_bounds_are_complete():
     interest = TypedMemory(
         "h0123456789abcdef",
@@ -220,7 +432,7 @@ def test_typed_codec_gateway_usage_and_invalid_sdk_output(tmp_path):
     sdk = build_worker_typed_request(
         request, default_openai_provider_config()
     ).to_sdk_kwargs()
-    assert sdk["text"]["format"]["name"] == "private_typed_memory_proposal"
+    assert sdk["text"]["format"]["name"] == "private_typed_memory_proposal_v2"
     assert sdk["store"] is False and sdk["tools"] == []
     malformed = json.loads(wire)
     malformed["model_request"]["memories"][0]["item_id"] = "forged"
@@ -275,7 +487,9 @@ def test_typed_codec_gateway_usage_and_invalid_sdk_output(tmp_path):
             "source_role": "supporting",
         }
     )
-    transport = FakeOpenAITransport([provider_response(invalid)])
+    transport = FakeOpenAITransport(
+        [provider_response(json.dumps({"proposal": json.loads(invalid)}))]
+    )
     state = ProviderStateStore(EventStore(tmp_path / "provider.db"))
     gateway = TrustedOpenAIGateway(
         store=state,
@@ -295,6 +509,8 @@ def test_typed_codec_gateway_usage_and_invalid_sdk_output(tmp_path):
     assert outcome.outcome is GatewayOutcome.INVALID_PROPOSAL and outcome.attempts == 1
     usage = state.usage_attempt("typed:invalid:1")
     assert usage.total_tokens == 120
+    assert usage.rejection_reason == "invalid_purpose_proposal"
+    assert usage.provider_error_code == "typed_invalid_fields"
 
 
 def test_typed_worker_commit_guard_checks_permission_after_provider(tmp_path):
@@ -311,7 +527,9 @@ def test_typed_worker_commit_guard_checks_permission_after_provider(tmp_path):
     state = ProviderStateStore(EventStore(tmp_path / "provider.db"))
     gateway = TrustedOpenAIGateway(
         store=state,
-        transport=FakeOpenAITransport([provider_response(json.dumps(no_change))]),
+        transport=FakeOpenAITransport(
+            [provider_response(json.dumps({"proposal": no_change}))]
+        ),
         config=replace(
             default_openai_provider_config(),
             deployment_stage=DeploymentStage.STAGE_1,
@@ -1184,7 +1402,14 @@ def _typed_worker(socket_path, provider_path, ready, count):
                         "role": "assistant",
                         "status": "completed",
                         "content": [
-                            {"type": "output_text", "text": json.dumps(proposal)}
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    proposal
+                                    if "proposal" in proposal
+                                    else {"proposal": proposal}
+                                ),
+                            }
                         ],
                     }
                 ],
@@ -1438,7 +1663,10 @@ def test_source_deletion_during_typed_provider_attempt_blocks_commit(tmp_path):
                         "role": "assistant",
                         "status": "completed",
                         "content": [
-                            {"type": "output_text", "text": json.dumps(proposal)}
+                            {
+                                "type": "output_text",
+                                "text": json.dumps({"proposal": proposal}),
+                            }
                         ],
                     }
                 ],
@@ -2070,7 +2298,14 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
                         "role": "assistant",
                         "status": "completed",
                         "content": [
-                            {"type": "output_text", "text": json.dumps(proposal)}
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    proposal
+                                    if task != "evolve_private_typed_memory"
+                                    else {"proposal": proposal}
+                                ),
+                            }
                         ],
                     }
                 ],
@@ -2542,7 +2777,7 @@ def test_lost_typed_response_is_uncertain_without_retransmission(
                     else []
                 )
                 + [
-                    provider_response(json.dumps(proposal)),
+                    provider_response(json.dumps({"proposal": proposal})),
                     provider_response(json.dumps(reply)),
                 ]
             ),

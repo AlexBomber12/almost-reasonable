@@ -751,7 +751,7 @@ def _usage(env, *, timeout=120):
     code = (
         "import json,sqlite3; "
         "d=sqlite3.connect('file:/var/lib/pilot-worker/provider.sqlite3?mode=ro',uri=True); "
-        "r=d.execute('SELECT attempt_id,correlation_id,outcome,rejection_reason,input_tokens,output_tokens,total_tokens,retry_count,estimated_cost,cost_estimate_status FROM provider_usage_attempts').fetchall(); "
+        "r=d.execute('SELECT attempt_id,correlation_id,outcome,rejection_reason,input_tokens,output_tokens,total_tokens,retry_count,estimated_cost,cost_estimate_status,provider_error_code FROM provider_usage_attempts').fetchall(); "
         "p=d.execute('SELECT attempt_id FROM provider_attempt_reservations').fetchall(); "
         "print(json.dumps({'attempts':r,'reservations':[x[0] for x in p]}))"
     )
@@ -828,8 +828,8 @@ def _reconcile(
         raise ValueError("current provider or allowance accounting does not match")
     if any(
         row[1] != required_ids[row[0]]
-        or row[2] != "completed"
-        or row[3] is not None
+        or row[2] not in {"completed", "invalid_proposal"}
+        or (row[3] is None) != (row[2] == "completed")
         or row[7] != 0
         for row in current
     ):
@@ -846,6 +846,27 @@ def _reconcile(
     ):
         raise ValueError("required current attempts are missing")
     return rows, current, remaining
+
+
+def _proposal_failure(rows, step):
+    """Return only fixed evidence for a rejected billed operation."""
+    from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
+
+    for row in rows:
+        if row[2] == "invalid_proposal":
+            family = row[0].split(":", 1)[0]
+            family = family if family in {"evolution", "typed", "reply"} else "unknown"
+            code = (
+                row[10]
+                if family == "typed"
+                and len(row) > 10
+                and row[10] in TYPED_DIAGNOSTIC_CODES
+                else "unknown"
+            )
+            return JourneyOutcomeError(
+                step, "invalid_proposal", operation_family=family, diagnostic_code=code
+            )
+    return None
 
 
 def run(args):
@@ -1155,7 +1176,7 @@ def run(args):
                     for kind in ("evolution", "typed")
                 )
             expected.append((reply_id, correlation))
-            _reconcile(
+            _, current, _ = _reconcile(
                 env,
                 baseline,
                 expected,
@@ -1163,6 +1184,9 @@ def run(args):
                 final=len(expected) == required,
                 required=required,
             )
+            failure = _proposal_failure(current, message_id)
+            if failure is not None:
+                raise failure
             return response
 
         def history():
@@ -1239,6 +1263,9 @@ def run(args):
         if isinstance(error, JourneyOutcomeError):
             report["failure_step"] = error.step
             report["failure_model_state"] = error.model_state
+            if error.operation_family is not None:
+                report["failure_operation_family"] = error.operation_family
+                report["failure_diagnostic_code"] = error.diagnostic_code
         report["status"] = (
             "interrupted" if isinstance(error, KeyboardInterrupt) else "failed"
         )

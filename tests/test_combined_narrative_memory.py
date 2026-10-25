@@ -29,6 +29,8 @@ from test_privacy_deletion import (
 
 
 def _result(value):
+    if "fields" in value and "source_role" in value:
+        value = {"proposal": value}
     return response(text=json.dumps(value))
 
 

@@ -22,7 +22,8 @@ from app.cognition.worker_evolution import (
 from app.cognition.worker_typed import (
     TypedModelRequest,
     TypedProposal,
-    parse_typed_proposal,
+    TypedValidationError,
+    parse_typed_provider_response,
 )
 from app.cognition.worker_narrative import (
     NarrativeModelRequest,
@@ -145,6 +146,7 @@ class _ParsedResponse:
     shared: SharedSuggestion | None = None
     narrative: NarrativeProposal | None = None
     rejection_reason: RejectionReason | None = None
+    diagnostic_code: str | None = None
 
 
 class TrustedOpenAIGateway:
@@ -393,7 +395,7 @@ class TrustedOpenAIGateway:
                 outcome=parsed.outcome,
                 response_id=response.response_id,
                 usage=response.usage,
-                error_code=None,
+                error_code=parsed.diagnostic_code,
                 suspend=None,
                 rejection_reason=(
                     parsed.rejection_reason
@@ -753,12 +755,13 @@ def _parse_response(
         )
     if typed:
         try:
-            parsed_typed = parse_typed_proposal(text)
-        except ValueError:
+            parsed_typed = parse_typed_provider_response(text)
+        except TypedValidationError as error:
             return _ParsedResponse(
                 GatewayOutcome.INVALID_PROPOSAL,
                 None,
                 rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+                diagnostic_code=error.code,
             )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
     if narrative:

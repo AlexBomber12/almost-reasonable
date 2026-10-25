@@ -32,6 +32,13 @@ output is one `new_memory`, one `revise_memory` of a shown same-type handle, or
 `no_change`. Type-specific values remain bounded. The application owns all
 identities, timestamps, verification and authorization, and rejects unknown
 fields, duplicate JSON keys, invalid values and forged handles.
+The provider-facing `private_typed_memory_proposal_v2` response wraps that
+operation in `proposal` and constrains static decision, kind, handle,
+source-role, field-shape and numeric combinations. The worker IPC and
+`model-contract-private-typed-v1` request remain unchanged. Local validation
+still enforces shown-handle membership, source provenance, nonblank text and
+UTF-8 byte limits, which the provider schema cannot establish. Invalid typed
+outputs keep their billed usage and a fixed text-free diagnostic code.
 
 The source-bound EventStore receipt stores the selected handles and exact heads,
 the visible head snapshot and all exposed source IDs before provider I/O. The

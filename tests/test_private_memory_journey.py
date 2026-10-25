@@ -20,6 +20,90 @@ from acceptance import private_pilot_live as live
 from app.trusted.openai_transport import OpenAIResponsesTransport
 
 
+def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error(
+    monkeypatch,
+):
+    operations = [
+        ("evolution:abc", "corr"),
+        ("typed:abc", "corr"),
+        ("reply:abc", "corr"),
+    ]
+    rows = [
+        [
+            name + ":1",
+            "corr",
+            "invalid_proposal" if name.startswith("typed:") else "completed",
+            "invalid_purpose_proposal" if name.startswith("typed:") else None,
+            2,
+            1,
+            3,
+            0,
+            "0",
+            "estimated",
+            "typed_invalid_number" if name.startswith("typed:") else None,
+        ]
+        for name, _ in operations
+    ]
+    monkeypatch.setattr(
+        live, "_usage", lambda *_args, **_kwargs: {"attempts": rows, "reservations": []}
+    )
+    monkeypatch.setattr(
+        live,
+        "_allowance",
+        lambda *_args, **_kwargs: {
+            "maximum": MAX_OPERATIONS,
+            "consumed": [name for name, _ in operations],
+        },
+    )
+    baseline = {
+        "attempts": set(),
+        "rows": {},
+        "consumed": set(),
+        "maximum": MAX_OPERATIONS,
+    }
+    assert (
+        len(
+            live._reconcile(
+                {},
+                baseline,
+                operations,
+                {"max_aggregate_input_tokens": 100, "max_aggregate_output_tokens": 100},
+                required=MAX_OPERATIONS,
+            )[1]
+        )
+        == 3
+    )
+    failure = live._proposal_failure(rows, "robot-original")
+    assert failure.step == "robot-original"
+    assert failure.operation_family == "typed"
+    assert failure.diagnostic_code == "typed_invalid_number"
+    other = list(rows[2])
+    other[2:4] = ["invalid_proposal", "invalid_purpose_proposal"]
+    other[10] = "typed_invalid_number"
+    assert (
+        live._proposal_failure([other], "robot-original").diagnostic_code == "unknown"
+    )
+    rows[1][4] = None
+    with pytest.raises(ValueError, match="usage is unavailable"):
+        live._reconcile(
+            {},
+            baseline,
+            operations,
+            {"max_aggregate_input_tokens": 100, "max_aggregate_output_tokens": 100},
+            required=MAX_OPERATIONS,
+        )
+    unsafe = JourneyOutcomeError(
+        "private_canary",
+        "invalid_proposal",
+        operation_family="private_canary",
+        diagnostic_code="private_canary",
+    )
+    assert unsafe.step == "<invalid>"
+    assert unsafe.operation_family == "unknown"
+    assert unsafe.diagnostic_code == "unknown"
+    assert "private_canary" not in str(unsafe)
+
+
 def test_robot_journey_requires_actual_persistent_projection_after_eviction():
     sent = []
     deleted = False
@@ -201,8 +285,11 @@ def test_mandatory_answer_turn_rejects_no_action(step):
     assert failure.value.model_state == "no_action"
 
 
+@pytest.mark.parametrize("reject_typed", [False, True])
 def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accounting(
     tmp_path,
+    reject_typed,
+    monkeypatch,
 ):
     from dataclasses import replace
     import os
@@ -281,6 +368,21 @@ def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accoun
                             "kind": "durable_interest",
                             "source_role": "supporting",
                             "fields": {
+                                "topic": "Synthetic invalid interest",
+                                "strength": 101,
+                                "status": "active",
+                                "reason_for_interest": "Synthetic reason",
+                            },
+                        }
+                    )
+                    if reject_typed and index == 1
+                    else _result(
+                        {
+                            "decision": "new_memory",
+                            "handle": None,
+                            "kind": "durable_interest",
+                            "source_role": "supporting",
+                            "fields": {
                                 "topic": "Ладога",
                                 "strength": 70,
                                 "status": "active",
@@ -338,7 +440,10 @@ def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accoun
     )
     server.start()
     worker = Thread(
-        target=lambda: server.serve(max_connections=MAX_OPERATIONS), daemon=True
+        target=lambda: server.serve(
+            max_connections=3 if reject_typed else MAX_OPERATIONS
+        ),
+        daemon=True,
     )
     worker.start()
     projections = []
@@ -381,6 +486,75 @@ def test_http_worker_no_action_filler_reaches_restart_recall_deletion_and_accoun
             deleted = True
             assert active_gate.reconcile()
             return {"status": disposition}
+
+        if reject_typed:
+            assert send("robot-original", FIRST)["model_state"] == "completed"
+            with sqlite3.connect(tmp_path / "provider.db") as db:
+                rows = db.execute(
+                    "SELECT attempt_id, correlation_id, outcome, rejection_reason, "
+                    "input_tokens, output_tokens, total_tokens, retry_count, "
+                    "estimated_cost, cost_estimate_status, provider_error_code "
+                    "FROM provider_usage_attempts ORDER BY started_at, attempt_id"
+                ).fetchall()
+                assert db.execute(
+                    "SELECT count(*) FROM provider_attempt_reservations"
+                ).fetchone() == (0,)
+            assert len(rows) == 3
+            assert [row[2] for row in rows].count("invalid_proposal") == 1
+            assert (
+                next(row[3] for row in rows if row[2] == "invalid_proposal")
+                == "invalid_purpose_proposal"
+            )
+            assert all(
+                row[4] is not None and row[5] is not None and row[7] == 0
+                for row in rows
+            )
+            assert len({row[0] for row in rows}) == 3
+            operations = [(row[0].removesuffix(":1"), row[1]) for row in rows]
+            monkeypatch.setattr(
+                live,
+                "_usage",
+                lambda *_args, **_kwargs: {"attempts": rows, "reservations": []},
+            )
+            monkeypatch.setattr(
+                live,
+                "_allowance",
+                lambda *_args, **_kwargs: {
+                    "maximum": MAX_OPERATIONS,
+                    "consumed": [name for name, _ in operations],
+                },
+            )
+            assert (
+                len(
+                    live._reconcile(
+                        {},
+                        {
+                            "attempts": set(),
+                            "rows": {},
+                            "consumed": set(),
+                            "maximum": MAX_OPERATIONS,
+                        },
+                        operations,
+                        {
+                            "max_aggregate_input_tokens": 10_000,
+                            "max_aggregate_output_tokens": 10_000,
+                        },
+                        required=MAX_OPERATIONS,
+                    )[1]
+                )
+                == 3
+            )
+            from app.core.self_state_store import SelfStateStore
+            from test_cognition_pipeline import principal
+
+            assert (
+                SelfStateStore(events).retrieve_private_candidates(principal("a")) == ()
+            )
+            failure = live._proposal_failure(rows, "robot-original")
+            assert failure.operation_family == "typed"
+            assert failure.diagnostic_code == "typed_invalid_number"
+            assert failure.model_state == "invalid_proposal"
+            return
 
         run_robot_journey(send, restart, inspect, delete)
         assert restarted and deleted
