@@ -6,6 +6,7 @@ import json
 
 import pytest
 
+from app.privacy.models import ConsentPurpose
 from test_private_web_http import Browser, header_values, web as web_fixture
 from test_participant_privacy_http import (
     acknowledge,
@@ -143,6 +144,49 @@ def test_privacy_previews_are_escaped_scoped_and_erased(journey):
     assert b"PREVIEW-A" not in body
     assert "Заблокировано удалением" in body.decode()
     assert "Удалено" in body.decode()
+
+
+@pytest.mark.parametrize(
+    ("purpose", "label"),
+    [
+        (ConsentPurpose.IDENTIFIABLE_QUOTATION, "Дословно"),
+        (ConsentPurpose.IDENTIFIABLE_DISCLOSURE, "С указанием автора"),
+        (ConsentPurpose.SHARED_ABSTRACTION, "Обобщение"),
+    ],
+)
+def test_privacy_renders_supported_grants_and_keeps_recovery_and_revocation(
+    journey, monkeypatch, purpose, label
+):
+    *_, a, _b = journey
+    acknowledge(a)
+    source = source_for(a, "SUPPORTED-PURPOSE-PREVIEW")
+    assert (
+        post(a, "/api/privacy/grants", {**grant_for(source), "purpose": purpose})[0]
+        == "201 Created"
+    )
+    status, _, body = a.request("GET", "/privacy")
+    assert status == "200 OK"
+    assert label in body.decode()
+    assert "Отозвать" in body.decode()
+    assert b"SUPPORTED-PURPOSE-PREVIEW" in body
+    monkeypatch.setattr(a.app._privacy.gate, "_generation", None)
+    status, _, body = a.request("GET", "/privacy")
+    assert status == "200 OK"
+    assert label in body.decode()
+    assert "Повторить проверку" in body.decode()
+    assert "Выйти" in body.decode()
+    assert b"SUPPORTED-PURPOSE-PREVIEW" not in body
+    assert (
+        post(
+            a,
+            "/api/privacy/revocations",
+            {"operation_id": "revoke-supported", "consent_id": "consent:grant-1"},
+        )[0]
+        == "201 Created"
+    )
+    status, _, body = a.request("GET", "/privacy")
+    assert status == "200 OK"
+    assert "Отозвано" in body.decode()
 
 
 def test_onboarding_is_concise_and_keeps_complete_notice(journey):

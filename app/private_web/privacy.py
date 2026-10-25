@@ -201,6 +201,7 @@ class ParticipantPrivacyControls:
         purpose_names = {
             "identifiable_quotation": "Дословно",
             "identifiable_disclosure": "С указанием автора",
+            "shared_abstraction": "Обобщение",
         }
         rows = []
         for row in grants:
