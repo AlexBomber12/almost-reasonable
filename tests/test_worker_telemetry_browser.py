@@ -1,5 +1,7 @@
 """Browser labels keep worker evidence separate from application control."""
 
+from datetime import UTC, datetime
+
 from playwright.sync_api import expect, sync_playwright
 import os
 from threading import Event, Thread
@@ -61,7 +63,7 @@ def test_gateway_rate_limit_renders_specific_safe_owner_diagnosis(tmp_path):
                     "synthetic browser password"
                 )
                 page.get_by_role("button", name="Войти", exact=True).click()
-                page.locator("#recent-activity summary").click()
+                page.locator("#diagnostics summary").click()
                 expect(page.locator("#recent-worker")).to_contain_text(
                     "Ограничение частоты запросов провайдера"
                 )
@@ -103,7 +105,7 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
                 data = response.json()
                 data["worker"] = {
                     "available": True,
-                    "collected_at": "2026-10-19T12:00:00+00:00",
+                    "collected_at": datetime.now(UTC).isoformat(),
                     "stop": {"valid": True, "active": False},
                     "provider": {
                         "available": True,
@@ -159,7 +161,7 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
             expect(page.locator("#latest-outcome")).to_contain_text(
                 "Предложение отклонено"
             )
-            page.locator("#recent-activity summary").click()
+            page.locator("#diagnostics summary").click()
             expect(page.locator("#recent-application")).to_contain_text(
                 "Предложение отклонено"
             )
@@ -178,7 +180,7 @@ def test_worker_telemetry_available_and_unavailable_rendering(tmp_path):
                 "Резервирования воркера без окончательного результата1"
             )
             expect(page.locator("#status")).to_contain_text(
-                "Фактическое использование провайдераНеизвестно: итоговые данные неполны"
+                "Полнота учёта воркераИтоговые данные неполны"
             )
             expect(page.locator("#status")).to_contain_text(
                 "Приостановка расходов воркераПриостановлены"

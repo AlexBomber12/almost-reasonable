@@ -27,13 +27,12 @@ from app.privacy.models import (
     require_token,
 )
 from app.privacy.notice import (
-    NARRATIVE_DISCLOSURE_RU,
-    NARRATIVE_DISCLOSURE_VERSION,
     NOTICE_RU,
     NoticeService,
 )
 
 from .auth import AuthStore, AuthenticatedSession
+from .presentation import back_header, date_label, document
 
 
 class PrivacyControlError(ValueError):
@@ -95,7 +94,7 @@ class ParticipantPrivacyControls:
                 "WHERE e.event_id=? AND e.audience_principal_id=? "
                 "AND e.event_type='participant_input' AND e.channel='private_chat' "
                 "AND p.audience_principal_id=e.audience_principal_id "
-                "AND p.retention_status='active'",
+                "AND p.audience_principal_id=e.audience_principal_id AND p.retention_status='active'",
                 (reference, session.principal_id.value),
             ).fetchone()
             if (
@@ -106,6 +105,23 @@ class ParticipantPrivacyControls:
                 raise PrivacyControlError(404)
             return row[0]
 
+    @staticmethod
+    def _notice_text() -> str:
+        return (
+            '<div class="notice-text">'
+            + "".join(
+                f"<p>{escape(paragraph)}</p>"
+                for paragraph in NOTICE_RU.strip().split("\n\n")
+            )
+            + "</div>"
+        )
+
+    @staticmethod
+    def _page_document(title: str, content: str) -> bytes:
+        return document(
+            title, content, script='<script src="/assets/privacy.js" defer></script>'
+        )
+
     def page(
         self,
         session: AuthenticatedSession,
@@ -114,9 +130,35 @@ class ParticipantPrivacyControls:
         source_before: str | None = None,
         deletion_before: str | None = None,
     ) -> bytes:
-        acknowledged = self.acknowledged(session)
-        status = "Подтверждено" if acknowledged else "Требуется подтверждение"
+        if not self.acknowledged(session):
+            return self._page_document(
+                "Прежде чем начать",
+                (
+                    f'<main class="onboarding" data-csrf="{escape(csrf)}">'
+                    '<span class="brand__mark" aria-hidden="true">AR</span>'
+                    '<button class="theme-toggle" type="button">Тема</button>'
+                    "<h1>Прежде чем начать</h1><ol>"
+                    "<li><p><b>Где обрабатываются данные.</b> Текст может передаваться OpenAI; "
+                    "трафик туннеля обрабатывает Cloudflare. Владелец и оператор инфраструктуры "
+                    "технически могут иметь доступ к локальному хранилищу.</p></li>"
+                    "<li><p><b>Ваши слова не публикуются автоматически.</b> Безопасные обобщения могут "
+                    "влиять на агента. Для узнаваемой цитаты или раскрытия нужно отдельное точное разрешение.</p></li>"
+                    "<li><p><b>Можно запросить удаление.</b> Локальное удаление доступно в настройках "
+                    "приватности. У внешних сервисов действуют их правила хранения.</p></li></ol>"
+                    "<details><summary>Полный текст уведомления</summary>"
+                    + self._notice_text()
+                    + "</details>"
+                    '<p id="privacy-feedback" role="status" aria-live="polite"></p>'
+                    '<form method="post" action="/api/privacy/notice" data-endpoint="/api/privacy/notice">'
+                    f'<input type="hidden" name="version" value="{escape(NOTICE_VERSION)}">'
+                    "<button>Понятно, к разговору</button></form></main>"
+                ),
+            )
         with closing(self.ledger._open()) as db:
+            acknowledgement = db.execute(
+                "SELECT acknowledged_at FROM notice_acknowledgements WHERE principal_id=? AND notice_version=?",
+                (session.principal_id.value, NOTICE_VERSION),
+            ).fetchone()
             cursor = None
             if before is not None:
                 self._token(before)
@@ -143,123 +185,174 @@ class ParticipantPrivacyControls:
             grants = db.execute(query, params).fetchall()
         has_more = len(grants) > 20
         grants = grants[:20]
-        next_link = (
-            f'<a href="/privacy?before={quote(grants[-1][0], safe="")}">'
-            "Следующие согласия</a>"
-            if has_more
-            else ""
-        )
+        next_link = self._next_link("before", grants[-1][0]) if has_more else ""
         now = self.clock()
-        audience_names = {
-            "public": "Публичная аудитория",
-        }
+        if source_before is not None:
+            self._token(source_before)
+        unavailable = False
+        try:
+            source_rows, source_has_more, previews = self.gate.authorized(
+                lambda: self._page_sources(session, source_before, grants)
+            )
+        except PrivacyReadBlocked:
+            source_rows, source_has_more, previews = (), False, {}
+            unavailable = True
         purpose_names = {
-            "identifiable_quotation": "Идентифицируемая цитата",
-            "identifiable_disclosure": "Идентифицируемое раскрытие",
+            "identifiable_quotation": "Дословно",
+            "identifiable_disclosure": "С указанием автора",
         }
-        rows = "".join(
-            "<li>"
-            + " · ".join(
-                escape(str(value))
-                for value in (
-                    row[0],
-                    row[1],
-                    audience_names.get(row[2], row[2]),
-                    purpose_names.get(row[3], row[3]),
-                    row[4],
-                )
-            )
-            + (
-                " · Использование заблокировано удалением"
+        rows = []
+        for row in grants:
+            label = (
+                "Заблокировано удалением"
                 if row[6]
-                else " · Отозвано"
+                else "Отозвано"
                 if row[5]
-                else " · Срок истёк"
+                else "Истекло"
                 if _time(row[4]) <= now
-                else " · Действует до срока"
+                else "Действует"
             )
-            + (
+            active = label == "Действует"
+            preview = previews.get(row[1], "Текст сообщения недоступен")
+            revoke = (
                 '<form method="post" action="/api/privacy/revocations" data-endpoint="/api/privacy/revocations">'
                 f'<input type="hidden" name="consent_id" value="{escape(row[0])}">'
                 "<button>Отозвать</button></form>"
                 if row[5] is None
                 else ""
             )
-            + "</li>"
-            for row in grants
-        )
-        deletion_labels = {
-            "pending": "Ожидает удаления",
-            "applied": "Локальное удаление завершено",
-            "incomplete_blocked": "Удаление не завершено",
-        }
+            rows.append(
+                f'<li><span class="preview">{escape(preview[:160])}</span>'
+                f'<div class="row-meta"><span>{purpose_names[row[3]]} · Публично, в Threads · '
+                f"до {date_label(_time(row[4]))}</span>"
+                f'<span class="badge{" badge--ok" if active else ""}">{label}</span>{revoke}</div></li>'
+            )
         deletion_status = self.status(session, deletion_before)
-        deletion_rows = "".join(
-            f"<li>{escape(row['operation_id'])}: "
-            f"{deletion_labels.get(row['status'], 'Операция отклонена')}</li>"
-            for row in deletion_status["deletions"]
-        )
-        deletion_next_link = (
-            f'<a href="/privacy?deletion_before={quote(deletion_status["next_cursor"], safe="")}">'
-            "Следующие удаления</a>"
-            if deletion_status["next_cursor"] is not None
+        deletion_dates = self._deletion_dates(session, deletion_status["deletions"])
+        deletion_rows = []
+        labels = {
+            "pending": "Ожидает",
+            "applied": "Удалено",
+            "incomplete_blocked": "Не завершено",
+        }
+        for row in deletion_status["deletions"]:
+            retry = (
+                '<form method="post" action="/api/privacy/reconcile" data-endpoint="/api/privacy/reconcile">'
+                "<button>Повторить</button></form>"
+                if row["status"] in {"pending", "incomplete_blocked"}
+                else ""
+            )
+            deletion_rows.append(
+                f"<li><span>Удаление от {date_label(_time(deletion_dates[row['operation_id']]))}</span>"
+                f'<div class="row-meta"><span class="badge">{labels.get(row["status"], "Операция отклонена")}</span>'
+                f"{retry}</div></li>"
+            )
+        deletion_next = (
+            self._next_link("deletion_before", deletion_status["next_cursor"])
+            if deletion_status["next_cursor"]
             else ""
         )
-        try:
-            if source_before is not None:
-                self._token(source_before)
-            source_rows, source_has_more = self.gate.authorized(
-                lambda: self._source_ids(session, source_before)
-            )
-        except PrivacyReadBlocked:
-            source_rows = ()
-            source_has_more = False
         source_links = "".join(
-            f'<li><a href="/privacy/source?ref={quote(ref, safe="")}">'
-            f"Сообщение {index}</a></li>"
-            for index, ref in enumerate(source_rows, 1)
+            f'<li><a class="source-link" href="/privacy/source?ref={quote(ref, safe="")}">'
+            f'<span class="preview">{escape(content[:160])}</span>'
+            f'<span class="muted">{date_label(_time(occurred))}</span></a></li>'
+            for ref, content, occurred in source_rows
         )
-        source_next_link = (
-            f'<a href="/privacy?source_before={quote(source_rows[-1], safe="")}">'
-            "Следующие источники</a>"
+        source_next = (
+            self._next_link("source_before", source_rows[-1][0])
             if source_has_more
             else ""
         )
-        return (
-            '<!doctype html><html lang="ru"><meta charset="utf-8">'
-            "<title>Приватность</title><h1>Приватность</h1>"
-            '<nav><a href="/chat">Чат</a></nav>'
-            f"<p>Версия {escape(NOTICE_VERSION)}: {status}</p>"
-            f"<pre>{escape(NOTICE_RU)}</pre>"
-            '<section id="narrative-disclosure" '
-            f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
-            f"<p>{escape(NARRATIVE_DISCLOSURE_RU)}</p></section>"
-            f'<main data-csrf="{escape(csrf)}">'
-            '<form method="post" action="/api/privacy/notice" data-endpoint="/api/privacy/notice"><h2>Подтверждение уведомления</h2>'
-            f'<input type="hidden" name="version" value="{escape(NOTICE_VERSION)}">'
-            "<button>Подтвердить уведомление</button></form>"
-            "<p>Отдельное согласие необязательно для приватного разговора.</p>"
-            "<h2>Мои источники</h2><ol>"
-            + source_links
+        ack_label = (
+            "Подтверждено " + date_label(_time(acknowledgement[0]))
+            if acknowledgement
+            else "Подтверждено"
+        )
+        blocked = (
+            '<p class="feedback">Сообщения временно недоступны: удаление ещё не завершено.</p>'
+            if unavailable
+            else ""
+        )
+        deletions = (
+            '<section><h2>Удаления</h2><ol class="card-list">'
+            + "".join(deletion_rows)
             + "</ol>"
-            + source_next_link
-            + "<h2>Согласия</h2><ol>"
-            + rows
-            + "</ol>"
-            + next_link
-            + "<h2>Статус локального удаления</h2><ol>"
-            + deletion_rows
-            + "</ol>"
-            + deletion_next_link
-            + '<form method="post" action="/api/privacy/reconcile" data-endpoint="/api/privacy/reconcile"><h2>Повторить локальное удаление</h2>'
-            "<button>Проверить незавершённые операции</button></form>"
-            '<button id="privacy-logout">Выйти</button>'
-            '</main><script src="/assets/privacy.js"></script></html>'
-        ).encode()
+            + deletion_next
+            + "</section>"
+            if deletion_rows
+            else ""
+        )
+        return self._page_document(
+            "Приватность",
+            (
+                '<div class="page-shell">'
+                + back_header("Приватность", "/chat")
+                + f'<main class="privacy-main" data-csrf="{escape(csrf)}">'
+                '<p id="privacy-feedback" class="toast" role="status" aria-live="polite"></p>'
+                '<details class="card"><summary>Уведомление о данных'
+                f'<span class="muted"> · {ack_label}</span></summary>{self._notice_text()}</details>'
+                f'<section><h2>Мои сообщения</h2>{blocked}<ol class="card-list">'
+                + (
+                    source_links
+                    or '<li class="muted">Пока нет доступных сообщений</li>'
+                )
+                + "</ol>"
+                + source_next
+                + '<p class="hint">Откройте сообщение, чтобы разрешить цитату или удалить его.</p></section>'
+                '<section><h2>Разрешения на публикацию</h2><ol class="card-list">'
+                + ("".join(rows) or '<li class="muted">Пока нет</li>')
+                + "</ol>"
+                + next_link
+                + "</section>"
+                + deletions
+                + "</main></div>"
+            ),
+        )
+
+    @staticmethod
+    def _next_link(field: str, cursor: str) -> str:
+        return f'<a class="button secondary" href="/privacy?{field}={quote(cursor, safe="")}">Показать ещё</a>'
+
+    def _page_sources(self, session, before, grants):
+        sources, more = self._source_ids(session, before)
+        references = tuple(row[1] for row in grants if not row[6])
+        previews = {}
+        if references:
+            with closing(self.store._open()) as db:
+                self.store._verify_current_schema(db)
+                placeholders = ",".join("?" for _ in references)
+                rows = db.execute(
+                    "SELECT e.event_id,p.content FROM event_envelopes e "
+                    "JOIN private_payloads p ON p.payload_id=e.payload_id "
+                    "WHERE e.audience_principal_id=? AND p.audience_principal_id=e.audience_principal_id "
+                    "AND e.event_type='participant_input' AND e.channel='private_chat' "
+                    "AND p.retention_status='active' AND e.event_id IN ("
+                    + placeholders
+                    + ") LIMIT 20",
+                    (session.principal_id.value, *references),
+                ).fetchall()
+                previews = dict(rows)
+        return sources, more, previews
+
+    def _deletion_dates(self, session, deletions):
+        if not deletions:
+            return {}
+        with closing(self.ledger._open()) as db:
+            placeholders = ",".join("?" for _ in deletions)
+            return dict(
+                db.execute(
+                    "SELECT operation_id,requested_at FROM deletion_records WHERE principal_id=? "
+                    "AND operation_id IN (" + placeholders + ") LIMIT 20",
+                    (
+                        session.principal_id.value,
+                        *(row["operation_id"] for row in deletions),
+                    ),
+                ).fetchall()
+            )
 
     def _source_ids(
         self, session: AuthenticatedSession, before: str | None = None
-    ) -> tuple[tuple[str, ...], bool]:
+    ) -> tuple[tuple[tuple[str, str, str], ...], bool]:
         with closing(self.store._open()) as db:
             self.store._verify_current_schema(db)
             cursor = None
@@ -269,16 +362,17 @@ class ParticipantPrivacyControls:
                     "JOIN private_payloads p ON p.payload_id=e.payload_id "
                     "WHERE e.event_id=? AND e.audience_principal_id=? "
                     "AND e.event_type='participant_input' AND e.channel='private_chat' "
-                    "AND p.retention_status='active'",
+                    "AND p.audience_principal_id=e.audience_principal_id AND p.retention_status='active'",
                     (before, session.principal_id.value),
                 ).fetchone()
                 if cursor is None:
                     raise PrivacyControlError(404)
             query = (
-                "SELECT e.event_id FROM event_envelopes e "
+                "SELECT e.event_id,p.content,e.occurred_at FROM event_envelopes e "
                 "JOIN private_payloads p ON p.payload_id=e.payload_id "
                 "WHERE e.audience_principal_id=? AND e.event_type='participant_input' "
-                "AND e.channel='private_chat' AND p.retention_status='active' "
+                "AND e.channel='private_chat' AND p.audience_principal_id=e.audience_principal_id "
+                "AND p.retention_status='active' "
             )
             params: tuple[str, ...] = (session.principal_id.value,)
             if cursor is not None:
@@ -286,40 +380,61 @@ class ParticipantPrivacyControls:
                 params += (cursor[0], cursor[0], cursor[1])
             query += "ORDER BY e.occurred_at DESC,e.event_id DESC LIMIT 21"
             rows = db.execute(query, params).fetchall()
-        return tuple(row[0] for row in rows[:20]), len(rows) > 20
+        return tuple(rows[:20]), len(rows) > 20
 
     def source_page(
         self, session: AuthenticatedSession, csrf: str, reference: str
     ) -> bytes:
         content = self.source(session, reference)
+        occurred = self.gate.authorized(lambda: self._source_date(session, reference))
+        title = "Сообщение от " + date_label(_time(occurred))
         ref = escape(reference)
-        return (
-            '<!doctype html><html lang="ru"><meta charset="utf-8">'
-            "<title>Источник</title><h1>Управление источником</h1>"
-            f'<pre>{escape(content)}</pre><main data-csrf="{escape(csrf)}">'
-            "<p>Согласие относится только к этому точному сообщению, аудитории, цели и сроку.</p>"
-            '<form method="post" action="/api/privacy/grants" data-endpoint="/api/privacy/grants"><h2>Дать согласие</h2>'
-            f'<input type="hidden" name="source" value="{ref}">'
-            '<label>Аудитория <select name="audience">'
-            '<option value="" selected disabled>Выберите аудиторию</option>'
-            '<option value="public">Публичная аудитория</option></select></label>'
-            '<label>Цель <select name="purpose">'
-            '<option value="" selected disabled>Выберите цель</option>'
-            '<option value="identifiable_quotation">Идентифицируемая цитата</option>'
-            '<option value="identifiable_disclosure">Идентифицируемое раскрытие</option>'
-            '</select></label><label>Срок <select name="validity_hours">'
-            '<option value="" selected disabled>Выберите срок</option>'
-            '<option value="1">1 час</option><option value="24">24 часа</option>'
-            '<option value="168">7 дней</option></select></label>'
-            "<button>Дать отдельное согласие</button></form>"
-            "<p>Удаление этого источника инвалидирует зависимые локальные памяти и ответы. "
-            "Оно не удаляет данные у внешних обработчиков и уже опубликованный материал.</p>"
-            '<form method="post" action="/api/privacy/deletions" data-endpoint="/api/privacy/deletions"><h2>Удалить источник</h2>'
-            f'<input type="hidden" name="source" value="{ref}">'
-            '<label><input type="checkbox" name="confirm" value="delete" required>'
-            "Подтверждаю локальное удаление</label><button>Удалить</button></form>"
-            '</main><script src="/assets/privacy.js"></script></html>'
-        ).encode()
+        return self._page_document(
+            title,
+            (
+                '<div class="page-shell">'
+                + back_header(title, "/privacy")
+                + f'<main class="privacy-main" data-csrf="{escape(csrf)}">'
+                f'<div class="source-content">{escape(content)}</div>'
+                '<p id="privacy-feedback" role="status" aria-live="polite"></p>'
+                '<form class="card" method="post" action="/api/privacy/grants" data-endpoint="/api/privacy/grants">'
+                "<h2>Разрешить публикацию</h2>"
+                '<p class="hint">Разрешение относится только к полному сообщению выше, выбранной цели, публичной аудитории и сроку.</p>'
+                f'<input type="hidden" name="source" value="{ref}"><input type="hidden" name="audience" value="public">'
+                '<fieldset class="choice-group"><legend>Как</legend><div class="segments">'
+                '<label><input type="radio" name="purpose" value="identifiable_quotation" checked>Дословно</label>'
+                '<label><input type="radio" name="purpose" value="identifiable_disclosure">С указанием автора</label></div></fieldset>'
+                '<fieldset class="choice-group"><legend>На срок</legend><div class="segments">'
+                '<label><input type="radio" name="validity_hours" value="1">1 час</label>'
+                '<label><input type="radio" name="validity_hours" value="24" checked>Сутки</label>'
+                '<label><input type="radio" name="validity_hours" value="168">Неделя</label></div></fieldset>'
+                '<p id="purpose-help" class="hint">Агент сможет дословно процитировать это сообщение. '
+                "Цитата может быть узнаваемой.</p>"
+                '<p class="hint">Публично, в Threads. Разрешение можно отозвать, но уже опубликованное не вернуть.</p>'
+                "<button>Разрешить</button></form>"
+                '<form class="card danger-zone" method="post" action="/api/privacy/deletions" data-endpoint="/api/privacy/deletions">'
+                '<h2>Удалить сообщение</h2><p class="hint">Запросить локальное удаление сообщения и зависимых данных. '
+                "Операция может остаться незавершённой.</p>"
+                f'<input type="hidden" name="source" value="{ref}">'
+                '<input type="hidden" name="confirm" value="delete">'
+                '<button class="danger-button">Удалить</button></form></main></div>'
+                '<dialog id="delete-dialog" role="dialog" aria-modal="true" aria-labelledby="delete-title">'
+                '<h2 id="delete-title">Удалить сообщение?</h2>'
+                "<p>Будет запрошено удаление сообщения и зависимых данных здесь. Удаление может не завершиться. "
+                "У OpenAI, Cloudflare и Meta действуют их правила хранения. Уже опубликованное не возвращается.</p>"
+                '<div class="dialog-actions"><button id="delete-cancel" class="secondary" autofocus>Отмена</button>'
+                '<button id="delete-confirm" class="danger-button">Удалить</button></div></dialog>'
+            ),
+        )
+
+    def _source_date(self, session, reference):
+        # Recheck the same source under the read gate before returning metadata.
+        self._source_unfenced(session, reference)
+        with closing(self.store._open()) as db:
+            return db.execute(
+                "SELECT occurred_at FROM event_envelopes WHERE event_id=? AND audience_principal_id=?",
+                (reference, session.principal_id.value),
+            ).fetchone()[0]
 
     @staticmethod
     def _current(check: Callable[[], bool]) -> None:

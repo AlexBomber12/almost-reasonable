@@ -2,15 +2,99 @@
 let csrf = null;
 const byId = id => document.getElementById(id);
 const message = text => { byId('message').textContent = text; };
+try {
+  const theme = localStorage.getItem('ar-theme');
+  if (theme === 'dark' || theme === 'light') document.documentElement.dataset.theme = theme;
+} catch (_) { /* System theme remains available. */ }
+const themeLabel = () => {
+  const dark = document.documentElement.dataset.theme === 'dark' || (!document.documentElement.dataset.theme && matchMedia('(prefers-color-scheme: dark)').matches);
+  byId('theme-toggle').textContent = dark ? 'Светлая тема' : 'Тёмная тема';
+  return dark;
+};
+byId('theme-toggle').addEventListener('click', () => {
+  const theme = themeLabel() ? 'light' : 'dark'; document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('ar-theme', theme); } catch (_) { /* In-memory preference. */ }
+  themeLabel();
+});
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change', themeLabel);
+themeLabel();
+function dateText(value) {
+  const date = new Date(value);
+  return value && Number.isFinite(date.getTime()) ? date.toLocaleString('ru-RU', {day:'numeric', month:'long', hour:'2-digit', minute:'2-digit'}) : 'Дата не указана';
+}
+const dialog = byId('owner-dialog');
+  dialog.addEventListener('keydown', event => {
+    if (event.key !== 'Tab') return;
+    const buttons = [...dialog.querySelectorAll('button:not(:disabled)')];
+    const first = buttons[0], last = buttons[buttons.length - 1];
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault(); last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault(); first.focus();
+    }
+  });
+
+function ask(title, description, action) {
+  byId('dialog-title').textContent = title; byId('dialog-description').textContent = description;
+  byId('dialog-confirm').textContent = action;
+  dialog.showModal();
+  return new Promise(resolve => {
+    const yes = () => { dialog.returnValue = 'yes'; dialog.close(); };
+    const no = () => { dialog.returnValue = ''; dialog.close(); };
+    byId('dialog-confirm').addEventListener('click', yes);
+    byId('dialog-cancel').addEventListener('click', no);
+    dialog.addEventListener('close', () => {
+      byId('dialog-confirm').removeEventListener('click', yes);
+      byId('dialog-cancel').removeEventListener('click', no);
+      resolve(dialog.returnValue === 'yes');
+    }, {once:true});
+    dialog.returnValue = '';
+  });
+}
+function controlsVisible(visible) {
+  byId('control-panel').hidden = !visible; byId('login-panel').hidden = visible;
+  byId('refresh').hidden = !visible; byId('logout').hidden = !visible;
+}
+let snapshot = null;
+let receivedAt = 0;
+function tile(id, text, state) { byId(id).textContent = text; byId(id).dataset.state = state; }
+function renderTiles() {
+  if (!snapshot) return;
+  const data = snapshot, worker = data.worker;
+  const stale = Date.now() - receivedAt > 30000;
+  const workerFresh = !stale && worker.available && Number.isFinite(Date.parse(worker.collected_at)) && Math.abs(Date.now() - Date.parse(worker.collected_at)) <= 30000;
+  tile('application-state', stale ? 'Данные устарели' : data.application_stop.active ? 'Stop включён' : 'Stop выключен', stale ? 'unknown' : data.application_stop.active ? 'stopped' : 'observed');
+  tile('worker-state', !worker.available ? 'Недоступен' : !workerFresh ? 'Данные устарели' : !worker.stop.valid ? 'Stop неизвестен' : worker.stop.active ? 'Stop включён' : 'Stop выключен', workerFresh && worker.stop.valid ? (worker.stop.active ? 'stopped' : 'observed') : 'unknown');
+  byId('worker-detail').textContent = worker.available ? `Наблюдение: ${dateText(worker.collected_at)}` : 'Наблюдение воркера недоступно';
+  const localSuspended = data.application_provider.spend_suspended;
+  const provider = worker.provider;
+  const providerKnown = workerFresh && provider.available;
+  const bothSuspended = !stale && localSuspended && providerKnown && provider.spend_suspended;
+  tile('spend-state', stale ? 'Данные устарели' : bothSuspended ? 'Приостановлены по учёту' : localSuspended || (providerKnown && provider.spend_suspended) ? 'Частичная приостановка' : 'Приостановка не подтверждена', bothSuspended ? 'stopped' : 'unknown');
+  byId('spend-detail').textContent = `Попытки IPC: ${data.application_provider.attempt_count}; воркер: ${providerKnown ? provider.attempt_count : 'нет свежих данных'}. Биллинг недоступен.`;
+  const stopped = !stale && data.application_stop.active && workerFresh && worker.stop.valid && worker.stop.active;
+  byId('emergency-zone').hidden = stopped; byId('worker-local-stop').hidden = !stopped;
+  byId('stop').setAttribute('aria-pressed', String(data.application_stop.active));
+  byId('resume').setAttribute('aria-pressed', String(!data.application_stop.active));
+}
+setInterval(renderTiles, 1000);
 const stopResult = value => ({pending: 'Ожидается', confirmed: 'Подтверждено', unavailable: 'Недоступно', uncertain: 'Неизвестно'})[value] || 'Неизвестно';
 async function api(path, method = 'GET', payload = null, token = null) {
   const options = {method, credentials: 'same-origin', headers: {}};
   if (payload !== null) {options.headers['Content-Type'] = 'application/json'; options.body = JSON.stringify(payload);}
   if (token !== null) options.headers['X-CSRF-Token'] = token;
-  const response = await fetch(path, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(response.status === 401 ? 'Требуется вход владельца.' : `Запрос отклонён (${response.status}).`);
-  return data;
+  let response;
+  try { response = await fetch(path, options); }
+  catch (_) { throw new Error('Не удалось связаться с панелью. Статус операции неизвестен.'); }
+  if (!response.ok) {
+    const text = path === '/login' && response.status === 401 ? 'Неверное имя или пароль' :
+      response.status === 401 ? 'Требуется вход владельца.' :
+      response.status === 429 ? 'Слишком много попыток. Попробуйте позже.' :
+      'Не удалось выполнить запрос. Попробуйте ещё раз.';
+    throw new Error(text);
+  }
+  try { return await response.json(); }
+  catch (_) { throw new Error('Не удалось прочитать ответ. Проверьте состояние отдельно.'); }
 }
 function show(name, value) {
   const key = document.createElement('dt'); key.textContent = name;
@@ -22,23 +106,30 @@ const reasons = {invalid_proposal: 'Недопустимое предложен�
 function recentList(id, source, label) {
   const list = byId(id); list.replaceChildren();
   if (!source || !source.available) {
-    const item = document.createElement('li'); item.textContent = 'Недоступно'; list.append(item); return;
+    const item = document.createElement('tr'); const cell = document.createElement('td');
+    cell.colSpan = 5; cell.textContent = `${label}: недоступно`; item.append(cell); list.append(item); return;
   }
   if (!source.rows.length) {
-    const item = document.createElement('li'); item.textContent = 'Записей нет'; list.append(item); return;
+    const item = document.createElement('tr'); const cell = document.createElement('td');
+    cell.colSpan = 5; cell.textContent = `${label}: записей нет`; item.append(cell); list.append(item); return;
   }
+  const families = {private_reply: 'Ответ приложения', provider_attempt: 'Попытка провайдера', reservation: 'Резервирование'};
   for (const row of source.rows.slice(0, 10)) {
-    const item = document.createElement('li');
-    const outcome = outcomes[row.outcome] || outcomes.unknown;
-    const reason = row.reason === null ? '' : `; ${reasons[row.reason] || reasons.unknown}`;
-    const tokens = row.tokens === null ? '; токены неизвестны' : `; записано токенов: ${row.tokens}`;
-    const reference = row.reference ? `; ссылка ${row.reference}` : '';
-    item.textContent = `${row.time}: ${label}: ${outcome}${reason}${tokens}${reference}`;
+    const item = document.createElement('tr');
+    for (const text of [dateText(row.time), families[row.family] || label,
+      outcomes[row.outcome] || outcomes.unknown,
+      row.reason === null ? '—' : reasons[row.reason] || reasons.unknown,
+      row.tokens === null ? 'Неизвестны' : String(row.tokens)]) {
+      const cell = document.createElement('td'); cell.textContent = text; item.append(cell);
+    }
     list.append(item);
   }
 }
 async function refresh() {
   const data = await api('/status', 'POST');
+  snapshot = data; receivedAt = Date.now();
+  byId('updated').textContent = `Обновлено в ${new Date(receivedAt).toLocaleTimeString('ru-RU', {hour:'2-digit', minute:'2-digit'})}`;
+  renderTiles();
   byId('status').replaceChildren(); byId('audit').replaceChildren();
   show('Stop приложения', data.application_stop.active ? 'Включён' : 'Выключен');
   show('Расходы приложения (IPC)', data.application_provider.spend_suspended ? 'Приостановлены' : 'Приостановка не зафиксирована');
@@ -53,8 +144,9 @@ async function refresh() {
   recentList('recent-application', recent.application, 'Ответ приложения');
   recentList('recent-worker', recent.worker, 'Попытка воркера');
   const latest = recent.application && recent.application.available && recent.application.rows[0];
+  byId('application-detail').textContent = latest ? `Последнее сообщение: ${dateText(latest.time)}` : 'Время последнего ответа не записано';
   byId('latest-outcome').textContent = latest ? `Последний наблюдаемый ответ приложения: ${outcomes[latest.outcome] || outcomes.unknown}. Время относится к исходному сообщению.` : 'Последний ответ приложения: недоступен или не записан.';
-  show('Наблюдение воркера', worker.available ? `Собрано ${worker.collected_at}` : 'Недоступно');
+  show('Наблюдение воркера', worker.available ? `Собрано ${dateText(worker.collected_at)}` : 'Недоступно');
   show('Stop воркера', worker.stop.valid ? (worker.stop.active ? 'Включён' : 'Выключен') : 'Недоступен');
   if (data.emergency_operation) {
     show('Последняя команда: приложение', stopResult(data.emergency_operation.application));
@@ -69,17 +161,14 @@ async function refresh() {
       show(`${label} воркера`, String(provider.recorded_tokens[key]));
     }
     show('Попытки воркера с неизвестным или неполным учётом токенов', String(provider.unknown_usage_attempts));
-    show('Фактическое использование провайдера', provider.unresolved_reservations > 0 || provider.unknown_usage_attempts > 0 ? 'Неизвестно: итоговые данные неполны; резервирование не подтверждает вызов провайдера' : 'Не подтверждается этой панелью');
+    if (provider.unresolved_reservations > 0 || provider.unknown_usage_attempts > 0) show('Полнота учёта воркера', 'Итоговые данные неполны; резервирование не подтверждает вызов провайдера');
   } else {
     show('Записанные токены воркера', 'Недоступно');
     show('Попытки воркера с неизвестным или неполным учётом токенов', 'Недоступно');
-    show('Фактическое использование провайдера', 'Недоступно');
   }
-  show('Биллинг провайдера', 'Не является источником данных этой панели');
-  show('Активация и разрешённый лимит', 'Недоступны этой панели; готовность не подтверждена');
   show('Хранилище разговоров', data.event_store.health === 'read_interface_ok' ? 'Диагностика чтения доступна' : 'Недоступно');
   show('Версия схемы разговоров', String(data.event_store.schema_version));
-  show('Режим журнала', data.event_store.journal_mode);
+  show('Режим журнала', ({wal: 'Журнал упреждающей записи', delete: 'Удаляемый журнал', memory: 'В памяти'})[data.event_store.journal_mode] || 'Другой режим');
   show('Внешние ключи', data.event_store.foreign_keys_enabled ? 'Включены' : 'Выключены');
   show('Ожидание блокировки, мс', String(data.event_store.busy_timeout_ms));
   show('Реестр приватности', data.privacy.ledger_ready ? 'Доступен' : 'Недоступен');
@@ -87,7 +176,7 @@ async function refresh() {
     const row = document.createElement('li');
     const actions = {stop: 'включение Stop', resume: 'снятие Stop', stop_control: 'изменение Stop', worker_stop_control: 'изменение Stop воркера', session_control: 'управление сеансом', worker_stop: 'Stop воркера', application_stop: 'Stop приложения'};
     const results = {applied: 'выполнено', rejected: 'отклонено', confirmed: 'подтверждено', unavailable: 'недоступно', uncertain: 'неизвестно'};
-    row.textContent = `${item.occurred_at}: ${actions[item.action_type] || 'действие владельца'}, ${results[item.result] || 'результат записан'}`;
+    row.textContent = `${dateText(item.occurred_at)}: ${actions[item.action_type] || 'действие владельца'}, ${results[item.result] || 'результат записан'}`;
     byId('audit').append(row);
   }
 }
@@ -99,15 +188,15 @@ byId('login-form').addEventListener('submit', async event => {
     const form = new FormData(event.target);
     const result = await api('/login', 'POST', {username: form.get('username'), password: form.get('password'), csrf: challenge.csrf});
     csrf = result.csrf;
-    event.target.reset(); byId('login-panel').hidden = true; byId('control-panel').hidden = false;
+    event.target.reset(); controlsVisible(true);
     await refresh(); message('Вход выполнен.');
   } catch (error) {message(error.message);}
-  finally {byId('login-submit').disabled = false;}
+  finally {event.target.elements.password.value = ''; byId('login-submit').disabled = false;}
 });
 byId('refresh').addEventListener('click', () => refresh().catch(error => message(error.message)));
 async function change(active) {
   try {
-    if (!active && !confirm('Снять Stop приложения? Проверьте состояние воркера отдельно.')) return;
+    if (!active && !await ask('Снять Stop приложения?', 'Состояние воркера проверяется отдельно. Его Stop снимается только локально.', 'Снять Stop')) return;
     const operation = await api('/operation', 'POST', null, csrf);
     await api('/stop', 'POST', {operation_id: operation.operation_id, active}, csrf);
     await refresh(); message(active ? 'Stop приложения включён.' : 'Stop приложения снят.');
@@ -115,6 +204,7 @@ async function change(active) {
 }
 byId('stop').addEventListener('click', () => change(true));
 byId('emergency-stop').addEventListener('click', async () => {
+  if (!await ask('Остановить приложение и воркер?', 'Уже отправленный провайдеру запрос и его стоимость не отменяются.', 'Остановить всё')) return;
   const button = byId('emergency-stop');
   button.disabled = true;
   byId('emergency-result').textContent = 'Приложение: ожидается; воркер: ожидается.';
@@ -131,8 +221,7 @@ byId('emergency-stop').addEventListener('click', async () => {
 });
 byId('resume').addEventListener('click', () => change(false));
 byId('logout').addEventListener('click', async () => {
-  try {await api('/logout', 'POST', null, csrf); csrf = null; byId('control-panel').hidden = true; byId('login-panel').hidden = false; message('Вы вышли.');}
+  try {await api('/logout', 'POST', null, csrf); csrf = null; snapshot = null; controlsVisible(false); byId('updated').textContent = '';  message('Вы вышли.');}
   catch (error) {message(error.message);}
 });
-byId('login-help').textContent = '';
 byId('login-submit').disabled = false;

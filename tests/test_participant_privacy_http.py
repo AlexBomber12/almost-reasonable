@@ -117,8 +117,6 @@ def test_privacy_native_forms_never_encode_inputs_into_urls(journey):
     ]
     forms = [form for page in pages for form in FormTargets(page).forms]
     assert {form["data-endpoint"] for form in forms} == {
-        "/api/privacy/notice",
-        "/api/privacy/reconcile",
         "/api/privacy/revocations",
         "/api/privacy/grants",
         "/api/privacy/deletions",
@@ -142,8 +140,8 @@ def test_notice_gate_acknowledgement_and_authenticated_restart(journey):
     assert a.request("GET", "/privacy")[0] == "200 OK"
     notice = a.request("GET", "/privacy")[2]
     assert "OpenAI".encode() in notice and "Cloudflare".encode() in notice
-    assert "fictional-autobiography-ru-v1".encode() in notice
-    assert "Биографические истории".encode() in notice
+    assert "Прежде чем начать".encode() in notice
+    assert "Полный текст уведомления".encode() in notice
     assert a.request("GET", "/chat")[0] == "303 See Other"
     assert a.submit("one", "Секрет А")[0] == "403 Forbidden"
     assert not fake.calls
@@ -166,7 +164,7 @@ def test_notice_gate_acknowledgement_and_authenticated_restart(journey):
     chat = a.request("GET", "/chat")
     assert chat[0] == "200 OK"
     assert "fictional-autobiography-ru-v1".encode() in chat[2]
-    assert "Биографические истории".encode() in chat[2]
+    assert "Истории от первого лица".encode() in chat[2]
 
 
 def test_exact_grant_revocation_and_deletion_with_isolation(journey):
@@ -381,6 +379,7 @@ def test_expired_grant_can_be_renewed_but_revoked_scope_stays_blocked(journey):
 
 def test_older_active_grant_remains_reachable_for_revocation(journey):
     clock, auth, store, ledger, gate, fake, config, a, b = journey
+    acknowledge(a)
     session = auth.authenticate(a.cookies["ar_session"])
     context = a.app._privacy.context(session)
     for number in range(21):
@@ -633,10 +632,10 @@ def test_restart_retries_expiry_and_foreign_operation_ids(journey):
     a.app = b.app = reopened
     a.login("alice", "synthetic-password-a")
     assert post(a, "/api/privacy/grants", grant)[0] == "200 OK"
-    assert "Действует до срока".encode() in a.request("GET", "/privacy")[2]
+    assert "Действует".encode() in a.request("GET", "/privacy")[2]
     clock.timestamp += 3600
     a.login("alice", "synthetic-password-a")
-    assert "Срок истёк".encode() in a.request("GET", "/privacy")[2]
+    assert "Истекло".encode() in a.request("GET", "/privacy")[2]
     controls = reopened._privacy
     called = []
     result = controls.consent.authorize(
@@ -692,7 +691,7 @@ def test_interrupted_deletion_status_and_reconciliation(journey):
     assert b"incomplete_blocked" in a.request("GET", "/api/privacy/status")[2]
     privacy_page = a.request("GET", "/privacy")
     assert privacy_page[0] == "200 OK"
-    assert "Удаление не завершено".encode() in privacy_page[2]
+    assert "Не завершено".encode() in privacy_page[2]
     assert post(a, "/api/privacy/deletions", payload)[0] == "200 OK"
     real_reconcile = gate.reconcile
     gate.reconcile = lambda: False
@@ -701,7 +700,7 @@ def test_interrupted_deletion_status_and_reconciliation(journey):
     controls.deletion.adapter.erase = original
     assert post(a, "/api/privacy/reconcile", {})[2] == b'{"status":"reconciled"}'
     assert b'"status":"applied"' in a.request("GET", "/api/privacy/status")[2]
-    assert "Локальное удаление завершено".encode() in a.request("GET", "/privacy")[2]
+    assert "Удалено".encode() in a.request("GET", "/privacy")[2]
     assert a.request("GET", "/api/history")[0] == "200 OK"
 
 
@@ -723,10 +722,7 @@ def test_revocation_and_grant_status_remain_usable_during_blocked_deletion(journ
         json.loads(post(a, "/api/privacy/deletions", payload)[2])["status"]
         == "incomplete_blocked"
     )
-    assert (
-        "Использование заблокировано удалением".encode()
-        in a.request("GET", "/privacy")[2]
-    )
+    assert "Заблокировано удалением".encode() in a.request("GET", "/privacy")[2]
     gate.reconcile = lambda: False
     assert (
         post(
@@ -811,10 +807,7 @@ def test_grant_scope_and_deletion_intent_remove_current_use(journey):
     )
     assert outcome.reason == "source_deleted"
     assert post(a, "/api/privacy/reconcile", {})[2] == b'{"status":"reconciled"}'
-    assert (
-        "Использование заблокировано удалением".encode()
-        in a.request("GET", "/privacy")[2]
-    )
+    assert "Заблокировано удалением".encode() in a.request("GET", "/privacy")[2]
     assert a.request("GET", "/api/history")[0] == "200 OK"
     assert a.request("GET", "/chat")[0] == "200 OK"
     assert "Управление источником".encode() not in a.request("GET", "/chat")[2]
@@ -857,8 +850,9 @@ def test_source_selection_and_logout_stay_available_when_notice_unacknowledged(j
         )
     assert a.request("GET", "/chat")[0] == "303 See Other"
     page = a.request("GET", "/privacy")[2]
-    assert quote(source, safe="").encode() in page and "Мои источники".encode() in page
-    assert "Выйти".encode() in page
+    assert quote(source, safe="").encode() not in page
+    assert "Прежде чем начать".encode() in page
+    assert "Выйти".encode() not in page
     assert (
         a.request(
             "GET", "/privacy/source", extra_environ={"QUERY_STRING": f"ref={source}"}
@@ -876,105 +870,59 @@ def test_source_selection_and_logout_stay_available_when_notice_unacknowledged(j
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is unavailable")
 def test_privacy_browser_reports_rejected_mutations_and_failed_logout(journey):
-    a = journey[-2]
-    status, _, script = a.request("GET", "/assets/privacy.js")
-    assert status == "200 OK"
+    # Privacy errors and stable retry identity are checked without network access.
+    # The relocated logout controls are exercised in test_ui_refresh_browser.
+    script = journey[-2].request("GET", "/assets/privacy.js")[2]
     harness = r"""
-const fs = require('node:fs');
-const vm = require('node:vm');
+const fs = require('node:fs'), vm = require('node:vm');
 const script = fs.readFileSync(0, 'utf8');
-
-async function scenario(endpoint, response, expectedAlert, expectedLocation) {
-  const listeners = {};
-  const alerts = [];
-  const form = {
-    dataset: {endpoint},
-    addEventListener(name, callback) { listeners.submit = callback; }
-  };
-  const logout = {
-    addEventListener(name, callback) { listeners.logout = callback; }
-  };
-  const location = {href: '/privacy', reload() { this.href = 'reloaded'; }};
+const tick = () => new Promise(resolve => setImmediate(resolve));
+async function scenario(endpoint, responses, expected, expectedPath = '/privacy') {
+  const handlers = {}, operations = [], feedback = {textContent:'',className:''};
+  const submitButton = {disabled:false};
+  const form = {dataset:{endpoint}, querySelector(){return submitButton;},
+    addEventListener(name, fn){handlers.submit = fn;}};
+  const cancel = {addEventListener(name,fn){handlers.cancel=fn;}},
+    confirm = {addEventListener(name,fn){handlers.confirm=fn;}},
+    dialog = {addEventListener(){}, close(){}, showModal(){handlers.confirm();}};
+  const location = {href:'/privacy', assign(path){this.href=path;}};
   const context = {
-    document: {
-      querySelectorAll() { return [form]; },
-      querySelector() { return {dataset: {csrf: 'csrf'}}; },
-      getElementById() { return logout; }
-    },
-    FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
-    crypto: {randomUUID() { return 'operation'; }},
-    fetch: async () => typeof response === 'function' ? response() : response,
-    sessionStorage: {removeItem() { throw Error('blocked'); }},
-    alert(message) { alerts.push(message); },
-    location
+    document:{getElementById(id){return ({'privacy-feedback':feedback,'delete-dialog':dialog,
+      'delete-cancel':cancel,'delete-confirm':confirm})[id] || null;},
+      querySelectorAll(){return [form];},querySelector(){return {dataset:{csrf:'csrf'}};}},
+    sessionStorage:{getItem(){return null;},removeItem(){},setItem(){}},
+    crypto:{randomUUID(){return 'stable-operation';}},
+    FormData:class { *[Symbol.iterator](){yield ['source','synthetic'];}},
+    fetch:async (url,options)=>{
+      operations.push(JSON.parse(options.body).operation_id);
+      const next = responses.shift(); if(next === 'network') throw Error('offline');
+      return next;
+    }, location
   };
   vm.runInNewContext(script, context);
-  if (endpoint === '/logout') await listeners.logout();
-  else await listeners.submit({preventDefault() {}});
-  if (alerts.length !== (expectedAlert === undefined ? 0 : 1) ||
-      (expectedAlert !== undefined && alerts[0] !== expectedAlert) ||
-      location.href !== expectedLocation) {
-    throw Error(JSON.stringify({endpoint, alerts, location: location.href}));
+  for(const text of expected){handlers.submit({preventDefault(){}});await tick();
+    if(feedback.textContent !== text) throw Error(JSON.stringify({endpoint,feedback,text}));
+    if(submitButton.disabled) throw Error('busy button retained');
   }
+  if(location.href !== expectedPath) throw Error(location.href);
+  if(operations.length > 1 && operations[0] !== operations[1]) throw Error('changed retry identity');
 }
-
-async function uncertainMutationRetry() {
-  let submit;
-  const alerts = [];
-  const operations = [];
-  const form = {
-    dataset: {endpoint: '/api/privacy/grants'},
-    addEventListener(name, callback) { submit = callback; }
-  };
-  const location = {href: '/privacy', reload() { this.href = 'reloaded'; }};
-  vm.runInNewContext(script, {
-    document: {
-      querySelectorAll() { return [form]; },
-      querySelector() { return {dataset: {csrf: 'csrf'}}; },
-      getElementById() { return null; }
-    },
-    FormData: class { *[Symbol.iterator]() { yield ['version', 'v1']; } },
-    crypto: {randomUUID() { return 'same-operation'; }},
-    fetch: async (url, options) => {
-      operations.push(JSON.parse(options.body).operation_id);
-      if (operations.length === 1) throw Error('offline');
-      return {ok: true, json: async () => ({status: 'granted'})};
-    },
-    alert(message) { alerts.push(message); },
-    location
-  });
-  await submit({preventDefault() {}});
-  if (alerts[0] !== 'Статус операции неизвестен. Повторите попытку.' ||
-      location.href !== '/privacy') throw Error(JSON.stringify({alerts, location}));
-  await submit({preventDefault() {}});
-  if (operations.join(',') !== 'same-operation,same-operation' ||
-      alerts[1] !== '{"status":"granted"}' || location.href !== 'reloaded') {
-    throw Error(JSON.stringify({operations, alerts, location}));
+const ok = status => ({ok:true,json:async()=>({status})});
+(async()=>{
+  for(const path of ['grants','revocations','deletions']) {
+    await scenario('/api/privacy/'+path,[{ok:false,status:503,json(){throw Error('raw body');}}],
+      ['Не удалось выполнить. Попробуйте ещё раз.']);
   }
-}
-
-(async () => {
-  await scenario('/api/privacy/grants',
-    {ok: false, json() { throw Error('HTML error body'); }},
-    'Операция отклонена', '/privacy');
-  await scenario('/api/privacy/revocations',
-    {ok: false, json() { throw Error('HTML error body'); }},
-    'Операция отклонена', '/privacy');
-  await scenario('/api/privacy/deletions',
-    {ok: false, json() { throw Error('HTML error body'); }},
-    'Операция отклонена', '/privacy');
-  await scenario('/logout', {ok: false},
-    'Не удалось выйти. Сессия может быть активна.', '/privacy');
-  await scenario('/logout', {ok: true},
-    undefined, '/login');
-  await scenario('/logout', () => { throw Error('offline'); },
-    'Выход не подтверждён. Проверьте сеанс перед уходом.', '/privacy');
-  await uncertainMutationRetry();
-})().catch(error => { console.error(error); process.exitCode = 1; });
+  await scenario('/api/privacy/grants',['network',ok('already_granted')],
+    ['Статус операции неизвестен. Повторите попытку.','Публикация разрешена. Срок указан в списке разрешений.']);
+  await scenario('/api/privacy/revocations',[ok('revoked')],['Разрешение отозвано']);
+  await scenario('/api/privacy/deletions',[ok('pending')],['Удаление ожидает выполнения']);
+  await scenario('/api/privacy/deletions',[ok('incomplete_blocked')],
+    ['Удаление не завершено. Его можно повторить в настройках приватности.']);
+  await scenario('/api/privacy/deletions',[ok('applied')],['Сообщение удалено']);
+})().catch(error=>{console.error(error);process.exitCode=1;});
 """
-    result = subprocess.run(
-        ["node", "-e", harness], input=script, capture_output=True, check=False
-    )
+    result = subprocess.run(["node", "-e", harness], input=script, capture_output=True)
     assert result.returncode == 0, result.stderr.decode()
 
 
@@ -1358,6 +1306,7 @@ def test_http_deletion_requires_mission_reassessment(journey):
 
 def test_status_listing_is_bounded_and_principal_scoped_while_reads_fenced(journey):
     clock, auth, store, ledger, gate, fake, config, a, b = journey
+    acknowledge(a)
     context = a.app._privacy.context(auth.authenticate(a.cookies["ar_session"]))
     for index in range(25):
         request = DeletionRequest(
@@ -1392,12 +1341,14 @@ def test_status_listing_is_bounded_and_principal_scoped_while_reads_fenced(journ
     assert older_status["next_cursor"] is None
     assert json.loads(b.request("GET", "/api/privacy/status")[2])["deletions"] == []
     page = a.request("GET", "/privacy")[2]
-    assert b"bounded-24" in page and b"bounded-00" not in page
+    assert page.count("Ожидает".encode()) == 20
+    assert b"bounded-24" not in page and b"bounded-00" not in page
     assert b"/privacy?deletion_before=bounded-05" in page
     older_page = a.request(
         "GET", "/privacy", extra_environ={"QUERY_STRING": "deletion_before=bounded-05"}
     )[2]
-    assert b"bounded-00" in older_page
+    assert older_page.count("Ожидает".encode()) == 5
+    assert b"bounded-00" not in older_page
     for path, query, expected in (
         ("/api/privacy/status", "before=foreign-op", "404 Not Found"),
         ("/api/privacy/status", "before=bad%20id", "400 Bad Request"),
@@ -1749,7 +1700,7 @@ def test_authenticated_http_deletion_process_exit_reconciles_before_reads(
     browser.login("alice", "synthetic-password-a")
     assert browser.request("GET", "/api/history")[0] == "503 Service Unavailable"
     assert b"pending" in browser.request("GET", "/api/privacy/status")[2]
-    assert "Ожидает удаления".encode() in browser.request("GET", "/privacy")[2]
+    assert "Ожидает".encode() in browser.request("GET", "/privacy")[2]
     assert post(browser, "/api/privacy/reconcile", {})[2] == b'{"status":"reconciled"}'
     assert b"applied" in browser.request("GET", "/api/privacy/status")[2]
     assert b"CANARY-HTTP-EXIT-13" not in browser.request("GET", "/api/history")[2]

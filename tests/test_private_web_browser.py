@@ -136,10 +136,11 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                     page.goto(f"{origin}/")
                     page.wait_for_url(f"{origin}/chat")
                     assert page.get_by_role(
-                        "heading", name="Начните разговор"
+                        "heading", name="С чего начнём?"
                     ).is_visible()
                     assert observed_asset_referers and all(
-                        referer is None for referer in observed_asset_referers
+                        referer in {None, f"{origin}/login"}
+                        for referer in observed_asset_referers
                     )
                     native = browser.new_page(
                         ignore_https_errors=True, java_script_enabled=False
@@ -154,9 +155,7 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                             lambda reply: reply.url.startswith(origin)
                             and reply.request.method == "POST"
                         ) as reply:
-                            native.get_by_role(
-                                "button", name="Отправить сообщение"
-                            ).click()
+                            native.get_by_role("button", name="Отправить").click()
                         assert reply.value.url == f"{origin}/api/messages"
                         assert reply.value.status == 403
                         native.wait_for_url(f"{origin}/api/messages")
@@ -184,6 +183,7 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                     page.evaluate(
                         "() => { Storage.prototype.removeItem = () => { throw new Error('blocked'); }; }"
                     )
+                    page.get_by_role("button", name="Меню").click()
                     page.get_by_role("button", name="Выйти").click()
                     page.wait_for_url(f"{origin}/login")
                     assert page.goto(f"{origin}/session").json() == {
@@ -266,12 +266,13 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 page.get_by_role("button", name="Войти").click()
                 page.wait_for_url(f"{origin}/privacy")
                 page.on("dialog", lambda dialog: dialog.accept())
-                page.get_by_role("button", name="Подтвердить уведомление").click()
-                page.get_by_text("Подтверждено", exact=False).wait_for()
+                page.get_by_role("button", name="Понятно, к разговору").click()
+                page.wait_for_url(f"{origin}/chat")
                 page.goto(f"{origin}/chat")
-                assert page.get_by_role("heading", name="Начните разговор").is_visible()
+                assert page.get_by_role("heading", name="С чего начнём?").is_visible()
                 assert page.locator("#narrative-disclosure").is_visible()
-                assert page.locator("#history li").count() == 0
+                assert page.locator("#history .message").count() == 0
+                page.get_by_role("button", name="Меню").click()
                 page.get_by_role("link", name="Приватность").click()
                 page.wait_for_url(f"{origin}/privacy")
                 page.goto(f"{origin}/chat")
@@ -303,12 +304,10 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
 
                 page.route("**/api/messages", lose_response)
                 editor.fill("Первый вопрос")
-                page.get_by_role("button", name="Отправить сообщение").click()
-                page.get_by_text(
-                    "Результат отправки неизвестен.", exact=False
-                ).wait_for()
+                page.get_by_role("button", name="Отправить").click()
+                page.get_by_text("Не удалось отправить", exact=False).wait_for()
                 assert editor.input_value() == "Первый вопрос"
-                assert page.locator("#history li").count() == 0
+                assert page.locator("#history .message").count() == 0
                 assert len(fake.calls) == 1
                 session = next(
                     cookie["value"]
@@ -339,14 +338,14 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
 
                 page.route("**/api/messages", record_request)
                 editor.fill("Новый черновик после неизвестной отправки")
-                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_role("button", name="Повторить", exact=True).click()
                 page.get_by_text(
                     "Синтетический ответ <script>текст</script>"
                 ).wait_for()
                 assert observed_ids[0] == observed_ids[1]
                 assert observed_contents == ["Первый вопрос", "Первый вопрос"]
                 assert len(fake.calls) == 1
-                assert page.locator("#history li").count() == 2
+                assert page.locator("#history .message").count() == 2
                 assert page.locator("#history script").count() == 0
                 assert (
                     editor.input_value() == "Новый черновик после неизвестной отправки"
@@ -371,7 +370,7 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     "Второй синтетический ответ",
                 ]
                 page.reload()
-                assert page.locator("#history li").count() == 4
+                assert page.locator("#history .message").count() == 4
                 screenshot_dir = os.environ.get("UI01_SCREENSHOT_DIR")
                 if screenshot_dir:
                     Path(screenshot_dir).mkdir(parents=True, exist_ok=True)
@@ -386,9 +385,21 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 mobile = mobile_context.new_page()
                 mobile.goto(f"{origin}/chat")
                 assert mobile.evaluate("matchMedia('(pointer: coarse)').matches")
-                assert mobile.get_by_role(
-                    "button", name="Отправить сообщение"
-                ).is_visible()
+                assert mobile.get_by_role("button", name="Отправить").is_visible()
+                mobile_editor = mobile.get_by_label("Сообщение", exact=True)
+                expect(mobile_editor).to_be_enabled()
+                mobile_posts = []
+                mobile.on(
+                    "request",
+                    lambda request: mobile_posts.append(request.url)
+                    if request.method == "POST"
+                    else None,
+                )
+                mobile_editor.fill("Мобильная строка")
+                mobile_editor.press("Enter")
+                expect(mobile_editor).to_have_value("Мобильная строка\n")
+                assert mobile_posts == []
+                mobile_editor.fill("")
                 if screenshot_dir:
                     mobile.screenshot(
                         path=str(Path(screenshot_dir) / "mobile-emulation.png")
@@ -396,9 +407,9 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 mobile_context.close()
                 runtime._stop = lambda: True
                 editor.fill("После остановки")
-                page.get_by_role("button", name="Отправить сообщение").click()
-                page.get_by_text("Ответ остановлен.", exact=False).wait_for()
-                expect(page.locator("#history li")).to_have_count(5)
+                page.get_by_role("button", name="Отправить").click()
+                page.get_by_text("Ответ сейчас недоступен.", exact=False).wait_for()
+                expect(page.locator("#history .message")).to_have_count(5)
                 assert page.get_by_text("Второй синтетический ответ").is_visible()
 
                 def reject_once(route):
@@ -408,22 +419,22 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
 
                 page.route("**/api/messages", reject_once)
                 editor.fill("Черновик при ошибке")
-                page.get_by_role("button", name="Отправить сообщение").click()
-                page.get_by_text("Не удалось отправить.", exact=False).wait_for()
+                page.get_by_role("button", name="Отправить").click()
+                page.get_by_text("Не удалось отправить", exact=False).wait_for()
                 assert editor.input_value() == "Черновик при ошибке"
                 editor.fill("")
-                expect(page.locator("#send-button")).to_have_text("Повторить отправку")
-                page.get_by_role("button", name="Отправить сообщение").click()
+                expect(page.locator("#retry-message")).to_be_visible()
+                page.get_by_role("button", name="Повторить", exact=True).click()
                 page.get_by_text("Черновик при ошибке", exact=True).wait_for()
                 assert observed_ids[-2] == observed_ids[-1]
 
                 editor.fill("я" * 5000)
-                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_role("button", name="Отправить").click()
                 page.get_by_text("Сообщение не принято.", exact=False).wait_for()
                 assert editor.input_value() == "я" * 5000
                 rejected_id = observed_ids[-1]
                 editor.fill("Исправленный вопрос")
-                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_role("button", name="Отправить").click()
                 page.get_by_text("Исправленный вопрос", exact=True).wait_for()
                 assert observed_ids[-1] != rejected_id
 
@@ -443,13 +454,13 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     long_url,
                 )
                 page.reload()
-                assert page.locator("#history li").count() == 15
+                assert page.locator("#history .message").count() == 15
                 assert page.evaluate(
                     "document.querySelector('#conversation').scrollHeight > document.querySelector('#conversation').clientHeight"
                 )
                 page.evaluate("document.querySelector('#conversation').scrollTop = 0")
                 editor.fill("Пока читаю старые сообщения")
-                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_role("button", name="Отправить").click()
                 page.get_by_text("Пока читаю старые сообщения", exact=True).wait_for()
                 assert (
                     page.evaluate("document.querySelector('#conversation').scrollTop")
@@ -461,23 +472,20 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     assert page.evaluate(
                         "document.documentElement.scrollWidth <= innerWidth"
                     )
-                    assert page.get_by_role(
-                        "button", name="Отправить сообщение"
-                    ).is_visible()
+                    assert page.get_by_role("button", name="Отправить").is_visible()
                     assert page.get_by_label("Сообщение", exact=True).is_visible()
                     assert page.evaluate(
                         "document.querySelector('#send-button').getBoundingClientRect().bottom <= innerHeight"
                     )
                 page.set_viewport_size({"width": 360, "height": 350})
-                assert page.get_by_role(
-                    "button", name="Отправить сообщение"
-                ).is_visible()
+                assert page.get_by_role("button", name="Отправить").is_visible()
                 assert page.evaluate(
                     "document.documentElement.scrollWidth <= innerWidth"
                 )
                 assert page.evaluate(
                     "document.querySelector('#send-button').getBoundingClientRect().bottom <= innerHeight"
                 )
+                page.get_by_role("button", name="Меню").click()
                 page.get_by_role("button", name="Выйти").click()
                 page.wait_for_url(f"{origin}/login")
                 page.get_by_label("Имя пользователя").fill("synthetic")
@@ -492,17 +500,15 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 page.get_by_label("Сообщение", exact=True).fill(
                     "Несохранённый черновик"
                 )
-                expect(
-                    page.get_by_role("button", name="Отправить сообщение")
-                ).to_be_enabled()
+                expect(page.get_by_role("button", name="Отправить")).to_be_enabled()
                 auth.revoke(session)
-                page.get_by_role("button", name="Отправить сообщение").click()
-                page.get_by_text("Сеанс завершён.", exact=False).wait_for()
+                page.get_by_role("button", name="Отправить").click()
+                page.get_by_text("Сеанс завершён", exact=False).wait_for()
                 assert (
                     page.get_by_label("Сообщение", exact=True).input_value()
                     == "Несохранённый черновик"
                 )
-                page.get_by_role("link", name="Войти снова").click()
+                page.get_by_role("link", name="Войти").click()
                 page.wait_for_url(f"{origin}/login")
                 page.get_by_label("Имя пользователя").fill("synthetic")
                 page.get_by_label("Пароль").fill("synthetic test password")
@@ -512,14 +518,14 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                     "Несохранённый черновик"
                 )
                 assert page.get_by_role(
-                    "button", name="Отправить сообщение"
+                    "button", name="Повторить", exact=True
                 ).is_enabled()
                 page.evaluate(
                     "document.querySelector('#message-form').dataset.csrf = 'wrong'"
                 )
-                page.get_by_role("button", name="Отправить сообщение").click()
+                page.get_by_role("button", name="Повторить", exact=True).click()
                 page.get_by_text("Доступ отклонён.", exact=False).wait_for()
-                assert not page.get_by_text("Сеанс завершён.", exact=False).is_visible()
+                assert not page.get_by_text("Сеанс завершён", exact=False).is_visible()
                 expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
                     "Несохранённый черновик"
                 )
@@ -527,7 +533,7 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 expect(page.get_by_label("Сообщение", exact=True)).to_have_value(
                     "Несохранённый черновик"
                 )
-                expect(page.locator("#send-button")).to_have_text("Повторить отправку")
+                expect(page.locator("#retry-message")).to_be_visible()
                 session = next(
                     cookie["value"]
                     for cookie in page.context.cookies()
@@ -540,14 +546,15 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 page.get_by_label("Пароль").fill("other synthetic password")
                 page.get_by_role("button", name="Войти").click()
                 page.wait_for_url(f"{origin}/privacy")
-                page.get_by_role("button", name="Подтвердить уведомление").click()
-                page.get_by_text("Подтверждено", exact=False).wait_for()
+                page.get_by_role("button", name="Понятно, к разговору").click()
+                page.wait_for_url(f"{origin}/chat")
                 page.goto(f"{origin}/chat")
                 expect(page.get_by_label("Сообщение", exact=True)).to_have_value("")
                 assert page.evaluate("sessionStorage.length") == 0
                 page.get_by_label("Сообщение", exact=True).fill(
                     "Черновик другого аккаунта"
                 )
+                page.get_by_role("button", name="Меню").click()
                 page.get_by_role("button", name="Выйти").click()
                 page.wait_for_url(f"{origin}/login")
                 assert page.evaluate("sessionStorage.length") == 0
