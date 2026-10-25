@@ -188,3 +188,50 @@ def test_missing_acknowledgement_date_is_not_invented(journey, monkeypatch):
     body = a.request("GET", "/privacy")[2].decode()
     assert "Подтверждено</span>" in body
     assert "Подтверждено 25" not in body
+
+
+def test_revocation_failure_offers_recovery_and_logout_without_deletions(
+    journey, monkeypatch
+):
+    _clock, auth, _store, _ledger, gate, _fake, _config, a, _b = journey
+    acknowledge(a)
+    source = source_for(a, "REVOCATION-BLOCKED-CONTENT")
+    assert post(a, "/api/privacy/grants", grant_for(source))[0] == "201 Created"
+    reconcile = gate.reconcile
+    monkeypatch.setattr(gate, "reconcile", lambda: False)
+    assert (
+        post(
+            a,
+            "/api/privacy/revocations",
+            {"operation_id": "blocked-revoke", "consent_id": "consent:grant-1"},
+        )[0]
+        == "201 Created"
+    )
+    assert json.loads(a.request("GET", "/api/privacy/status")[2])["deletions"] == []
+    status, _, error = a.request("GET", "/chat")
+    assert status == "503 Service Unavailable"
+    assert b'href="/privacy"' in error
+    body = a.request("GET", "/privacy")[2]
+    assert "Повторить проверку".encode() in body
+    assert b'id="privacy-logout"' in body
+    assert b"REVOCATION-BLOCKED-CONTENT" not in body
+    assert "удаление ещё не завершено".encode() not in body
+    assert b'{"status":"blocked"}' == post(a, "/api/privacy/reconcile", {})[2]
+    monkeypatch.setattr(gate, "reconcile", reconcile)
+    assert b'{"status":"reconciled"}' == post(a, "/api/privacy/reconcile", {})[2]
+    assert a.request("GET", "/chat")[0] == "200 OK"
+    assert "Повторить проверку".encode() not in a.request("GET", "/privacy")[2]
+    monkeypatch.setattr(gate, "_generation", None)
+    token = a.cookies["ar_session"]
+    assert (
+        a.request("POST", "/logout", extra_environ={"HTTP_X_CSRF_TOKEN": "wrong"})[0]
+        == "403 Forbidden"
+    )
+    assert auth.authenticate(token) is not None
+    assert (
+        a.request(
+            "POST", "/logout", extra_environ={"HTTP_X_CSRF_TOKEN": a.cookies["ar_csrf"]}
+        )[0]
+        == "303 See Other"
+    )
+    assert auth.authenticate(token) is None

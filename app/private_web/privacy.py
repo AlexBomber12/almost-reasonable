@@ -269,7 +269,11 @@ class ParticipantPrivacyControls:
             else "Подтверждено"
         )
         blocked = (
-            '<p class="feedback">Сообщения временно недоступны: удаление ещё не завершено.</p>'
+            '<div class="card"><p class="feedback">Сообщения временно недоступны: '
+            "проверка приватности не завершена.</p>"
+            '<form method="post" action="/api/privacy/reconcile" data-endpoint="/api/privacy/reconcile">'
+            "<button>Повторить проверку</button></form>"
+            '<button id="privacy-logout" class="secondary" type="button">Выйти</button></div>'
             if unavailable
             else ""
         )

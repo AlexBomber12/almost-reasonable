@@ -8,8 +8,8 @@ const notices = {
   applied: 'Сообщение удалено',
   pending: 'Удаление ожидает выполнения',
   incomplete_blocked: 'Удаление не завершено. Его можно повторить в настройках приватности.',
-  reconciled: 'Проверка незавершённых операций выполнена. Проверьте статус нужного удаления.',
-  blocked: 'Удаление пока не завершено. Проверьте статус в настройках приватности.'
+  reconciled: 'Проверка приватности завершена.',
+  blocked: 'Проверка приватности пока не завершена. Попробуйте повторить её позже.'
 };
 function show(text, error = false) {
   feedback.textContent = text;
@@ -96,4 +96,24 @@ document.querySelectorAll('form[data-endpoint]').forEach(form => {
     } else submit(form);
   });
 });
+const logout = document.getElementById('privacy-logout');
+if (logout) logout.addEventListener('click', async () => {
+  logout.disabled = true;
+  try {
+    const response = await fetch('/logout', {
+      method: 'POST', credentials: 'same-origin',
+      headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}
+    });
+    if (response.ok) {
+      try {
+        sessionStorage.removeItem('ar-chat-recovery-v1');
+        sessionStorage.removeItem(toastKey);
+      } catch (_) { /* Revoked server sessions do not depend on browser storage. */ }
+      location.assign('/login');
+    } else show('Не удалось выйти. Сеанс может быть активен.', true);
+  } catch (_) {
+    show('Выход не подтверждён. Проверьте сеанс перед уходом.', true);
+  } finally { logout.disabled = false; }
+});
+
 })();

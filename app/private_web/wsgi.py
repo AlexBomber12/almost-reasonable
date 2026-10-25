@@ -175,6 +175,8 @@ class PrivateWebApplication:
                     error.status,
                     error.message,
                     api=environ.get("PATH_INFO", "").startswith("/api/"),
+                    privacy_recovery=error.status == HTTPStatus.SERVICE_UNAVAILABLE
+                    and self._privacy is not None,
                 )
         except PrivacyReadBlocked:
             response = self._error(
@@ -183,6 +185,7 @@ class PrivateWebApplication:
                 else HTTPStatus.INTERNAL_SERVER_ERROR,
                 "Privacy reconciliation required.",
                 api=environ.get("PATH_INFO", "").startswith("/api/"),
+                privacy_recovery=self._privacy is not None,
             )
         except Exception:
             response = self._error(
@@ -862,6 +865,7 @@ class PrivateWebApplication:
         headers: list[tuple[str, str]] | None = None,
         *,
         api: bool = False,
+        privacy_recovery: bool = False,
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         if api:
             result = PrivateWebApplication._json(status, {"error": message})
@@ -881,13 +885,18 @@ class PrivateWebApplication:
         title, text = titles.get(
             status.value, ("Что-то пошло не так", "Попробуйте ещё раз чуть позже.")
         )
+        recovery_link = (
+            '<a class="button secondary" href="/privacy">Приватность</a>'
+            if privacy_recovery
+            else ""
+        )
         body = document(
             title,
             (
                 '<main class="login-card"><span class="brand__mark" aria-hidden="true">AR</span>'
                 '<button class="theme-toggle" type="button">Тема</button>'
                 f'<p class="muted">Ошибка {status.value}</p><h1>{title}</h1><p>{text}</p>'
-                '<a class="button" href="/chat">Вернуться в чат</a></main>'
+                f'<a class="button" href="/chat">Вернуться в чат</a>{recovery_link}</main>'
             ),
             body_class="login-page",
         )

@@ -619,3 +619,125 @@ def test_dates_use_same_local_midnight_boundary_before_and_after_refresh(
             ] == ["До местной полуночи", "После местной полуночи"]
         finally:
             browser.close()
+
+
+@pytest.mark.parametrize("cause", ["revocation", "deletion"])
+def test_blocked_privacy_recovery_and_logout(journey, tmp_path, monkeypatch, cause):
+    from app.privacy.models import ErasureReport
+    from test_participant_privacy_http import acknowledge, grant_for, post, source_for
+
+    _clock, auth, _store, _ledger, gate, _fake, _config, a, _b = journey
+    acknowledge(a)
+    source = source_for(a, "BLOCKED-PRIVATE-CANARY")
+    reconcile = gate.reconcile
+    if cause == "revocation":
+        post(a, "/api/privacy/grants", grant_for(source))
+        monkeypatch.setattr(gate, "reconcile", lambda: False)
+        post(
+            a,
+            "/api/privacy/revocations",
+            {"operation_id": "revoke-blocked", "consent_id": "consent:grant-1"},
+        )
+        assert post(a, "/api/privacy/reconcile", {})[2] == b'{"status":"blocked"}'
+        assert (
+            a.app._privacy.status(auth.authenticate(a.cookies["ar_session"]))[
+                "deletions"
+            ]
+            == []
+        )
+    else:
+        monkeypatch.setattr(
+            a.app._privacy.deletion.adapter,
+            "erase",
+            lambda request: ErasureReport(
+                False, False, frozenset(), ("synthetic_block",)
+            ),
+        )
+        assert (
+            post(
+                a,
+                "/api/privacy/deletions",
+                {
+                    "operation_id": "delete-blocked-ui",
+                    "source": source,
+                    "confirm": "delete",
+                },
+            )[2]
+            == b'{"status":"incomplete_blocked","operation_id":"delete-blocked-ui"}'
+        )
+    with ui_server(journey, tmp_path) as origin, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(
+                ignore_https_errors=True, viewport={"width": 390, "height": 800}
+            )
+            page.goto(origin + "/login")
+            page.get_by_label("Имя пользователя").fill("alice")
+            page.get_by_label("Пароль", exact=True).fill("synthetic-password-a")
+            page.get_by_role("button", name="Войти", exact=True).click()
+            page.wait_for_url(origin + "/chat")
+            expect(
+                page.get_by_role(
+                    "heading", name="Сервис временно недоступен", exact=True
+                )
+            ).to_be_visible()
+            page.get_by_role("link", name="Приватность", exact=True).click()
+            expect(page.locator("#privacy-logout")).to_be_visible()
+            expect(
+                page.get_by_role("button", name="Повторить проверку", exact=True)
+            ).to_be_visible()
+            assert "BLOCKED-PRIVATE-CANARY" not in page.locator("body").inner_text()
+            for width in (360, 390, 768, 1280):
+                page.set_viewport_size({"width": width, "height": 800})
+                assert_layout(page)
+            page.set_viewport_size({"width": 390, "height": 800})
+            screenshot(page, "privacy-blocked-" + cause)
+            if cause == "revocation":
+                page.get_by_role(
+                    "button", name="Повторить проверку", exact=True
+                ).click()
+                expect(page.locator("#privacy-feedback")).to_contain_text(
+                    "Проверка приватности пока не завершена"
+                )
+            monkeypatch.setattr(gate, "reconcile", reconcile)
+            page.get_by_role("button", name="Повторить проверку", exact=True).click()
+            expect(page.locator("#privacy-feedback")).to_contain_text(
+                "Проверка приватности завершена"
+            )
+            expect(page.locator("#privacy-logout")).to_have_count(0)
+            assert page.goto(origin + "/chat").status == 200
+            monkeypatch.setattr(gate, "_generation", None)
+            page.goto(origin + "/privacy")
+            token = next(
+                c["value"] for c in page.context.cookies() if c["name"] == "ar_session"
+            )
+            page.route(
+                "**/logout", lambda route: route.fulfill(status=503, body="RAW-ERROR")
+            )
+            page.locator("#privacy-logout").click()
+            expect(page.locator("#privacy-feedback")).to_have_text(
+                "Не удалось выйти. Сеанс может быть активен."
+            )
+            assert auth.authenticate(token) is not None
+            page.route("**/logout", lambda route: route.abort())
+            page.locator("#privacy-logout").click()
+            expect(page.locator("#privacy-feedback")).to_have_text(
+                "Выход не подтверждён. Проверьте сеанс перед уходом."
+            )
+            page.unroute("**/logout")
+            page.locator("main").evaluate("main => {main.dataset.csrf='wrong'}")
+            page.locator("#privacy-logout").click()
+            expect(page.locator("#privacy-feedback")).to_have_text(
+                "Не удалось выйти. Сеанс может быть активен."
+            )
+            assert auth.authenticate(token) is not None
+            page.reload()
+            page.evaluate(
+                "() => {Storage.prototype.removeItem = () => {throw Error('blocked')};}"
+            )
+            page.locator("#privacy-logout").click()
+            page.wait_for_url(origin + "/login")
+            assert auth.authenticate(token) is None
+            assert all(c["name"] != "ar_session" for c in page.context.cookies())
+        finally:
+            browser.close()
