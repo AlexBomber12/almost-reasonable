@@ -16,6 +16,62 @@ ROOT = Path(__file__).resolve().parents[1]
 APP_IMAGE = "almost-reasonable-private-pilot-app:local"
 
 
+def test_combined_compose_separates_app_and_worker_protected_paths():
+    if shutil.which("docker") is None:
+        pytest.skip("Docker CLI unavailable")
+    env = os.environ.copy()
+    env.update(
+        {
+            "PILOT_SOCKET_DIR": "/tmp/b03e/ipc",
+            "PILOT_WORKER_STATE_DIR": "/tmp/b03e/worker",
+            "PILOT_APP_STATE_DIR": "/tmp/b03e/app",
+            "PILOT_CONTROL_DIR": "/tmp/b03e/control",
+            "PILOT_SECRET_DIR": "/tmp/b03e/secrets",
+            "PILOT_ALLOWED_HOST": "synthetic.example",
+            "PILOT_ALLOWED_ORIGIN": "https://synthetic.example",
+            "PILOT_APP_SUBNET": "10.251.254.0/29",
+            "PILOT_APP_IP": "10.251.254.3",
+            "PILOT_ID": "synthetic-b03e",
+        }
+    )
+    result = subprocess.run(
+        (
+            *live.COMPOSE,
+            "-f",
+            "ops/compose.private-pilot-memory-acceptance.yaml",
+            "-f",
+            "ops/compose.private-pilot-combined-acceptance.yaml",
+            "config",
+            "--format",
+            "json",
+        ),
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=True,
+    )
+    services = json.loads(result.stdout)["services"]
+    app = services["private-app"]
+    worker = services["provider-worker"]
+    assert app["user"] == "11022:11022"
+    assert worker["user"] == "11021:11021"
+    assert {volume["target"] for volume in app["volumes"]} == {
+        "/run/pilot-ipc",
+        "/var/lib/pilot-app",
+    }
+    assert {
+        "/run/secrets",
+        "/var/lib/pilot-worker",
+        "/run/almost-reasonable-private-pilot/control",
+    } <= {volume["target"] for volume in worker["volumes"]}
+    assert "/var/lib/pilot-app/narrative-permission.json" in app["command"]
+    assert (
+        "/run/almost-reasonable-private-pilot/control/narrative.json"
+        in worker["command"]
+    )
+
+
 def _docker(*args, timeout=120):
     return subprocess.run(
         ("docker", *args),

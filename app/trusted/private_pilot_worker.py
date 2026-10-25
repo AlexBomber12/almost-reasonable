@@ -49,6 +49,7 @@ EXTRACTION_PERMISSION_VERSION = "private-memory-extraction-permission-v1"
 EVOLUTION_PERMISSION_VERSION = "private-memory-evolution-permission-v1"
 TYPED_PERMISSION_VERSION = "private-typed-memory-permission-v1"
 NARRATIVE_PERMISSION_VERSION = "private-narrative-permission-v1"
+COMBINED_NARRATIVE_PERMISSION_VERSION = "private-narrative-permission-v2"
 SHARED_PERMISSION_VERSION = "private-shared-proposal-permission-v1"
 
 
@@ -141,7 +142,10 @@ class PilotRequestGate:
 
     def narrative_limit(self) -> int | None:
         return self._memory_limit(
-            self.narrative_permission_path, NARRATIVE_PERMISSION_VERSION
+            self.narrative_permission_path,
+            COMBINED_NARRATIVE_PERMISSION_VERSION
+            if self.activation.combined_acceptance
+            else NARRATIVE_PERMISSION_VERSION,
         )
 
     def shared_limit(self) -> int | None:
@@ -164,6 +168,14 @@ class PilotRequestGate:
                 and value["pilot_id"] == self.activation.pilot_id
                 and type(value["max_operations"]) is int
                 and 1 <= value["max_operations"] <= self.activation.max_operations
+                and (
+                    version != NARRATIVE_PERMISSION_VERSION
+                    or value["max_operations"] == 1
+                )
+                and (
+                    version != COMBINED_NARRATIVE_PERMISSION_VERSION
+                    or value["max_operations"] == self.activation.max_operations
+                )
             ):
                 return value["max_operations"]
         except (
@@ -304,10 +316,10 @@ def build_worker(
             path is not None
             for path in (
                 extraction_permission_path,
-                narrative_permission_path,
                 shared_permission_path,
             )
         )
+        or (narrative_permission_path is not None) != activation.combined_acceptance
     ):
         raise PilotAuthorityError("invalid memory acceptance scope")
     allowance = PilotAllowance(allowance_database, activation)

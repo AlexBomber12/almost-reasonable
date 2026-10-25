@@ -17,10 +17,16 @@ def main(argv=None):
     original = OpenAIResponsesTransport.call
 
     def record(self, request, *, timeout_seconds):
-        if request.purpose == "agent":
+        if request.purpose in {
+            "agent",
+            "memory_evolution",
+            "typed_memory_evolution",
+            "narrative_evolution",
+            "narrative_reply",
+        }:
             payload = (
                 json.dumps(
-                    {"task": "private_conversation", "input": request.input_text},
+                    {"purpose": request.purpose, "input": request.input_text},
                     ensure_ascii=False,
                     separators=(",", ":"),
                 ).encode()

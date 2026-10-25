@@ -96,37 +96,85 @@ class NarrativeProposal:
     episode: str | None
 
 
+NARRATIVE_DIAGNOSTIC_CODES = frozenset(
+    {
+        "narrative_invalid_size",
+        "narrative_duplicate_key",
+        "narrative_invalid_json",
+        "narrative_invalid_envelope",
+        "narrative_invalid_shape",
+        "narrative_invalid_decision",
+        "narrative_invalid_handle",
+        "narrative_invalid_episode",
+    }
+)
+
+
+class NarrativeValidationError(ValueError):
+    def __init__(self, code: str):
+        self.code = code
+        super().__init__("invalid narrative proposal")
+
+
 def parse_narrative_proposal(raw: str) -> NarrativeProposal:
-    if type(raw) is not str or len(raw.encode("utf-8")) > 8192:
-        raise ValueError("invalid narrative proposal")
     try:
+        if type(raw) is not str or len(raw.encode("utf-8")) > 8192:
+            raise NarrativeValidationError("narrative_invalid_size")
         value = json.loads(raw, object_pairs_hook=_unique)
-    except (ValueError, UnicodeError):
-        raise ValueError("invalid narrative proposal") from None
+    except NarrativeValidationError:
+        raise
+    except UnicodeError:
+        raise NarrativeValidationError("narrative_invalid_size") from None
+    except ValueError:
+        raise NarrativeValidationError("narrative_invalid_json") from None
     if type(value) is not dict or set(value) != {"decision", "handle", "episode"}:
-        raise ValueError("invalid narrative proposal")
+        raise NarrativeValidationError("narrative_invalid_shape")
     decision, handle, episode = value["decision"], value["handle"], value["episode"]
+    if type(decision) is not str or decision not in {"create", "revise", "no_change"}:
+        raise NarrativeValidationError("narrative_invalid_decision")
     if decision == "no_change" and handle is None and episode is None:
         return NarrativeProposal(decision, None, None)
-    if (
-        decision not in {"create", "revise"}
-        or (decision == "create" and handle is not None)
-        or (
-            decision == "revise"
-            and (type(handle) is not str or _HANDLE.fullmatch(handle) is None)
-        )
-        or type(episode) is not str
-        or not episode.strip()
-        or len(episode.encode("utf-8")) > 4096
+    if decision == "no_change":
+        raise NarrativeValidationError("narrative_invalid_shape")
+    if (decision == "create" and handle is not None) or (
+        decision == "revise"
+        and (type(handle) is not str or _HANDLE.fullmatch(handle) is None)
     ):
-        raise ValueError("invalid narrative proposal")
+        raise NarrativeValidationError("narrative_invalid_handle")
+    try:
+        if (
+            type(episode) is not str
+            or not episode.strip()
+            or len(episode.encode("utf-8")) > 4096
+        ):
+            raise NarrativeValidationError("narrative_invalid_episode")
+    except UnicodeError:
+        raise NarrativeValidationError("narrative_invalid_episode") from None
     return NarrativeProposal(decision, handle, episode)
+
+
+def parse_narrative_provider_response(raw: str) -> NarrativeProposal:
+    try:
+        if type(raw) is not str or len(raw.encode("utf-8")) > 8192:
+            raise NarrativeValidationError("narrative_invalid_size")
+        value = json.loads(raw, object_pairs_hook=_unique)
+        if type(value) is not dict or set(value) != {"proposal"}:
+            raise NarrativeValidationError("narrative_invalid_envelope")
+        return parse_narrative_proposal(
+            json.dumps(value["proposal"], ensure_ascii=False)
+        )
+    except NarrativeValidationError:
+        raise
+    except UnicodeError:
+        raise NarrativeValidationError("narrative_invalid_size") from None
+    except (TypeError, ValueError, OverflowError):
+        raise NarrativeValidationError("narrative_invalid_json") from None
 
 
 def _unique(pairs):
     result = {}
     for key, value in pairs:
         if key in result:
-            raise ValueError("duplicate narrative proposal field")
+            raise NarrativeValidationError("narrative_duplicate_key")
         result[key] = value
     return result

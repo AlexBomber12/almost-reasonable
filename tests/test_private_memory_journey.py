@@ -104,6 +104,59 @@ def test_rejected_typed_attempt_is_billed_and_diagnosed_without_accounting_error
     assert "private_canary" not in str(unsafe)
 
 
+def test_rejected_narrative_keeps_billed_usage_and_conservative_reply_hold(monkeypatch):
+    suffix = "a" * 64
+    operations = [
+        (family + ":" + suffix, "corr")
+        for family in ("evolution", "typed", "narrative")
+    ]
+    rows = [
+        [
+            operation + ":1",
+            "corr",
+            "invalid_proposal" if operation.startswith("narrative:") else "completed",
+            "invalid_purpose_proposal" if operation.startswith("narrative:") else None,
+            4,
+            2,
+            6,
+            0,
+            "0",
+            "estimated",
+            "narrative_invalid_handle" if operation.startswith("narrative:") else None,
+        ]
+        for operation, _ in operations
+    ]
+    monkeypatch.setattr(
+        live, "_usage", lambda *_args, **_kwargs: {"attempts": rows, "reservations": []}
+    )
+    monkeypatch.setattr(
+        live,
+        "_allowance",
+        lambda *_args, **_kwargs: {
+            "maximum": 20,
+            "consumed": [operation for operation, _ in operations]
+            + ["reply_hold:" + suffix],
+        },
+    )
+    baseline = {"attempts": set(), "rows": {}, "consumed": set(), "maximum": 20}
+    assert (
+        len(
+            live._reconcile(
+                {},
+                baseline,
+                operations,
+                {"max_aggregate_input_tokens": 100, "max_aggregate_output_tokens": 100},
+                required=20,
+            )[1]
+        )
+        == 3
+    )
+    failure = live._proposal_failure(rows, "combined-story")
+    assert failure.operation_family == "narrative"
+    assert failure.diagnostic_code == "narrative_invalid_handle"
+    assert failure.step == "combined-story"
+
+
 def test_robot_journey_requires_actual_persistent_projection_after_eviction():
     sent = []
     deleted = False
@@ -667,7 +720,7 @@ def test_synthetic_worker_capture_records_exact_reply_input(tmp_path, monkeypatc
     monkeypatch.setattr(private_memory_worker.private_pilot_worker, "main", fake_main)
     assert private_memory_worker.main([]) == 0
     assert json.loads(capture.read_text()) == {
-        "task": "private_conversation",
+        "purpose": "agent",
         "input": '{"task":"private_conversation"}',
     }
     assert len(seen) == 1

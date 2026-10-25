@@ -19,10 +19,13 @@ from app.trusted.openai_credential_files import (
 ACTIVATION_VERSION = "private-pilot-activation-v1"
 MEMORY_ACTIVATION_VERSION = "private-pilot-activation-b03d-v1"
 MEMORY_TASK = "synthetic-private-robot-memory-b03d"
+COMBINED_ACTIVATION_VERSION = "private-pilot-activation-b03e-v1"
+COMBINED_TASK = "synthetic-private-combined-memory-b03e"
 PROVIDER_CONFIG_VERSION = "openai-private-pilot-v1"
 MODEL = "gpt-6-luna"
 MAX_OPERATIONS = 5
 MAX_MEMORY_ACCEPTANCE_OPERATIONS = 27
+MAX_COMBINED_ACCEPTANCE_OPERATIONS = 20
 MAX_WINDOW_SECONDS = 600
 MAX_MEMORY_ACCEPTANCE_WINDOW_SECONDS = 3600
 _FIELDS = frozenset(
@@ -118,6 +121,7 @@ class PilotActivation:
     max_operations: int
     digest: str
     memory_acceptance: bool = False
+    combined_acceptance: bool = False
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -145,7 +149,13 @@ def load_activation(
         value = json.loads(payload, object_pairs_hook=_unique)
         if type(value) is not dict or type(allow_memory_acceptance) is not bool:
             raise ValueError("invalid activation fields")
-        memory_acceptance = (
+        combined_acceptance = (
+            allow_memory_acceptance
+            and set(value) == _FIELDS | {"task"}
+            and value.get("version") == COMBINED_ACTIVATION_VERSION
+            and value.get("task") == COMBINED_TASK
+        )
+        memory_acceptance = combined_acceptance or (
             allow_memory_acceptance
             and set(value) == _FIELDS | {"task"}
             and value.get("version") == MEMORY_ACTIVATION_VERSION
@@ -160,7 +170,13 @@ def load_activation(
             raise ValueError("invalid current time")
         valid = (
             value["version"]
-            == (MEMORY_ACTIVATION_VERSION if memory_acceptance else ACTIVATION_VERSION)
+            == (
+                COMBINED_ACTIVATION_VERSION
+                if combined_acceptance
+                else MEMORY_ACTIVATION_VERSION
+                if memory_acceptance
+                else ACTIVATION_VERSION
+            )
             and type(value["pilot_id"]) is str
             and _IDENTIFIER.fullmatch(value["pilot_id"]) is not None
             and type(value["application_peer_uid"]) is int
@@ -177,9 +193,15 @@ def load_activation(
             and 1
             <= value["max_operations"]
             <= (
-                MAX_MEMORY_ACCEPTANCE_OPERATIONS
+                MAX_COMBINED_ACCEPTANCE_OPERATIONS
+                if combined_acceptance
+                else MAX_MEMORY_ACCEPTANCE_OPERATIONS
                 if memory_acceptance
                 else MAX_OPERATIONS
+            )
+            and (
+                not combined_acceptance
+                or value["max_operations"] == MAX_COMBINED_ACCEPTANCE_OPERATIONS
             )
             and value["max_attempts_per_operation"] == 1
             and type(value["max_attempts_per_operation"]) is int
@@ -204,6 +226,7 @@ def load_activation(
             value["max_operations"],
             sha256(payload).hexdigest(),
             memory_acceptance,
+            combined_acceptance,
         )
     except (
         PilotAuthorityError,
