@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<title>Almost Reasonable — дизайн-ревью</title>
+<style>
+body{margin:0;background:#eef0ec;color:#26352f;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#205a46;text-underline-offset:.18em}a:hover{color:#123d2e}
+</style>
+</helmet>
+<div style="max-width:1240px;margin:0 auto;padding:56px 28px 96px;display:flex;flex-direction:column;gap:72px">
+
+<header style="display:flex;flex-direction:column;gap:18px;max-width:760px">
+<div style="font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:#617068">Дизайн-ревью · AlexBomber12/almost-reasonable@main</div>
+<h1 style="margin:0;font-size:44px;line-height:1.08;letter-spacing:-.035em;text-wrap:pretty">Чат почти хорош. Всё вокруг него — нет.</h1>
+<p style="margin:0;font-size:18px;line-height:1.55;color:#46564d;text-wrap:pretty">Проверены 7 экранов: вход, чат, приватность, управление источником, страницы ошибок и панель владельца. Чат и вход стилизованы аккуратно; страницы приватности и ошибок отдаются без CSS и viewport, показывают внутренние ID, JSON и английский текст. Ниже — проблемы по экранам и предлагаемый вид.</p>
+<div style="display:flex;flex-wrap:wrap;gap:10px;font-size:14px">
+<span style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:99px;background:#f8e4e1;color:#8a2a24;font-weight:600">● Критично — 8</span>
+<span style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:99px;background:#fbefd2;color:#7a5410;font-weight:600">● Важно — 20</span>
+<span style="display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:99px;background:#e3eee5;color:#235a47;font-weight:600">● Мелочь — 10</span>
+</div>
+</header>
+
+<section style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:16px">
+<div style="background:#fff;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:8px"><div style="font-size:13px;color:#617068">01</div><div style="font-size:18px;font-weight:650;letter-spacing:-.01em">Одна визуальная система</div><p style="margin:0;font-size:15px;line-height:1.5;color:#46564d">Подключить chat.css к /privacy, /privacy/source и ошибкам. Сейчас это голый HTML без &lt;meta viewport&gt; — на телефоне мелкий текст и горизонтальный скролл из-за &lt;pre&gt;.</p></div>
+<div style="background:#fff;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:8px"><div style="font-size:13px;color:#617068">02</div><div style="font-size:18px;font-weight:650;letter-spacing:-.01em">Убрать внутреннюю кухню</div><p style="margin:0;font-size:15px;line-height:1.5;color:#46564d">consent_id, operation_id, версии уведомления, ISO-даты, alert(JSON) — пользователю это не нужно. Заменить на человеческие статусы и превью сообщений.</p></div>
+<div style="background:#fff;border-radius:16px;padding:22px;display:flex;flex-direction:column;gap:8px"><div style="font-size:13px;color:#617068">03</div><div style="font-size:18px;font-weight:650;letter-spacing:-.01em">Меньше слов в чате</div><p style="margin:0;font-size:15px;line-height:1.5;color:#46564d">Тройной заголовок, подписи «Вы/Собеседник», ссылка под каждым сообщением, постоянная подсказка про Enter. Действия — в меню сообщения, состояние ответа — индикатором, а не текстом.</p></div>
+</section>
+
+<section id="chat" style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h2 style="margin:0;font-size:30px;letter-spacing:-.03em">Чат</h2><code style="font-size:13px;color:#617068">/chat · wsgi.py _chat_page · chat.js · chat.css</code></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px;background:#fff;border-radius:16px;padding:8px 22px">
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Тройной заголовок.</b> «Almost Reasonable» + «Личный разговор» в шапке и ещё H1 «Разговор». Оставить только бренд в шапке, H1 сделать visually-hidden.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>«Управление источником» под каждым вашим сообщением.</b> Жаргон и визуальный шум в каждой реплике. Перенести в меню «⋯» по наведению/долгому тапу: «Разрешить цитирование», «Удалить».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Нет индикатора ответа.</b> Пока агент думает — только строка «Отправляем сообщение…» над полем. Нужен пузырь-заглушка в ленте («печатает…»), а после — сам ответ.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Статусы написаны языком протокола.</b> «Повторите её явно с тем же номером сообщения», «Результат неизвестен. Повторите отправку явно». Пользователь не видит номера сообщения. Заменить на «Не удалось отправить» + кнопки «Повторить» / «Отменить» рядом.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Подписи «Вы» / «Собеседник».</b> Выравнивание и пузырь уже говорят, кто пишет. «Собеседник» безлико — если подпись нужна, то «Almost Reasonable». Предлагаю убрать обе.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Пузырь пользователя почти сливается с фоном</b> (#e6eee7 на #f7f8f5). Ответ агента с зелёной полосой слева выглядит как цитата. Пузырь — насыщеннее, ответ агента — просто текст.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Ни дат, ни времени,</b> хотя API отдаёт occurred_at. Добавить разделители «Сегодня / Вчера / 12 октября».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Поле ввода с resize: vertical</b> и ручкой в углу. Лучше авто-рост до 8 строк. Кнопку «Отправить» — круглой иконкой, «Повторить отправку» не меняет ширину кнопки.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>«Enter — отправить · Shift+Enter…»</b> висит всегда. Показать только в пустом чате или убрать.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Дисклеймер ИИ уезжает со скроллом</b> и в длинной истории не виден. Перенести одной строкой под поле ввода.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Пустое состояние — карточка с рамкой</b> под заголовком и дисклеймером: три блока ради одной фразы. Достаточно приветствия по центру.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Пока проверяется сеанс,</b> поле и кнопка disabled без объяснения. Плейсхолдер «Подключаемся…».</div></div>
+</div>
+
+<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center">
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · переписка</figcaption>
+<div style="width:380px;height:720px;border-radius:28px;background:#f7f8f5;border:1px solid #dfe5de;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 50px #1b3c2214">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#f7f8f5;border-bottom:1px solid #e6ebe5">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:30px;height:30px;border-radius:9px;background:#286347;color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700">AR</span><span style="font-size:15px;font-weight:650;letter-spacing:-.01em">Almost Reasonable</span></div>
+<span style="width:36px;height:36px;border-radius:10px;display:grid;place-items:center;color:#46564d;font-size:20px;line-height:1">⋯</span>
+</div>
+<div style="flex:1;padding:18px 16px;display:flex;flex-direction:column;gap:16px;overflow:hidden">
+<div style="align-self:center;font-size:12px;color:#617068">Сегодня</div>
+<div style="align-self:flex-end;max-width:80%;padding:10px 14px;background:#d9e8dd;border-radius:18px 18px 6px 18px;font-size:15px;line-height:1.45">Как ты думаешь, есть ли смысл в долгих прогулках без цели?</div>
+<div style="max-width:92%;font-size:15px;line-height:1.6">Есть. Я заметил, что лучшие мысли приходят, когда идёшь без маршрута — голова перестаёт решать задачу навигации и освобождается для остального.</div>
+<div style="align-self:flex-end;display:flex;align-items:center;gap:6px">
+<span style="width:28px;height:28px;border-radius:8px;background:#fff;border:1px solid #e1e8e2;display:grid;place-items:center;font-size:14px;color:#46564d">⋯</span>
+<div style="max-width:240px;padding:10px 14px;background:#d9e8dd;border-radius:18px 18px 6px 18px;font-size:15px;line-height:1.45">А сам ты гуляешь?</div>
+</div>
+<div style="display:flex;align-items:center;gap:8px;font-size:14px;color:#617068"><span style="display:flex;gap:4px"><span style="width:6px;height:6px;border-radius:50%;background:#86a997"></span><span style="width:6px;height:6px;border-radius:50%;background:#86a997;opacity:.7"></span><span style="width:6px;height:6px;border-radius:50%;background:#86a997;opacity:.4"></span></span>Печатает</div>
+</div>
+<div style="padding:10px 12px 14px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:flex-end;gap:8px;padding:6px 6px 6px 14px;background:#fff;border:1px solid #cfdcd2;border-radius:22px">
+<span style="flex:1;padding:8px 0;font-size:15px;color:#66776c">Сообщение</span>
+<span style="width:36px;height:36px;border-radius:50%;background:#286347;color:#fff;display:grid;place-items:center;font-size:17px;font-weight:700">↑</span>
+</div>
+<div style="text-align:center;font-size:12px;color:#617068;line-height:1.4">ИИ-агент. Истории от первого лица могут быть вымыслом.</div>
+</div>
+</div>
+</figure>
+
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · пустой чат и ошибка отправки</figcaption>
+<div style="width:380px;height:720px;border-radius:28px;background:#f7f8f5;border:1px solid #dfe5de;overflow:hidden;display:flex;flex-direction:column;box-shadow:0 20px 50px #1b3c2214">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #e6ebe5">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:30px;height:30px;border-radius:9px;background:#286347;color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700">AR</span><span style="font-size:15px;font-weight:650">Almost Reasonable</span></div>
+<div style="display:flex;flex-direction:column;gap:2px;position:relative"><span style="width:36px;height:36px;border-radius:10px;display:grid;place-items:center;background:#e6ebe5;font-size:20px;line-height:1">⋯</span></div>
+</div>
+<div style="position:relative;flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:10px;padding:24px 32px;text-align:center">
+<div style="position:absolute;top:8px;right:12px;width:200px;background:#fff;border-radius:14px;box-shadow:0 10px 30px #1b3c2226;border:1px solid #e1e8e2;padding:6px;display:flex;flex-direction:column;text-align:left">
+<span style="padding:10px 12px;font-size:15px;border-radius:9px;background:#f1f5f1">Приватность</span>
+<span style="padding:10px 12px;font-size:15px">Выйти</span>
+</div>
+<div style="font-size:24px;font-weight:650;letter-spacing:-.025em;margin-top:60px">С чего начнём?</div>
+<p style="margin:0;font-size:15px;line-height:1.5;color:#53645a;text-wrap:pretty">Напишите что угодно — разговор виден только вам.</p>
+<p style="margin:0;font-size:13px;color:#617068">Enter — отправить, Shift+Enter — новая строка</p>
+</div>
+<div style="padding:10px 12px 14px;display:flex;flex-direction:column;gap:8px">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px 10px 14px;background:#f8e4e1;border-radius:14px">
+<span style="font-size:14px;color:#8a2a24;line-height:1.35">Не удалось отправить</span>
+<span style="display:flex;gap:6px"><span style="padding:7px 12px;border-radius:9px;font-size:14px;font-weight:600;color:#8a2a24">Отменить</span><span style="padding:7px 12px;border-radius:9px;background:#9d302a;color:#fff;font-size:14px;font-weight:600">Повторить</span></span>
+</div>
+<div style="display:flex;align-items:flex-end;gap:8px;padding:6px 6px 6px 14px;background:#fff;border:1px solid #cfdcd2;border-radius:22px">
+<span style="flex:1;padding:8px 0;font-size:15px;line-height:1.4">Расскажи что-нибудь о себе</span>
+<span style="width:36px;height:36px;border-radius:50%;background:#286347;color:#fff;display:grid;place-items:center;font-size:17px;font-weight:700;opacity:.5">↑</span>
+</div>
+<div style="text-align:center;font-size:12px;color:#617068">ИИ-агент. Истории от первого лица могут быть вымыслом.</div>
+</div>
+</div>
+</figure>
+</div>
+</div>
+</section>
+
+<section id="login" style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h2 style="margin:0;font-size:30px;letter-spacing:-.03em">Вход и ошибки</h2><code style="font-size:13px;color:#617068">/login · _login_page · _error</code></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px;background:#fff;border-radius:16px;padding:8px 22px">
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Неверный пароль → голая английская страница</b> «Invalid username or password.» (lang=en, без стилей, без формы). То же для блокировки «Too many login attempts». Нужна та же форма с ошибкой по-русски и сохранённым логином.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Все ошибки 400/403/404/500</b> — то же самое: «Not found.», «CSRF validation failed.», «Privacy reconciliation required.». Единый шаблон: заголовок по-русски, одна фраза, кнопка «Вернуться в чат».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>На карточке входа нет названия продукта</b> — только «Личный разговор» и ✳. Поставить бренд, подзаголовок убрать.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Нет «показать пароль»</b> и состояния загрузки кнопки «Входим…». Знак ✳ рендерится по-разному на платформах — лучше монограмма.</div></div>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center">
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · вход с ошибкой</figcaption>
+<div style="width:380px;padding:32px 28px;border-radius:24px;background:#fff;border:1px solid #e0e9e0;box-shadow:0 12px 40px #1b3c2212;display:flex;flex-direction:column;gap:18px">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:34px;height:34px;border-radius:10px;background:#286347;color:#fff;display:grid;place-items:center;font-size:14px;font-weight:700">AR</span><span style="font-size:17px;font-weight:650">Almost Reasonable</span></div>
+<div style="font-size:24px;font-weight:650;letter-spacing:-.025em">Вход</div>
+<div style="padding:10px 14px;border-radius:12px;background:#f8e4e1;color:#8a2a24;font-size:14px">Неверное имя или пароль</div>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:14px;font-weight:600">Имя пользователя</span><span style="padding:12px;border:1px solid #afc1b2;border-radius:12px;font-size:15px">synthetic-a</span></div>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:14px;font-weight:600">Пароль</span><span style="display:flex;justify-content:space-between;padding:12px;border:1.5px solid #9d302a;border-radius:12px;font-size:15px"><span>••••••••••</span><span style="font-size:13px;color:#46564d">Показать</span></span></div>
+<span style="padding:13px;border-radius:12px;background:#286347;color:#fff;text-align:center;font-weight:650;font-size:15px">Войти</span>
+</div>
+</figure>
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · шаблон ошибки</figcaption>
+<div style="width:380px;padding:32px 28px;border-radius:24px;background:#fff;border:1px solid #e0e9e0;display:flex;flex-direction:column;gap:14px">
+<span style="font-size:13px;color:#617068">Ошибка 404</span>
+<div style="font-size:24px;font-weight:650;letter-spacing:-.025em">Страница не найдена</div>
+<p style="margin:0;font-size:15px;line-height:1.5;color:#53645a">Возможно, ссылка устарела.</p>
+<span style="align-self:flex-start;padding:11px 18px;border-radius:12px;background:#286347;color:#fff;font-weight:650;font-size:15px">Вернуться в чат</span>
+</div>
+</figure>
+</div>
+</div>
+</section>
+
+<section id="privacy" style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h2 style="margin:0;font-size:30px;letter-spacing:-.03em">Приватность</h2><code style="font-size:13px;color:#617068">/privacy · privacy.py page() · privacy.js</code></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px;background:#fff;border-radius:16px;padding:8px 22px">
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Страница без стилей и viewport.</b> Нет &lt;head&gt;, chat.css не подключён, текст уведомления в &lt;pre&gt; моноширинным с жёсткими переносами — на 360px горизонтальный скролл.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Результат действий — alert(JSON.stringify(result))</b>: пользователь видит {"status":"acknowledged"}. Заменить на тост/инлайн-статус по-русски.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Первый вход ломает флоу.</b> /chat редиректит сюда, человек видит стену текста, списки и кнопку «Выйти». После подтверждения страница просто перезагружается — в чат не ведёт. Нужен отдельный экран онбординга с одной кнопкой «Понятно, к разговору».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Сырые идентификаторы:</b> «Версия … : Подтверждено», в согласиях consent_id · content_reference · public · ISO-дата, в удалениях operation_id. Показывать превью сообщения, дату по-русски и статус-чип.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>«Мои источники»: Сообщение 1, Сообщение 2…</b> — без текста ссылки бесполезны. Переименовать в «Мои сообщения», показывать первую строку и дату.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Кнопка «Подтвердить уведомление» видна и после подтверждения.</b> Показывать её только в онбординге, в настройках — «Подтверждено 12 окт.».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>«Повторить локальное удаление / Проверить незавершённые операции»</b> — служебное действие для оператора. Скрыть; показывать только если есть статус «Удаление не завершено», рядом с ним.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Нет шапки чата</b> — только ссылка «Чат» в nav и «Выйти» в самом низу. Использовать ту же шапку с «← Назад».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Дисклеймер ИИ продублирован</b> и здесь — он не про приватность. Убрать.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Пустые списки</b> выводятся как пустой &lt;ol&gt; под заголовком. Секции без данных — скрыть или «Пока нет».</div></div>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center">
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · онбординг (вместо редиректа на /privacy)</figcaption>
+<div style="width:380px;height:720px;border-radius:28px;background:#f7f8f5;border:1px solid #dfe5de;overflow:hidden;display:flex;flex-direction:column;padding:28px 24px 20px;gap:22px;box-sizing:border-box">
+<span style="width:34px;height:34px;border-radius:10px;background:#286347;color:#fff;display:grid;place-items:center;font-size:14px;font-weight:700">AR</span>
+<div style="font-size:26px;font-weight:650;letter-spacing:-.03em;line-height:1.15">Прежде чем начать</div>
+<div style="display:flex;flex-direction:column;gap:16px">
+<div style="display:grid;grid-template-columns:28px 1fr;gap:12px"><span style="width:28px;height:28px;border-radius:50%;background:#e3eee5;color:#235a47;display:grid;place-items:center;font-size:13px;font-weight:700">1</span><div style="font-size:15px;line-height:1.45"><b>Где обрабатываются данные.</b> Текст разговора передаётся OpenAI; трафик идёт через Cloudflare.</div></div>
+<div style="display:grid;grid-template-columns:28px 1fr;gap:12px"><span style="width:28px;height:28px;border-radius:50%;background:#e3eee5;color:#235a47;display:grid;place-items:center;font-size:13px;font-weight:700">2</span><div style="font-size:15px;line-height:1.45"><b>Ваши слова не публикуются.</b> Идеи могут влиять на агента только в обобщённом виде. Цитата — только с вашего отдельного согласия.</div></div>
+<div style="display:grid;grid-template-columns:28px 1fr;gap:12px"><span style="width:28px;height:28px;border-radius:50%;background:#e3eee5;color:#235a47;display:grid;place-items:center;font-size:13px;font-weight:700">3</span><div style="font-size:15px;line-height:1.45"><b>Можно удалить.</b> Любое сообщение удаляется локально; у внешних сервисов — по их правилам.</div></div>
+</div>
+<span style="font-size:14px;color:#205a46;text-decoration:underline;text-underline-offset:.18em">Полный текст уведомления</span>
+<div style="flex:1"></div>
+<span style="padding:14px;border-radius:14px;background:#286347;color:#fff;text-align:center;font-weight:650;font-size:15px">Понятно, к разговору</span>
+</div>
+</figure>
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · настройки приватности</figcaption>
+<div style="width:380px;height:720px;border-radius:28px;background:#f7f8f5;border:1px solid #dfe5de;overflow:hidden;display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;gap:10px;padding:14px 16px;border-bottom:1px solid #e6ebe5"><span style="font-size:18px;color:#46564d">←</span><span style="font-size:15px;font-weight:650">Приватность</span></div>
+<div style="padding:16px;display:flex;flex-direction:column;gap:20px;overflow:hidden">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;background:#fff;border-radius:14px"><div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:15px;font-weight:600">Уведомление о данных</span><span style="font-size:13px;color:#617068">Подтверждено 12 октября</span></div><span style="font-size:14px;color:#205a46">Открыть</span></div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;font-weight:650;color:#617068;padding:0 4px">Разрешения на цитирование</span>
+<div style="background:#fff;border-radius:14px;display:flex;flex-direction:column">
+<div style="display:flex;flex-direction:column;gap:6px;padding:14px 16px;border-bottom:1px solid #edf0ec"><span style="font-size:15px;line-height:1.4">«Как ты думаешь, есть ли смысл в долгих…»</span><div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:13px;color:#617068">Цитата · до 19 окт.</span><span style="display:flex;gap:10px;align-items:center"><span style="font-size:12px;font-weight:600;padding:3px 8px;border-radius:99px;background:#e3eee5;color:#235a47">Действует</span><span style="font-size:14px;color:#9d302a">Отозвать</span></span></div></div>
+<div style="display:flex;flex-direction:column;gap:6px;padding:14px 16px"><span style="font-size:15px;line-height:1.4">«Мне кажется, что усталость — это…»</span><div style="display:flex;align-items:center;justify-content:space-between"><span style="font-size:13px;color:#617068">Раскрытие · 3 окт.</span><span style="font-size:12px;font-weight:600;padding:3px 8px;border-radius:99px;background:#eceeeb;color:#53645a">Отозвано</span></div></div>
+</div>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;font-weight:650;color:#617068;padding:0 4px">Удаления</span>
+<div style="background:#fff;border-radius:14px;display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px;border-bottom:1px solid #edf0ec"><span style="font-size:15px">Сообщение от 2 окт.</span><span style="font-size:12px;font-weight:600;padding:3px 8px;border-radius:99px;background:#e3eee5;color:#235a47">Удалено</span></div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 16px"><span style="font-size:15px">Сообщение от 28 сент.</span><span style="display:flex;gap:10px;align-items:center"><span style="font-size:12px;font-weight:600;padding:3px 8px;border-radius:99px;background:#fbefd2;color:#7a5410">Не завершено</span><span style="font-size:14px;color:#205a46">Повторить</span></span></div>
+</div>
+</div>
+<span style="padding:0 4px;font-size:14px;color:#46564d">Чтобы удалить сообщение или разрешить цитату — откройте меню ⋯ у сообщения в чате.</span>
+</div>
+</div>
+</figure>
+</div>
+</div>
+</section>
+
+<section id="source" style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h2 style="margin:0;font-size:30px;letter-spacing:-.03em">Управление источником</h2><code style="font-size:13px;color:#617068">/privacy/source · source_page()</code></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px;background:#fff;border-radius:16px;padding:8px 22px">
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Без стилей, без viewport, без пути назад</b> — ни шапки, ни ссылки на чат. После удаления — alert с JSON и редирект на /privacy вместо возврата в чат.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Select «Аудитория» с единственным вариантом</b> «Публичная аудитория» — лишний шаг. Убрать, написать текстом «Публично, в Threads».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Юридический жаргон:</b> «Идентифицируемая цитата / раскрытие», «инвалидирует зависимые локальные памяти», «Дать отдельное согласие». Перевести на человеческий: «Можно цитировать дословно», «Можно упомянуть, что идея ваша».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Удаление выглядит как обычная кнопка.</b> Опасное действие — красное, отдельной зоной, с подтверждением в диалоге вместо чекбокса.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Три select'а с disabled-плейсхолдером</b> для 2–3 вариантов. Сегментированные кнопки быстрее и видны сразу.</div></div>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center">
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · лист действий сообщения</figcaption>
+<div style="width:380px;height:720px;border-radius:28px;background:#9aa39d;border:1px solid #dfe5de;overflow:hidden;display:flex;flex-direction:column;justify-content:flex-end">
+<div style="background:#fff;border-radius:24px 24px 0 0;padding:10px 20px 22px;display:flex;flex-direction:column;gap:18px">
+<span style="align-self:center;width:40px;height:4px;border-radius:2px;background:#d5dcd6"></span>
+<div style="padding:12px 14px;background:#f1f5f1;border-radius:14px;font-size:15px;line-height:1.45;color:#46564d">«Как ты думаешь, есть ли смысл в долгих прогулках без цели?»</div>
+<div style="display:flex;flex-direction:column;gap:12px">
+<span style="font-size:17px;font-weight:650;letter-spacing:-.01em">Разрешить публикацию</span>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:#617068">Как</span><div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:#eef2ee;border-radius:12px"><span style="padding:9px;border-radius:9px;background:#fff;text-align:center;font-size:14px;font-weight:600;box-shadow:0 1px 3px #1b3c221a">Дословно</span><span style="padding:9px;text-align:center;font-size:14px;color:#46564d">С указанием автора</span></div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:#617068">На срок</span><div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px;background:#eef2ee;border-radius:12px"><span style="padding:9px;text-align:center;font-size:14px;color:#46564d">1 час</span><span style="padding:9px;border-radius:9px;background:#fff;text-align:center;font-size:14px;font-weight:600;box-shadow:0 1px 3px #1b3c221a">Сутки</span><span style="padding:9px;text-align:center;font-size:14px;color:#46564d">Неделя</span></div></div>
+<span style="font-size:13px;color:#617068;line-height:1.4">Публично, в Threads. Разрешение можно отозвать, но опубликованное не вернуть.</span>
+<span style="padding:13px;border-radius:12px;background:#286347;color:#fff;text-align:center;font-weight:650;font-size:15px">Разрешить</span>
+</div>
+<div style="height:1px;background:#edf0ec"></div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px"><div style="display:flex;flex-direction:column;gap:2px"><span style="font-size:15px;font-weight:600;color:#9d302a">Удалить сообщение</span><span style="font-size:13px;color:#617068;line-height:1.35">Агент забудет всё, что из него узнал</span></div><span style="padding:10px 14px;border-radius:10px;background:#f8e4e1;color:#8a2a24;font-size:14px;font-weight:600">Удалить</span></div>
+</div>
+</div>
+</figure>
+</div>
+</div>
+</section>
+
+<section id="owner" style="display:flex;flex-direction:column;gap:28px">
+<div style="display:flex;align-items:baseline;gap:14px;flex-wrap:wrap"><h2 style="margin:0;font-size:30px;letter-spacing:-.03em">Панель владельца</h2><code style="font-size:13px;color:#617068">owner_control/static · index.html · owner.js · owner.css</code></div>
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:32px;align-items:start">
+<div style="display:flex;flex-direction:column;gap:2px;background:#fff;border-radius:16px;padding:8px 22px">
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#f8e4e1;color:#8a2a24;text-align:center">Критично</span><div style="font-size:15px;line-height:1.5"><b>Аварийная остановка выглядит как «Обновить».</b> Пять одинаковых голубых кнопок в одну строку вперемешку с текстом; «Выйти» стоит рядом со «Снять Stop». Аварийную кнопку — красной и отдельно, «Выйти» — в шапку.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>~25 строк в &lt;dl&gt;</b>, часть всегда одинакова: «Биллинг провайдера — Не является источником данных этой панели», «Активация и разрешённый лимит — Недоступны этой панели». Удалить. Схему, journal mode, busy timeout, FK — свернуть в «Диагностика».</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Главное не видно сразу.</b> Наверх — три плитки: Приложение (работает / Stop), Воркер (работает / Stop), Расходы (идут / приостановлены).</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Активность — склеенные строки</b> «время: метка: итог; причина; токены; ссылка». Таблица с колонками Время / Итог / Причина / Токены.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#fbefd2;color:#7a5410;text-align:center">Важно</span><div style="font-size:15px;line-height:1.5"><b>Другая визуальная система</b> (синий, тени, радиус .3rem) — выглядит как другой продукт. Взять палитру чата.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0;border-bottom:1px solid #edf0ec"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Подзаголовок «Управление приложением. Состояние воркера проверяется отдельно.»</b> и дубль подсказки про JavaScript (p + noscript). Оставить только noscript.</div></div>
+<div style="display:grid;grid-template-columns:84px 1fr;gap:12px;padding:14px 0"><span style="align-self:start;font-size:12px;font-weight:650;padding:3px 8px;border-radius:6px;background:#e3eee5;color:#235a47;text-align:center">Мелочь</span><div style="font-size:15px;line-height:1.5"><b>Название «Частный пилот»</b> не совпадает с продуктом. «Almost Reasonable · Владелец».</div></div>
+</div>
+<div style="display:flex;flex-wrap:wrap;gap:24px;justify-content:center">
+<figure style="margin:0;display:flex;flex-direction:column;gap:10px;width:100%;max-width:560px">
+<figcaption style="font-size:13px;color:#617068">Предлагаю · верх панели</figcaption>
+<div style="border-radius:20px;background:#f7f8f5;border:1px solid #dfe5de;overflow:hidden;display:flex;flex-direction:column">
+<div style="display:flex;align-items:center;justify-content:space-between;padding:14px 20px;border-bottom:1px solid #e6ebe5"><div style="display:flex;align-items:center;gap:10px"><span style="width:30px;height:30px;border-radius:9px;background:#26352f;color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700">AR</span><span style="font-size:15px;font-weight:650">Владелец</span></div><span style="display:flex;gap:16px;font-size:14px;color:#355a49"><span>Обновить</span><span>Выйти</span></span></div>
+<div style="padding:20px;display:flex;flex-direction:column;gap:18px">
+<div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px">
+<div style="padding:14px;background:#fff;border-radius:14px;display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:#617068">Приложение</span><span style="display:flex;align-items:center;gap:6px;font-size:16px;font-weight:650"><span style="width:8px;height:8px;border-radius:50%;background:#2f8a5c"></span>Работает</span></div>
+<div style="padding:14px;background:#fff;border-radius:14px;display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:#617068">Воркер</span><span style="display:flex;align-items:center;gap:6px;font-size:16px;font-weight:650"><span style="width:8px;height:8px;border-radius:50%;background:#2f8a5c"></span>Работает</span></div>
+<div style="padding:14px;background:#fff;border-radius:14px;display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:#617068">Расходы</span><span style="display:flex;align-items:center;gap:6px;font-size:16px;font-weight:650"><span style="width:8px;height:8px;border-radius:50%;background:#c58a1a"></span>Приостановлены</span></div>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;padding:16px;border-radius:14px;background:#f8e4e1;flex-wrap:wrap"><div style="display:flex;flex-direction:column;gap:3px;flex:1;min-width:200px"><span style="font-size:15px;font-weight:650;color:#8a2a24">Аварийная остановка</span><span style="font-size:13px;color:#7a3530;line-height:1.4">Останавливает приложение и воркер. Уже отправленный запрос не отменяется.</span></div><span style="padding:11px 16px;border-radius:11px;background:#9d302a;color:#fff;font-size:14px;font-weight:650">Остановить всё</span></div>
+<div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;background:#fff;border-radius:14px"><span style="font-size:14px">Stop только приложения</span><span style="display:flex;gap:4px;padding:3px;background:#eef2ee;border-radius:10px;font-size:13px"><span style="padding:6px 10px;border-radius:8px;background:#fff;font-weight:600">Выкл</span><span style="padding:6px 10px;color:#46564d">Вкл</span></span></div>
+<div style="display:flex;justify-content:space-between;padding:12px 16px;background:#fff;border-radius:14px;font-size:14px"><span>Активность · Диагностика · Журнал владельца</span><span style="color:#617068">▾</span></div>
+</div>
+</div>
+</figure>
+</div>
+</div>
+</section>
+
+<section style="display:flex;flex-direction:column;gap:18px;max-width:760px">
+<h2 style="margin:0;font-size:30px;letter-spacing:-.03em">Порядок работ</h2>
+<ol style="margin:0;padding-left:22px;display:flex;flex-direction:column;gap:12px;font-size:16px;line-height:1.5">
+<li><b>Быстро и без риска:</b> подключить chat.css и viewport к /privacy, /privacy/source, ошибкам; русский шаблон ошибок; вход с инлайн-ошибкой.</li>
+<li><b>Убрать шум в чате:</b> H1, подписи «Вы/Собеседник», ссылку под сообщениями, подсказку Enter; дисклеймер — под поле.</li>
+<li><b>Состояния:</b> индикатор «печатает», ошибка с «Повторить / Отменить», переписать тексты статусов.</li>
+<li><b>Приватность:</b> онбординг → чат; настройки без ID; лист действий сообщения вместо /privacy/source.</li>
+<li><b>Панель владельца:</b> плитки статуса, отдельная аварийная зона, диагностика свёрнута.</li>
+</ol>
+<p style="margin:0;font-size:14px;color:#617068;line-height:1.5">CSP сейчас style-src 'self' — инлайн-стили и &lt;style&gt; на сервере не сработают, всё новое — в chat.css.</p>
+</section>
+
+</div>
+</x-dc>
+</body>
+</html>

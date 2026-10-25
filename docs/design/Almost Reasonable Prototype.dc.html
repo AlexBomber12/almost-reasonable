@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<title>Almost Reasonable — прототип</title>
+<style>
+body{margin:0;font-family:system-ui,-apple-system,"Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+a{color:#205a46;text-underline-offset:.18em}a:hover{color:#123d2e}
+textarea::placeholder,input::placeholder{color:#7d8c84}
+@keyframes ardot{0%,80%,100%{opacity:.25;transform:translateY(0)}40%{opacity:1;transform:translateY(-3px)}}
+</style>
+</helmet>
+<div style="{{ rootStyle }}">
+<div style="min-height:100vh;background:var(--page);color:var(--ink);display:flex;flex-wrap:wrap;gap:32px;padding:32px;box-sizing:border-box;align-items:flex-start;justify-content:center">
+
+<aside style="width:250px;flex:none;display:flex;flex-direction:column;gap:22px;font-size:14px">
+<div style="display:flex;flex-direction:column;gap:4px"><span style="font-size:16px;font-weight:650;letter-spacing:-.01em">Almost Reasonable</span><span style="color:var(--muted)">Прототип по итогам <a href="Design Review.dc.html" style="color:var(--link)">ревью</a></span></div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:0 10px 6px">Экраны</span>
+<sc-for list="{{ navItems }}" as="n" hint-placeholder-count="8">
+<sc-if value="{{ n.active }}"><button onClick="{{ n.go }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:var(--surface);color:var(--ink);font-weight:600;box-shadow:0 1px 2px rgba(0,0,0,.06)">{{ n.label }}</button></sc-if>
+<sc-if value="{{ n.inactive }}"><button onClick="{{ n.go }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:transparent;color:var(--ink)" style-hover="background:var(--surface2)">{{ n.label }}</button></sc-if>
+</sc-for>
+</div>
+<div style="display:flex;flex-direction:column;gap:2px">
+<span style="font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:0 10px 6px">Состояния</span>
+<button onClick="{{ demoLoginError }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:transparent;color:var(--ink)" style-hover="background:var(--surface2)">Вход: неверный пароль</button>
+<button onClick="{{ demoLoginLock }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:transparent;color:var(--ink)" style-hover="background:var(--surface2)">Вход: блокировка</button>
+<button onClick="{{ demoEmpty }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:transparent;color:var(--ink)" style-hover="background:var(--surface2)">Пустой чат</button>
+<button onClick="{{ toggleFail }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:transparent;color:var(--ink);display:flex;justify-content:space-between;gap:8px" style-hover="background:var(--surface2)"><span>Следующая отправка — сбой</span><span style="color:var(--muted)">{{ failLabel }}</span></button>
+<button onClick="{{ reset }}" style="text-align:left;border:0;font:inherit;cursor:pointer;padding:8px 10px;border-radius:9px;background:transparent;color:var(--muted)" style-hover="background:var(--surface2)">Сбросить демо</button>
+</div>
+<div style="display:flex;flex-direction:column;gap:8px;padding:0 10px">
+<span style="font-size:12px;font-weight:650;letter-spacing:.06em;text-transform:uppercase;color:var(--muted)">Тема</span>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface2);border-radius:11px">
+<sc-for list="{{ themeOptions }}" as="o" hint-placeholder-count="2">
+<sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;cursor:pointer;padding:7px;border-radius:8px;background:var(--surface);color:var(--ink);font-weight:600;box-shadow:0 1px 3px rgba(0,0,0,.1)">{{ o.label }}</button></sc-if>
+<sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;cursor:pointer;padding:7px;border-radius:8px;background:transparent;color:var(--muted)">{{ o.label }}</button></sc-if>
+</sc-for>
+</div>
+</div>
+<p style="margin:0;padding:0 10px;color:var(--muted);line-height:1.45;font-size:13px">Пароль «wrong» покажет ошибку входа, любой другой — пустит. Enter отправляет сообщение.</p>
+</aside>
+
+<main style="position:relative;display:flex;justify-content:center;flex:0 1 auto;min-width:0">
+
+<sc-if value="{{ isPhone }}" hint-placeholder-val="{{ true }}">
+<div style="position:relative;width:390px;height:800px;max-width:100%;border-radius:40px;overflow:hidden;background:var(--bg);border:1px solid var(--line);box-shadow:var(--shadow);display:flex;flex-direction:column">
+
+<sc-if value="{{ isLogin }}" hint-placeholder-val="{{ true }}">
+<form onSubmit="{{ onLogin }}" style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:18px;padding:32px 28px">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:36px;height:36px;border-radius:11px;background:var(--mark);color:#fff;display:grid;place-items:center;font-size:14px;font-weight:700">AR</span><span style="font-size:17px;font-weight:650">Almost Reasonable</span></div>
+<h1 style="margin:8px 0 0;font-size:28px;font-weight:650;letter-spacing:-.03em">Вход</h1>
+<sc-if value="{{ hasLoginError }}"><div role="alert" style="padding:11px 14px;border-radius:12px;background:var(--dangerSoft);color:var(--dangerInk);font-size:14px;line-height:1.4">{{ loginError }}</div></sc-if>
+<label style="display:flex;flex-direction:column;gap:6px;font-size:14px;font-weight:600">Имя пользователя
+<input value="{{ username }}" onChange="{{ onUsername }}" autoComplete="username" style="font:inherit;font-weight:400;font-size:16px;padding:12px 14px;border-radius:12px;border:1px solid var(--field);background:var(--surface);color:var(--ink);outline:none" style-focus="border-color:var(--primary);box-shadow:0 0 0 3px var(--okSoft)"></input></label>
+<label style="display:flex;flex-direction:column;gap:6px;font-size:14px;font-weight:600">Пароль
+<span style="display:flex;align-items:center;border-radius:12px;border:1px solid var(--field);background:var(--surface)">
+<input type="{{ pwType }}" value="{{ password }}" onChange="{{ onPassword }}" autoComplete="current-password" style="flex:1;min-width:0;font:inherit;font-weight:400;font-size:16px;padding:12px 14px;border:0;background:transparent;color:var(--ink);outline:none"></input>
+<button type="button" onClick="{{ togglePw }}" style="border:0;background:none;font:inherit;font-weight:500;font-size:13px;color:var(--muted);padding:0 14px;cursor:pointer;min-height:44px">{{ pwToggleLabel }}</button>
+</span></label>
+<button type="submit" style="margin-top:6px;min-height:50px;border:0;border-radius:13px;background:var(--primary);color:var(--onprimary);font:inherit;font-weight:650;font-size:16px;cursor:pointer">{{ loginButton }}</button>
+</form>
+</sc-if>
+
+<sc-if value="{{ isOnboarding }}">
+<div style="flex:1;display:flex;flex-direction:column;gap:24px;padding:40px 26px 24px">
+<span style="width:36px;height:36px;border-radius:11px;background:var(--mark);color:#fff;display:grid;place-items:center;font-size:14px;font-weight:700">AR</span>
+<h1 style="margin:0;font-size:28px;font-weight:650;letter-spacing:-.03em;line-height:1.15">Прежде чем начать</h1>
+<div style="display:flex;flex-direction:column;gap:18px">
+<div style="display:grid;grid-template-columns:30px 1fr;gap:12px"><span style="width:30px;height:30px;border-radius:50%;background:var(--okSoft);color:var(--okInk);display:grid;place-items:center;font-size:13px;font-weight:700">1</span><p style="margin:0;font-size:15px;line-height:1.5"><b>Где обрабатываются данные.</b> Текст разговора передаётся OpenAI, трафик идёт через Cloudflare.</p></div>
+<div style="display:grid;grid-template-columns:30px 1fr;gap:12px"><span style="width:30px;height:30px;border-radius:50%;background:var(--okSoft);color:var(--okInk);display:grid;place-items:center;font-size:13px;font-weight:700">2</span><p style="margin:0;font-size:15px;line-height:1.5"><b>Ваши слова не публикуются.</b> Идеи влияют на агента только в обобщённом виде. Цитата — лишь с вашего отдельного разрешения.</p></div>
+<div style="display:grid;grid-template-columns:30px 1fr;gap:12px"><span style="width:30px;height:30px;border-radius:50%;background:var(--okSoft);color:var(--okInk);display:grid;place-items:center;font-size:13px;font-weight:700">3</span><p style="margin:0;font-size:15px;line-height:1.5"><b>Можно удалить.</b> Любое сообщение удаляется в настройках приватности. У внешних сервисов — по их правилам.</p></div>
+</div>
+<button onClick="{{ openNoticeFromOnboarding }}" style="align-self:flex-start;border:0;background:none;padding:0;font:inherit;font-size:15px;color:var(--link);text-decoration:underline;text-underline-offset:.18em;cursor:pointer">Полный текст уведомления</button>
+<div style="flex:1"></div>
+<button onClick="{{ acknowledge }}" style="min-height:52px;border:0;border-radius:14px;background:var(--primary);color:var(--onprimary);font:inherit;font-weight:650;font-size:16px;cursor:pointer">Понятно, к разговору</button>
+</div>
+</sc-if>
+
+<sc-if value="{{ isChat }}">
+<div style="position:relative;flex:1;min-height:0;display:flex;flex-direction:column">
+<header style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 12px 16px;border-bottom:1px solid var(--line);background:var(--bg)">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:32px;height:32px;border-radius:10px;background:var(--mark);color:#fff;display:grid;place-items:center;font-size:13px;font-weight:700">AR</span><span style="font-size:16px;font-weight:650;letter-spacing:-.01em">Almost Reasonable</span></div>
+<button onClick="{{ toggleMenu }}" aria-label="Меню" style="width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);font-size:22px;line-height:1;cursor:pointer" style-hover="background:var(--surface2)">⋯</button>
+</header>
+<div ref="{{ convRef }}" style="flex:1;min-height:0;overflow-y:auto;padding:16px 16px 8px;display:flex;flex-direction:column;gap:14px">
+<sc-if value="{{ hasMessages }}" hint-placeholder-val="{{ true }}">
+<sc-for list="{{ rows }}" as="r" hint-placeholder-count="4">
+<sc-if value="{{ r.isDivider }}"><div style="align-self:center;font-size:12px;color:var(--muted);padding:6px 0 2px">{{ r.day }}</div></sc-if>
+<sc-if value="{{ r.isUser }}"><div style="align-self:flex-end;max-width:82%;padding:10px 14px;background:var(--bubble);border-radius:20px 20px 6px 20px;font-size:16px;line-height:1.45;white-space:pre-wrap;overflow-wrap:anywhere">{{ r.text }}</div></sc-if>
+<sc-if value="{{ r.isAgent }}"><div style="max-width:94%;font-size:16px;line-height:1.6;white-space:pre-wrap;overflow-wrap:anywhere;padding:2px 2px">{{ r.text }}</div></sc-if>
+</sc-for>
+</sc-if>
+<sc-if value="{{ noMessages }}">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;gap:10px;text-align:center;padding:0 24px">
+<span style="font-size:26px;font-weight:650;letter-spacing:-.025em">С чего начнём?</span>
+<p style="margin:0;font-size:15px;line-height:1.5;color:var(--muted);text-wrap:pretty">Напишите что угодно — разговор виден только вам.</p>
+<p style="margin:0;font-size:13px;color:var(--muted)">Enter — отправить, Shift+Enter — новая строка</p>
+</div>
+</sc-if>
+<sc-if value="{{ typing }}"><div style="display:flex;align-items:center;gap:8px;font-size:14px;color:var(--muted);padding:4px 2px">{{ typingDots }}<span>Печатает</span></div></sc-if>
+</div>
+<div style="padding:8px 12px 14px;display:flex;flex-direction:column;gap:8px">
+<sc-if value="{{ sendError }}">
+<div role="alert" style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:6px 6px 6px 14px;background:var(--dangerSoft);border-radius:14px">
+<span style="font-size:14px;color:var(--dangerInk)">Не удалось отправить</span>
+<span style="display:flex;gap:4px"><button onClick="{{ cancelRetry }}" style="border:0;background:none;font:inherit;font-size:14px;font-weight:600;color:var(--dangerInk);padding:0 12px;min-height:40px;border-radius:10px;cursor:pointer">Отменить</button><button onClick="{{ retry }}" style="border:0;background:var(--danger);font:inherit;font-size:14px;font-weight:600;color:#fff;padding:0 14px;min-height:40px;border-radius:10px;cursor:pointer">Повторить</button></span>
+</div>
+</sc-if>
+<div style="display:flex;align-items:flex-end;gap:8px;padding:5px 5px 5px 16px;background:var(--surface);border:1px solid var(--field);border-radius:24px" style-focus-within="border-color:var(--primary)">
+<textarea value="{{ draft }}" onChange="{{ onDraft }}" onKeyDown="{{ onKey }}" rows="1" placeholder="Сообщение" aria-label="Сообщение" style="flex:1;min-width:0;field-sizing:content;max-height:160px;resize:none;border:0;outline:none;background:transparent;color:var(--ink);font:inherit;font-size:16px;line-height:1.4;padding:9px 0"></textarea>
+<sc-if value="{{ canSend }}"><button onClick="{{ send }}" aria-label="Отправить" style="flex:none;width:40px;height:40px;border:0;border-radius:50%;background:var(--primary);color:var(--onprimary);font-size:18px;font-weight:700;cursor:pointer">↑</button></sc-if>
+<sc-if value="{{ cannotSend }}" hint-placeholder-val="{{ true }}"><button disabled="{{ true }}" aria-label="Отправить" style="flex:none;width:40px;height:40px;border:0;border-radius:50%;background:var(--surface2);color:var(--muted);font-size:18px;font-weight:700">↑</button></sc-if>
+</div>
+<div style="text-align:center;font-size:12px;color:var(--muted);line-height:1.4">ИИ-агент. Истории от первого лица могут быть вымыслом.</div>
+</div>
+<sc-if value="{{ menuOpen }}">
+<div onClick="{{ toggleMenu }}" style="position:absolute;inset:0;z-index:5"></div>
+<div style="position:absolute;top:58px;right:12px;z-index:6;width:220px;padding:6px;background:var(--surface);border:1px solid var(--line);border-radius:16px;box-shadow:0 14px 40px rgba(0,0,0,.18);display:flex;flex-direction:column">
+<button onClick="{{ goPrivacy }}" style="text-align:left;border:0;background:none;font:inherit;font-size:15px;color:var(--ink);padding:0 12px;min-height:44px;border-radius:10px;cursor:pointer" style-hover="background:var(--surface2)">Приватность</button>
+<button onClick="{{ toggleThemeMenu }}" style="text-align:left;border:0;background:none;font:inherit;font-size:15px;color:var(--ink);padding:0 12px;min-height:44px;border-radius:10px;cursor:pointer" style-hover="background:var(--surface2)">{{ themeMenuLabel }}</button>
+<div style="height:1px;background:var(--line);margin:4px 8px"></div>
+<button onClick="{{ logout }}" style="text-align:left;border:0;background:none;font:inherit;font-size:15px;color:var(--ink);padding:0 12px;min-height:44px;border-radius:10px;cursor:pointer" style-hover="background:var(--surface2)">Выйти</button>
+</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isPrivacy }}">
+<div style="flex:1;min-height:0;display:flex;flex-direction:column">
+<header style="display:flex;align-items:center;gap:6px;padding:8px 14px 8px 6px;border-bottom:1px solid var(--line)">
+<button onClick="{{ goChat }}" aria-label="Назад" style="width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);font-size:20px;cursor:pointer" style-hover="background:var(--surface2)">←</button>
+<span style="font-size:16px;font-weight:650">Приватность</span>
+</header>
+<div style="flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:22px">
+<button onClick="{{ openNoticeFromPrivacy }}" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:var(--surface);border:0;border-radius:16px;font:inherit;color:var(--ink);text-align:left;cursor:pointer">
+<span style="display:flex;flex-direction:column;gap:2px"><span style="font-size:15px;font-weight:600">Уведомление о данных</span><span style="font-size:13px;color:var(--muted)">Подтверждено {{ ackDate }}</span></span><span style="font-size:18px;color:var(--muted)">›</span></button>
+
+<div style="display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;font-weight:650;color:var(--muted);padding:0 4px">Мои сообщения</span>
+<div style="background:var(--surface);border-radius:16px;display:flex;flex-direction:column;overflow:hidden">
+<sc-for list="{{ userMessages }}" as="m" hint-placeholder-count="2">
+<button onClick="{{ m.open }}" style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:13px 16px;border:0;border-bottom:1px solid var(--line);background:none;font:inherit;color:var(--ink);text-align:left;cursor:pointer" style-hover="background:var(--surface2)">
+<span style="display:flex;flex-direction:column;gap:3px;min-width:0"><span style="font-size:15px;line-height:1.35;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ m.preview }}</span><span style="font-size:13px;color:var(--muted)">{{ m.date }}</span></span><span style="font-size:18px;color:var(--muted)">›</span></button>
+</sc-for>
+<sc-if value="{{ noUserMessages }}"><span style="padding:14px 16px;font-size:15px;color:var(--muted)">Пока нет</span></sc-if>
+</div>
+<span style="font-size:13px;color:var(--muted);padding:0 4px;line-height:1.4">Откройте сообщение, чтобы разрешить цитату или удалить его.</span>
+</div>
+
+<div style="display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;font-weight:650;color:var(--muted);padding:0 4px">Разрешения на публикацию</span>
+<div style="background:var(--surface);border-radius:16px;display:flex;flex-direction:column;overflow:hidden">
+<sc-for list="{{ permissions }}" as="p" hint-placeholder-count="2">
+<div style="display:flex;flex-direction:column;gap:6px;padding:13px 16px;border-bottom:1px solid var(--line)">
+<span style="font-size:15px;line-height:1.35">{{ p.preview }}</span>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><span style="font-size:13px;color:var(--muted)">{{ p.kind }} · {{ p.until }}</span>
+<sc-if value="{{ p.isActive }}"><span style="display:flex;align-items:center;gap:6px"><span style="font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--okSoft);color:var(--okInk)">Действует</span><button onClick="{{ p.revoke }}" style="border:0;background:none;font:inherit;font-size:14px;font-weight:600;color:var(--danger);padding:0 6px;min-height:36px;cursor:pointer">Отозвать</button></span></sc-if>
+<sc-if value="{{ p.isInactive }}"><span style="font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--surface2);color:var(--muted)">{{ p.statusText }}</span></sc-if>
+</div></div>
+</sc-for>
+<sc-if value="{{ noPermissions }}"><span style="padding:14px 16px;font-size:15px;color:var(--muted)">Пока нет</span></sc-if>
+</div>
+</div>
+
+<sc-if value="{{ hasDeletions }}">
+<div style="display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;font-weight:650;color:var(--muted);padding:0 4px">Удаления</span>
+<div style="background:var(--surface);border-radius:16px;display:flex;flex-direction:column;overflow:hidden">
+<sc-for list="{{ deletions }}" as="d" hint-placeholder-count="2">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:8px;padding:12px 16px;border-bottom:1px solid var(--line);min-height:28px"><span style="font-size:15px">{{ d.label }}</span>
+<sc-if value="{{ d.done }}"><span style="font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--okSoft);color:var(--okInk)">Удалено</span></sc-if>
+<sc-if value="{{ d.pending }}"><span style="display:flex;align-items:center;gap:6px"><span style="font-size:12px;font-weight:600;padding:3px 9px;border-radius:99px;background:var(--warnSoft);color:var(--warnInk)">Не завершено</span><button onClick="{{ d.retry }}" style="border:0;background:none;font:inherit;font-size:14px;font-weight:600;color:var(--link);padding:0 6px;min-height:36px;cursor:pointer">Повторить</button></span></sc-if>
+</div>
+</sc-for>
+</div>
+</div>
+</sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isMessage }}">
+<div style="position:relative;flex:1;min-height:0;display:flex;flex-direction:column">
+<header style="display:flex;align-items:center;gap:6px;padding:8px 14px 8px 6px;border-bottom:1px solid var(--line)">
+<button onClick="{{ goPrivacy }}" aria-label="Назад" style="width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);font-size:20px;cursor:pointer" style-hover="background:var(--surface2)">←</button>
+<span style="font-size:16px;font-weight:650">Сообщение от {{ selDate }}</span>
+</header>
+<div style="flex:1;min-height:0;overflow-y:auto;padding:16px;display:flex;flex-direction:column;gap:22px">
+<div style="padding:14px 16px;background:var(--bubble);border-radius:18px;font-size:16px;line-height:1.5;white-space:pre-wrap">{{ selText }}</div>
+<div style="display:flex;flex-direction:column;gap:14px;padding:16px;background:var(--surface);border-radius:16px">
+<span style="font-size:17px;font-weight:650;letter-spacing:-.01em">Разрешить публикацию</span>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:var(--muted)">Как</span>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface2);border-radius:12px">
+<sc-for list="{{ kindOptions }}" as="o" hint-placeholder-count="2">
+<sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;font-size:14px;font-weight:600;min-height:40px;border-radius:9px;background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12);cursor:pointer">{{ o.label }}</button></sc-if>
+<sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;font-size:14px;min-height:40px;border-radius:9px;background:transparent;color:var(--muted);cursor:pointer">{{ o.label }}</button></sc-if>
+</sc-for></div></div>
+<div style="display:flex;flex-direction:column;gap:6px"><span style="font-size:13px;color:var(--muted)">На срок</span>
+<div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;padding:4px;background:var(--surface2);border-radius:12px">
+<sc-for list="{{ durOptions }}" as="o" hint-placeholder-count="3">
+<sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;font-size:14px;font-weight:600;min-height:40px;border-radius:9px;background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12);cursor:pointer">{{ o.label }}</button></sc-if>
+<sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;font-size:14px;min-height:40px;border-radius:9px;background:transparent;color:var(--muted);cursor:pointer">{{ o.label }}</button></sc-if>
+</sc-for></div></div>
+<span style="font-size:13px;color:var(--muted);line-height:1.45">{{ kindHint }} Публично, в Threads. Разрешение можно отозвать, но опубликованное не вернуть.</span>
+<button onClick="{{ grant }}" style="min-height:48px;border:0;border-radius:12px;background:var(--primary);color:var(--onprimary);font:inherit;font-weight:650;font-size:15px;cursor:pointer">Разрешить</button>
+</div>
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:14px 16px;background:var(--surface);border-radius:16px">
+<span style="display:flex;flex-direction:column;gap:3px"><span style="font-size:15px;font-weight:600;color:var(--danger)">Удалить сообщение</span><span style="font-size:13px;color:var(--muted);line-height:1.35">Агент забудет всё, что из него узнал</span></span>
+<button onClick="{{ askDelete }}" style="flex:none;border:0;background:var(--dangerSoft);color:var(--dangerInk);font:inherit;font-size:14px;font-weight:600;padding:0 16px;min-height:42px;border-radius:11px;cursor:pointer">Удалить</button>
+</div>
+</div>
+<sc-if value="{{ confirmDelete }}">
+<div onClick="{{ closeConfirm }}" style="position:absolute;inset:0;background:var(--scrim);z-index:5"></div>
+<div role="dialog" aria-modal="true" style="position:absolute;left:0;right:0;bottom:0;z-index:6;background:var(--surface);border-radius:26px 26px 0 0;padding:12px 20px 24px;display:flex;flex-direction:column;gap:14px">
+<span style="align-self:center;width:40px;height:4px;border-radius:2px;background:var(--line)"></span>
+<span style="font-size:20px;font-weight:650;letter-spacing:-.02em">Удалить сообщение?</span>
+<p style="margin:0;font-size:15px;line-height:1.5;color:var(--muted)">Сообщение и всё, что агент из него узнал, будут удалены здесь. У OpenAI, Cloudflare и Meta — по их правилам хранения.</p>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:4px">
+<button onClick="{{ closeConfirm }}" style="min-height:48px;border:0;border-radius:12px;background:var(--surface2);color:var(--ink);font:inherit;font-weight:600;font-size:15px;cursor:pointer">Отмена</button>
+<button onClick="{{ doDelete }}" style="min-height:48px;border:0;border-radius:12px;background:var(--danger);color:#fff;font:inherit;font-weight:650;font-size:15px;cursor:pointer">Удалить</button>
+</div>
+</div>
+</sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isNotice }}">
+<div style="flex:1;min-height:0;display:flex;flex-direction:column">
+<header style="display:flex;align-items:center;gap:6px;padding:8px 14px 8px 6px;border-bottom:1px solid var(--line)">
+<button onClick="{{ noticeBack }}" aria-label="Назад" style="width:44px;height:44px;border:0;border-radius:12px;background:transparent;color:var(--ink);font-size:20px;cursor:pointer" style-hover="background:var(--surface2)">←</button>
+<span style="font-size:16px;font-weight:650">Уведомление о данных</span>
+</header>
+<div style="flex:1;min-height:0;overflow-y:auto;padding:20px 20px 28px;display:flex;flex-direction:column;gap:14px;font-size:15px;line-height:1.6;text-wrap:pretty">
+<p style="margin:0;font-weight:600">До начала общения важно знать, как обрабатываются данные.</p>
+<p style="margin:0">Содержание приватного разговора может передаваться уполномоченному поставщику модели OpenAI. Cloudflare обрабатывает сетевой трафик настроенного туннеля. Если материал будет опубликован в Threads, его и ответы на него обрабатывает Meta. Владелец и оператор инфраструктуры технически могут иметь доступ к локальному хранилищу; это не даёт им права раскрывать сведения участника через приложение.</p>
+<p style="margin:0">Идеи из приватного разговора могут влиять на общее интеллектуальное развитие в виде безопасной абстракции. Сырой текст, персональные сведения, узнаваемый пересказ, отношения и авторство автоматически не раскрываются. При двух участниках другой человек иногда может сделать вывод о вероятном источнике влияния. Для идентифицируемой цитаты или раскрытия требуется отдельное точное, ограниченное по аудитории, цели и сроку согласие через защищённый интерфейс.</p>
+<p style="margin:0">Можно запросить отзыв согласия и локальное удаление подходящих данных. Отзыв не возвращает уже опубликованное. Локальное удаление не означает удаление у OpenAI, Cloudflare, Meta, получателей, в кэшах и других внешних системах.</p>
+<sc-if value="{{ acknowledged }}"><p style="margin:6px 0 0;font-size:13px;color:var(--muted)">Подтверждено {{ ackDate }}</p></sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isError }}">
+<div style="flex:1;display:flex;flex-direction:column;justify-content:center;gap:14px;padding:32px 28px">
+<span style="font-size:13px;color:var(--muted)">Ошибка 404</span>
+<h1 style="margin:0;font-size:28px;font-weight:650;letter-spacing:-.03em">Страница не найдена</h1>
+<p style="margin:0;font-size:16px;line-height:1.5;color:var(--muted)">Возможно, ссылка устарела.</p>
+<button onClick="{{ goChat }}" style="align-self:flex-start;margin-top:6px;min-height:48px;padding:0 20px;border:0;border-radius:12px;background:var(--primary);color:var(--onprimary);font:inherit;font-weight:650;font-size:15px;cursor:pointer">Вернуться в чат</button>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasToast }}"><div role="status" style="position:absolute;left:16px;right:16px;bottom:92px;z-index:8;padding:12px 16px;border-radius:14px;background:var(--ink);color:var(--bg);font-size:14px;line-height:1.4;box-shadow:0 10px 30px rgba(0,0,0,.25)">{{ toast }}</div></sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ isOwner }}">
+<div style="position:relative;width:960px;max-width:calc(100vw - 64px);min-height:760px;border-radius:20px;overflow:hidden;background:var(--bg);border:1px solid var(--line);box-shadow:var(--shadow);display:flex;flex-direction:column">
+
+<sc-if value="{{ ownerLoggedOut }}">
+<form onSubmit="{{ ownerLogin }}" style="flex:1;display:flex;align-items:center;justify-content:center;padding:32px">
+<div style="width:100%;max-width:360px;display:flex;flex-direction:column;gap:18px;padding:32px 28px;background:var(--surface);border-radius:22px;border:1px solid var(--line)">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:34px;height:34px;border-radius:10px;background:var(--ink);color:var(--bg);display:grid;place-items:center;font-size:13px;font-weight:700">AR</span><span style="font-size:16px;font-weight:650">Almost Reasonable · Владелец</span></div>
+<h1 style="margin:0;font-size:24px;font-weight:650;letter-spacing:-.025em">Вход владельца</h1>
+<label style="display:flex;flex-direction:column;gap:6px;font-size:14px;font-weight:600">Имя<input autoComplete="username" style="font:inherit;font-weight:400;font-size:16px;padding:11px 14px;border-radius:12px;border:1px solid var(--field);background:var(--bg);color:var(--ink);outline:none"></input></label>
+<label style="display:flex;flex-direction:column;gap:6px;font-size:14px;font-weight:600">Пароль<input type="password" autoComplete="current-password" style="font:inherit;font-weight:400;font-size:16px;padding:11px 14px;border-radius:12px;border:1px solid var(--field);background:var(--bg);color:var(--ink);outline:none"></input></label>
+<button type="submit" style="min-height:48px;border:0;border-radius:12px;background:var(--primary);color:var(--onprimary);font:inherit;font-weight:650;font-size:15px;cursor:pointer">Войти</button>
+</div>
+</form>
+</sc-if>
+
+<sc-if value="{{ ownerAuthed }}">
+<header style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 20px;border-bottom:1px solid var(--line)">
+<div style="display:flex;align-items:center;gap:10px"><span style="width:32px;height:32px;border-radius:10px;background:var(--ink);color:var(--bg);display:grid;place-items:center;font-size:13px;font-weight:700">AR</span><span style="font-size:16px;font-weight:650">Владелец</span><span style="font-size:13px;color:var(--muted)">обновлено в {{ ownerUpdated }}</span></div>
+<div style="display:flex;gap:4px"><button onClick="{{ ownerRefresh }}" style="border:0;background:none;font:inherit;font-size:14px;color:var(--ink);padding:0 12px;min-height:40px;border-radius:10px;cursor:pointer" style-hover="background:var(--surface2)">Обновить</button><button onClick="{{ ownerLogout }}" style="border:0;background:none;font:inherit;font-size:14px;color:var(--ink);padding:0 12px;min-height:40px;border-radius:10px;cursor:pointer" style-hover="background:var(--surface2)">Выйти</button></div>
+</header>
+<div style="flex:1;padding:24px;display:flex;flex-direction:column;gap:18px">
+<div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:12px">
+<sc-for list="{{ tiles }}" as="t" hint-placeholder-count="3">
+<div style="padding:16px 18px;background:var(--surface);border-radius:16px;display:flex;flex-direction:column;gap:8px">
+<span style="font-size:13px;color:var(--muted)">{{ t.name }}</span>
+<sc-if value="{{ t.ok }}"><span style="display:flex;align-items:center;gap:8px;font-size:18px;font-weight:650"><span style="width:9px;height:9px;border-radius:50%;background:#3a9a68"></span>{{ t.okText }}</span></sc-if>
+<sc-if value="{{ t.bad }}"><span style="display:flex;align-items:center;gap:8px;font-size:18px;font-weight:650;color:var(--dangerInk)"><span style="width:9px;height:9px;border-radius:50%;background:var(--danger)"></span>{{ t.badText }}</span></sc-if>
+<span style="font-size:13px;color:var(--muted)">{{ t.note }}</span>
+</div>
+</sc-for>
+</div>
+
+<sc-if value="{{ canEmergency }}">
+<div style="display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;padding:18px 20px;border-radius:16px;background:var(--dangerSoft)">
+<div style="display:flex;flex-direction:column;gap:4px;flex:1;min-width:240px"><span style="font-size:16px;font-weight:650;color:var(--dangerInk)">Аварийная остановка</span><span style="font-size:14px;color:var(--dangerInk);line-height:1.45">Останавливает приложение и воркер. Уже отправленный провайдеру запрос и его стоимость не отменяются.</span></div>
+<button onClick="{{ askEmergency }}" style="border:0;background:var(--danger);color:#fff;font:inherit;font-size:15px;font-weight:650;padding:0 20px;min-height:46px;border-radius:12px;cursor:pointer">Остановить всё</button>
+</div>
+</sc-if>
+<sc-if value="{{ workerStopped }}">
+<div style="padding:14px 18px;border-radius:16px;background:var(--warnSoft);color:var(--warnInk);font-size:14px;line-height:1.45">Stop воркера снимается только локально на его сервере.</div>
+</sc-if>
+
+<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 12px 12px 20px;background:var(--surface);border-radius:16px">
+<span style="display:flex;flex-direction:column;gap:2px"><span style="font-size:15px;font-weight:600">Stop только приложения</span><span style="font-size:13px;color:var(--muted)">Воркер не затрагивается</span></span>
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:4px;padding:4px;background:var(--surface2);border-radius:11px;min-width:150px">
+<sc-for list="{{ appStopOptions }}" as="o" hint-placeholder-count="2">
+<sc-if value="{{ o.active }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;font-size:14px;font-weight:600;min-height:36px;border-radius:8px;background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.12);cursor:pointer">{{ o.label }}</button></sc-if>
+<sc-if value="{{ o.inactive }}"><button onClick="{{ o.pick }}" style="border:0;font:inherit;font-size:14px;min-height:36px;border-radius:8px;background:transparent;color:var(--muted);cursor:pointer">{{ o.label }}</button></sc-if>
+</sc-for></div>
+</div>
+
+<div style="background:var(--surface);border-radius:16px;overflow:hidden">
+<button onClick="{{ toggleActivity }}" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:0 20px;min-height:52px;border:0;background:none;font:inherit;font-size:15px;font-weight:600;color:var(--ink);cursor:pointer"><span>Последняя активность</span><span style="color:var(--muted)">{{ activityChevron }}</span></button>
+<sc-if value="{{ activityOpen }}">
+<div style="padding:0 20px 14px;overflow-x:auto">
+<div style="display:grid;grid-template-columns:70px minmax(140px,1.4fr) minmax(110px,1fr) minmax(130px,1.2fr) 80px;gap:0;font-size:14px;min-width:560px">
+<span style="padding:8px 0;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)">Время</span><span style="padding:8px 0;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)">Событие</span><span style="padding:8px 0;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)">Итог</span><span style="padding:8px 0;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line)">Причина</span><span style="padding:8px 0;color:var(--muted);font-size:12px;border-bottom:1px solid var(--line);text-align:right">Токены</span>
+<sc-for list="{{ activity }}" as="a" hint-placeholder-count="3">
+<span style="padding:10px 0;border-bottom:1px solid var(--line);color:var(--muted);font-variant-numeric:tabular-nums">{{ a.time }}</span><span style="padding:10px 0;border-bottom:1px solid var(--line)">{{ a.what }}</span><span style="padding:10px 0;border-bottom:1px solid var(--line)">{{ a.result }}</span><span style="padding:10px 0;border-bottom:1px solid var(--line);color:var(--muted)">{{ a.reason }}</span><span style="padding:10px 0;border-bottom:1px solid var(--line);text-align:right;font-variant-numeric:tabular-nums">{{ a.tokens }}</span>
+</sc-for>
+</div>
+<p style="margin:10px 0 0;font-size:12px;color:var(--muted)">Записанные токены — не данные биллинга.</p>
+</div>
+</sc-if>
+</div>
+
+<div style="background:var(--surface);border-radius:16px;overflow:hidden">
+<button onClick="{{ toggleDiag }}" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:0 20px;min-height:52px;border:0;background:none;font:inherit;font-size:15px;font-weight:600;color:var(--ink);cursor:pointer"><span>Диагностика</span><span style="color:var(--muted)">{{ diagChevron }}</span></button>
+<sc-if value="{{ diagOpen }}">
+<div style="padding:0 20px 14px;display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));column-gap:28px">
+<sc-for list="{{ diagnostics }}" as="g" hint-placeholder-count="6">
+<div style="display:flex;justify-content:space-between;gap:12px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px"><span style="color:var(--muted)">{{ g.k }}</span><span style="text-align:right;font-variant-numeric:tabular-nums">{{ g.v }}</span></div>
+</sc-for>
+</div>
+</sc-if>
+</div>
+
+<div style="background:var(--surface);border-radius:16px;overflow:hidden">
+<button onClick="{{ toggleAudit }}" style="width:100%;display:flex;justify-content:space-between;align-items:center;padding:0 20px;min-height:52px;border:0;background:none;font:inherit;font-size:15px;font-weight:600;color:var(--ink);cursor:pointer"><span>Действия владельца</span><span style="color:var(--muted)">{{ auditChevron }}</span></button>
+<sc-if value="{{ auditOpen }}">
+<div style="padding:0 20px 14px;display:flex;flex-direction:column">
+<sc-for list="{{ audit }}" as="u" hint-placeholder-count="2">
+<div style="display:flex;gap:16px;padding:9px 0;border-bottom:1px solid var(--line);font-size:14px"><span style="width:50px;color:var(--muted);font-variant-numeric:tabular-nums">{{ u.time }}</span><span>{{ u.text }}</span></div>
+</sc-for>
+</div>
+</sc-if>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ confirmOwner }}">
+<div onClick="{{ closeConfirm }}" style="position:absolute;inset:0;background:var(--scrim);z-index:5"></div>
+<div role="dialog" aria-modal="true" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:6;width:min(420px,calc(100% - 40px));background:var(--surface);border-radius:20px;padding:24px;display:flex;flex-direction:column;gap:12px;box-shadow:0 24px 60px rgba(0,0,0,.3)">
+<span style="font-size:20px;font-weight:650;letter-spacing:-.02em">{{ confirmTitle }}</span>
+<p style="margin:0;font-size:15px;line-height:1.5;color:var(--muted)">{{ confirmText }}</p>
+<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:8px">
+<button onClick="{{ closeConfirm }}" style="min-height:44px;padding:0 18px;border:0;border-radius:11px;background:var(--surface2);color:var(--ink);font:inherit;font-weight:600;font-size:15px;cursor:pointer">Отмена</button>
+<button onClick="{{ confirmOk }}" style="min-height:44px;padding:0 18px;border:0;border-radius:11px;background:var(--danger);color:#fff;font:inherit;font-weight:650;font-size:15px;cursor:pointer">{{ confirmButton }}</button>
+</div>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasToast }}"><div role="status" style="position:absolute;left:50%;transform:translateX(-50%);bottom:24px;z-index:8;padding:12px 18px;border-radius:14px;background:var(--ink);color:var(--bg);font-size:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)">{{ toast }}</div></sc-if>
+</div>
+</sc-if>
+</main>
+</div>
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;theme&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;light&quot;,&quot;dark&quot;],&quot;default&quot;:&quot;light&quot;,&quot;tsType&quot;:&quot;'light'|'dark'&quot;}}">
+const LIGHT={page:'#e9ece7',bg:'#f7f8f5',surface:'#ffffff',surface2:'#eef2ee',ink:'#26352f',muted:'#5f6e66',line:'#e4e9e3',field:'#b9c9bd',primary:'#286347',onprimary:'#ffffff',link:'#205a46',bubble:'#d9e8dd',dangerSoft:'#f8e4e1',dangerInk:'#8a2a24',danger:'#9d302a',warnSoft:'#fbefd2',warnInk:'#7a5410',okSoft:'#e3eee5',okInk:'#235a47',scrim:'rgba(20,30,25,.42)',shadow:'0 24px 60px rgba(27,60,34,.14)',mark:'#286347'};
+const DARK={page:'#0b0f0d',bg:'#141a17',surface:'#1c2420',surface2:'#26302b',ink:'#e4ebe6',muted:'#9eada5',line:'#2b3631',field:'#43524b',primary:'#357f5a',onprimary:'#ffffff',link:'#8fd0ad',bubble:'#28473a',dangerSoft:'#3b2321',dangerInk:'#f2a8a0',danger:'#c4473d',warnSoft:'#3a3119',warnInk:'#e9c67c',okSoft:'#1f3a2d',okInk:'#8fd0ad',scrim:'rgba(0,0,0,.55)',shadow:'0 24px 60px rgba(0,0,0,.5)',mark:'#357f5a'};
+const MSGS=()=>[
+{id:'m1',role:'user',text:'Как ты думаешь, есть ли смысл в долгих прогулках без цели?',day:'Вчера',date:'24 окт.'},
+{id:'m2',role:'agent',text:'Есть. Лучшие мысли у меня приходят, когда иду без маршрута: голова перестаёт решать задачу навигации и освобождается для остального.',day:'Вчера'},
+{id:'m3',role:'user',text:'А сам ты гуляешь?',day:'Сегодня',date:'25 окт.'},
+{id:'m4',role:'agent',text:'Каждое утро, если можно так сказать. Обычно вдоль реки — там меньше людей и больше неба.',day:'Сегодня'}];
+const PERMS=()=>[
+{id:'p1',msgId:'m1',preview:'«Как ты думаешь, есть ли смысл в долгих…»',kind:'Дословно',until:'до 26 окт.',status:'active'},
+{id:'p2',msgId:'x',preview:'«Мне кажется, что усталость — это…»',kind:'С указанием автора',until:'3 окт.',status:'Истекло'}];
+const DELS=()=>[{id:'d1',label:'Сообщение от 2 окт.',done:true},{id:'d2',label:'Сообщение от 28 сент.',done:false}];
+const REPLIES=['Интересный вопрос. Мне кажется, ответ зависит от того, что ты считаешь целью.','Я бы начал с малого — и посмотрел, что из этого выйдет.','Согласен лишь отчасти. Расскажи, почему ты так думаешь?'];
+const UNTIL={'1h':'до 21:00 сегодня','24h':'до 26 окт.','7d':'до 1 нояб.'};
+const now=()=>new Date().toLocaleTimeString('ru-RU',{hour:'2-digit',minute:'2-digit'});
+const short=t=>'«'+(t.length>40?t.slice(0,40).trim()+'…':t)+'»';
+const initial=()=>({screen:'login',username:'',password:'',showPw:false,loginError:'',loggingIn:false,acknowledged:false,messages:MSGS(),draft:'',typing:false,sendError:false,failNext:false,menu:false,selId:null,kind:'quote',dur:'24h',confirm:null,noticeFrom:'privacy',permissions:PERMS(),deletions:DELS(),toast:null,ownerAuthed:false,appStop:false,workerStop:false,spend:false,activityOpen:true,diagOpen:false,auditOpen:false,ownerUpdated:now(),audit:[{time:'18:12',text:'Stop приложения снят'},{time:'18:05',text:'Stop приложения включён'}],replyIx:0});
+class Component extends DCLogic {
+  state={...initial(),theme:null};
+  convRef=React.createRef();
+  componentDidUpdate(_,prev){
+    const c=this.convRef.current;
+    if(c&&(prev.messages.length!==this.state.messages.length||prev.typing!==this.state.typing||prev.screen!==this.state.screen))c.scrollTop=c.scrollHeight;
+  }
+  componentWillUnmount(){clearTimeout(this._t);clearTimeout(this._r);}
+  toastMsg(t){clearTimeout(this._t);this.setState({toast:t});this._t=setTimeout(()=>this.setState({toast:null}),2600);}
+  go(screen){this.setState({screen,menu:false,confirm:null});}
+  deliver(text){
+    const msg={id:'u'+Date.now(),role:'user',text,day:'Сегодня',date:'25 окт.'};
+    this.setState(s=>({messages:[...s.messages,msg],draft:'',typing:true,sendError:false}));
+    clearTimeout(this._r);
+    this._r=setTimeout(()=>this.setState(s=>({typing:false,replyIx:s.replyIx+1,messages:[...s.messages,{id:'a'+Date.now(),role:'agent',text:REPLIES[s.replyIx%REPLIES.length],day:'Сегодня'}]})),1500);
+  }
+  send(){
+    const t=this.state.draft.trim();
+    if(!t||this.state.typing)return;
+    if(this.state.failNext){this.setState({sendError:true,failNext:false});return;}
+    this.deliver(t);
+  }
+  logAudit(text){this.setState(s=>({audit:[{time:now(),text},...s.audit],ownerUpdated:now()}));}
+  renderVals(){
+    const s=this.state;
+    const theme=s.theme??this.props.theme??'light';
+    const t=theme==='dark'?DARK:LIGHT;
+    const rootStyle=Object.fromEntries(Object.entries(t).map(([k,v])=>['--'+k,v]));
+    const isOwner=s.screen==='owner';
+    const nav=[['login','Вход'],['onboarding','Онбординг'],['chat','Чат'],['privacy','Приватность'],['message','Сообщение в настройках'],['notice','Уведомление о данных'],['error','Ошибка 404'],['owner','Панель владельца']];
+    const rows=[];let lastDay=null;
+    for(const m of s.messages){if(m.day!==lastDay){rows.push({isDivider:true,day:m.day});lastDay=m.day;}rows.push({isUser:m.role==='user',isAgent:m.role==='agent',text:m.text});}
+    const users=s.messages.filter(m=>m.role==='user');
+    const sel=users.find(m=>m.id===s.selId)||users[0];
+    const seg=(opts,cur,key)=>opts.map(([v,label])=>({label,active:cur===v,inactive:cur!==v,pick:()=>this.setState({[key]:v})}));
+    const confirmMap={
+      emergency:{title:'Остановить всё?',text:'Приложение и воркер перестанут отвечать. Stop воркера снимается только локально.',button:'Остановить',ok:()=>{this.setState({appStop:true,workerStop:true,spend:true,confirm:null});this.logAudit('Аварийная остановка: приложение и воркер');this.toastMsg('Приложение и воркер остановлены');}},
+      resume:{title:'Снять Stop приложения?',text:'Приложение снова начнёт отвечать. Состояние воркера проверьте отдельно.',button:'Снять Stop',ok:()=>{this.setState({appStop:false,confirm:null});this.logAudit('Stop приложения снят');this.toastMsg('Stop приложения снят');}}
+    };
+    const cf=confirmMap[s.confirm];
+    return {
+      rootStyle,
+      navItems:nav.map(([k,label])=>({label,active:s.screen===k,inactive:s.screen!==k,go:()=>{if(k==='message'&&!s.selId&&users[0])this.setState({selId:users[0].id});if(k==='notice')this.setState({noticeFrom:'privacy'});this.go(k);}})),
+      themeOptions:seg([['light','Светлая'],['dark','Тёмная']],theme,'theme'),
+      failLabel:s.failNext?'вкл':'выкл',
+      toggleFail:()=>this.setState({failNext:!s.failNext}),
+      demoLoginError:()=>this.setState({screen:'login',loginError:'Неверное имя или пароль',password:''}),
+      demoLoginLock:()=>this.setState({screen:'login',loginError:'Слишком много попыток. Попробуйте через 15 минут.',password:''}),
+      demoEmpty:()=>this.setState({screen:'chat',messages:[],typing:false,menu:false}),
+      reset:()=>this.setState({...initial(),theme:s.theme}),
+      isPhone:!isOwner,isOwner,
+      isLogin:s.screen==='login',isOnboarding:s.screen==='onboarding',isChat:s.screen==='chat',isPrivacy:s.screen==='privacy',isMessage:s.screen==='message',isNotice:s.screen==='notice',isError:s.screen==='error',
+      hasToast:!!s.toast,toast:s.toast,
+      username:s.username,password:s.password,
+      onUsername:e=>this.setState({username:e.target.value}),
+      onPassword:e=>this.setState({password:e.target.value}),
+      pwType:s.showPw?'text':'password',pwToggleLabel:s.showPw?'Скрыть':'Показать',
+      togglePw:()=>this.setState({showPw:!s.showPw}),
+      hasLoginError:!!s.loginError,loginError:s.loginError,
+      loginButton:s.loggingIn?'Входим…':'Войти',
+      onLogin:e=>{e.preventDefault();if(s.loggingIn)return;
+        if(!s.username.trim()||!s.password){this.setState({loginError:'Введите имя пользователя и пароль'});return;}
+        this.setState({loggingIn:true,loginError:''});
+        setTimeout(()=>{if(this.state.password==='wrong')this.setState({loggingIn:false,loginError:'Неверное имя или пароль',password:''});
+          else this.setState({loggingIn:false,password:'',screen:this.state.acknowledged?'chat':'onboarding'});},700);},
+      acknowledge:()=>this.setState({acknowledged:true,screen:'chat'}),
+      acknowledged:s.acknowledged,ackDate:s.acknowledged?'25 октября':'—',
+      openNoticeFromOnboarding:()=>this.setState({screen:'notice',noticeFrom:'onboarding'}),
+      openNoticeFromPrivacy:()=>this.setState({screen:'notice',noticeFrom:'privacy'}),
+      noticeBack:()=>this.go(s.noticeFrom),
+      convRef:this.convRef,
+      rows,hasMessages:s.messages.length>0,noMessages:s.messages.length===0,typing:s.typing,
+      typingDots:React.createElement('span',{style:{display:'flex',gap:4}},[0,1,2].map(i=>React.createElement('span',{key:i,style:{width:6,height:6,borderRadius:'50%',background:'#86a997',animation:`ardot 1.2s ${i*0.15}s infinite ease-in-out`}}))),
+      draft:s.draft,onDraft:e=>this.setState({draft:e.target.value}),
+      onKey:e=>{if(e.key==='Enter'&&!e.shiftKey&&!e.nativeEvent.isComposing){e.preventDefault();this.send();}},
+      canSend:!!s.draft.trim()&&!s.typing,cannotSend:!s.draft.trim()||s.typing,
+      send:()=>this.send(),
+      sendError:s.sendError,retry:()=>this.deliver(s.draft.trim()),cancelRetry:()=>this.setState({sendError:false}),
+      menuOpen:s.menu,toggleMenu:()=>this.setState({menu:!s.menu}),
+      themeMenuLabel:theme==='dark'?'Светлая тема':'Тёмная тема',
+      toggleThemeMenu:()=>this.setState({theme:theme==='dark'?'light':'dark',menu:false}),
+      logout:()=>this.setState({screen:'login',menu:false,username:'',loginError:''}),
+      goPrivacy:()=>this.go('privacy'),goChat:()=>this.go('chat'),
+      userMessages:users.slice().reverse().map(m=>({preview:m.text,date:m.date,open:()=>this.setState({selId:m.id,screen:'message',kind:'quote',dur:'24h'})})),
+      noUserMessages:users.length===0,
+      permissions:s.permissions.map(p=>({preview:p.preview,kind:p.kind,until:p.until,isActive:p.status==='active',isInactive:p.status!=='active',statusText:p.status,
+        revoke:()=>{this.setState(st=>({permissions:st.permissions.map(x=>x.id===p.id?{...x,status:'Отозвано'}:x)}));this.toastMsg('Разрешение отозвано');}})),
+      noPermissions:s.permissions.length===0,
+      hasDeletions:s.deletions.length>0,
+      deletions:s.deletions.map(d=>({label:d.label,done:d.done,pending:!d.done,retry:()=>{this.setState(st=>({deletions:st.deletions.map(x=>x.id===d.id?{...x,done:true}:x)}));this.toastMsg('Удаление завершено');}})),
+      selText:sel?sel.text:'',selDate:sel?sel.date:'',
+      kindOptions:seg([['quote','Дословно'],['attrib','С указанием автора']],s.kind,'kind'),
+      durOptions:seg([['1h','1 час'],['24h','Сутки'],['7d','Неделя']],s.dur,'dur'),
+      kindHint:s.kind==='quote'?'Агент сможет процитировать сообщение без имени.':'Агент сможет упомянуть, что мысль ваша.',
+      grant:()=>{if(!sel)return;const until=UNTIL[s.dur];
+        this.setState(st=>({screen:'privacy',permissions:[{id:'p'+Date.now(),msgId:sel.id,preview:short(sel.text),kind:st.kind==='quote'?'Дословно':'С указанием автора',until,status:'active'},...st.permissions]}));
+        this.toastMsg('Публикация разрешена '+until);},
+      askDelete:()=>this.setState({confirm:'delete'}),
+      confirmDelete:s.confirm==='delete',
+      closeConfirm:()=>this.setState({confirm:null}),
+      doDelete:()=>{if(!sel)return;
+        this.setState(st=>({confirm:null,screen:'privacy',messages:st.messages.filter(m=>m.id!==sel.id),
+          permissions:st.permissions.map(p=>p.msgId===sel.id&&p.status==='active'?{...p,status:'Удалено'}:p),
+          deletions:[{id:'d'+Date.now(),label:'Сообщение от '+sel.date,done:true},...st.deletions],selId:null}));
+        this.toastMsg('Сообщение удалено');},
+      ownerLoggedOut:!s.ownerAuthed,ownerAuthed:s.ownerAuthed,
+      ownerLogin:e=>{e.preventDefault();this.setState({ownerAuthed:true,ownerUpdated:now()});},
+      ownerLogout:()=>this.setState({ownerAuthed:false,confirm:null}),
+      ownerRefresh:()=>{this.setState({ownerUpdated:now()});this.toastMsg('Состояние обновлено');},
+      ownerUpdated:s.ownerUpdated,
+      tiles:[
+        {name:'Приложение',ok:!s.appStop,bad:s.appStop,okText:'Работает',badText:'Stop',note:s.appStop?'Ответы не отправляются':'Последний ответ в 20:02'},
+        {name:'Воркер',ok:!s.workerStop,bad:s.workerStop,okText:'Работает',badText:'Stop',note:s.workerStop?'Снимается локально':'Данные собраны в '+s.ownerUpdated},
+        {name:'Расходы провайдера',ok:!s.spend,bad:s.spend,okText:'Идут',badText:'Приостановлены',note:'37 попыток · 0 без итога'}],
+      canEmergency:!(s.appStop&&s.workerStop),workerStopped:s.workerStop,
+      askEmergency:()=>this.setState({confirm:'emergency'}),
+      appStopOptions:[{label:'Выкл',active:!s.appStop,inactive:s.appStop,pick:()=>{if(s.appStop)this.setState({confirm:'resume'});}},{label:'Вкл',active:s.appStop,inactive:!s.appStop,pick:()=>{if(!s.appStop){this.setState({appStop:true});this.logAudit('Stop приложения включён');this.toastMsg('Stop приложения включён');}}}],
+      confirmOwner:isOwner&&!!cf,confirmTitle:cf?cf.title:'',confirmText:cf?cf.text:'',confirmButton:cf?cf.button:'',confirmOk:cf?cf.ok:()=>{},
+      activityOpen:s.activityOpen,diagOpen:s.diagOpen,auditOpen:s.auditOpen,
+      activityChevron:s.activityOpen?'Свернуть':'Показать',diagChevron:s.diagOpen?'Свернуть':'Показать',auditChevron:s.auditOpen?'Свернуть':'Показать',
+      toggleActivity:()=>this.setState({activityOpen:!s.activityOpen}),toggleDiag:()=>this.setState({diagOpen:!s.diagOpen}),toggleAudit:()=>this.setState({auditOpen:!s.auditOpen}),
+      activity:[
+        {time:'20:02',what:'Ответ приложения',result:'Успешно',reason:'—',tokens:'1 284'},
+        {time:'19:58',what:'Попытка воркера',result:'Ограничено',reason:'Лимит запросов',tokens:'—'},
+        {time:'19:41',what:'Ответ приложения',result:'Успешно',reason:'—',tokens:'962'},
+        {time:'19:40',what:'Попытка воркера',result:'Итог неизвестен',reason:'Истекло время',tokens:'—'}],
+      diagnostics:[{k:'Хранилище разговоров',v:'Доступно'},{k:'Реестр приватности',v:'Доступен'},{k:'Версия схемы',v:'8'},{k:'Режим журнала',v:'WAL'},{k:'Внешние ключи',v:'Включены'},{k:'Ожидание блокировки',v:'5 000 мс'},{k:'Токены воркера: вход',v:'41 210'},{k:'Токены воркера: выход',v:'9 880'},{k:'Попыток с неполным учётом',v:'1'}],
+      audit:s.audit
+    };
+  }
+}
+</script>
+</body>
+</html>
