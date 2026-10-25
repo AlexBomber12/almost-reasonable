@@ -26,13 +26,47 @@ MAX_OPERATIONS = 20
 
 
 def _assert_projection(records, *, deleted=False):
+    episode_texts = {
+        episode["text"]
+        for row in records
+        if row["purpose"] in {"narrative_evolution", "agent", "narrative_reply"}
+        for episode in json.loads(row["input"]).get(
+            "episodes"
+            if row["purpose"] == "narrative_evolution"
+            else "fictional_episodes",
+            [],
+        )
+        if isinstance(episode.get("text"), str) and episode["text"]
+    }
+
+    def visible_text(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for item in value.values():
+                yield from visible_text(item)
+        elif isinstance(value, list):
+            for item in value:
+                yield from visible_text(item)
+
     for row in records:
         if row["purpose"] in {"memory_evolution", "typed_memory_evolution"}:
             writer = json.loads(row["input"])
+            derived_context = {
+                key: value
+                for key, value in writer.items()
+                if key != "participant_input"
+            }
             if (
                 "episodes" in writer
                 or "fictional_episodes" in writer
-                or "untrusted_fiction_data" in row["input"]
+                or "untrusted_fiction_data"
+                in json.dumps(derived_context, ensure_ascii=False)
+                or any(
+                    episode in text
+                    for text in visible_text(derived_context)
+                    for episode in episode_texts
+                )
             ):
                 raise AssertionError("fiction entered a factual memory writer")
     replies = [

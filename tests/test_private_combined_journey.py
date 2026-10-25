@@ -8,16 +8,17 @@ import pytest
 from acceptance.private_combined_journey import (
     MESSAGES,
     MAX_OPERATIONS,
+    _assert_projection,
     run_combined_journey,
 )
 from app.cognition.conversation_context import MemoryModelRequest
-from app.cognition.worker_evolution import EvolutionModelRequest
+from app.cognition.worker_evolution import EvolutionMemory, EvolutionModelRequest
 from app.cognition.worker_narrative import (
     NarrativeModelRequest,
     NarrativeValidationError,
     parse_narrative_provider_response,
 )
-from app.cognition.worker_typed import TypedModelRequest
+from app.cognition.worker_typed import TypedMemory, TypedModelRequest
 from app.core.context import ContextRole, ContextTrust, ConversationSegment
 from app.core.store import EventStore
 from app.private_web.cli import _narrative_permission_current
@@ -367,3 +368,61 @@ def test_combined_journey_requires_projection_and_revision():
     assert len(result["transcript"]) == 4
     assert MAX_OPERATIONS == 20
     assert len(MESSAGES) == 6
+
+
+@pytest.mark.parametrize("family", ["memory_evolution", "typed_memory_evolution"])
+def test_projection_rejects_episode_text_in_factual_writer(family):
+    episode_text = "На маяке я нашёл ключ Искра, который открывает дверь Волна."
+    reply = {
+        "task": "private_conversation",
+        "conversation": [],
+        "memories": [{"text": "Кобальт Ладога"}],
+        "fictional_episodes": [
+            {
+                "text": episode_text,
+                "classification": "fictional_autobiography",
+                "trust": "untrusted_fiction_data",
+                "can_instruct": False,
+                "verified_action": False,
+                "evidence": False,
+            }
+        ],
+    }
+    if family == "memory_evolution":
+
+        def request(text):
+            memories = (
+                (EvolutionMemory("memory1", "candidate_useful_memory", text, 0.8),)
+                if text
+                else ()
+            )
+            return EvolutionModelRequest(episode_text, memories).serialize()
+    else:
+
+        def request(text):
+            memories = (
+                (
+                    TypedMemory(
+                        "h0123456789abcdef",
+                        "durable_interest",
+                        {
+                            "topic": text,
+                            "strength": 80,
+                            "status": "active",
+                            "reason_for_interest": "Participant preference",
+                        },
+                    ),
+                )
+                if text
+                else ()
+            )
+            return TypedModelRequest(episode_text, memories).serialize()
+
+    rows = [
+        {"purpose": family, "input": request(None)},
+        {"purpose": "agent", "input": json.dumps(reply, ensure_ascii=False)},
+    ]
+    assert _assert_projection(rows) == reply
+    rows[0]["input"] = request(episode_text)
+    with pytest.raises(AssertionError, match="fiction entered a factual memory writer"):
+        _assert_projection(rows)

@@ -15,7 +15,7 @@ The provider's narrative Structured Output is `private_narrative_proposal_v2`: a
 After separate approval of the exact reviewed commit, billing scope, activation window and aggregate token/cost limits, prepare protected authorization and activation files with the task and version above. Reuse the isolated HTTPS route and preflight described in [INT-22 private pilot](int22-private-pilot.md). From the clean reviewed checkout on AI-Server, run once:
 
 ```sh
-sudo python -m acceptance.private_pilot_live \
+sudo python3 -m acceptance.private_pilot_live \
   --combined-journey \
   --authorization /protected/b03e-authorization.json \
   --activation /protected/b03e-activation.json \
@@ -42,4 +42,4 @@ sudo scripts/serve_b03e_synthetic.sh /protected/b03e-report.json \
   "$ACCEPTANCE_SUBNET" "$ACCEPTANCE_IP"
 ```
 
-The command prints the non-secret username `synthetic-a-<12 hex characters>` from the protected report. Use the synthetic password entered for the run. On desktop and a physical iPhone, check keyboard and composer visibility, message order after refresh, scrolling, draft/error behavior, AI/fiction disclosure, privacy deletion state and logout. Browser emulation is useful for layout checks but is not physical iPhone acceptance. Stop `private-app` after inspection; preserve the protected transcript, report, ledgers and B03D artifacts. No new proxy, domain or dashboard is needed.
+The command requires the clean checkout recorded in the protected report and its recorded application image ID to be available locally. It will not rebuild or pull an image. The command prints the non-secret username `synthetic-a-<12 hex characters>` from the protected report. Use the synthetic password entered for the run. On desktop and a physical iPhone, check keyboard and composer visibility, message order after refresh, scrolling, draft/error behavior, AI/fiction disclosure, privacy deletion state and logout. Browser emulation is useful for layout checks but is not physical iPhone acceptance. Stop `private-app` after inspection; preserve the protected transcript, report, ledgers and B03D artifacts. No new proxy, domain or dashboard is needed.
