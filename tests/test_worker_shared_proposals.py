@@ -308,7 +308,7 @@ def test_shared_worker_protocol_rejects_forged_fields_and_cross_operation_result
     sdk = build_worker_shared_request(
         request, default_openai_provider_config()
     ).to_sdk_kwargs()
-    assert sdk["text"]["format"]["name"] == "shared_abstraction_proposal"
+    assert sdk["text"]["format"]["name"] == "shared_abstraction_proposal_v2"
     assert sdk["tools"] == [] and sdk["store"] is False
     assert decode_request(encoded).model_request == request
     raw = json.loads(encoded)
@@ -498,7 +498,8 @@ def test_real_local_worker_transmits_one_bounded_suggestion_and_accounts_for_it(
         "completed",
         (
             ProviderOutput(
-                "message", (ProviderContent("output_text", json.dumps(suggestion)),)
+                "message",
+                (ProviderContent("output_text", json.dumps({"proposal": suggestion})),),
             ),
         ),
         None,

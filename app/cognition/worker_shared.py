@@ -160,5 +160,57 @@ def parse_shared_suggestion(text: str) -> SharedSuggestion:
         ):
             raise ValueError
         return SharedSuggestion(decision, handle, kind, statement, float(confidence))
-    except (TypeError, UnicodeError, ValueError):
+    except (TypeError, UnicodeError, ValueError, OverflowError):
         raise ValueError("invalid shared suggestion") from None
+
+
+SHARED_DIAGNOSTIC_CODES = frozenset(
+    f"shared_{suffix}"
+    for suffix in (
+        "invalid_size",
+        "invalid_json",
+        "duplicate_key",
+        "invalid_envelope",
+        "invalid_shape",
+        "invalid_decision",
+        "invalid_handle",
+        "invalid_kind",
+        "invalid_text",
+        "invalid_number",
+    )
+)
+
+
+def parse_shared_provider_response(raw: str) -> SharedSuggestion:
+    """Decode the v2 provider envelope into the unchanged internal suggestion."""
+    from .provider_envelope import ProposalDiagnostic, provider_proposal
+
+    data = provider_proposal(raw, "shared", MAX_OUTPUT_BYTES)
+    if set(data) != {"decision", "handle", "kind", "statement", "confidence"}:
+        raise ProposalDiagnostic("shared_invalid_shape")
+    decision = data["decision"]
+    if type(decision) is not str or decision not in {"no_change", "new", "revise"}:
+        raise ProposalDiagnostic("shared_invalid_decision")
+    handle = data["handle"]
+    if (decision != "revise" and handle is not None) or (
+        decision == "revise"
+        and (type(handle) is not str or _HANDLE.fullmatch(handle) is None)
+    ):
+        raise ProposalDiagnostic("shared_invalid_handle")
+    if decision == "no_change":
+        if any(data[key] is not None for key in ("kind", "statement", "confidence")):
+            raise ProposalDiagnostic("shared_invalid_shape")
+    else:
+        if type(data["kind"]) is not str or data["kind"] not in KINDS:
+            raise ProposalDiagnostic("shared_invalid_kind")
+        if type(data["statement"]) is not str or not data["statement"].strip():
+            raise ProposalDiagnostic("shared_invalid_text")
+        if (
+            type(data["confidence"]) not in {int, float}
+            or not 0 <= data["confidence"] <= 1
+        ):
+            raise ProposalDiagnostic("shared_invalid_number")
+    try:
+        return parse_shared_suggestion(json.dumps(data, ensure_ascii=False))
+    except (TypeError, UnicodeError, ValueError, OverflowError):
+        raise ProposalDiagnostic("shared_invalid_text") from None

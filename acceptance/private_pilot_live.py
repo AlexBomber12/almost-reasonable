@@ -880,7 +880,13 @@ def _proposal_failure(rows, step):
     """Return only fixed evidence for a rejected billed operation."""
     from app.cognition.worker_typed import TYPED_DIAGNOSTIC_CODES
     from app.cognition.worker_narrative import NARRATIVE_DIAGNOSTIC_CODES
+    from app.cognition.worker_evolution import EVOLUTION_DIAGNOSTIC_CODES
 
+    codes_by_family = {
+        "evolution": EVOLUTION_DIAGNOSTIC_CODES,
+        "typed": TYPED_DIAGNOSTIC_CODES,
+        "narrative": NARRATIVE_DIAGNOSTIC_CODES,
+    }
     for row in rows:
         if row[2] == "invalid_proposal":
             family = row[0].split(":", 1)[0]
@@ -891,14 +897,7 @@ def _proposal_failure(rows, step):
             )
             code = (
                 row[10]
-                if family in {"typed", "narrative"}
-                and len(row) > 10
-                and row[10]
-                in (
-                    TYPED_DIAGNOSTIC_CODES
-                    if family == "typed"
-                    else NARRATIVE_DIAGNOSTIC_CODES
-                )
+                if len(row) > 10 and row[10] in codes_by_family.get(family, ())
                 else "unknown"
             )
             return JourneyOutcomeError(

@@ -154,5 +154,70 @@ def parse_evolution_proposal(text: str) -> EvolutionProposal:
         return EvolutionProposal(
             decision, tuple(handles), kind, statement, float(confidence)
         )
-    except (TypeError, UnicodeError, ValueError):
+    except (TypeError, UnicodeError, ValueError, OverflowError):
         raise ValueError("invalid evolution proposal") from None
+
+
+EVOLUTION_DIAGNOSTIC_CODES = frozenset(
+    f"evolution_{suffix}"
+    for suffix in (
+        "invalid_size",
+        "invalid_json",
+        "duplicate_key",
+        "invalid_envelope",
+        "invalid_shape",
+        "invalid_decision",
+        "invalid_handle",
+        "invalid_kind",
+        "invalid_text",
+        "invalid_number",
+    )
+)
+
+
+def parse_evolution_provider_response(raw: str) -> EvolutionProposal:
+    """Decode the v2 provider envelope into the unchanged internal proposal."""
+    from .provider_envelope import ProposalDiagnostic, provider_proposal
+
+    data = provider_proposal(raw, "evolution", MAX_OUTPUT_BYTES)
+    if set(data) != {"decision", "handles", "kind", "statement", "confidence"}:
+        raise ProposalDiagnostic("evolution_invalid_shape")
+    decision = data["decision"]
+    if type(decision) is not str or decision not in {
+        "no_change",
+        "new_memory",
+        "revise_memory",
+        "consolidate_memories",
+    }:
+        raise ProposalDiagnostic("evolution_invalid_decision")
+    handles = data["handles"]
+    count = {"no_change": 0, "new_memory": 0, "revise_memory": 1}.get(decision)
+    if (
+        type(handles) is not list
+        or len(handles) > MAX_MEMORIES
+        or (count is not None and len(handles) != count)
+        or (count is None and len(handles) < 2)
+        or any(
+            type(handle) is not str or _HANDLE.fullmatch(handle) is None
+            for handle in handles
+        )
+        or len(set(handles)) != len(handles)
+    ):
+        raise ProposalDiagnostic("evolution_invalid_handle")
+    if decision == "no_change":
+        if any(data[key] is not None for key in ("kind", "statement", "confidence")):
+            raise ProposalDiagnostic("evolution_invalid_shape")
+    else:
+        if type(data["kind"]) is not str or data["kind"] not in _KINDS:
+            raise ProposalDiagnostic("evolution_invalid_kind")
+        if type(data["statement"]) is not str or not data["statement"].strip():
+            raise ProposalDiagnostic("evolution_invalid_text")
+        if (
+            type(data["confidence"]) not in {int, float}
+            or not 0 <= data["confidence"] <= 1
+        ):
+            raise ProposalDiagnostic("evolution_invalid_number")
+    try:
+        return parse_evolution_proposal(json.dumps(data, ensure_ascii=False))
+    except (TypeError, UnicodeError, ValueError, OverflowError):
+        raise ProposalDiagnostic("evolution_invalid_text") from None

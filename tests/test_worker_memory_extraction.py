@@ -162,7 +162,7 @@ def test_extraction_accepts_finite_confidence_boundaries(confidence):
 def test_large_confidence_response_is_invalid_proposal_and_usage_is_recorded(tmp_path):
     raw = _confidence_response(10**400)
     assert len(raw.encode()) == 511
-    response = provider_response(raw)
+    response = provider_response(json.dumps({"proposal": json.loads(raw)}))
     assert (
         _parse_response(response, extraction=True).outcome
         is GatewayOutcome.INVALID_PROPOSAL
@@ -225,7 +225,7 @@ def test_extraction_wire_and_provider_projection_exclude_protected_fields():
         request, default_openai_provider_config()
     ).to_sdk_kwargs()
     assert sdk["tools"] == [] and sdk["store"] is False
-    assert sdk["text"]["format"]["name"] == "private_memory_proposal"
+    assert sdk["text"]["format"]["name"] == "private_memory_proposal_v2"
     assert "I collect old maps" in sdk["input"]
     data["model_request"]["source_event_id"] = "forged"
     with pytest.raises(WorkerProtocolError):
@@ -283,7 +283,9 @@ def test_extraction_codec_and_gateway_reject_mismatched_or_invalid_shapes(tmp_pa
             "confidence": 0.8,
         }
     )
-    parsed = _parse_response(provider_response(output), extraction=True)
+    parsed = _parse_response(
+        provider_response(json.dumps({"proposal": json.loads(output)})), extraction=True
+    )
     assert parsed.outcome is GatewayOutcome.COMPLETED
     assert parsed.extraction.statement == "Alice collects old maps"
     assert (
@@ -298,7 +300,9 @@ def test_extraction_codec_and_gateway_reject_mismatched_or_invalid_shapes(tmp_pa
     store = ProviderStateStore(EventStore(tmp_path / "provider.db"))
     gateway = TrustedOpenAIGateway(
         store=store,
-        transport=FakeOpenAITransport([provider_response(output)]),
+        transport=FakeOpenAITransport(
+            [provider_response(json.dumps({"proposal": json.loads(output)}))]
+        ),
         config=replace(
             default_openai_provider_config(),
             deployment_stage=DeploymentStage.STAGE_1,
@@ -317,7 +321,7 @@ def test_extraction_codec_and_gateway_reject_mismatched_or_invalid_shapes(tmp_pa
     assert result.extraction.statement == "Alice collects old maps"
     assert (
         store.usage_attempt("memory:" + "a" * 64 + ":1").prompt_version
-        == "private-extraction-v1"
+        == "private-extraction-v2"
     )
 
 
@@ -388,7 +392,15 @@ def _extraction_worker(
                         "role": "assistant",
                         "status": "completed",
                         "content": [
-                            {"type": "output_text", "text": json.dumps(proposal)}
+                            {
+                                "type": "output_text",
+                                "text": json.dumps(
+                                    {"proposal": proposal}
+                                    if json.loads(kwargs["input"])["task"]
+                                    == "extract_private_memory"
+                                    else proposal
+                                ),
+                            }
                         ],
                     }
                 ],
@@ -579,7 +591,7 @@ def test_authenticated_process_worker_persists_and_retrieves_memory_after_restar
     with EventStore(tmp_path / "worker-provider.db")._open() as db:
         assert set(
             db.execute("SELECT prompt_version FROM provider_usage_attempts").fetchall()
-        ) == {("private-extraction-v1",), ("agent-proposal-v2",)}
+        ) == {("private-extraction-v2",), ("agent-proposal-v2",)}
     reopened = EventStore(events.database_path)
     new_gate = type(gate)(_ledger, reopened)
     assert new_gate.reconcile()
@@ -815,7 +827,7 @@ def test_malformed_extraction_creates_no_memory_and_app_replay_does_not_call_wor
             assert db.execute(
                 "SELECT prompt_version,outcome,total_tokens FROM provider_usage_attempts ORDER BY attempt_id"
             ).fetchall() == [
-                ("private-extraction-v1", "invalid_proposal", 2),
+                ("private-extraction-v2", "invalid_proposal", 2),
                 ("agent-proposal-v2", "completed", 2),
             ]
             assert db.execute(
@@ -882,10 +894,12 @@ def _lost_result_worker(socket_path, database_path, ready):
                                 "type": "output_text",
                                 "text": json.dumps(
                                     {
-                                        "decision": "new_memory",
-                                        "kind": "candidate_useful_memory",
-                                        "statement": "Alice collects old maps",
-                                        "confidence": 0.8,
+                                        "proposal": {
+                                            "decision": "new_memory",
+                                            "kind": "candidate_useful_memory",
+                                            "statement": "Alice collects old maps",
+                                            "confidence": 0.8,
+                                        }
                                     }
                                 ),
                             }
@@ -1150,7 +1164,9 @@ def test_server_rechecks_worker_guard_after_extraction_and_client_checks_version
     )
     gateway = TrustedOpenAIGateway(
         store=ProviderStateStore(EventStore(tmp_path / "provider.db")),
-        transport=FakeOpenAITransport([provider_response(output)]),
+        transport=FakeOpenAITransport(
+            [provider_response(json.dumps({"proposal": json.loads(output)}))]
+        ),
         config=replace(
             default_openai_provider_config(),
             deployment_stage=DeploymentStage.STAGE_1,

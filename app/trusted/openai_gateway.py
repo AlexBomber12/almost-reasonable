@@ -12,12 +12,12 @@ from app.core.agent_proposals import ProposalValidation, parse_agent_proposal
 from app.cognition.worker_extraction import (
     ExtractionModelRequest,
     ExtractionProposal,
-    parse_extraction_proposal,
+    parse_extraction_provider_response,
 )
 from app.cognition.worker_evolution import (
     EvolutionModelRequest,
     EvolutionProposal,
-    parse_evolution_proposal,
+    parse_evolution_provider_response,
 )
 from app.cognition.worker_typed import (
     TypedModelRequest,
@@ -34,8 +34,9 @@ from app.cognition.worker_narrative import (
 from app.cognition.worker_shared import (
     SharedProposalRequest,
     SharedSuggestion,
-    parse_shared_suggestion,
+    parse_shared_provider_response,
 )
+from app.cognition.provider_envelope import ProposalDiagnostic
 from app.core.model_contract import ModelRequest
 from app.core.provider_contract import (
     PROVIDER_NAME,
@@ -481,15 +482,15 @@ class TrustedOpenAIGateway:
             model_identifier=self._config.model,
             provider_config_version=self._config.version,
             prompt_version=(
-                "private-evolution-v1"
+                "private-evolution-v2"
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
                 else "private-narrative-v2"
                 if type(request) is NarrativeModelRequest
-                else "shared-proposal-v1"
+                else "shared-proposal-v2"
                 if type(request) is SharedProposalRequest
-                else "private-extraction-v1"
+                else "private-extraction-v2"
                 if type(request) is ExtractionModelRequest
                 else self._config.prompt_version
             ),
@@ -737,6 +738,41 @@ def _parse_response(
         return _ParsedResponse(
             GatewayOutcome.COMPLETED, None, narrative=parsed_narrative
         )
+    if extraction:
+        try:
+            parsed = parse_extraction_provider_response(text)
+        except ProposalDiagnostic as error:
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+                diagnostic_code=error.code,
+            )
+        return _ParsedResponse(GatewayOutcome.COMPLETED, None, parsed)
+    if evolution:
+        try:
+            parsed_evolution = parse_evolution_provider_response(text)
+        except ProposalDiagnostic as error:
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+                diagnostic_code=error.code,
+            )
+        return _ParsedResponse(
+            GatewayOutcome.COMPLETED, None, evolution=parsed_evolution
+        )
+    if shared:
+        try:
+            parsed_shared = parse_shared_provider_response(text)
+        except ProposalDiagnostic as error:
+            return _ParsedResponse(
+                GatewayOutcome.INVALID_PROPOSAL,
+                None,
+                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
+                diagnostic_code=error.code,
+            )
+        return _ParsedResponse(GatewayOutcome.COMPLETED, None, shared=parsed_shared)
     try:
         payload = json.loads(text)
     except (ValueError, UnicodeDecodeError):
@@ -744,28 +780,6 @@ def _parse_response(
             GatewayOutcome.INVALID_RESPONSE,
             None,
             rejection_reason=RejectionReason.INVALID_JSON,
-        )
-    if extraction:
-        try:
-            parsed = parse_extraction_proposal(text)
-        except ValueError:
-            return _ParsedResponse(
-                GatewayOutcome.INVALID_PROPOSAL,
-                None,
-                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
-            )
-        return _ParsedResponse(GatewayOutcome.COMPLETED, None, parsed)
-    if evolution:
-        try:
-            parsed_evolution = parse_evolution_proposal(text)
-        except ValueError:
-            return _ParsedResponse(
-                GatewayOutcome.INVALID_PROPOSAL,
-                None,
-                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
-            )
-        return _ParsedResponse(
-            GatewayOutcome.COMPLETED, None, evolution=parsed_evolution
         )
     if typed:
         try:
@@ -778,16 +792,6 @@ def _parse_response(
                 diagnostic_code=error.code,
             )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
-    if shared:
-        try:
-            parsed_shared = parse_shared_suggestion(text)
-        except ValueError:
-            return _ParsedResponse(
-                GatewayOutcome.INVALID_PROPOSAL,
-                None,
-                rejection_reason=RejectionReason.INVALID_PURPOSE_PROPOSAL,
-            )
-        return _ParsedResponse(GatewayOutcome.COMPLETED, None, shared=parsed_shared)
     if type(payload) is not dict or set(payload) != {"proposal"}:
         return _ParsedResponse(
             GatewayOutcome.INVALID_RESPONSE,

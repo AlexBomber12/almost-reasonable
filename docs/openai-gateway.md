@@ -70,12 +70,24 @@ prove availability for this project. No live request was made for this PR.
 
 ## Output and policy handling
 
-The provider is asked for one strict root object covering only `no_action`,
-`reply`, `research`, and `propose_publication`. Every field remains required by the
-provider schema; unused fields must be null. Locally, the gateway checks response
-status and output item types, refuses tool/function output, handles refusal and
-incomplete responses separately, bounds UTF-8 output, parses JSON, rejects unknown
-or mismatched fields, and finally calls the existing `parse_agent_proposal`.
+The provider is asked for a strict root object with a nested, decision-specific
+`proposal`. The agent decision vocabulary is `no_action`, `reply`, `research`,
+and `propose_publication`; each branch requires only its own payload. The
+private generic evolution, extraction, and shared abstraction provider formats
+use `*_v2` names and the same nested decision-variant shape. Their instructions
+spell out null payloads for `no_change`, handle roles, and the envelope. The
+internal worker IPC and persisted proposal formats remain unchanged. There is
+no legacy flat provider-output fallback.
+
+For these memory contracts, Structured Outputs constrains decision-specific
+nullability, handle syntax and count, nonempty strings, and numeric confidence
+bounds. The local decoders still reject duplicate handles, whitespace-only
+statements, excessive UTF-8 bytes, and handles absent from the current shown
+projection. The gateway checks response status and output item types, refuses
+tool/function output, handles refusal and incomplete responses separately, and
+records only fixed diagnostic codes on malformed or rejected proposals. A schema
+match cannot prove source provenance, semantic correctness, or complete
+equivalence with local validation.
 
 Provider schema success is not authorization. The returned `ProposalValidation`
 is an untrusted proposal for the existing `ActionPolicy`; the gateway executes no

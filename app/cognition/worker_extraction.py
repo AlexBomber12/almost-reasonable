@@ -89,5 +89,50 @@ def parse_extraction_proposal(text: str) -> ExtractionProposal:
         ):
             raise ValueError
         return ExtractionProposal(decision, kind, statement, float(confidence))
-    except (TypeError, UnicodeError, ValueError):
+    except (TypeError, UnicodeError, ValueError, OverflowError):
         raise ValueError("invalid extraction proposal") from None
+
+
+EXTRACTION_DIAGNOSTIC_CODES = frozenset(
+    f"extraction_{suffix}"
+    for suffix in (
+        "invalid_size",
+        "invalid_json",
+        "duplicate_key",
+        "invalid_envelope",
+        "invalid_shape",
+        "invalid_decision",
+        "invalid_kind",
+        "invalid_text",
+        "invalid_number",
+    )
+)
+
+
+def parse_extraction_provider_response(raw: str) -> ExtractionProposal:
+    """Decode the v2 provider envelope into the unchanged internal proposal."""
+    from .provider_envelope import ProposalDiagnostic, provider_proposal
+
+    data = provider_proposal(raw, "extraction", 8192)
+    if set(data) != {"decision", "kind", "statement", "confidence"}:
+        raise ProposalDiagnostic("extraction_invalid_shape")
+    decision = data["decision"]
+    if type(decision) is not str or decision not in {"no_change", "new_memory"}:
+        raise ProposalDiagnostic("extraction_invalid_decision")
+    if decision == "no_change":
+        if any(data[key] is not None for key in ("kind", "statement", "confidence")):
+            raise ProposalDiagnostic("extraction_invalid_shape")
+    else:
+        if type(data["kind"]) is not str or data["kind"] not in _KINDS:
+            raise ProposalDiagnostic("extraction_invalid_kind")
+        if type(data["statement"]) is not str or not data["statement"].strip():
+            raise ProposalDiagnostic("extraction_invalid_text")
+        if (
+            type(data["confidence"]) not in {int, float}
+            or not 0 <= data["confidence"] <= 1
+        ):
+            raise ProposalDiagnostic("extraction_invalid_number")
+    try:
+        return parse_extraction_proposal(json.dumps(data, ensure_ascii=False))
+    except (TypeError, UnicodeError, ValueError, OverflowError):
+        raise ProposalDiagnostic("extraction_invalid_text") from None
