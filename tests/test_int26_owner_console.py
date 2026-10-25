@@ -184,10 +184,10 @@ def test_pilot_console_admission_status_assets_and_stop(tmp_path):
     app = build_application(args)
     status, page, headers = call(app, "/")
     assert status == 200
-    assert "Частный пилот" in page
+    assert "Almost Reasonable · Владелец" in page
     assert ("Referrer-Policy", "no-referrer") in headers
     assert "fetch(" in call(app, "/owner.js")[1]
-    assert "font-family" in call(app, "/owner.css")[1]
+    assert "system-ui" in call(app, "/owner.css")[1]
     assert call(app, "/", "POST")[0] == 405
     assert call(app, "/", HTTP_HOST="chat.test")[0] == 400
     assert call(app, "/login", REMOTE_ADDR="127.0.0.2")[0] == 403

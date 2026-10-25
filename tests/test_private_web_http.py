@@ -182,7 +182,7 @@ def test_login_page_and_private_responses_have_security_headers(web):
     assert header_values(headers, "X-Content-Type-Options") == ["nosniff"]
     assert header_values(headers, "Referrer-Policy") == ["same-origin"]
     assert "default-src 'none'" in header_values(headers, "Content-Security-Policy")[0]
-    assert "Личный разговор".encode() in body
+    assert "Almost Reasonable".encode() in body
     cookie = header_values(headers, "Set-Cookie")[0]
     assert "HttpOnly" in cookie and "SameSite=Strict" in cookie and "Secure" in cookie
     assert not header_values(headers, "Access-Control-Allow-Origin")
@@ -204,7 +204,7 @@ def test_authenticated_chat_session_status_and_logout(web):
     status, headers, body = browser.request("GET", "/chat", origin=False)
     assert status == "200 OK"
     assert header_values(headers, "Referrer-Policy") == ["no-referrer"]
-    assert "Начните разговор".encode() in body
+    assert "С чего начнём?".encode() in body
     assert "Войти как alice".encode() not in body
 
     token = browser.cookies["ar_session"]
@@ -406,7 +406,7 @@ def test_invalid_login_is_generic_and_abuse_is_rate_limited(web):
     status, headers, body = browser.login("alice", "correct horse battery")
     assert status == "429 Too Many Requests"
     assert header_values(headers, "Retry-After") == ["40"]
-    assert b"Too many login attempts" in body
+    assert "Слишком много попыток".encode() in body
 
 
 def test_expired_session_has_clear_states(web):
@@ -721,6 +721,7 @@ def test_login_request_validation_and_chat_csrf_cookie(web):
         == "403 Forbidden"
     )
 
+    csrf = browser.cookies["ar_login_csrf"]
     body = f"username=alice&password=correct+horse+battery&csrf={csrf}".encode()
     assert (
         browser.request(
@@ -753,7 +754,7 @@ def test_participant_login_rejects_nonmatching_origins(web, origin):
         extra_environ={} if origin is None else {"HTTP_ORIGIN": origin},
     )
     assert status == "403 Forbidden"
-    assert b"Origin validation failed." in body
+    assert "Нет доступа".encode() in body
     assert "ar_session" not in browser.cookies
 
 

@@ -99,6 +99,9 @@ def test_chromium_owner_login_stop_and_logout_have_no_credential_urls(tmp_path, 
             ).to_be_visible()
             page.on("dialog", lambda dialog: dialog.accept())
             page.get_by_role("button", name="Снять Stop только приложения").click()
+            page.get_by_role("dialog").get_by_role(
+                "button", name="Снять Stop", exact=True
+            ).click()
             expect(page.locator("#message")).to_have_text("Stop приложения снят.")
             assert not store.active()
             page.get_by_role("button", name="Включить Stop приложения").click()
@@ -132,9 +135,15 @@ def test_chromium_emergency_button_reports_separate_uncertain_worker(tmp_path):
             page.get_by_role("button", name="Войти", exact=True).click()
             page.on("dialog", lambda dialog: dialog.accept())
             page.get_by_role("button", name="Снять Stop только приложения").click()
+            page.get_by_role("dialog").get_by_role(
+                "button", name="Снять Stop", exact=True
+            ).click()
             expect(page.locator("#message")).to_have_text("Stop приложения снят.")
             assert not store.active()
-            page.get_by_role("button", name="Остановить приложение и воркер").click()
+            page.locator("#emergency-stop").click()
+            page.get_by_role("dialog").get_by_role(
+                "button", name="Остановить всё", exact=True
+            ).click()
             expect(page.locator("#emergency-result")).to_have_text(
                 "Приложение: Подтверждено; воркер: Неизвестно."
             )
@@ -156,7 +165,7 @@ def test_chromium_emergency_result_survives_failed_status_refresh(tmp_path):
             page.get_by_label("Пароль", exact=True).fill("synthetic browser password")
             page.get_by_role("button", name="Войти", exact=True).click()
             expect(
-                page.get_by_role("button", name="Остановить приложение и воркер")
+                page.get_by_role("button", name="Остановить всё", exact=True)
             ).to_be_visible()
             page.route(
                 "**/status",
@@ -166,7 +175,10 @@ def test_chromium_emergency_result_survives_failed_status_refresh(tmp_path):
                     body='{"error":"unavailable"}',
                 ),
             )
-            page.get_by_role("button", name="Остановить приложение и воркер").click()
+            page.locator("#emergency-stop").click()
+            page.get_by_role("dialog").get_by_role(
+                "button", name="Остановить всё", exact=True
+            ).click()
             expect(page.locator("#emergency-result")).to_have_text(
                 "Приложение: Подтверждено; воркер: Подтверждено."
             )

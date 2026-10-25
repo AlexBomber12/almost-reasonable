@@ -10,13 +10,14 @@ from pathlib import Path
 import re
 import secrets
 from typing import Any
-from urllib.parse import parse_qs, quote, urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .auth import AuthenticatedSession, AuthStore, LoginStatus
 from .conversation import ConversationService
 from .privacy import ParticipantPrivacyControls, PrivacyControlError
 from app.privacy.application import PrivacyReadBlocked
-from app.privacy.notice import NARRATIVE_DISCLOSURE_RU, NARRATIVE_DISCLOSURE_VERSION
+from app.privacy.notice import NARRATIVE_DISCLOSURE_VERSION
+from .presentation import date_label, document
 
 
 SESSION_COOKIE = "ar_session"
@@ -174,6 +175,8 @@ class PrivateWebApplication:
                     error.status,
                     error.message,
                     api=environ.get("PATH_INFO", "").startswith("/api/"),
+                    privacy_recovery=error.status == HTTPStatus.SERVICE_UNAVAILABLE
+                    and self._privacy is not None,
                 )
         except PrivacyReadBlocked:
             response = self._error(
@@ -182,6 +185,7 @@ class PrivateWebApplication:
                 else HTTPStatus.INTERNAL_SERVER_ERROR,
                 "Privacy reconciliation required.",
                 api=environ.get("PATH_INFO", "").startswith("/api/"),
+                privacy_recovery=self._privacy is not None,
             )
         except Exception:
             response = self._error(
@@ -192,9 +196,12 @@ class PrivateWebApplication:
         status, headers, body = response
         referrer_policy = (
             "same-origin"
-            if environ.get("REQUEST_METHOD") == "GET"
-            and environ.get("PATH_INFO") == "/login"
-            and status == HTTPStatus.OK
+            if any(
+                key == "Set-Cookie"
+                and value.startswith(LOGIN_CSRF_COOKIE + "=")
+                and "; Max-Age=0" not in value
+                for key, value in headers
+            )
             else "no-referrer"
         )
         headers = [*self._security_headers(referrer_policy=referrer_policy), *headers]
@@ -320,28 +327,38 @@ class PrivateWebApplication:
 
     def _login_page(
         self,
+        status: HTTPStatus = HTTPStatus.OK,
+        message: str = "",
+        username: str = "",
+        headers: tuple[tuple[str, str], ...] = (),
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         csrf = secrets.token_urlsafe(32)
-        body = (
-            '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1">'
-            "<title>Вход · Almost Reasonable</title>"
-            '<link rel="stylesheet" href="/assets/chat.css"></head><body class="login-page">'
-            '<main class="login-card"><span class="login-mark" aria-hidden="true">✳</span>'
-            "<h1>Личный разговор</h1>"
-            "<p>Войдите, чтобы продолжить разговор.</p>"
-            '<form method="post" action="/login">'
-            '<label>Имя пользователя <input name="username" autocomplete="username" required></label>'
-            '<label>Пароль <input type="password" name="password" '
-            'autocomplete="current-password" required></label>'
-            f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
-            '<button type="submit">Войти</button></form></main></body></html>'
-        ).encode()
+        error = (
+            f'<p class="feedback" role="alert">{escape(message)}</p>' if message else ""
+        )
+        body = document(
+            "Вход",
+            (
+                '<main class="login-card"><div class="brand">'
+                '<span class="brand__mark" aria-hidden="true">AR</span><strong>Almost Reasonable</strong></div>'
+                '<button class="theme-toggle" type="button">Тема</button><h1>Вход</h1>'
+                f'{error}<form id="login-form" method="post" action="/login">'
+                '<label for="username">Имя пользователя</label>'
+                f'<input id="username" name="username" value="{escape(username)}" autocomplete="username" required>'
+                '<label for="password">Пароль</label><div class="password-field">'
+                '<input id="password" type="password" name="password" autocomplete="current-password" required>'
+                '<button id="password-toggle" type="button" aria-controls="password" aria-pressed="false">Показать</button></div>'
+                f'<input type="hidden" name="csrf" value="{escape(csrf)}">'
+                '<button type="submit">Войти</button></form></main>'
+            ),
+            body_class="login-page",
+        )
         return (
-            HTTPStatus.OK,
+            status,
             [
                 ("Content-Type", "text/html; charset=utf-8"),
                 self._set_cookie(LOGIN_CSRF_COOKIE, csrf, path="/login"),
+                *headers,
             ],
             body,
         )
@@ -369,8 +386,14 @@ class PrivateWebApplication:
         ):
             raise _RequestError(HTTPStatus.BAD_REQUEST, "Malformed login request.")
         cookie_csrf = self._cookie_value(environ, LOGIN_CSRF_COOKIE)
-        if not secrets.compare_digest(fields["csrf"][0], cookie_csrf or ""):
-            raise _RequestError(HTTPStatus.FORBIDDEN, "CSRF validation failed.")
+        if not cookie_csrf or not secrets.compare_digest(
+            fields["csrf"][0], cookie_csrf
+        ):
+            return self._login_page(
+                HTTPStatus.FORBIDDEN,
+                "Сессия входа устарела. Попробуйте ещё раз.",
+                fields["username"][0],
+            )
         result = self._auth_store.login(
             fields["username"][0],
             fields["password"][0],
@@ -378,13 +401,19 @@ class PrivateWebApplication:
             existing_session_token=self._cookie_value(environ, SESSION_COOKIE),
         )
         if result.status is LoginStatus.LOCKED:
-            return self._error(
+            minutes = (self._auth_store.lockout_seconds + 59) // 60
+            return self._login_page(
                 HTTPStatus.TOO_MANY_REQUESTS,
-                "Too many login attempts. Try again later.",
-                [("Retry-After", str(self._auth_store.lockout_seconds))],
+                f"Слишком много попыток. Попробуйте через {minutes} мин.",
+                fields["username"][0],
+                (("Retry-After", str(self._auth_store.lockout_seconds)),),
             )
         if result.status is LoginStatus.INVALID:
-            return self._error(HTTPStatus.UNAUTHORIZED, "Invalid username or password.")
+            return self._login_page(
+                HTTPStatus.UNAUTHORIZED,
+                "Неверное имя или пароль",
+                fields["username"][0],
+            )
         return self._redirect(
             "/chat",
             [
@@ -414,64 +443,62 @@ class PrivateWebApplication:
                 "Your session protection is invalid. Please sign in again.",
             )
         items = self._checked_history(session, environ)
-        history = "".join(
-            f'<li class="message message--{item.role}">'
-            f'<div class="message__body"><span class="message__speaker">'
-            f"{'Вы' if item.role == 'participant' else 'Собеседник'}</span>"
-            f'<p class="message__text">{escape(item.content)}</p>'
-            + (
-                f'<a class="message__source" href="/privacy/source?ref={quote(item.event_id, safe="")}">'
-                "Управление источником</a>"
-                if self._privacy is not None and item.role == "participant"
-                else ""
+        history_parts = []
+        previous_day = None
+        for item in items:
+            day = item.occurred_at.date()
+            if day != previous_day:
+                history_parts.append(
+                    f'<li class="date-separator" data-date="{item.occurred_at.isoformat()}">'
+                    f"{date_label(item.occurred_at)}</li>"
+                )
+                previous_day = day
+            history_parts.append(
+                f'<li class="message message--{item.role}" data-event-id="{escape(item.event_id)}" '
+                f'data-occurred-at="{item.occurred_at.isoformat()}">'
+                '<div class="message__body"><span class="visually-hidden">'
+                f"{'Вы:' if item.role == 'participant' else 'Almost Reasonable:'}</span>"
+                f'<p class="message__text">{escape(item.content)}</p></div></li>'
             )
-            + "</div></li>"
-            for item in items
+        empty_hidden = " hidden" if items else ""
+        privacy_link = (
+            '<a href="/privacy">Приватность</a>' if self._privacy is not None else ""
         )
-        empty = (
-            '<div id="empty-state" class="empty-state"><h2>Начните разговор</h2>'
-            "<p>Напишите сообщение, и оно появится здесь.</p></div>"
-            if not items
-            else ""
+        body = document(
+            "Разговор",
+            (
+                '<div class="chat-shell"><header class="chat-header">'
+                '<div class="brand"><span class="brand__mark" aria-hidden="true">AR</span>'
+                "<strong>Almost Reasonable</strong></div>"
+                '<button id="menu-toggle" class="icon-button" aria-label="Меню" aria-expanded="false" aria-controls="chat-menu">⋯</button>'
+                f'<nav id="chat-menu" class="chat-menu" aria-label="Настройки и выход" hidden>{privacy_link}'
+                '<button class="theme-toggle" type="button">Тема</button><hr>'
+                '<form method="post" action="/logout" id="logout-form"><button type="submit">Выйти</button></form></nav></header>'
+                '<main id="conversation" class="conversation" aria-label="Разговор"><div class="conversation__inner">'
+                '<h1 class="visually-hidden">Разговор</h1>'
+                f'<div id="empty-state" class="empty-state"{empty_hidden}><h2>С чего начнём?</h2>'
+                "<p>Напишите о том, что вам интересно. Настройки данных — в разделе «Приватность».</p>"
+                '<p class="desktop-hint">Enter — отправить, Shift+Enter — новая строка</p></div>'
+                f'<ol id="history" class="history" aria-label="Сообщения">{"".join(history_parts)}</ol>'
+                '<div id="request-progress" class="request-progress" role="status" hidden>'
+                '<span class="progress-dots" aria-hidden="true">•••</span> Обрабатываем сообщение…</div>'
+                '</div></main><div class="composer-area"><div class="composer-inner">'
+                '<div class="delivery-feedback"><p role="status" aria-live="polite" id="model-status" class="status"></p>'
+                '<a id="status-action" class="status-action" href="/login" hidden></a>'
+                '<span id="retry-actions" hidden><button type="button" id="cancel-retry">Отменить</button>'
+                '<button type="button" id="retry-message">Повторить</button></span></div>'
+                f'<form id="message-form" method="post" action="/api/messages" data-csrf="{escape(csrf)}">'
+                '<label for="message-content" class="visually-hidden">Сообщение</label>'
+                '<textarea id="message-content" name="content" required maxlength="8192" rows="1" '
+                'placeholder="Подключаемся…" aria-label="Сообщение"></textarea>'
+                '<button type="submit" id="send-button" aria-label="Отправить">↑</button></form>'
+                '<p id="narrative-disclosure" class="disclosure" '
+                f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
+                "ИИ-агент. Истории от первого лица могут быть вымыслом.</p>"
+                "</div></div></div>"
+            ),
+            body_class="chat-page",
         )
-        body = (
-            '<!doctype html><html lang="ru"><head><meta charset="utf-8">'
-            '<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">'
-            "<title>Разговор · Almost Reasonable</title>"
-            '<link rel="stylesheet" href="/assets/chat.css"></head><body>'
-            '<div class="chat-shell"><header class="chat-header">'
-            '<div class="brand"><span class="brand__mark" aria-hidden="true">✳</span>'
-            "<div><strong>Almost Reasonable</strong><span>Личный разговор</span></div></div>"
-            '<nav aria-label="Настройки и выход">'
-            + (
-                '<a href="/privacy">Приватность</a>'
-                if self._privacy is not None
-                else ""
-            )
-            + '<form method="post" action="/logout" id="logout-form">'
-            '<button type="submit">Выйти</button></form></nav></header>'
-            '<main id="conversation" class="conversation" aria-label="Разговор">'
-            '<div class="conversation__inner">'
-            "<h1>Разговор</h1>"
-            '<p id="narrative-disclosure" class="disclosure" '
-            f'data-version="{NARRATIVE_DISCLOSURE_VERSION}">'
-            f"{escape(NARRATIVE_DISCLOSURE_RU)}</p>"
-            f'{empty}<ol id="history" class="history" aria-label="Сообщения">{history}</ol>'
-            "</div></main>"
-            '<div class="composer-area"><div class="composer-inner">'
-            '<p role="status" aria-live="polite" id="model-status" class="status"></p>'
-            '<a id="status-action" class="status-action" href="/login" hidden></a>'
-            f'<form id="message-form" method="post" action="/api/messages" data-csrf="{escape(csrf)}">'
-            '<label for="message-content" class="visually-hidden">Сообщение</label>'
-            '<textarea id="message-content" name="content" required maxlength="8192" '
-            'rows="2" placeholder="Напишите сообщение…" aria-label="Сообщение"></textarea>'
-            '<button type="submit" id="send-button" aria-label="Отправить сообщение">'
-            "Отправить</button></form>"
-            '<button type="button" id="discard-pending" class="discard-pending" hidden>'
-            "Отменить повтор</button>"
-            '<p class="composer-hint">Enter — отправить · Shift+Enter — новая строка</p>'
-            '</div></div></div><script src="/assets/chat.js"></script></body></html>'
-        ).encode()
         return HTTPStatus.OK, [("Content-Type", "text/html; charset=utf-8")], body
 
     def _history(
@@ -633,51 +660,7 @@ class PrivateWebApplication:
 
     @staticmethod
     def _privacy_javascript():
-        body = """'use strict';
-document.querySelectorAll('form[data-endpoint]').forEach((form) => {
-  form.addEventListener('submit', async (event) => {
-    event.preventDefault();
-    const data = Object.fromEntries(new FormData(form));
-    if (form.dataset.endpoint !== '/api/privacy/notice' &&
-        form.dataset.endpoint !== '/api/privacy/reconcile') {
-      data.operation_id = form.dataset.operationId ||= crypto.randomUUID();
-    }
-    if (data.validity_hours) data.validity_hours = Number(data.validity_hours);
-    try {
-      const response = await fetch(form.dataset.endpoint, {
-        method: 'POST', credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json',
-                  'X-CSRF-Token': document.querySelector('main').dataset.csrf},
-        body: JSON.stringify(data)
-      });
-      if (!response.ok) {
-        alert('Операция отклонена');
-        return;
-      }
-      const result = await response.json();
-      alert(JSON.stringify(result));
-      if (form.dataset.endpoint === '/api/privacy/deletions') location.href = '/privacy';
-      else location.reload();
-    } catch (error) {
-      alert('Статус операции неизвестен. Повторите попытку.');
-    }
-  });
-});
-const logout = document.getElementById('privacy-logout');
-if (logout) logout.addEventListener('click', async () => {
-  try {
-    const response = await fetch('/logout', {method: 'POST', credentials: 'same-origin',
-      headers: {'X-CSRF-Token': document.querySelector('main').dataset.csrf}});
-    if (response.ok) {
-      try { sessionStorage.removeItem('ar-chat-recovery-v1'); } catch (_) { /* storage unavailable */ }
-      location.href = '/login';
-    }
-    else alert('Не удалось выйти. Сессия может быть активна.');
-  } catch (error) {
-    alert('Выход не подтверждён. Проверьте сеанс перед уходом.');
-  }
-});
-""".encode()
+        body = (Path(__file__).parent / "privacy.js").read_bytes()
         return HTTPStatus.OK, [("Content-Type", "text/javascript; charset=utf-8")], body
 
     def _checked_history(self, session, environ):
@@ -882,15 +865,41 @@ if (logout) logout.addEventListener('click', async () => {
         headers: list[tuple[str, str]] | None = None,
         *,
         api: bool = False,
+        privacy_recovery: bool = False,
     ) -> tuple[HTTPStatus, list[tuple[str, str]], bytes]:
         if api:
             result = PrivateWebApplication._json(status, {"error": message})
             return result[0], [*result[1], *(headers or [])], result[2]
-        body = (
-            "<!doctype html><html lang=en><meta charset=utf-8>"
-            f"<title>{status.value} {escape(status.phrase)}</title>"
-            f"<h1>{escape(message)}</h1></html>"
-        ).encode()
+        titles = {
+            400: (
+                "Не удалось выполнить запрос",
+                "Обновите страницу и попробуйте снова.",
+            ),
+            403: ("Нет доступа", "Войдите снова или вернитесь в чат."),
+            404: ("Страница не найдена", "Возможно, ссылка устарела."),
+            405: ("Запрос не поддерживается", "Вернитесь в чат и попробуйте снова."),
+            413: ("Запрос не поддерживается", "Вернитесь в чат и попробуйте снова."),
+            415: ("Запрос не поддерживается", "Вернитесь в чат и попробуйте снова."),
+            503: ("Сервис временно недоступен", "Попробуйте через несколько минут."),
+        }
+        title, text = titles.get(
+            status.value, ("Что-то пошло не так", "Попробуйте ещё раз чуть позже.")
+        )
+        recovery_link = (
+            '<a class="button secondary" href="/privacy">Приватность</a>'
+            if privacy_recovery
+            else ""
+        )
+        body = document(
+            title,
+            (
+                '<main class="login-card"><span class="brand__mark" aria-hidden="true">AR</span>'
+                '<button class="theme-toggle" type="button">Тема</button>'
+                f'<p class="muted">Ошибка {status.value}</p><h1>{title}</h1><p>{text}</p>'
+                f'<a class="button" href="/chat">Вернуться в чат</a>{recovery_link}</main>'
+            ),
+            body_class="login-page",
+        )
         return (
             status,
             [("Content-Type", "text/html; charset=utf-8"), *(headers or [])],
