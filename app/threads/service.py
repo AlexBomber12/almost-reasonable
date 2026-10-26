@@ -655,10 +655,13 @@ class ThreadsService:
         max_pages: int = MAX_POLL_PAGES,
         max_events: int = MAX_POLL_EVENTS,
         timeout_seconds: float = MAX_POLL_SECONDS,
+        deadline_at: datetime | None = None,
         interrupt_after_fetch: bool = False,
     ) -> PollResult:
         require_reference("poll correlation ID", correlation_id)
         require_aware_time("poll time", now)
+        if deadline_at is not None:
+            require_aware_time("poll deadline", deadline_at)
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
         if type(max_pages) is not int or not 1 <= max_pages <= MAX_POLL_PAGES:
@@ -686,6 +689,7 @@ class ThreadsService:
                 max_pages=max_pages,
                 max_events=max_events,
                 timeout_seconds=timeout_seconds,
+                deadline_at=deadline_at,
                 interrupt_after_fetch=interrupt_after_fetch,
             )
         except Exception as error:
@@ -709,8 +713,18 @@ class ThreadsService:
         max_events: int,
         timeout_seconds: float,
         interrupt_after_fetch: bool,
+        deadline_at: datetime | None = None,
     ) -> PollResult:
         started = self.clock()
+
+        def remaining_time():
+            remaining = timeout_seconds - (self.clock() - started)
+            if deadline_at is not None:
+                remaining = min(
+                    remaining, (deadline_at - self.utc_now()).total_seconds()
+                )
+            return remaining
+
         expected_source_ref = (
             self._bound_source_ref if self.live_enabled else self.simulator.source_ref
         )
@@ -728,11 +742,11 @@ class ThreadsService:
         fetched_count = 0
         pages = 0
         while pages < max_pages:
-            if self.clock() - started >= timeout_seconds:
+            if remaining_time() <= 0:
                 raise PollingError("poll time limit reached")
             self._check_poll_policy_with_audit(stream, correlation_id, now)
             if type(self.simulator) is ThreadsHTTPTransport:
-                remaining = timeout_seconds - (self.clock() - started)
+                remaining = remaining_time()
                 if remaining <= 0:
                     raise PollingError("poll time limit reached")
                 page = self.simulator.poll(
@@ -743,7 +757,7 @@ class ThreadsService:
                 )
             else:
                 page = self.simulator.poll(stream, cursor)
-            if self.clock() - started >= timeout_seconds:
+            if remaining_time() <= 0:
                 raise PollingError("poll time limit reached")
             if interrupt_after_fetch:
                 raise SimulatedCrash(transmission_possible=False)
@@ -773,7 +787,7 @@ class ThreadsService:
                 break
             seen_cursors.add(cursor)
         self._check_poll_policy_with_audit(stream, correlation_id, now)
-        remaining = timeout_seconds - (self.clock() - started)
+        remaining = remaining_time()
         if remaining <= 0:
             raise PollingError("poll time limit reached")
         try:
@@ -794,7 +808,7 @@ class ThreadsService:
                 events=pending_events,
                 now=now,
                 lock_wait_seconds=min(5.0, remaining),
-                deadline_check=lambda: (self.clock() - started < timeout_seconds),
+                deadline_check=lambda: remaining_time() > 0,
                 precommit_check=lambda: self._check_poll_policy(stream),
             )
         except PollCommitDeadlineError as error:

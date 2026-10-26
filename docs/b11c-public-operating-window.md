@@ -125,6 +125,10 @@ and worker recompute the remaining timeout after control/journal and IPC delays,
 before provider dispatch. Expiry during admission remains consumed without a
 paid request or an automatic replacement. Ordinary non-window requests retain
 their existing exchange. Use the same reviewed revision for app and public worker.
+Polling retains the absolute expiry through durable admission and policy checks,
+then caps each transport timeout and page commit against the remaining time.
+An observed expiry remains closed across restart and clock rollback through
+the existing durable watermark.
 Existing scheduler claims, coalescing, selected cadence, duplicate suppression,
 active hours, action limits and cooldown still decide wakeup eligibility.
 Downtime offers at most one current tick and schedules the next a full cadence

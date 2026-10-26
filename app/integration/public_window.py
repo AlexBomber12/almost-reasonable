@@ -143,7 +143,7 @@ class PublicOperatingWindow:
 
     def _check(self, row):
         now = self.app.clock.now().astimezone(UTC)
-        if now >= self.spec.expires_at:
+        if max(now, datetime.fromisoformat(row["last_seen"])) >= self.spec.expires_at:
             raise WindowDenied("expired")
         if now.isoformat() < row["last_seen"]:
             raise WindowDenied("clock_regressed")
@@ -284,6 +284,7 @@ class PublicOperatingWindow:
                 timeout_seconds=min(
                     10, (self.spec.expires_at - self.app.clock.now()).total_seconds()
                 ),
+                deadline_at=self.spec.expires_at,
             )
             self._outcome(identity, "completed")
         for stream in (InboundKind.REPLY, InboundKind.MENTION):
@@ -338,9 +339,21 @@ class PublicOperatingWindow:
                     ProviderFailure,
                     ThreadsStoreError,
                 ):
-                    state = "failed"
+                    state = (
+                        "expired"
+                        if self.app.clock.now() >= self.spec.expires_at
+                        else "failed"
+                    )
                 finally:
                     self.app.operating_window = None
+                    # Observing expiry is durable even when the next clock
+                    # sample (or a restarted process) moves backwards.
+                    self.snapshot["last_seen"] = max(
+                        self.snapshot["last_seen"],
+                        self.app.clock.now().astimezone(UTC).isoformat(),
+                    )
+                    with self.app.journal.transaction() as db:
+                        self._watermark(db)
                 return self.summary(state)
         except BlockingIOError:
             # The other process owns all admissions. Do not wait or touch its work.

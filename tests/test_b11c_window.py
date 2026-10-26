@@ -1105,3 +1105,123 @@ def test_request_deadline_is_bound_to_the_durable_operation(tmp_path):
         assert sdk.calls == http.calls == []
     finally:
         worker.close()
+
+
+@pytest.mark.parametrize(
+    "delay_point", ["admission", "initial_guard", "effect_guard", "response"]
+)
+def test_poll_absolute_expiry_survives_admission_and_control_delays(
+    tmp_path, delay_point
+):
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    app.scheduler.repository.select_cadence(timedelta(minutes=10))
+    window_spec = spec(
+        expires_at=NOW + timedelta(seconds=4),
+        max_model_calls=2,
+        max_poll_pages=1,
+        max_inbound_events=0,
+    )
+    timeouts = []
+    request = http.request
+
+    def fetch(method, url, headers, body, timeout):
+        timeouts.append(timeout)
+        result = request(method, url, headers, body, timeout)
+        if delay_point == "response":
+            clock.advance(timedelta(seconds=5))
+        return result
+
+    http.request = fetch
+    if delay_point == "admission":
+        start = app.service.store.start_poll_attempt
+
+        def delayed(*args, **kwargs):
+            result = start(*args, **kwargs)
+            clock.advance(timedelta(seconds=3))
+            return result
+
+        app.service.store.start_poll_attempt = delayed
+    elif delay_point != "response":
+        check = app.service._check_poll_policy
+        calls = []
+
+        def delayed(*args, **kwargs):
+            result = check(*args, **kwargs)
+            calls.append(True)
+            if len(calls) == (1 if delay_point == "initial_guard" else 2):
+                clock.advance(timedelta(seconds=3))
+            return result
+
+        app.service._check_poll_policy = delayed
+    thread = serve(worker, 1)
+    try:
+        result = PublicOperatingWindow(app, window_spec).run(
+            wait=lambda seconds: clock.advance(timedelta(seconds=seconds))
+        )
+        finish(thread)
+        assert result["state"] == "expired"
+        assert len(sdk.calls) == len(http.calls) == 1
+        assert http.calls[0][0] == "GET"
+        assert timeouts[0] == pytest.approx(
+            4 if delay_point == "response" else 1, abs=0.05
+        )
+        assert result["consumed"] == {
+            "model_calls": 1,
+            "poll_pages": 1,
+            "inbound_events": 0,
+        }
+        if delay_point == "response":
+            from app.threads.domain import InboundKind
+
+            assert (
+                app.service.store.pending_inbound_events(
+                    app.account, InboundKind.REPLY, now=clock.now()
+                )
+                == ()
+            )
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("deadline", [NOW.replace(tzinfo=None), "tomorrow"])
+def test_invalid_poll_absolute_deadline_never_contacts_transport(tmp_path, deadline):
+    from app.threads.domain import InboundKind
+
+    app, worker, sdk, http, _ = setup(tmp_path, NO_ACTION)
+    try:
+        with pytest.raises(ValueError):
+            app.poll(
+                InboundKind.REPLY,
+                correlation_id="invalid-deadline",
+                deadline_at=deadline,
+            )
+        assert sdk.calls == http.calls == []
+    finally:
+        worker.close()
+
+
+def test_observed_expiry_stays_closed_after_restart_and_clock_rollback(tmp_path):
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    app.scheduler.repository.select_cadence(timedelta(minutes=10))
+    window_spec = spec(max_model_calls=3, max_poll_pages=2, max_inbound_events=0)
+    thread = serve(worker, 1)
+    try:
+        first = PublicOperatingWindow(app, window_spec).run(
+            wait=lambda _: clock.advance(timedelta(minutes=1))
+        )
+        finish(thread)
+        assert first["state"] == "expired"
+        assert first["consumed"] == {
+            "model_calls": 1,
+            "poll_pages": 1,
+            "inbound_events": 0,
+        }
+        clock.advance(timedelta(seconds=-30))
+        second = PublicOperatingWindow(app, window_spec).run(
+            wait=lambda _: clock.advance(timedelta(minutes=1))
+        )
+        assert second["state"] == "expired"
+        assert second["consumed"] == first["consumed"]
+        assert len(sdk.calls) == len(http.calls) == 1
+    finally:
+        worker.close()
