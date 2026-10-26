@@ -9,9 +9,16 @@ import pytest
 
 from app.integration.public_window import PublicOperatingWindow, WindowSpec
 from app.threads.domain import OutboxState
-from test_int24_runtime import NOW, setup
+from test_int24_runtime import NOW
+from test_b05b_public_runtime import _setup as mission_setup
 
 NO_ACTION = {"decision": "no_action", "reason_category": "not_warranted"}
+
+
+def setup(tmp_path, proposal):
+    parts = mission_setup(tmp_path, proposal)
+    parts[1].utc_now = parts[4].now
+    return parts
 
 
 def spec(**changes):
@@ -185,6 +192,7 @@ def test_competing_instances_do_not_duplicate_any_effect(tmp_path, kind):
         clock=clock,
         wakeup_policy=app.scheduler.policy,
         operator=app.operator,
+        mission=app.mission,
         enabled=True,
         live_enabled=True,
     )
@@ -242,9 +250,9 @@ def test_competing_instances_do_not_duplicate_any_effect(tmp_path, kind):
 def test_interrupted_admissions_are_not_replaced_or_resent(
     tmp_path, monkeypatch, point
 ):
-    from test_b05b_public_runtime import _setup, _attach_fake_research
+    from test_b05b_public_runtime import _attach_fake_research
 
-    app, worker, sdk, http, clock = _setup(
+    app, worker, sdk, http, clock = setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}
     )
     research = _attach_fake_research(app, tmp_path, monkeypatch)
@@ -315,9 +323,7 @@ def test_lost_paid_response_is_consumed_across_restart(tmp_path):
 
 @pytest.mark.parametrize("change", ["expiry", "stop", "privacy", "mission", "clock"])
 def test_idle_control_change_exits_before_any_new_calls(tmp_path, monkeypatch, change):
-    from test_b05b_public_runtime import _setup
-
-    app, worker, sdk, http, clock = _setup(tmp_path, NO_ACTION)
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
     window_spec = spec(max_poll_pages=0, max_inbound_events=0)
     original_generation = app.ledger.control_generation()
 
@@ -471,10 +477,10 @@ def test_window_research_uses_canonical_request_and_later_evidence(tmp_path):
     from app.trusted.public_research import PublicResearchBoundary, PublicResearchServer
     from app.trusted.public_research_transport import PublicResearchTransport
     from app.trusted.research_authority_journal import AuthorityJournal
-    from test_b05b_public_runtime import _setup, _profile
+    from test_b05b_public_runtime import _profile
     from test_int20_public_research import SDK, raw_response
 
-    app, worker, sdk, http, clock = _setup(
+    app, worker, sdk, http, clock = setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}
     )
     application_path, worker_path = _profile(tmp_path)
@@ -546,10 +552,10 @@ def test_window_research_uses_canonical_request_and_later_evidence(tmp_path):
 
 
 def test_window_does_not_recover_an_unrelated_research_intent(tmp_path, monkeypatch):
-    from test_b05b_public_runtime import _setup, _attach_fake_research
+    from test_b05b_public_runtime import _attach_fake_research
     from app.threads.domain import InboundKind
 
-    app, worker, sdk, http, _ = _setup(
+    app, worker, sdk, http, _ = setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}
     )
     research = _attach_fake_research(app, tmp_path, monkeypatch)
@@ -586,6 +592,7 @@ def test_window_plan_is_credential_free_and_activation_requires_review(
 
     config = {
         "operating_window_reviewed": True,
+        "public_mission_path": "/reviewed/mission.json",
         "operating_window": json.loads(spec().encoded()),
     }
     monkeypatch.setattr(module, "_config", lambda _: config)
@@ -624,6 +631,7 @@ def test_operator_run_window_routes_reviewed_spec_and_restores_signal(
 
     config = {
         "operating_window_reviewed": True,
+        "public_mission_path": "/reviewed/mission.json",
         "operating_window": json.loads(spec().encoded()),
     }
     monkeypatch.setattr(module, "_config", lambda _: config)
@@ -690,9 +698,9 @@ def test_invalid_window_has_no_authority(changes):
 
 
 def test_research_authority_change_stops_the_same_window(tmp_path, monkeypatch):
-    from test_b05b_public_runtime import _setup, _attach_fake_research
+    from test_b05b_public_runtime import _attach_fake_research
 
-    app, worker, sdk, http, clock = _setup(tmp_path, NO_ACTION)
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
     _attach_fake_research(app, tmp_path, monkeypatch)
 
     def change(_):
@@ -931,5 +939,169 @@ def test_verified_mention_in_window_becomes_reply_draft(tmp_path):
         draft = app.draft(result["pending_drafts"][0]["operation_id"])
         assert draft.parent_message_id == "mention-1"
         assert draft.state is OutboxState.AWAITING_APPROVAL
+    finally:
+        worker.close()
+
+
+def test_window_rejects_missing_reviewed_mission_before_any_work(tmp_path, monkeypatch):
+    from test_int24_runtime import setup as without_mission
+    from app.ops import int24_threads_runtime as module
+
+    app, worker, sdk, http, _ = without_mission(tmp_path, NO_ACTION)
+    config = {
+        "operating_window_reviewed": True,
+        "operating_window": json.loads(spec().encoded()),
+    }
+    monkeypatch.setattr(module, "_config", lambda _: config)
+    monkeypatch.setattr(
+        module,
+        "_runtime",
+        lambda _: pytest.fail("missing mission loaded runtime credentials"),
+    )
+    try:
+        with pytest.raises(ValueError, match="mission"):
+            PublicOperatingWindow(app, spec())
+        with pytest.raises(ValueError, match="mission"):
+            module.main(["run-window", "--config", "/reviewed", "--activate-live"])
+        assert sdk.calls == http.calls == []
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize(
+    "delay_point", ["after_started", "reservation", "worker_reservation"]
+)
+def test_absolute_window_deadline_survives_admission_and_dispatch_delays(
+    tmp_path, delay_point
+):
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    window_spec = spec(expires_at=NOW + timedelta(seconds=4), max_model_calls=1)
+    if delay_point == "after_started":
+        app.checkpoint = (
+            lambda point: clock.advance(timedelta(seconds=3))
+            if point == "after_started"
+            else None
+        )
+    elif delay_point == "reservation":
+        evidence = app.model.reservation_evidence
+
+        def delayed(request):
+            result = evidence(request)
+            clock.advance(timedelta(seconds=3))
+            return result
+
+        app.model.reservation_evidence = delayed
+    else:
+        reserve = worker.provider_store.reserve_attempt
+
+        def delayed(*args, **kwargs):
+            result = reserve(*args, **kwargs)
+            clock.advance(timedelta(seconds=3))
+            return result
+
+        worker.provider_store.reserve_attempt = delayed
+    thread = serve(worker, 1)
+    try:
+        result = PublicOperatingWindow(app, window_spec).run()
+        finish(thread)
+        assert result["state"] == "exhausted"
+        assert len(sdk.calls) == 1
+        assert sdk.calls[0]["timeout"] == pytest.approx(1)
+        payload = app.journal.read(
+            PublicOperatingWindow(app, window_spec).operations()[0]
+        )
+        assert payload["deadline_at"] == window_spec.expires_at.isoformat()
+        assert http.calls == []
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("delay_point", ["reservation", "worker_reservation"])
+def test_expiry_during_dispatch_never_starts_a_paid_request(tmp_path, delay_point):
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    window_spec = spec(expires_at=NOW + timedelta(seconds=4), max_model_calls=1)
+    if delay_point == "reservation":
+        evidence = app.model.reservation_evidence
+
+        def delayed(request):
+            result = evidence(request)
+            clock.advance(timedelta(seconds=5))
+            return result
+
+        app.model.reservation_evidence = delayed
+        thread = None
+    else:
+        reserve = worker.provider_store.reserve_attempt
+
+        def delayed(*args, **kwargs):
+            result = reserve(*args, **kwargs)
+            clock.advance(timedelta(seconds=5))
+            return result
+
+        worker.provider_store.reserve_attempt = delayed
+        thread = serve(worker, 1)
+    try:
+        result = PublicOperatingWindow(app, window_spec).run()
+        if thread is not None:
+            finish(thread)
+        assert result["state"] == "expired"
+        assert result["consumed"]["model_calls"] == 1
+        assert (
+            PublicOperatingWindow(app, window_spec).run()["consumed"]
+            == result["consumed"]
+        )
+        assert sdk.calls == http.calls == []
+    finally:
+        worker.close()
+
+
+@pytest.mark.parametrize("wire_deadline", [None, 42, "tomorrow", "2026-10-17T12:00:00"])
+def test_public_request_rejects_invalid_absolute_deadlines(wire_deadline):
+    from app.core.public_behavior import PublicBehaviorRequest, decode_public_request
+
+    base = PublicBehaviorRequest(
+        "operation-1", "operation-1", "autonomous_wakeup", (), (), 1
+    )
+    value = json.loads(base.encode()) | {"deadline_at": wire_deadline}
+    with pytest.raises(ValueError):
+        decode_public_request(json.dumps(value).encode())
+    with pytest.raises(ValueError):
+        replace(base, deadline_at=NOW.replace(tzinfo=None)).encode()
+    bounded = replace(base, deadline_at=NOW)
+    assert decode_public_request(bounded.encode()) == bounded
+    assert "deadline_at" not in json.loads(base.encode())
+
+
+def test_request_deadline_is_bound_to_the_durable_operation(tmp_path):
+    from datetime import datetime
+    from app.core.public_behavior import PublicBehaviorRequest
+
+    app, worker, sdk, http, _ = setup(tmp_path, NO_ACTION)
+    runner = PublicOperatingWindow(app, spec(max_model_calls=1))
+
+    def check(point):
+        if point == "after_started":
+            operation = runner.operations()[0]
+            payload = app.journal.read(operation)
+            deadline = datetime.fromisoformat(payload["deadline_at"])
+            request = PublicBehaviorRequest(
+                operation,
+                operation,
+                "autonomous_wakeup",
+                (),
+                tuple(payload["mission_text"]),
+                1,
+                deadline_at=deadline,
+            )
+            assert app.attest_worker_request(request)
+            assert not app.attest_worker_request(
+                replace(request, deadline_at=deadline + timedelta(seconds=1))
+            )
+            raise KeyboardInterrupt
+
+    app.checkpoint = check
+    try:
+        assert runner.run()["state"] == "interrupted"
+        assert sdk.calls == http.calls == []
     finally:
         worker.close()

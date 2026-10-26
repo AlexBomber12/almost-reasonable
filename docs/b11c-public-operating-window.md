@@ -118,6 +118,13 @@ model slot commits in the same transaction as its existing `started` intent.
 The journal's existing single-host OS lock serializes window runners across
 processes and is released on process exit; no SQLite transaction spans HTTP or
 worker calls. Recovery is limited to the current window's admitted operations.
+The application requires a verified public mission before window activation.
+An absolute model deadline commits with each admitted intent and travels as an
+optional timestamp in the existing secretless public-worker request. The client
+and worker recompute the remaining timeout after control/journal and IPC delays,
+before provider dispatch. Expiry during admission remains consumed without a
+paid request or an automatic replacement. Ordinary non-window requests retain
+their existing exchange. Use the same reviewed revision for app and public worker.
 Existing scheduler claims, coalescing, selected cadence, duplicate suppression,
 active hours, action limits and cooldown still decide wakeup eligibility.
 Downtime offers at most one current tick and schedules the next a full cadence

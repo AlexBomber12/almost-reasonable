@@ -78,6 +78,8 @@ class PublicOperatingWindow:
 
     def __init__(self, app, spec):
         self.app, self.spec = app, spec
+        if app.mission is None:
+            raise ValueError("reviewed public mission is required")
         if app.mission_evolution is not None:
             raise ValueError("operating windows require a fixed reviewed mission")
 
@@ -112,9 +114,7 @@ class PublicOperatingWindow:
                 raise ValueError("operating window journal capacity reached")
             controls = {
                 "generation": self.app.ledger.control_generation(),
-                "mission": None
-                if self.app.mission is None
-                else self.app.mission.snapshot()[1],
+                "mission": self.app.mission.snapshot()[1],
                 "research": self._research_binding(),
             }
             db.execute(
@@ -152,11 +152,10 @@ class PublicOperatingWindow:
             raise WindowDenied("controls_changed")
         if self._research_binding() != controls["research"]:
             raise WindowDenied("controls_changed")
-        if self.app.mission is not None:
-            try:
-                self.app.mission.require(controls["mission"])
-            except ValueError as error:
-                raise WindowDenied("controls_changed") from error
+        try:
+            self.app.mission.require(controls["mission"])
+        except ValueError as error:
+            raise WindowDenied("controls_changed") from error
         return now
 
     def guard(self):

@@ -1,7 +1,7 @@
 """Isolated public inference server with OS peer authentication and attempt fence."""
 
 from datetime import UTC, datetime
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import json
 import os
 from pathlib import Path
@@ -259,6 +259,7 @@ class PublicWorkerServer:
         adapter,
         provider_store: ProviderStateStore,
         socket_gid=None,
+        utc_now=lambda: datetime.now(UTC),
     ):
         if (
             not socket_path.is_absolute()
@@ -266,6 +267,7 @@ class PublicWorkerServer:
             or type(permitted_uid) is not int
             or not 0 <= permitted_uid <= 2**32 - 2
             or not callable(attest)
+            or not callable(utc_now)
             or type(provider_store) is not ProviderStateStore
         ):
             raise ValueError("invalid worker server configuration")
@@ -290,6 +292,7 @@ class PublicWorkerServer:
             ):
                 raise ValueError("unsafe worker attempt storage")
         self.permitted_uid, self.attest, self.adapter = permitted_uid, attest, adapter
+        self.utc_now = utc_now
         self.provider_store = provider_store
         self.socket_gid = socket_gid
         previous = os.umask(0o077)
@@ -386,6 +389,14 @@ class PublicWorkerServer:
                     return
                 if reservation is not AttemptReservationStatus.CREATED:
                     return
+                if request.deadline_at is not None:
+                    remaining = (request.deadline_at - self.utc_now()).total_seconds()
+                    if remaining <= 0:
+                        return
+                    request = replace(
+                        request,
+                        deadline_seconds=min(request.deadline_seconds, remaining),
+                    )
                 try:
                     proposal = self.adapter.complete(request)
                 except Exception as error:

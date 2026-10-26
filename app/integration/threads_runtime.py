@@ -275,6 +275,8 @@ class ThreadsRuntime(ThreadsStage0):
         self.research_profile_path = research_profile_path
         self.research_scope = research_scope
         self.model.public_context = self.inference_public_context
+        self.model.operation_deadline = self.inference_deadline
+        self.model.utc_now = clock.now
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
         if (
@@ -573,6 +575,7 @@ class ThreadsRuntime(ThreadsStage0):
                 and self.inference_mission_evolution_context(request.operation_id)
                 == request.mission_evolution
                 and 0 < request.deadline_seconds <= payload["timeout"]
+                and request.deadline_at == self.inference_deadline(request.operation_id)
             )
         except PublicInferenceContextChanged:
             self.journal.finish(
@@ -619,14 +622,18 @@ class ThreadsRuntime(ThreadsStage0):
             "timeout": payload["timeout"],
         }
 
+    def inference_deadline(self, operation):
+        if self.operating_window is None:
+            return None
+        return self.parse_time(self.journal.read(operation)["deadline_at"])
+
     def _decide(self, operation, origin, context, timeout=5):
         self.guard()
+        deadline = None
         if self.operating_window is not None:
-            timeout = min(
-                timeout,
-                (
-                    self.operating_window.spec.expires_at - self.clock.now()
-                ).total_seconds(),
+            deadline = min(
+                self.operating_window.spec.expires_at,
+                self.clock.now() + timedelta(seconds=timeout),
             )
         try:
             self.journal.read(operation)
@@ -634,6 +641,8 @@ class ThreadsRuntime(ThreadsStage0):
         except ValueError:
             pass
         origin = {**origin, "runtime_version": PUBLIC_RUNTIME_VERSION}
+        if deadline is not None:
+            origin["deadline_at"] = deadline.isoformat()
         if any(
             type(text) is not str or len(text.encode()) > MAX_CONTEXT
             for text in context
@@ -716,7 +725,7 @@ class ThreadsRuntime(ThreadsStage0):
             TriggerType(trigger),
             DeliberationBudget(1, 1, timeout),
             now,
-            now + timedelta(seconds=timeout),
+            now + timedelta(seconds=timeout) if deadline is None else deadline,
             PriorResultCategory.NONE,
             False,
         )

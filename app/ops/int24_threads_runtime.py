@@ -113,6 +113,8 @@ def _runtime(config):
 def _window_spec(config):
     if config.get("operating_window_reviewed") is not True:
         raise ValueError("reviewed operating window is absent")
+    if not config.get("public_mission_path"):
+        raise ValueError("reviewed public mission is required")
     if config.get("enable_public_mission_evolution"):
         raise ValueError("operating windows require a fixed reviewed mission")
     value = config["operating_window"]

@@ -5,13 +5,14 @@ an authority source; the worker owns its model, tools, credentials and retry pol
 """
 
 from dataclasses import dataclass
+from datetime import datetime
 import hashlib
 import json
 import math
 import re
 
 from app.research.assessment import MAX_PUBLIC_EVIDENCE_BYTES
-from app.threads.domain import require_reference
+from app.threads.domain import require_aware_time, require_reference
 from app.behavior.deliberation import (
     BehaviorProposalValidation,
     parse_behavior_proposal,
@@ -37,6 +38,7 @@ class PublicBehaviorRequest:
     catalog: tuple[tuple[str, str], ...] = ()
     evidence: tuple[str, ...] = ()
     mission_evolution: tuple[str, ...] = ()
+    deadline_at: datetime | None = None
 
     def encode(self) -> bytes:
         require_reference("operation ID", self.operation_id)
@@ -116,6 +118,9 @@ class PublicBehaviorRequest:
             value["reservation"] = self.reservation
         if self.mission_evolution:
             value["mission_evolution"] = self.mission_evolution
+        if self.deadline_at is not None:
+            require_aware_time("public inference deadline", self.deadline_at)
+            value["deadline_at"] = self.deadline_at.isoformat()
         data = json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode()
         if len(data) > MAX_FRAME:
             raise ValueError("public request too large")
@@ -129,7 +134,7 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
         value = json.loads(data, object_pairs_hook=_unique_fields)
         if (
             type(value) is not dict
-            or set(value) - {"mission_evolution"}
+            or set(value) - {"mission_evolution", "deadline_at"}
             not in (
                 {
                     "version",
@@ -176,6 +181,9 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
             ),
             tuple(value["evidence"]),
             tuple(value.get("mission_evolution", ())),
+            datetime.fromisoformat(value["deadline_at"])
+            if "deadline_at" in value
+            else None,
         )
         request.encode()
         return request
