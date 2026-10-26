@@ -567,3 +567,51 @@ def test_prose_url_matching_does_not_truncate_unrecorded_parenthesized_paths():
     url = "https://example.org/path"
     assert not prose_urls_are_recorded([url + "(unrecorded)"], {url})
     assert not prose_urls_are_recorded([url + "_(unrecorded)"], {url})
+
+
+def test_private_reply_local_citations_preserve_long_id_evidence_without_leakage(
+    tmp_path,
+):
+    from app.private_web.research_bridge import render_report
+    from app.research.brief import ResearchScreeningContext
+
+    raw = assessed_raw()
+    raw["id"] = "resp_" + "a" * 48
+    raw["output"][0]["id"] = "ws_" + "b" * 48
+    raw["output"][1]["id"] = "msg_" + "c" * 48
+    report = execute(tmp_path, raw)["report"]
+    original = deepcopy(report)
+    screening = ResearchScreeningContext(
+        private_quotations=("Закрытый CANARY-B05D-739052",),
+        participant_identifiers=("participant-alice",),
+    )
+    rendered = render_report(report, screening)
+    assert rendered is not None
+    assert report == original
+    assert raw["id"] not in rendered
+    metadata = json.loads(rendered.split("```json\n")[1].split("\n```")[0])
+    assert metadata["reference_scope"] == "reply_local"
+    assert metadata["sources"] == [
+        {**source, "reference": f"source:{index}"}
+        for index, source in enumerate(original["sources"], 1)
+    ]
+    labels = {
+        s["reference"]: f"source:{i}" for i, s in enumerate(original["sources"], 1)
+    }
+    expected = deepcopy(original["assessment"])
+    for claim in expected["claims"]:
+        for evidence in claim["evidence"]:
+            evidence["reference"] = labels[evidence["reference"]]
+    assert metadata["assessment"] == expected
+    for field in ("main_finding", "uncertainty"):
+        changed = deepcopy(report)
+        changed[field] += " Закрытый CANARY-B05D-739052"
+        assert render_report(changed, screening) is None
+    changed = deepcopy(report)
+    changed["sources"][0]["url"] = "https://example.org/CANARY-B05D-739052"
+    assert (
+        render_report(
+            changed, ResearchScreeningContext(private_canaries=("CANARY-B05D-739052",))
+        )
+        is None
+    )

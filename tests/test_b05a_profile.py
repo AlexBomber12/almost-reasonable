@@ -770,7 +770,7 @@ def test_worker_bootstrap_requires_profile_and_durable_journal(tmp_path):
     profile_data["expires_at"] = (current + timedelta(minutes=5)).isoformat()
     worker_path.write_text(json.dumps(profile_data))
     provider_path = tmp_path / "provider.sqlite"
-    provider_path.touch(mode=0o600)
+    EventStore(provider_path)
     args = {
         "socket_path": tmp_path / "research.sock",
         "provider_database": provider_path,
@@ -944,4 +944,61 @@ def test_reviewed_question_removal_keeps_unrelated_private_words():
     assert (
         _without_reviewed_question("   What causes auroras?   ", QUESTIONS[1]).strip()
         == ""
+    )
+
+
+def test_pilot_stop_contract_selected_explicitly_and_shared(tmp_path):
+    from app.trusted.worker_stop import assert_stop
+    from app.trusted.private_pilot_worker import PilotStop
+
+    _, worker_path, journal_path = _test_profile(tmp_path)
+    current = datetime.now(UTC)
+    data = json.loads(worker_path.read_text())
+    for field in ("issued_at", "reviewed_at"):
+        data[field] = (current - timedelta(minutes=1)).isoformat()
+    data["expires_at"] = (current + timedelta(minutes=5)).isoformat()
+    worker_path.write_text(json.dumps(data))
+    provider = tmp_path / "provider.sqlite"
+    EventStore(provider)
+    stop = tmp_path / "stop.json"
+    stop.write_text('{"version":"private-pilot-emergency-stop-v1","stop":false}')
+    stop.chmod(0o400)
+    sdk = SDK([raw_response()])
+    args = dict(
+        socket_path=tmp_path / "research.sock",
+        provider_database=provider,
+        profile_path=worker_path,
+        authority_journal=journal_path,
+        project_id="synthetic-project",
+        organization_id="synthetic-organization",
+        transport=PublicResearchTransport(sdk),
+    )
+    with pytest.raises(ValueError, match="exactly one Stop"):
+        build_worker(**args)
+    with pytest.raises(ValueError, match="exactly one Stop"):
+        build_worker(**args, stop_path=stop, pilot_stop_path=stop)
+    server = build_worker(**args, pilot_stop_path=stop)
+    profile = server._boundary._profile
+    assert not PilotStop(stop).active()
+    assert (
+        server._boundary.execute(
+            profile.request("first", "ocean"), peer_uid=os.geteuid()
+        )["outcome"]
+        == "completed"
+    )
+    assert_stop(stop)
+    assert PilotStop(stop).active()
+    assert (
+        server._boundary.execute(
+            profile.request("second", "aurora"), peer_uid=os.geteuid()
+        )["outcome"]
+        == "emergency_stop"
+    )
+    assert len(sdk.calls) == 1
+    restarted = build_worker(**args, pilot_stop_path=stop)
+    assert (
+        restarted._boundary.execute(
+            profile.request("second", "aurora"), peer_uid=os.geteuid()
+        )["outcome"]
+        == "emergency_stop"
     )

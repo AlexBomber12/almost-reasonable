@@ -65,8 +65,11 @@ its ancestors must meet the trusted-directory rule above. Removing or changing
 the stop file stops new attempts. The protected provider credential
 file is required by the production constructor. Provision the worker's provider
 database as a worker-owned `0600` regular file in a worker-owned `0700`
-directory before starting the worker; startup rejects a missing, linked, or
-insecure database or ancestor so a restart cannot silently replace one-use
+directory before starting the worker. It must already contain the current
+EventStore schema: read-only startup admission rejects empty placeholders as
+well as missing, linked or insecure databases/ancestors. For the ordinary pilot,
+[B05D](b05d-research-deployment.md) reuses the existing worker provider database
+without initializing another store. A restart cannot silently replace one-use
 reservations.
 Provider database ownership stays worker-side. This procedure must not be run
 during offline tests.

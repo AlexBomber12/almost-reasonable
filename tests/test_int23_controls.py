@@ -712,7 +712,8 @@ def test_worker_database_must_remain_worker_owned_and_nonreplaceable(tmp_path):
         tmp_path.chmod(0o700)
 
 
-def test_worker_cli_lifecycle_and_module_entry(tmp_path, monkeypatch):
+@pytest.mark.parametrize("stop_option", ["--stop-file", "--pilot-stop-file"])
+def test_worker_cli_lifecycle_and_module_entry(tmp_path, monkeypatch, stop_option):
     observed = []
 
     class Server:
@@ -729,6 +730,10 @@ def test_worker_cli_lifecycle_and_module_entry(tmp_path, monkeypatch):
 
     def fake_builder(**kwargs):
         assert kwargs["socket_path"] == tmp_path / "sock"
+        selected = (
+            "pilot_stop_path" if stop_option == "--pilot-stop-file" else "stop_path"
+        )
+        assert kwargs[selected] == tmp_path / "stop.json"
         observed.append("build")
         return Server()
 
@@ -742,7 +747,7 @@ def test_worker_cli_lifecycle_and_module_entry(tmp_path, monkeypatch):
                 str(tmp_path / "provider.db"),
                 "--approval",
                 str(tmp_path / "approval.json"),
-                "--stop-file",
+                stop_option,
                 str(tmp_path / "stop.json"),
                 "--project-id",
                 "proj_synthetic",

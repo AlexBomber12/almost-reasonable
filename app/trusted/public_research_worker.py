@@ -1,6 +1,8 @@
 """Explicit operator-started public research worker process."""
 
 import argparse
+from contextlib import closing
+import sqlite3
 import json
 import os
 from pathlib import Path
@@ -20,6 +22,7 @@ from app.trusted.openai_worker_server import WorkerServerConfig
 from app.trusted.public_research import PublicResearchBoundary, PublicResearchServer
 from app.trusted.public_research_transport import PublicResearchTransport
 from app.trusted.research_authority_journal import AuthorityJournal
+from app.trusted.private_pilot_worker import PilotStop
 
 
 class PublicResearchStop:
@@ -94,13 +97,25 @@ def build_worker(
     approval_path: Path | None = None,
     profile_path: Path | None = None,
     authority_journal: Path | None = None,
-    stop_path: Path,
+    stop_path: Path | None = None,
+    pilot_stop_path: Path | None = None,
     project_id: str,
     organization_id: str,
     trusted_ipc_gid: int | None = None,
     transport: PublicResearchTransport | None = None,
 ):
+    if (stop_path is None) == (pilot_stop_path is None):
+        raise ValueError("choose exactly one Stop contract")
     _validate_provider_database(provider_database)
+    try:
+        with closing(
+            sqlite3.connect(provider_database.as_uri() + "?mode=ro", uri=True)
+        ) as existing:
+            EventStore._verify_current_schema(existing)
+    except (sqlite3.Error, RuntimeError):
+        raise ValueError(
+            "existing initialized research provider database required"
+        ) from None
     if (approval_path is None) == (profile_path is None):
         raise ValueError("choose exactly one public research authority")
     if (profile_path is None) != (authority_journal is None):
@@ -110,7 +125,11 @@ def build_worker(
         if approval_path is not None
         else load_research_profile(profile_path, role="worker")
     )
-    stop = PublicResearchStop(stop_path)
+    stop = (
+        PilotStop(pilot_stop_path)
+        if pilot_stop_path is not None
+        else PublicResearchStop(stop_path)
+    )
     boundary = PublicResearchBoundary(
         store=ProviderStateStore(EventStore(provider_database)),
         transport=transport
@@ -146,7 +165,9 @@ def main(argv=None):
     parser.add_argument("--approval", type=Path)
     parser.add_argument("--profile", type=Path)
     parser.add_argument("--authority-journal", type=Path)
-    parser.add_argument("--stop-file", type=Path, required=True)
+    stops = parser.add_mutually_exclusive_group(required=True)
+    stops.add_argument("--stop-file", type=Path)
+    stops.add_argument("--pilot-stop-file", type=Path)
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--organization-id", required=True)
     parser.add_argument("--socket-group-gid", type=int)
@@ -158,6 +179,7 @@ def main(argv=None):
         profile_path=args.profile,
         authority_journal=args.authority_journal,
         stop_path=args.stop_file,
+        pilot_stop_path=args.pilot_stop_file,
         project_id=args.project_id,
         organization_id=args.organization_id,
         trusted_ipc_gid=args.socket_group_gid,
