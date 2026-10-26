@@ -4,6 +4,7 @@ import math
 import re
 import threading
 
+from app.research.assessment import ASSESSMENT_INSTRUCTIONS
 from app.research.provider import (
     HostedSearchRequest,
     HostedSearchResponse,
@@ -60,6 +61,7 @@ class PublicResearchTransport:
         if type(request) is not HostedSearchRequest:
             raise TypeError("sealed hosted-search request required")
         kwargs = request.to_sdk_kwargs()
+        kwargs["instructions"] += ASSESSMENT_INSTRUCTIONS
         if (
             type(timeout_seconds) not in (float, int)
             or not math.isfinite(timeout_seconds)

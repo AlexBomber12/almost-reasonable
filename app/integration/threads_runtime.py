@@ -19,6 +19,7 @@ from app.behavior.deliberation import (
 )
 from app.behavior.durable_scheduler import DurableScheduler, SQLiteSchedulerRepository
 from app.behavior.russian_gate import RussianOutputPolicy
+from app.research.assessment import MAX_PUBLIC_EVIDENCE_BYTES
 from app.core.agent_proposals import (
     AgentDecision,
     NoActionProposal,
@@ -64,6 +65,29 @@ from app.threads.transport import ThreadsHTTPTransport
 from app.behavior.worker_client import PublicBehaviorClient
 
 PUBLIC_RUNTIME_VERSION = "threads-public-runtime-v1"
+
+
+def _initialize_research_storage(db):
+    """Transactionally retain historical reports while widening evidence only."""
+    schema = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='public_research_ops'"
+    ).fetchone()
+    legacy = schema is not None and "length(evidence)<=2048" in schema[0]
+    if legacy:
+        db.execute(
+            "ALTER TABLE public_research_ops RENAME TO public_research_ops_legacy"
+        )
+    db.execute(
+        "CREATE TABLE IF NOT EXISTS public_research_ops(operation TEXT PRIMARY KEY, "
+        "research_id TEXT NOT NULL UNIQUE, topic TEXT NOT NULL, profile_digest TEXT NOT NULL, "
+        "phase TEXT NOT NULL CHECK(phase IN ('started','completed','failed','uncertain','held')), "
+        f"evidence TEXT CHECK(evidence IS NULL OR length(CAST(evidence AS BLOB))<={MAX_PUBLIC_EVIDENCE_BYTES}))"
+    )
+    if legacy:
+        db.execute(
+            "INSERT INTO public_research_ops SELECT * FROM public_research_ops_legacy"
+        )
+        db.execute("DROP TABLE public_research_ops_legacy")
 
 
 class PublicInferenceContextChanged(ValueError):
@@ -289,12 +313,7 @@ class ThreadsRuntime(ThreadsStage0):
                 "operation TEXT NOT NULL, action TEXT NOT NULL, actor TEXT NOT NULL, "
                 "at TEXT NOT NULL, reference TEXT NOT NULL)"
             )
-            db.execute(
-                "CREATE TABLE IF NOT EXISTS public_research_ops(operation TEXT PRIMARY KEY, "
-                "research_id TEXT NOT NULL UNIQUE, topic TEXT NOT NULL, profile_digest TEXT NOT NULL, "
-                "phase TEXT NOT NULL CHECK(phase IN ('started','completed','failed','uncertain','held')), "
-                "evidence TEXT CHECK(evidence IS NULL OR length(evidence)<=2048))"
-            )
+            _initialize_research_storage(db)
             db.execute(
                 "CREATE TABLE IF NOT EXISTS public_research_completions("
                 "operation TEXT PRIMARY KEY, completed_at TEXT NOT NULL)"
@@ -1131,10 +1150,15 @@ class ThreadsRuntime(ThreadsStage0):
                             "sources": report["sources"],
                             "claim_status": "unverified",
                             "semantic_support": "not_evaluated",
+                            **{
+                                key: report[key]
+                                for key in ("uncertainty", "assessment")
+                                if key in report
+                            },
                         },
                         ensure_ascii=False,
                     )
-                    if len(evidence.encode("utf-8")) > 2048:
+                    if len(evidence.encode("utf-8")) > MAX_PUBLIC_EVIDENCE_BYTES:
                         evidence = None
                         phase = "failed"
                     else:

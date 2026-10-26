@@ -30,6 +30,8 @@ from app.trusted.research_authority_journal import AuthorityJournal
 from app.threads.domain import InboundKind
 from app.threads.service import PolicyDeniedError
 from test_int20_public_research import SDK, raw_response
+from test_b05c_claim_evidence import assessed_raw
+from app.research.assessment import MAX_PUBLIC_EVIDENCE_BYTES
 from test_int24_runtime import NOW, run_once, setup
 
 
@@ -127,7 +129,10 @@ def test_pre_upgrade_completed_research_remains_public_context(tmp_path, monkeyp
         worker.close()
 
 
-def test_wakeup_research_is_one_search_and_later_unverified_evidence(tmp_path):
+@pytest.mark.parametrize("assessed", [False, True])
+def test_wakeup_research_is_one_search_and_later_unverified_evidence(
+    tmp_path, assessed
+):
     app, infer_worker, infer_sdk, http, clock = _setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}
     )
@@ -136,7 +141,7 @@ def test_wakeup_research_is_one_search_and_later_unverified_evidence(tmp_path):
     ipc.mkdir(mode=0o700)
     journal_path = ipc / "authority.sqlite"
     journal_path.touch(mode=0o600)
-    sdk = SDK([raw_response()])
+    sdk = SDK([assessed_raw() if assessed else raw_response()])
     boundary = PublicResearchBoundary(
         store=ProviderStateStore(EventStore(tmp_path / "search-events.sqlite")),
         transport=PublicResearchTransport(sdk),
@@ -190,6 +195,17 @@ def test_wakeup_research_is_one_search_and_later_unverified_evidence(tmp_path):
         evidence = json.loads(app.public_context("next")[1][0])
         assert evidence["claim_status"] == "unverified"
         assert evidence["semantic_support"] == "not_evaluated"
+        if assessed:
+            assert len(app.public_context("next")[1][0].encode()) > 2048
+            assert (
+                evidence["assessment"]["claims"][1]["evidence"][1]["relation"]
+                == "contradicts"
+            )
+            assert evidence["assessment"]["contradictions"]
+            assert (
+                evidence["assessment"]["claims"][1]["evidence"][0]["relation"]
+                == "insufficient"
+            )
         restarted = ThreadsRuntime(
             tmp_path / "journal.sqlite",
             tmp_path / "scheduler.sqlite",
@@ -224,6 +240,10 @@ def test_wakeup_research_is_one_search_and_later_unverified_evidence(tmp_path):
         next_inference.join(timeout=5)
         assert not next_inference.is_alive()
         assert "unverified" in infer_sdk.calls[1]["input"][1]["content"]
+        if assessed:
+            later = json.loads(infer_sdk.calls[1]["input"][1]["content"])
+            offered = json.loads(later["prior_untrusted_public_evidence"][0])
+            assert offered["assessment"] == evidence["assessment"]
         assert len(sdk.calls) == 1
         generation = app.ledger.control_generation
         app.ledger.control_generation = lambda: generation() + 1
@@ -699,7 +719,10 @@ def test_authority_change_during_search_discards_result(tmp_path, monkeypatch):
             {
                 "outcome": "completed",
                 "attempts": 1,
-                "report": {"main_finding": "x" * 3000, "sources": []},
+                "report": {
+                    "main_finding": "x" * MAX_PUBLIC_EVIDENCE_BYTES,
+                    "sources": [],
+                },
             },
             "failed",
         ),
@@ -707,7 +730,10 @@ def test_authority_change_during_search_discards_result(tmp_path, monkeypatch):
             {
                 "outcome": "completed",
                 "attempts": 1,
-                "report": {"main_finding": "Ж" * 1100, "sources": []},
+                "report": {
+                    "main_finding": "Ж" * (MAX_PUBLIC_EVIDENCE_BYTES // 2),
+                    "sources": [],
+                },
             },
             "failed",
         ),
