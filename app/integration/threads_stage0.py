@@ -251,16 +251,16 @@ class Stage0Journal:
             db.close()
 
     @contextmanager
-    def handoff_lock(self, operation):
+    def handoff_lock(self, operation, *, blocking=True):
         # Single-host SQLite deployment, matching the existing outbox liveness model.
         with open(str(self.path) + "." + operation + ".lock", "a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
             try:
                 yield
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def start(self, operation, origin):
+    def start(self, operation, origin, *, admit=None):
         with self.transaction() as db:
             if db.execute(
                 "SELECT 1 FROM intents WHERE operation=?", (operation,)
@@ -268,6 +268,8 @@ class Stage0Journal:
                 return False
             if db.execute("SELECT count(*) FROM intents").fetchone()[0] >= MAX_INTENTS:
                 raise ValueError("Stage 0 journal capacity reached")
+            if admit is not None and not admit(db, operation, origin):
+                return False
             db.execute(
                 "INSERT INTO intents VALUES(?,'started',?)",
                 (operation, json.dumps(origin, ensure_ascii=False)),
@@ -749,10 +751,12 @@ class ThreadsStage0:
             "resumed": resumed,
         }
 
-    def recover(self):
+    def recover(self, *, operations=None):
         self.guard()
         blocked = []
         for operation in self.journal.recoverable():
+            if operations is not None and operation not in operations:
+                continue
             payload = self.journal.read(operation)
             if payload["kind"] == "wake" and not any(
                 run.selected_event_id == payload["event"]

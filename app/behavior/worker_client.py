@@ -2,7 +2,7 @@
 
 import json
 from dataclasses import replace
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 import socket
 import struct
@@ -33,6 +33,8 @@ class PublicBehaviorClient:
         self.provider_store = None
         self.public_context = None
         self.mission_evolution_context = None
+        self.operation_deadline = None
+        self.utc_now = lambda: datetime.now(UTC)
 
     def complete(self, request, timeout_seconds):
         operation = request["correlation_id"]
@@ -51,8 +53,17 @@ class PublicBehaviorClient:
             public = replace(
                 public, mission_evolution=self.mission_evolution_context(operation)
             )
+        if self.operation_deadline is not None:
+            public = replace(public, deadline_at=self.operation_deadline(operation))
         if self.reservation_evidence is not None:
             public = replace(public, reservation=self.reservation_evidence(public))
+        if public.deadline_at is not None:
+            timeout_seconds = min(
+                timeout_seconds, (public.deadline_at - self.utc_now()).total_seconds()
+            )
+            if timeout_seconds <= 0:
+                raise TimeoutError("public inference deadline expired")
+            public = replace(public, deadline_seconds=timeout_seconds)
         payload = public.encode()
         deadline = time.monotonic() + timeout_seconds
         try:

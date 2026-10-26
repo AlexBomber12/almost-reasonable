@@ -249,6 +249,7 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise ValueError("invalid public mission evolution configuration")
         self.enabled, self.live_enabled = enabled, live_enabled
+        self.operating_window = None
         self.account, self.model, self.simulator = policy.account_ref, model, transport
         self.policy, self.owner, self.provider, self.ledger = (
             policy,
@@ -274,6 +275,8 @@ class ThreadsRuntime(ThreadsStage0):
         self.research_profile_path = research_profile_path
         self.research_scope = research_scope
         self.model.public_context = self.inference_public_context
+        self.model.operation_deadline = self.inference_deadline
+        self.model.utc_now = clock.now
         if mission is not None and type(mission) is not PublicMissionContext:
             raise ValueError("verified mission context required")
         if (
@@ -403,6 +406,8 @@ class ThreadsRuntime(ThreadsStage0):
             or not self.policy.russian_output_gate_available
         ):
             raise PolicyDeniedError("public runtime controls deny operation")
+        if self.operating_window is not None:
+            self.operating_window.guard()
 
     def publication_guard(self):
         self.guard()
@@ -570,6 +575,7 @@ class ThreadsRuntime(ThreadsStage0):
                 and self.inference_mission_evolution_context(request.operation_id)
                 == request.mission_evolution
                 and 0 < request.deadline_seconds <= payload["timeout"]
+                and request.deadline_at == self.inference_deadline(request.operation_id)
             )
         except PublicInferenceContextChanged:
             self.journal.finish(
@@ -600,6 +606,7 @@ class ThreadsRuntime(ThreadsStage0):
 
     def reservation_evidence(self, request):
         """Assert only the started operation fields to the UID authenticated worker."""
+        self.guard()
         if not self.attest_worker_request(request):
             raise ValueError("public operation is not reserved")
         payload = self.journal.read(request.operation_id)
@@ -615,19 +622,32 @@ class ThreadsRuntime(ThreadsStage0):
             "timeout": payload["timeout"],
         }
 
+    def inference_deadline(self, operation):
+        if self.operating_window is None:
+            return None
+        return self.parse_time(self.journal.read(operation)["deadline_at"])
+
     def _decide(self, operation, origin, context, timeout=5):
         self.guard()
+        deadline = None
+        if self.operating_window is not None:
+            deadline = min(
+                self.operating_window.spec.expires_at,
+                self.clock.now() + timedelta(seconds=timeout),
+            )
         try:
             self.journal.read(operation)
             return
         except ValueError:
             pass
         origin = {**origin, "runtime_version": PUBLIC_RUNTIME_VERSION}
+        if deadline is not None:
+            origin["deadline_at"] = deadline.isoformat()
         if any(
             type(text) is not str or len(text.encode()) > MAX_CONTEXT
             for text in context
         ):
-            if self.journal.start(operation, origin):
+            if self._start_public_operation(operation, origin):
                 self.journal.finish(
                     operation,
                     {**origin, "reason": "public_context_too_large"},
@@ -672,7 +692,7 @@ class ThreadsRuntime(ThreadsStage0):
             origin["mission_pending_id"] = mission_pending_id
             origin["mission_evidence_operation"] = mission_evidence_operation
             origin["mission_evidence_digest"] = mission_evidence_digest
-        if not self.journal.start(operation, origin):
+        if not self._start_public_operation(operation, origin):
             return
         self.checkpoint("after_started")
         self.guard()
@@ -705,7 +725,7 @@ class ThreadsRuntime(ThreadsStage0):
             TriggerType(trigger),
             DeliberationBudget(1, 1, timeout),
             now,
-            now + timedelta(seconds=timeout),
+            now + timedelta(seconds=timeout) if deadline is None else deadline,
             PriorResultCategory.NONE,
             False,
         )
@@ -916,6 +936,17 @@ class ThreadsRuntime(ThreadsStage0):
         )
         self.checkpoint("after_intent")
 
+    def _start_public_operation(self, operation, origin):
+        if self.operating_window is None:
+            return self.journal.start(operation, origin)
+        if not self.journal.start(
+            operation,
+            origin,
+            admit=self.operating_window.admit_deliberation,
+        ):
+            raise ValueError("operating window admission unavailable")
+        return True
+
     def _handoff(self, operation, payload):
         if self.mission_evolution is None:
             return self._handoff_with_mission_fence(operation, payload)
@@ -1055,7 +1086,11 @@ class ThreadsRuntime(ThreadsStage0):
             )
 
     def recover(self):
-        blocked = super().recover()
+        blocked = super().recover(
+            operations=None
+            if self.operating_window is None
+            else self.operating_window.operations()
+        )
         if self.mission_evolution is not None:
             with self.journal.transaction() as db:
                 rows = db.execute(

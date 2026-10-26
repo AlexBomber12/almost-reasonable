@@ -118,6 +118,11 @@ class SQLiteSchedulerRepository:
         with self._transaction() as db:
             db.execute("UPDATE scheduler_state SET cadence=?", (str(microseconds),))
 
+    def current_cadence(self, default: timedelta) -> timedelta:
+        with self._transaction() as db:
+            value = db.execute("SELECT cadence FROM scheduler_state").fetchone()[0]
+        return default if value is None else timedelta(microseconds=int(value))
+
     def outcomes(self) -> tuple[SchedulerRun, ...]:
         with self._transaction() as db:
             return tuple(
