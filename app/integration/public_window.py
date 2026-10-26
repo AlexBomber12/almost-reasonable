@@ -1,9 +1,11 @@
 """Bounded supervision of the existing public runtime; no publication authority."""
 
 from collections import Counter
+from contextlib import closing
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime, timedelta
 import json
+import sqlite3
 import time
 
 from app.behavior.scheduler import WakeupEvent
@@ -23,9 +25,12 @@ class WindowSpec:
     max_inbound_events: int
     poll_interval_seconds: int
     page_size: int = 10
+    mission_evolution: bool = False
 
     def __post_init__(self):
         require_reference("operating window", self.window_id)
+        if type(self.mission_evolution) is not bool:
+            raise ValueError("invalid window mission mode")
         if (
             not isinstance(self.expires_at, datetime)
             or self.expires_at.tzinfo is None
@@ -43,10 +48,13 @@ class WindowSpec:
                 raise ValueError("invalid finite window limit")
 
     def encoded(self):
-        return json.dumps(
-            asdict(self) | {"expires_at": self.expires_at.astimezone(UTC).isoformat()},
-            sort_keys=True,
-        )
+        value = asdict(self) | {
+            "expires_at": self.expires_at.astimezone(UTC).isoformat()
+        }
+        # Preserve the encoding of existing fixed-mission windows.
+        if not self.mission_evolution:
+            del value["mission_evolution"]
+        return json.dumps(value, sort_keys=True)
 
     def maximum_work(self, *, research_limit=0):
         return {
@@ -80,8 +88,10 @@ class PublicOperatingWindow:
         self.app, self.spec = app, spec
         if app.mission is None:
             raise ValueError("reviewed public mission is required")
-        if app.mission_evolution is not None:
-            raise ValueError("operating windows require a fixed reviewed mission")
+        if spec.mission_evolution != (app.mission_evolution is not None):
+            raise ValueError(
+                "window mission mode requires matching runtime (fixed or evolving)"
+            )
 
     def _initialize(self):
         now = self.app.clock.now().astimezone(UTC)
@@ -117,6 +127,8 @@ class PublicOperatingWindow:
                 "mission": self.app.mission.snapshot()[1],
                 "research": self._research_binding(),
             }
+            if self.spec.mission_evolution:
+                controls["root"] = self.app.mission._root_snapshot()[1]
             db.execute(
                 "INSERT INTO public_windows VALUES(?,?,?,?,?,?,0,0)",
                 (
@@ -157,18 +169,53 @@ class PublicOperatingWindow:
         if self._research_binding() != controls["research"]:
             raise WindowDenied("controls_changed")
         try:
+            if self.spec.mission_evolution and (
+                self.app.mission._root_snapshot()[1] != controls["root"]
+            ):
+                raise ValueError("window mission root changed")
             self.app.mission.require(controls["mission"])
         except ValueError as error:
             raise WindowDenied("controls_changed") from error
         return now
 
     def guard(self):
-        # The runner owns the journal's process lock. Controls stay immutable;
+        # The runner owns the journal's process lock. Authority stays bounded;
         # live mission/privacy checks still run here, including inside research
         # retention transactions. Persist the watermark at each admission and
         # loop boundary, without opening a nested journal write transaction.
-        now = self._check(self.snapshot)
+        # Read committed bindings even after a transition committed but its
+        # caller crashed. Never derive authority from the live mission alone.
+        with closing(sqlite3.connect(self.app.journal.path)) as db:
+            controls = db.execute(
+                "SELECT controls FROM public_windows WHERE id=?",
+                (self.spec.window_id,),
+            ).fetchone()[0]
+        now = self._check(self.snapshot | {"controls": controls})
         self.snapshot["last_seen"] = now.isoformat()
+
+    def bind_transition(self, db, operation, payload, current):
+        """Commit only this window's admitted transition alongside its intent."""
+        row = self._row(db)
+        self._check(row)
+        admitted = db.execute(
+            "SELECT 1 FROM public_window_work WHERE window=? AND operation=? "
+            "AND kind IN ('wake','reply','mention')",
+            (self.spec.window_id, operation),
+        ).fetchone()
+        controls = json.loads(row["controls"])
+        if (
+            not self.spec.mission_evolution
+            or admitted is None
+            or payload["mission"] != controls["mission"]
+        ):
+            raise WindowDenied("controls_changed")
+        if current.version != controls["mission"]["version"]:
+            controls["mission"] = self.app.mission.binding(current)
+        db.execute(
+            "UPDATE public_windows SET controls=? WHERE id=?",
+            (json.dumps(controls), self.spec.window_id),
+        )
+        self._watermark(db)
 
     def _watermark(self, db):
         db.execute(
@@ -385,6 +432,11 @@ class PublicOperatingWindow:
                     (self.spec.window_id,),
                 )
             )
+            pending_mission = (
+                self.app.mission_evolution.pending_in(db)
+                if self.spec.mission_evolution
+                else None
+            )
             lanes = {"tick": Counter(), "poll": Counter()}
             for kind, outcome in db.execute(
                 "SELECT kind,outcome FROM public_window_work WHERE window=? "
@@ -430,6 +482,13 @@ class PublicOperatingWindow:
             "research": {
                 "consumed": sum(research.values()),
                 "outcomes": dict(research),
+            },
+            "mission": {
+                "mode": "evolving" if self.spec.mission_evolution else "fixed",
+                "active": json.loads(row["controls"])["mission"],
+                "pending": None
+                if pending_mission is None
+                else pending_mission.proposal.proposal_id,
             },
             "pending_drafts": pending,
         }
