@@ -25,6 +25,12 @@ from app.core.provider_spend import (
     ProviderPersistenceError,
     ProviderStateStore,
 )
+from app.research.assessment import (
+    build_assessed_synthesis,
+    validate_assessment,
+    assessment_russian_texts,
+    prose_urls_are_recorded,
+)
 from app.research.brief import (
     ResearchQuestion,
     ResearchRecordSet,
@@ -40,7 +46,6 @@ from app.research.provider import (
     _validate_config,
     default_hosted_search_config,
 )
-from app.research.synthesis import ResearchSynthesisDraft, build_russian_synthesis
 from app.trusted.openai_gateway import TrustedOpenAIGateway
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_protocol import (
@@ -208,7 +213,9 @@ def decode_public_response(payload: bytes) -> dict[str, object]:
     if value["message"] is not None:
         raise WorkerProtocolError("invalid public research completion")
     _require_exact_dict(
-        report,
+        {key: item for key, item in report.items() if key != "assessment"}
+        if type(report) is dict
+        else report,
         {"main_finding", "uncertainty", "claim_status", "semantic_support", "sources"},
     )
     if (
@@ -238,6 +245,10 @@ def decode_public_response(payload: bytes) -> dict[str, object]:
             )
         ):
             raise WorkerProtocolError("invalid public research source")
+    if "assessment" in report:
+        validate_assessment(
+            report["assessment"], {source["reference"] for source in report["sources"]}
+        )
     return value
 
 
@@ -642,22 +653,32 @@ class PublicResearchBoundary:
                     _response("invalid_response", 1, usage=usage),
                     response_id=safe_response_id,
                 )
-            synthesis = build_russian_synthesis(
-                ResearchSynthesisDraft(
-                    evidence.text, (), _UNCERTAINTY, (), (evidence.text,)
-                ),
-                evidence.sources,
-            )
-            delivery = RussianOutputPolicy(max_regenerations=0).deliver(
-                synthesis.main_finding
-            )
-            if delivery.used_fallback:
+            synthesis, assessment = build_assessed_synthesis(evidence, _UNCERTAINTY)
+            texts = [synthesis.main_finding, *assessment_russian_texts(assessment)]
+            if _screen(texts, self._screening) is not None:
+                return finish(
+                    _response("invalid_response", 1, usage=usage),
+                    response_id=safe_response_id,
+                )
+            recorded_urls = {source.url for source in evidence.sources}
+            if not prose_urls_are_recorded(texts, recorded_urls):
+                return finish(
+                    _response("invalid_response", 1, usage=usage),
+                    response_id=safe_response_id,
+                )
+            policy = RussianOutputPolicy(max_regenerations=0)
+            delivery = policy.deliver(synthesis.main_finding)
+            if delivery.used_fallback or any(
+                policy.deliver(text).used_fallback
+                for text in assessment_russian_texts(assessment)
+            ):
                 return finish(
                     _response("output_gate_rejected", 1, usage=usage),
                     response_id=safe_response_id,
                 )
             report = {
                 "main_finding": delivery.text,
+                "assessment": assessment,
                 "uncertainty": synthesis.uncertainty,
                 "claim_status": "unverified",
                 "semantic_support": "not_evaluated",

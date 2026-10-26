@@ -10,6 +10,7 @@ import json
 import math
 import re
 
+from app.research.assessment import MAX_PUBLIC_EVIDENCE_BYTES
 from app.threads.domain import require_reference
 from app.behavior.deliberation import (
     BehaviorProposalValidation,
@@ -19,7 +20,7 @@ from app.core.agent_proposals import AgentDecision, ProposalInvalidReason
 from app.behavior.mission import MissionPurpose
 
 VERSION = "public-behavior-v1"
-MAX_FRAME = 32_768
+MAX_FRAME = 65_536
 MAX_CONTEXT = 2_048
 _TOPIC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 
@@ -70,7 +71,7 @@ class PublicBehaviorRequest:
             or type(self.evidence) is not tuple
             or len(self.evidence) > 1
             or any(
-                type(item) is not str or len(item.encode()) > MAX_CONTEXT
+                type(item) is not str or len(item.encode()) > MAX_PUBLIC_EVIDENCE_BYTES
                 for item in self.evidence
             )
         ):

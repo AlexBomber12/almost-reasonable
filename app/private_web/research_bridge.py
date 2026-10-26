@@ -17,10 +17,15 @@ import socket
 import stat
 import time
 
-from app.behavior.russian_gate import RussianOutputPolicy, _URL
+from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.agent_proposals import MAX_PROPOSAL_TEXT_UTF8_BYTES
 from app.core.provider_contract import CostEstimateStatus
 from app.core.provider_spend import ProviderAttemptRecord, ProviderStateStore
+from app.research.assessment import (
+    assessment_russian_texts,
+    validate_assessment,
+    prose_urls_are_recorded,
+)
 from app.research.authorization import SyntheticPublicResearchFixture
 from app.research.brief import ResearchScreeningContext, _screen
 from app.research.provenance import _valid_https_url, _valid_identifier
@@ -256,6 +261,14 @@ def render_report(report, screening=ResearchScreeningContext()):
         values.extend(
             value for value in (source["reference"], source["url"]) if value is not None
         )
+    if "assessment" in report:
+        try:
+            validate_assessment(
+                report["assessment"], {source["reference"] for source in sources}
+            )
+        except (TypeError, ValueError):
+            return None
+        values.extend(assessment_russian_texts(report["assessment"]))
     if _screen(values, screening) is not None:
         return None
     references = [source["reference"] for source in sources]
@@ -267,21 +280,22 @@ def render_report(report, screening=ResearchScreeningContext()):
         for source in sources
     ):
         return None
-    if (
-        RussianOutputPolicy(max_regenerations=0)
-        .deliver(report["main_finding"])
-        .used_fallback
+    prose = [report["main_finding"]]
+    if "assessment" in report:
+        prose.extend(assessment_russian_texts(report["assessment"]))
+    if any(
+        RussianOutputPolicy(max_regenerations=0).deliver(text).used_fallback
+        for text in prose
     ):
         return None
     recorded_urls = {source["url"] for source in sources}
-    if any(
-        match.group(0).rstrip(".,;") not in recorded_urls
-        for match in _URL.finditer(report["main_finding"])
-    ):
+    if not prose_urls_are_recorded(prose, recorded_urls):
         return None
     metadata = {
         key: report[key] for key in ("claim_status", "semantic_support", "sources")
     }
+    if "assessment" in report:
+        metadata["assessment"] = report["assessment"]
     text = (
         report["main_finding"]
         + "\n\n"
