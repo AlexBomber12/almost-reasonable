@@ -16,8 +16,9 @@ A desktop window resize alone does not exercise those independent states.
 
 Native iOS verification was unavailable: the development environment is
 Linux/WSL, without Xcode, an iOS Simulator, or a connected iPhone. The referenced
-owner screenshot was not available in this chat, and the in-app browser and iOS
-version were not identified. The following reproduction establishes a layout
+owner screenshot was not available in this chat. The owner later supplied “26”,
+interpreted as iOS 26; the minor version and in-app browser remain unidentified.
+The following reproduction establishes a layout
 defect consistent with the report, not the exact sequence of native events on
 that phone. Standalone Safari and an embedded browser must be checked separately;
 their viewport resizing and focus scrolling may differ.
@@ -83,6 +84,37 @@ Existing browser tests continue to cover submission, retries, IME behavior,
 privacy, and authentication. Simulated checks cannot establish native keyboard
 animation, caret scrolling, or actual embedded-browser viewport reporting.
 
+## Scroll-follow regression in the initial fix
+
+The follow-up browser regression confirms the finding on commit `546ea82`.
+Starting at the actual bottom with 40 synthetic messages, reducing the visual
+height from 800px to 400px leaves the conversation 400px from its end; the last
+message ends about 386px below the visible history. This fails both with an
+unchanged layout viewport and when the layout shrinks before the visual viewport
+callback. The older-history controls pass. These are simulated viewport results,
+not a reproduced native iPhone session.
+
+The initial fix preserves the scroll offset but loses the intent to follow the
+latest message. Recomputing the existing 180px `nearBottom()` test after the size
+change incorrectly classifies a following user as reading older history. Reading
+that geometry only at the start of `fitViewport()` is insufficient: CSS
+`max-height` can already have changed it during a layout resize.
+
+The correction remembers follow intent and the last observed scroll position
+before geometry changes. An actual position change refreshes that intent with
+the unchanged 180px policy; a queued scroll event with unchanged position does
+not invalidate it. A feature-detected ResizeObserver applies the same state when
+the conversation changes size, including multiline composer growth. Submission
+and history rendering use this same state and restoration function. This adds
+no delay, viewport-specific scroll rule, or unconditional resize-to-bottom.
+
+The new four-case regression asserts actual bottom distance and last-message
+bounds for both resize models and both following/older-history positions. It
+covers three keyboard cycles, multiline editor growth, three synthetic send/reply
+round trips per case, deliberate scrolling away and returning, and scrolling
+away while a fake-transport reply is held pending. The original alignment,
+draft recovery, zoom, and desktop checks remain in place.
+
 ## Owner's native iPhone check
 
 Use an owner-approved test build with a synthetic account, preseeded scrollable
@@ -92,9 +124,12 @@ history, and no paid model calls. Record iPhone/iOS and the browser/app version.
    to an older message, tap the editor, and wait for the native keyboard animation
    to settle. The header, editor, send button, and disclosure should be visible;
    only the intended bottom spacing should remain above the accessory bar.
-2. Type more than six lines, scroll inside the editor and history, and dismiss
-   and reopen the keyboard three times. Verify the draft, caret, and reading
-   position, and that dismissal restores the header without residual displacement.
+2. Start at the bottom and verify that the latest message remains visible through
+   keyboard opening, multiline typing, and a synthetic send/reply. Scroll to older
+   history and check that subsequent changes respect that reading position. Type
+   more than six lines, scroll inside the editor, and dismiss and reopen the
+   keyboard three times. Verify the draft, caret, reading position, and header
+   restoration without residual displacement.
 3. Rotate with the keyboard open, dismiss it, and expand/collapse browser toolbars.
    Check the controls again. Pinch zoom and pan, then return to normal scale.
 4. Capture synthetic before/after images and, if Web Inspector is available,

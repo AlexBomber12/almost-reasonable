@@ -122,6 +122,26 @@
       row.before(dateSeparator(row.dataset.occurredAt)); previousDay = day;
     }
   }
+  // Remember intent while geometry is still valid. Layout can shrink before the
+  // viewport callback, and textarea growth can resize history without that callback.
+  let following = nearBottom();
+  let scrollPosition = conversation.scrollTop;
+  function followsConversation() {
+    const position = conversation.scrollTop;
+    // A queued scroll event after a resize need not represent a new user position.
+    if (position !== scrollPosition) {
+      following = nearBottom();
+      scrollPosition = position;
+    }
+    return following;
+  }
+  function restoreConversation(follow = followsConversation()) {
+    if (follow) conversation.scrollTop = conversation.scrollHeight;
+    scrollPosition = conversation.scrollTop;
+    following = follow;
+  }
+  conversation.addEventListener('scroll', followsConversation);
+  if (window.ResizeObserver) new ResizeObserver(() => restoreConversation()).observe(conversation);
   const storageKey = 'ar-chat-recovery-v1';
   const retentionMs = 30 * 60 * 1000;
   let account = null;
@@ -216,7 +236,7 @@
     body.append(speaker, content); row.append(body); return row;
   }
   function showHistory(messages) {
-    const follow = nearBottom();
+    const follow = followsConversation();
     const fragment = document.createDocumentFragment();
     let previous = '';
     for (const item of messages) {
@@ -232,7 +252,7 @@
     clearOptimistic();
     historyList.replaceChildren(fragment);
     if (emptyState) emptyState.hidden = historyList.childElementCount > 0;
-    if (follow) conversation.scrollTop = conversation.scrollHeight;
+    restoreConversation(follow);
   }
 
   async function refreshHistory() {
@@ -309,7 +329,7 @@
       retain();
     }
     const submitted = pendingMessage;
-    const follow = nearBottom();
+    const follow = followsConversation();
     // A retry may already be in persisted history. Only fresh submissions are optimistic.
     if (isRetry) {
       clearOptimistic();
@@ -324,7 +344,7 @@
     textarea.readOnly = true;
     updateControls();
     announce('');
-    if (follow) conversation.scrollTop = conversation.scrollHeight;
+    restoreConversation(follow);
     try {
       const response = await fetch('/api/messages', {
         method: 'POST', credentials: 'same-origin',

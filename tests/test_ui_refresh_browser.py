@@ -140,6 +140,173 @@ def viewport_screenshot(page, name):
         page.screenshot(path=str(Path(destination) / (name + ".png")), clip=clip)
 
 
+def conversation_geometry(page):
+    return page.evaluate("""() => {
+      const history = document.querySelector('#conversation');
+      const area = history.getBoundingClientRect();
+      const latest = document.querySelector('#history .message:last-child').getBoundingClientRect();
+      return {
+        top: history.scrollTop, height: history.clientHeight,
+        distance: history.scrollHeight - history.scrollTop - history.clientHeight,
+        latestTop: latest.top - area.top, latestBottom: area.bottom - latest.bottom,
+      };
+    }""")
+
+
+def assert_conversation_position(page, following, reading):
+    geometry = conversation_geometry(page)
+    if following:
+        assert geometry["distance"] == pytest.approx(0, abs=1), geometry
+        assert geometry["latestTop"] >= 0 and geometry["latestBottom"] >= 0, geometry
+    else:
+        assert geometry["top"] == pytest.approx(reading, abs=1), geometry
+        assert geometry["distance"] > 180, geometry
+        assert geometry["latestBottom"] < 0, geometry
+
+
+@pytest.mark.parametrize("host_resizes_layout", [False, True])
+@pytest.mark.parametrize("following", [False, True])
+def test_chat_viewport_preserves_scroll_follow(
+    journey, tmp_path, host_resizes_layout, following
+):
+    """Simulated viewport changes must preserve the user's existing scroll policy."""
+    store, fake = journey[2], journey[5]
+    for index in range(40):
+        store.append_private_input(
+            principal("a"),
+            private_input(f"follow-{index}", f"Синтетическая история {index}\n" * 3),
+        )
+    with ui_server(journey, tmp_path) as origin, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(
+                ignore_https_errors=True,
+                viewport={"width": 390, "height": 800},
+                is_mobile=True,
+                has_touch=True,
+            )
+            simulated_visual_viewport(page)
+            login(page, origin)
+            editor = page.get_by_label("Сообщение", exact=True)
+            expect(page.locator("#history .message")).to_have_count(40)
+            page.evaluate(
+                """follow => {
+                  const history = document.querySelector('#conversation');
+                  history.scrollTop = follow ? history.scrollHeight : 300;
+                }""",
+                following,
+            )
+            settle_viewport(page)
+            reading = conversation_geometry(page)["top"]
+            assert_conversation_position(page, following, reading)
+
+            for cycle in range(3):
+                editor.focus()
+                if host_resizes_layout:
+                    # CSS max-height shrinks history before the visual viewport
+                    # callback; querying nearBottom only inside that callback is late.
+                    page.set_viewport_size({"width": 390, "height": 500})
+                page.evaluate("""() => {
+                  setVisibleViewport({height: 400, offsetTop: 30});
+                  // Deliver a queued scroll event after layout, with unchanged top.
+                  requestAnimationFrame(() => document.querySelector('#conversation')
+                    .dispatchEvent(new Event('scroll')));
+                }""")
+                settle_viewport(page)
+                assert_conversation_position(page, following, reading)
+                assert visible_chat_geometry(page)["gap"] == pytest.approx(12, abs=1)
+
+                # Textarea growth is another geometry change with the same policy.
+                editor.fill(f"Синтетическое сообщение {cycle}\n" + "строка\n" * 6)
+                settle_viewport(page)
+                assert editor.evaluate("el => el.scrollHeight > el.clientHeight")
+                assert_conversation_position(page, following, reading)
+                held_reply = []
+                if following and cycle == 1:
+                    # Keep the request pending while the user moves away, then
+                    # allow the existing fake transport to produce the response.
+                    page.route(
+                        "**/api/messages",
+                        lambda route: held_reply.append(route),
+                        times=1,
+                    )
+                page.get_by_role("button", name="Отправить", exact=True).click()
+                if following and cycle == 1:
+                    expect(page.locator("#request-progress")).to_be_visible()
+                    assert len(held_reply) == 1
+                    page.evaluate(
+                        "document.querySelector('#conversation').scrollTop -= 1000"
+                    )
+                    settle_viewport(page)
+                    pending_reading = conversation_geometry(page)["top"]
+                    assert_conversation_position(page, False, pending_reading)
+                    route = held_reply[0]
+                    route.fulfill(response=route.fetch())
+                expect(page.locator("#history .message--agent")).to_have_count(
+                    cycle + 1
+                )
+                expect(page.locator("#history .message").last).to_have_class(
+                    "message message--agent"
+                )
+                expect(page.locator("#request-progress")).to_be_hidden()
+                expect(editor).to_have_value("")
+                settle_viewport(page)
+                if following and cycle == 1:
+                    assert_conversation_position(page, False, pending_reading)
+                    page.evaluate("""() => {
+                      const history = document.querySelector('#conversation');
+                      history.scrollTop = history.scrollHeight;
+                    }""")
+                    settle_viewport(page)
+                assert_conversation_position(page, following, reading)
+
+                if following and cycle == 0:
+                    # Respect a deliberate move away even in the same task as a
+                    # viewport update, before its scroll event has been delivered.
+                    page.evaluate("""() => {
+                      document.querySelector('#conversation').scrollTop -= 1000;
+                      setVisibleViewport({height: 370, offsetTop: 45});
+                    }""")
+                    settle_viewport(page)
+                    away = conversation_geometry(page)["top"]
+                    assert_conversation_position(page, False, away)
+                    editor.fill("Несохранённый\nмногострочный\nчерновик")
+                    settle_viewport(page)
+                    assert_conversation_position(page, False, away)
+                    editor.blur()
+                    page.set_viewport_size({"width": 390, "height": 800})
+                    page.evaluate("setVisibleViewport({height: 800, offsetTop: 0})")
+                    settle_viewport(page)
+                    assert_conversation_position(page, False, away)
+                    editor.focus()
+                    if host_resizes_layout:
+                        page.set_viewport_size({"width": 390, "height": 500})
+                    page.evaluate("setVisibleViewport({height: 400, offsetTop: 30})")
+                    settle_viewport(page)
+                    assert_conversation_position(page, False, away)
+                    expect(editor).to_have_value(
+                        "Несохранённый\nмногострочный\nчерновик"
+                    )
+                    page.evaluate("""() => {
+                      const history = document.querySelector('#conversation');
+                      history.scrollTop = history.scrollHeight;
+                    }""")
+                    settle_viewport(page)
+                    assert_conversation_position(page, True, 0)
+                    editor.fill("")
+
+                editor.blur()
+                page.set_viewport_size({"width": 390, "height": 800})
+                page.evaluate("setVisibleViewport({height: 800, offsetTop: 0})")
+                settle_viewport(page)
+                assert_conversation_position(page, following, reading)
+                closed = visible_chat_geometry(page)
+                assert abs(closed["header"]) < 1 and abs(closed["bottom"]) < 1
+            assert len(fake.calls) == 3
+        finally:
+            browser.close()
+
+
 @pytest.mark.parametrize("host_resizes_layout", [False, True])
 def test_chat_visible_viewport_and_focus_scroll(journey, tmp_path, host_resizes_layout):
     """Separate visual-only resize from host resize plus retained document scroll."""
