@@ -60,8 +60,8 @@ Expiry or denied controls stop all new work. Existing per-call worker deadlines
 remain finite; model deadlines and polling deadlines are additionally capped by
 the remaining window time. An already started research request retains its
 existing finite worker deadline, and its result is retained only if controls
-still permit it. Idle control checks run at most 250 ms apart; interruption can
-arrive while idle or in a bounded external call.
+still permit it. The idle loop waits 250 ms between passes and rechecks controls
+before new work; interruption can arrive while idle or in a bounded external call.
 
 ## Later operator procedure
 
@@ -127,8 +127,8 @@ paid request or an automatic replacement. Ordinary non-window requests retain
 their existing exchange. Use the same reviewed revision for app and public worker.
 Polling retains the absolute expiry through durable admission and policy checks,
 then caps each transport timeout and page commit against the remaining time.
-An observed expiry remains closed across restart and clock rollback through
-the existing durable watermark.
+The expiry observation is latched before cleanup can resample the clock. The
+existing durable watermark keeps that window closed across restart and rollback.
 Existing scheduler claims, coalescing, selected cadence, duplicate suppression,
 active hours, action limits and cooldown still decide wakeup eligibility.
 Downtime offers at most one current tick and schedules the next a full cadence

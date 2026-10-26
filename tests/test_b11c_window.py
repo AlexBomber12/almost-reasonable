@@ -1225,3 +1225,34 @@ def test_observed_expiry_stays_closed_after_restart_and_clock_rollback(tmp_path)
         assert len(sdk.calls) == len(http.calls) == 1
     finally:
         worker.close()
+
+
+def test_expiry_observation_is_latched_before_cleanup_clock_resample(
+    tmp_path, monkeypatch
+):
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    window_spec = spec(max_model_calls=1, max_poll_pages=0, max_inbound_events=0)
+    samples = iter((NOW, window_spec.expires_at, NOW))
+    monkeypatch.setattr(clock, "now", lambda: next(samples, NOW))
+    monkeypatch.setattr(
+        app.model,
+        "complete",
+        lambda *_args: pytest.fail("expired window admitted a model request"),
+    )
+    try:
+        first = PublicOperatingWindow(app, window_spec).run()
+        assert first["state"] == "expired"
+        second = PublicOperatingWindow(app, window_spec).run()
+        assert second["state"] == "expired"
+        assert (
+            second["consumed"]
+            == first["consumed"]
+            == {
+                "model_calls": 0,
+                "poll_pages": 0,
+                "inbound_events": 0,
+            }
+        )
+        assert sdk.calls == http.calls == []
+    finally:
+        worker.close()

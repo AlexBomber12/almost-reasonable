@@ -143,7 +143,11 @@ class PublicOperatingWindow:
 
     def _check(self, row):
         now = self.app.clock.now().astimezone(UTC)
-        if max(now, datetime.fromisoformat(row["last_seen"])) >= self.spec.expires_at:
+        observed = max(now, datetime.fromisoformat(row["last_seen"]))
+        if observed >= self.spec.expires_at:
+            self.snapshot["last_seen"] = max(
+                self.snapshot["last_seen"], observed.isoformat()
+            )
             raise WindowDenied("expired")
         if now.isoformat() < row["last_seen"]:
             raise WindowDenied("clock_regressed")
@@ -346,6 +350,11 @@ class PublicOperatingWindow:
                     )
                 finally:
                     self.app.operating_window = None
+                    if state == "expired":
+                        self.snapshot["last_seen"] = max(
+                            self.snapshot["last_seen"],
+                            self.spec.expires_at.astimezone(UTC).isoformat(),
+                        )
                     # Observing expiry is durable even when the next clock
                     # sample (or a restarted process) moves backwards.
                     self.snapshot["last_seen"] = max(
