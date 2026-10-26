@@ -10,6 +10,8 @@ import sqlite3
 from uuid import UUID
 from weakref import finalize
 
+from app.core.sqlite_files import chmod_sqlite_metadata, sqlite_metadata_handle
+
 from .files import (
     directory_is_trusted,
     open_trusted_directory_chain,
@@ -160,11 +162,8 @@ class PrivacyLedger:
         except OSError as error:
             raise ValueError("privacy ledger parent is unsafe") from error
         try:
-            descriptor = os.open(
-                self.path.name,
-                os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW,
-                0o600,
-                dir_fd=parent_descriptor,
+            descriptor = sqlite_metadata_handle(
+                self.path.name, create=True, dir_fd=parent_descriptor
             )
         except BaseException:
             os.close(parent_descriptor)
@@ -174,7 +173,9 @@ class PrivacyLedger:
             if not regular_file_is_trusted(os.fstat(descriptor)):
                 raise ValueError("privacy ledger file is unsafe")
             self._require_trusted_sidecars()
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            # Serialize admission on the pinned directory. A raw database
+            # handle for flock would cancel SQLite record locks when closed.
+            fcntl.flock(parent_descriptor, fcntl.LOCK_EX)
             try:
                 with closing(
                     self._connect_descriptor_immutable(descriptor)
@@ -184,7 +185,7 @@ class PrivacyLedger:
                 with closing(self._connect_descriptor(descriptor)) as connection:
                     self._require_file_identity(connection, descriptor)
                     self._has_valid_schema(connection)
-                    os.fchmod(descriptor, 0o600)
+                    chmod_sqlite_metadata(descriptor, 0o600)
                     self._configure(connection)
                     initialized_schema = False
                     with connection:
@@ -203,7 +204,7 @@ class PrivacyLedger:
                     if initialized_schema:
                         os.fsync(parent_descriptor)
             finally:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                fcntl.flock(parent_descriptor, fcntl.LOCK_UN)
         except BaseException:
             os.close(descriptor)
             os.close(parent_descriptor)
@@ -321,9 +322,8 @@ class PrivacyLedger:
             raise RuntimeError("privacy ledger requires WAL journal mode")
         for suffix in _SQLITE_SIDECAR_SUFFIXES:
             try:
-                sidecar_descriptor = os.open(
+                sidecar_descriptor = sqlite_metadata_handle(
                     f"{self.path.name}{suffix}",
-                    os.O_RDWR | os.O_NOFOLLOW,
                     dir_fd=self._parent_descriptor,
                 )
             except FileNotFoundError:
@@ -331,16 +331,15 @@ class PrivacyLedger:
             try:
                 if not regular_file_is_trusted(os.fstat(sidecar_descriptor)):
                     raise RuntimeError("privacy ledger sidecar is unsafe")
-                os.fchmod(sidecar_descriptor, 0o600)
+                chmod_sqlite_metadata(sidecar_descriptor, 0o600)
             finally:
                 os.close(sidecar_descriptor)
 
     def _require_trusted_sidecars(self) -> None:
         for suffix in _SQLITE_SIDECAR_SUFFIXES:
             try:
-                descriptor = os.open(
+                descriptor = sqlite_metadata_handle(
                     f"{self.path.name}{suffix}",
-                    os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK,
                     dir_fd=self._parent_descriptor,
                 )
             except FileNotFoundError:

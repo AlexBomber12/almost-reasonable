@@ -185,18 +185,29 @@ the ordinary deployment/domain and retained B09D owner project.
 
 ## Restart and disabling
 
-Use the same complete research command and current stores. Sequence readiness:
-restart inference and verify its socket, then research and verify its socket;
-restart app and wait for HTTP; restart owner
-controls separately only if needed. Concurrent app/owner initialization produced
-a pre-existing SQLite SIGBUS in the rehearsal, including with native storage;
-this procedure avoids that trigger and does not claim unrestricted concurrent
-startup safety. A later B05E current-HEAD CI run also observed an inference
-worker SIGBUS during parallel inference/research restart against the shared
-provider database; the deployment regression now verifies each worker's socket
-before restarting the next process. This is readiness sequencing, not a general
-SQLite concurrency fix. The separate B09D project stays running during ordinary extension
-startup. No restart clears Stop or consumes/renews authority merely by starting.
+Use the same complete research command and current stores. With B09E, the
+ordinary app, owner console, inference and research workers may start or restart
+together against their existing shared SQLite stores on the supported Linux
+host. Check both worker sockets, application HTTP and owner telemetry before
+sending requests. Readiness checks remain necessary; process ordering is no
+longer a storage correctness requirement. The separate B09D project can stay
+running during an ordinary extension restart. No restart clears Stop or
+consumes/renews authority merely by starting.
+
+B09E's offline Docker fixture starts all six services together and restarts them
+together, with fake providers, production numeric identities and native volume
+state. It preserves exact provider usage, historical reservations, allowance,
+research admission and Stop, and checks integrity/foreign keys in all seven
+stores. This fixture passed without retrying failed startups. It does not prove
+every filesystem or deployment safe; the actual AI-Server configuration and
+live/browser validation remain operator work.
+
+Earlier app/owner initialization and inference/research restarts reported
+SQLite SIGBUS, including on native storage. B09E independently proves and fixes
+transaction lock loss caused by application security handles. SIGBUS did not
+reproduce in the corrected simultaneous-start/restart fixture. That evidence
+does **not** establish the exact cause of the earlier SIGBUS failures. See the
+[SQLite lock/security evidence](eventstore-v4.md#sqlite-security-handles-and-concurrent-processes-b09e).
 
 For an abrupt exit, stop the specific service and verify no process/container
 owns its socket before unlinking **only that stale socket** as the worker UID.
@@ -264,13 +275,14 @@ independently fetched page content or entailment guarantee. Real model quality,
 protected overrides, image/schema compatibility, host permissions/egress,
 proxy timeouts and full-host restart behavior require later operator validation.
 
-Local validation: `scripts/ci.sh` passed **5,395 tests** with **100% line and
+Original B05D validation: `scripts/ci.sh` passed **5,395 tests** with **100% line and
 branch coverage**, lint and formatting, using eight pytest workers and an
 isolated environment with the pinned development dependencies. No Docker checks
 were skipped. Both existing pinned Dockerfiles built; the worker CLI also loaded
 with networking disabled. No production credential, paid call or deployment was
-used. Container evidence covers the synthetic fixture and sequenced readiness,
-not the unprovided AI-Server configuration or simultaneous app/owner admission.
+used. That original evidence covered sequenced readiness. B09E extends this
+fixture to simultaneous startup/restart and integrity checks as described above;
+the unprovided AI-Server configuration remains outside the offline evidence.
 
 
 ## B05E: memory, narrative and research in one conversation

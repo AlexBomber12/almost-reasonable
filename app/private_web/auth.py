@@ -13,6 +13,8 @@ import secrets
 import sqlite3
 import stat
 
+from app.core.sqlite_files import chmod_sqlite_metadata, sqlite_metadata_handle
+
 from app.core.events import (
     AuthenticatedSourceReference,
     ParticipantId,
@@ -205,16 +207,12 @@ class AuthStore:
 
     def _secure_file(self) -> None:
         try:
-            descriptor = os.open(
-                self._database_path,
-                os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW,
-                0o600,
-            )
+            descriptor = sqlite_metadata_handle(self._database_path, create=True)
             try:
                 status = os.fstat(descriptor)
                 if not stat.S_ISREG(status.st_mode) or status.st_uid != os.geteuid():
                     raise RuntimeError("authentication store operation failed")
-                os.fchmod(descriptor, 0o600)
+                chmod_sqlite_metadata(descriptor, 0o600)
             finally:
                 os.close(descriptor)
         except OSError:

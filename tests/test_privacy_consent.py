@@ -1664,3 +1664,14 @@ def test_revocation_rolls_back_when_control_generation_is_missing(tmp_path):
 
     assert ledger.revocations() == ()
     assert ledger.audit_records() == audit_before
+
+
+def test_privacy_sidecar_access_failure_is_sanitized(tmp_path, monkeypatch):
+    ledger = PrivacyLedger(tmp_path / "ledger.sqlite3")
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError("synthetic sidecar access failure")
+
+    monkeypatch.setattr(ledger_module, "sqlite_metadata_handle", denied)
+    with pytest.raises(RuntimeError, match="privacy ledger sidecar is unsafe"):
+        ledger._require_trusted_sidecars()
