@@ -45,8 +45,20 @@ def base_config():
     }
 
 
-def test_command_preserves_protected_flags_and_never_replaces_worker():
+@pytest.mark.parametrize("narrative", [False, True])
+def test_command_preserves_protected_flags_and_never_replaces_worker(narrative):
     config = base_config()
+    if narrative:
+        config["services"]["private-app"]["command"].extend(
+            [
+                "--enable-memory-evolution",
+                "--enable-narrative",
+                "--narrative-permission",
+                "/protected/narrative.json",
+                "--narrative-pilot-id",
+                "existing-pilot",
+            ]
+        )
     before = deepcopy(config)
     result = extension_command(config, "ordinary-private")
     assert config == before
@@ -76,7 +88,6 @@ def test_command_preserves_protected_flags_and_never_replaces_worker():
         "string",
         "module",
         "no-worker",
-        "narrative",
         "research",
         "app-user",
         "worker-user",
@@ -101,8 +112,6 @@ def test_incompatible_configuration_fails_without_output(change, tmp_path, monke
         app["command"][3] = "different.module"
     elif change == "no-worker":
         app["command"].remove("--worker-socket")
-    elif change == "narrative":
-        app["command"].append("--enable-narrative")
     elif change == "research":
         app["command"].append("--public-research-scope")
     elif change == "app-user":

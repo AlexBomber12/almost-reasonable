@@ -141,7 +141,9 @@ the ordinary deployment/domain and retained B09D owner project.
    ```
 
    The helper exclusively creates a `0600` file and refuses overwrite,
-   pre-enabled research, narrative mode and incompatible commands/identities.
+   pre-enabled research and incompatible commands/identities. Compatible memory
+   and narrative flags, including their existing permission path and pilot ID,
+   are preserved when research options are appended.
    It reads configuration only: no stores, credentials, authority or requests.
    Regenerate a new reviewed file after any original command change. Inspect
    the resolved diff: provider-worker must remain entirely unchanged, especially
@@ -264,3 +266,72 @@ were skipped. Both existing pinned Dockerfiles built; the worker CLI also loaded
 with networking disabled. No production credential, paid call or deployment was
 used. Container evidence covers the synthetic fixture and sequenced readiness,
 not the unprovided AI-Server configuration or simultaneous app/owner admission.
+
+
+## B05E: memory, narrative and research in one conversation
+
+Starting revision: `0dceeaf91728ffb6fe667d44729c83726c32d978`. The design
+trace found explicit incompatibility in `WorkerConversationRuntime` and
+`app.ops.private_research_config`. The private_web CLI already forwards all
+three capabilities and omits shared intelligence when narrative is enabled.
+Narrative-context IPC and provider request validation already accept the ordinary
+research proposal vocabulary, retain fiction labels and direct-reality question
+instructions, and disable inference tools. `PublicResearchBridge` resolves only
+an existing reviewed topic or exact question, bound to one participant/source;
+no private context is needed by its worker protocol.
+
+Removing the two prohibitions alone would commit an unacknowledged fictional
+episode whenever a research report persisted. The retained order is memory
+(evolution or extraction), typed memory, an explicitly cued narrative proposal,
+then inference. A research decision uses the existing durable research intent
+as the alternative-reply marker. After intent, a received narrative proposal is
+rejected and its private receipt erased; recovery applies the same rule even
+if interruption preceded rejection. Only an ordinary persisted reply can
+acknowledge its projected episode. Existing episode/source dependencies remain
+on research replies, so deleting their private sources erases those replies.
+
+`PilotRequestGate` and `PilotAllowance` retain the atomic narrative/reply pair.
+Inference claims the held reply slot once even when it selects research; the
+research worker consumes its separate catalog slot. Unused held reply slots and
+uncertain operations remain consumed. Intent, started and provider reservation
+identities prevent retries after interruption, restart or a lost response.
+Application IPC markers remain separate from the shared worker usage ledger.
+No worker permission, activation, operation limit, schema or authority changes.
+Shared proposals remain incompatible with narrative mode.
+
+Public search still receives only the sealed canonical question, never message
+text, factual memory, episode text or participant identifiers. The application
+screens report output against source messages and the actual inference context,
+including selected memory prose, historical replies and projected fiction.
+This comparison data stays local. B05C sources, contradictions, uncertainty and
+same-operation assessment limitations are retained whole. Existing reply-size
+and privacy-screen bounds can still reject a report; no truncation or weaker
+screening is introduced.
+
+The existing four-input production preparation procedure above applies unchanged:
+retain base Compose, `int22.proxy.yaml`, `int22.network.yaml`, and
+`int22.multiturn-20261022-02.yaml`, then append the two research overrides.
+The helper preserves compatible memory/narrative flags and leaves the inference
+command, historical allowance, existing stores, common worker Stop and B09D
+accounting intact. Existing valid inference/narrative permissions and the finite
+reviewed catalog are required together. This task neither renews them nor adds
+a mode flag, separate deployment, public scheduling or Threads operation.
+
+Offline regressions in `tests/test_b05e_combined.py` connect authenticated HTTP,
+real AF_UNIX inference/research workers, existing pilot permissions/allowance,
+SQLite state and fake providers. One configured conversation corrects a factual
+memory, creates fiction, selects approved research with a same-turn fictional
+proposal, restarts, recalls the corrected fact, distinguishes fiction from real
+activity, and continues the story. Checks inspect actual provider requests,
+replies, durable episodes/dependencies, deletion, operation totals, participant
+isolation, Stop, permission loss and interruption/lost-response replay. CLI and
+preparation regressions cover retaining the same configuration.
+
+No live combined journey, deployment, production credential access, authority
+renewal or OpenAI/Meta call was performed. A later separately authorized check
+must use the ordinary deployment/domain and explicitly budget every enabled
+memory/narrative/inference operation plus research. Real-model story continuity,
+truthful reality answers, research quality, physical iPhone behavior, protected
+host configuration, permissions, proxy timeouts and restart readiness remain
+live/operator validation work. Fake-provider replies demonstrate data flow and
+contracts, not real-model semantic reliability; complete MVP remains BLOCKED.
