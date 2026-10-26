@@ -38,6 +38,33 @@
 (() => {
   const form = document.getElementById('message-form');
   if (!form) return;
+  const viewport = window.visualViewport;
+  if (viewport) {
+    const shell = document.querySelector('.chat-shell');
+    let queued = false;
+    function fitViewport() {
+      queued = false;
+      // Native focus scrolling can pan the visible viewport independently of dvh.
+      // Leave pinch zoom to the browser rather than reflowing into the zoomed area.
+      if (viewport.scale !== 1) {
+        for (const name of ['--chat-height', '--chat-top', '--chat-safe-bottom']) shell.style.removeProperty(name);
+        return;
+      }
+      const reduced = viewport.height < document.documentElement.clientHeight;
+      shell.style.setProperty('--chat-height', `${viewport.height}px`);
+      shell.style.setProperty('--chat-top', `${viewport.offsetTop}px`);
+      if (reduced) shell.style.setProperty('--chat-safe-bottom', '0px');
+      else shell.style.removeProperty('--chat-safe-bottom');
+    }
+    function scheduleViewport() {
+      if (!queued) { queued = true; requestAnimationFrame(fitViewport); }
+    }
+    viewport.addEventListener('resize', scheduleViewport);
+    viewport.addEventListener('scroll', scheduleViewport);
+    window.addEventListener('resize', scheduleViewport);
+    window.addEventListener('pageshow', scheduleViewport);
+    fitViewport();
+  }
   const textarea = document.getElementById('message-content');
   const sendButton = document.getElementById('send-button');
   const statusLine = document.getElementById('model-status');

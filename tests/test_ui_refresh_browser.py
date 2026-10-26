@@ -12,6 +12,7 @@ from playwright.sync_api import expect, sync_playwright
 import pytest
 
 from app.private_web.wsgi import PrivateWebConfig
+from test_event_store import principal, private_input
 from test_participant_privacy_http import journey as journey_fixture
 from test_private_web_browser import QuietWSGIHandler, running
 from test_owner_web_browser import owner_server
@@ -90,6 +91,240 @@ def assert_layout(page):
         .get_attribute("content")
         .endswith("viewport-fit=cover")
     )
+
+
+def simulated_visual_viewport(page):
+    # Contract simulation only: Chromium does not open a native iOS keyboard.
+    page.add_init_script("""(() => {
+      const viewport = new EventTarget();
+      const state = {offsetTop: 0, scale: 1};
+      for (const key of ['height', 'offsetTop', 'scale']) {
+        Object.defineProperty(viewport, key, {get: () => state[key] ?? innerHeight});
+      }
+      Object.defineProperty(window, 'visualViewport', {value: viewport});
+      window.setVisibleViewport = (values, event = 'resize') => {
+        Object.assign(state, values);
+        viewport.dispatchEvent(new Event(event));
+      };
+    })();""")
+
+
+def settle_viewport(page):
+    page.evaluate("""() => new Promise(resolve =>
+      requestAnimationFrame(() => requestAnimationFrame(resolve)))""")
+
+
+def visible_chat_geometry(page):
+    return page.evaluate("""() => {
+      const box = selector => document.querySelector(selector).getBoundingClientRect();
+      const viewport = visualViewport;
+      const bottom = viewport.offsetTop + viewport.height;
+      return {
+        header: box('.chat-header').top - viewport.offsetTop,
+        bottom: box('.chat-shell').bottom - bottom,
+        gap: bottom - box('.disclosure').bottom,
+        editor: box('#message-content').top - viewport.offsetTop,
+        send: bottom - box('#send-button').bottom,
+        historyHeight: document.querySelector('#conversation').clientHeight,
+        reading: document.querySelector('#conversation').scrollTop,
+      };
+    }""")
+
+
+def viewport_screenshot(page, name):
+    destination = os.environ.get("UI01_SCREENSHOT_DIR")
+    if destination:
+        Path(destination).mkdir(parents=True, exist_ok=True)
+        clip = page.evaluate("""() => ({x: 0, y: visualViewport.offsetTop,
+          width: innerWidth, height: visualViewport.height})""")
+        page.screenshot(path=str(Path(destination) / (name + ".png")), clip=clip)
+
+
+@pytest.mark.parametrize("host_resizes_layout", [False, True])
+def test_chat_visible_viewport_and_focus_scroll(journey, tmp_path, host_resizes_layout):
+    """Separate visual-only resize from host resize plus retained document scroll."""
+    store, fake = journey[2], journey[5]
+    for index in range(40):
+        store.append_private_input(
+            principal("a"),
+            private_input(f"viewport-{index}", f"Синтетическая строка {index}\n" * 3),
+        )
+    with ui_server(journey, tmp_path) as origin, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(
+                ignore_https_errors=True,
+                viewport={"width": 390, "height": 800},
+                is_mobile=True,
+                has_touch=True,
+            )
+            simulated_visual_viewport(page)
+            errors = []
+            page.on("pageerror", lambda error: errors.append(str(error)))
+            page.on(
+                "console",
+                lambda message: errors.append(message.text)
+                if message.type == "error" and "Content Security Policy" in message.text
+                else None,
+            )
+
+            # Emulate a nonzero safe area even though headless Chromium reports zero.
+            def safe_area(route):
+                reply = route.fetch()
+                route.fulfill(
+                    response=reply,
+                    body=reply.text().replace("env(safe-area-inset-bottom)", "34px"),
+                )
+
+            page.route("**/assets/chat.css", safe_area)
+            login(page, origin)
+            editor = page.get_by_label("Сообщение", exact=True)
+            expect(page.locator("#history .message")).to_have_count(40)
+            page.evaluate("document.querySelector('#conversation').scrollTop = 300")
+            initial = visible_chat_geometry(page)
+            assert initial["reading"] == 300
+            assert initial["gap"] == pytest.approx(34, abs=1)
+            assert initial["historyHeight"] > 500
+
+            for cycle in range(3):
+                editor.focus()
+                if host_resizes_layout:
+                    page.set_viewport_size({"width": 390, "height": 500})
+                # Model focus scrolling separately from visual viewport panning.
+                # The extra root extent permits the retained scroll seen in WebViews;
+                # this is a synthetic browser state, not a claim about native timing.
+                page.evaluate("""() => {
+                  document.documentElement.style.height = '1100px';
+                  window.scrollTo(0, 120);
+                  setVisibleViewport({height: 400, offsetTop: 30});
+                }""")
+                settle_viewport(page)
+                assert page.evaluate("scrollY") == 120
+                opened = visible_chat_geometry(page)
+                if cycle == 0:
+                    viewport_screenshot(
+                        page, f"simulated-keyboard-layout-{host_resizes_layout}"
+                    )
+                assert abs(opened["header"]) < 1, opened
+                assert abs(opened["bottom"]) < 1, opened
+                assert opened["gap"] == pytest.approx(12, abs=1), opened
+                assert opened["editor"] >= 0 and opened["send"] >= 0
+                assert opened["historyHeight"] > 0
+                assert opened["reading"] == pytest.approx(300, abs=1)
+
+                # Mobile Enter stays multiline and never submits the draft.
+                editor.fill(f"Черновик {cycle}")
+                for _ in range(7):
+                    editor.press("End")
+                    editor.press("Enter")
+                    editor.press("x")
+                draft = editor.input_value()
+                assert draft.count("\n") == 7
+                assert editor.evaluate("el => el.scrollHeight > el.clientHeight")
+                page.evaluate("document.querySelector('#conversation').scrollTop = 480")
+                page.evaluate("setVisibleViewport({offsetTop: 65}, 'scroll')")
+                settle_viewport(page)
+                panned = visible_chat_geometry(page)
+                assert abs(panned["header"]) < 1 and abs(panned["bottom"]) < 1
+                assert panned["reading"] == pytest.approx(480, abs=1)
+
+                # Dismiss before the final viewport event, retaining document scroll.
+                editor.blur()
+                page.set_viewport_size({"width": 390, "height": 800})
+                page.evaluate("setVisibleViewport({height: 800, offsetTop: 0})")
+                settle_viewport(page)
+                closed = visible_chat_geometry(page)
+                assert abs(closed["header"]) < 1 and abs(closed["bottom"]) < 1
+                assert closed["gap"] == pytest.approx(34, abs=1)
+                assert closed["reading"] == pytest.approx(480, abs=1)
+                expect(editor).to_have_value(draft)
+                page.evaluate("document.querySelector('#conversation').scrollTop = 300")
+
+            # Rotation with a multiline draft leaves history space and controls visible.
+            editor.focus()
+            page.set_viewport_size({"width": 800, "height": 390})
+            page.evaluate("setVisibleViewport({height: 220, offsetTop: 20})")
+            settle_viewport(page)
+            rotated = visible_chat_geometry(page)
+            assert abs(rotated["header"]) < 1 and abs(rotated["bottom"]) < 1
+            assert rotated["gap"] == pytest.approx(12, abs=1)
+            assert rotated["historyHeight"] > 0
+            assert rotated["editor"] >= 0 and rotated["send"] >= 0
+            expect(editor).to_have_value(draft)
+
+            # A zoomed viewport is for panning, not for shrinking/repositioning the UI.
+            page.evaluate("setVisibleViewport({scale: 2, height: 110, offsetTop: 70})")
+            settle_viewport(page)
+            assert (
+                page.locator(".chat-shell").evaluate(
+                    "el => el.getBoundingClientRect().height"
+                )
+                == 390
+            )
+            assert page.locator(".chat-header").bounding_box()["y"] == 0
+            viewport_meta = page.locator("meta[name=viewport]").get_attribute("content")
+            assert (
+                "user-scalable" not in viewport_meta
+                and "maximum-scale" not in viewport_meta
+            )
+            page.evaluate("setVisibleViewport({scale: 1, height: 220, offsetTop: 20})")
+            settle_viewport(page)
+            assert abs(visible_chat_geometry(page)["bottom"]) < 1
+
+            # Toolbar and back/forward-cache updates must not depend on input focus.
+            editor.blur()
+            page.evaluate("""() => {
+              setVisibleViewport({height: 350, offsetTop: 0}, 'state-only');
+              window.dispatchEvent(new PageTransitionEvent('pageshow', {persisted: true}));
+            }""")
+            settle_viewport(page)
+            assert abs(visible_chat_geometry(page)["bottom"]) < 1
+            page.set_viewport_size({"width": 390, "height": 800})
+            page.evaluate("setVisibleViewport({height: 800, offsetTop: 0})")
+            settle_viewport(page)
+            viewport_screenshot(page, "simulated-keyboard-closed")
+
+            # Draft recovery uses the existing account-scoped sessionStorage path.
+            page.reload()
+            expect(editor).to_be_enabled()
+            expect(editor).to_have_value(draft)
+            assert fake.calls == []
+            assert errors == []
+        finally:
+            browser.close()
+
+
+@pytest.mark.parametrize("without_visual_viewport", [False, True])
+def test_chat_layout_viewport_fallback(journey, tmp_path, without_visual_viewport):
+    """Ordinary desktop resizing, including the feature-detection fallback."""
+    with ui_server(journey, tmp_path) as origin, sync_playwright() as playwright:
+        browser = playwright.chromium.launch()
+        try:
+            page = browser.new_page(ignore_https_errors=True)
+            if without_visual_viewport:
+                page.add_init_script(
+                    "Object.defineProperty(window, 'visualViewport', {value: undefined})"
+                )
+            login(page, origin)
+            for width, height in ((1280, 800), (390, 350), (800, 390), (1280, 800)):
+                page.set_viewport_size({"width": width, "height": height})
+                # CSS constrains stale pre-frame viewport measurements on shrink.
+                send = page.locator("#send-button").bounding_box()
+                assert send["y"] + send["height"] <= height
+                settle_viewport(page)
+                assert_layout(page)
+                assert page.locator(".chat-header").bounding_box()["y"] == 0
+                box = page.locator(".chat-shell").bounding_box()
+                assert box["height"] == height
+                send = page.locator("#send-button").bounding_box()
+                assert send["y"] + send["height"] <= height
+            page.get_by_role("button", name="Меню", exact=True).click()
+            page.get_by_role("link", name="Приватность", exact=True).click()
+            assert page.locator("body").get_attribute("style") is None
+            assert page.locator(".chat-shell").count() == 0
+            assert journey[5].calls == []
+        finally:
+            browser.close()
 
 
 def contrast_pairs(page):

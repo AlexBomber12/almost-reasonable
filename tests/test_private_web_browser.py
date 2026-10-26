@@ -173,7 +173,7 @@ def test_chromium_native_login_form_and_private_referrer(tmp_path):
                     page.evaluate(
                         "url => { const link = document.createElement('a'); "
                         "link.href = url; link.textContent = 'Leave'; "
-                        "document.body.append(link); }",
+                        "document.querySelector('#conversation').append(link); }",
                         destination,
                     )
                     page.get_by_role("link", name="Leave").click()
