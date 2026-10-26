@@ -428,10 +428,11 @@ class ThreadsHTTPTransport:
             else f"{self.provider_user_id}/mentions"
         )
         params = {
-            "fields": "id,text,media_type,timestamp,root_post,replied_to,is_reply_owned_by_me",
+            "fields": "id,text,media_type,timestamp",
             "limit": str(limit),
         }
         if stream is InboundKind.REPLY:
+            params["fields"] += ",root_post,replied_to,is_reply_owned_by_me"
             params["reverse"] = "false"
         if raw_cursor is not None:
             params["after"] = raw_cursor
@@ -450,9 +451,11 @@ class ThreadsHTTPTransport:
         next_link = paging.get("next")
         if next_link is not None and (not isinstance(next_link, str) or not next_link):
             raise ProviderFailure(EffectClass.PROVEN_PRE_DISPATCH, "poll_page_invalid")
-        raw_next = cursors.get("after") if next_link is not None else None
+        # Threads documents cursor-only pages; absence of a next URL is not EOF.
+        # Links are never followed, including when older responses supply one.
+        raw_next = cursors.get("after")
         raw_next_bytes = None
-        if next_link is not None:
+        if "after" in cursors or next_link is not None:
             try:
                 if not isinstance(raw_next, str) or not raw_next:
                     raise ValueError("invalid cursor")
@@ -497,11 +500,11 @@ class ThreadsHTTPTransport:
                 if stream is InboundKind.REPLY:
                     if (
                         root_id != self.reply_thread_id
+                        or parent_id != self.reply_thread_id
                         or type(row.get("is_reply_owned_by_me")) is not bool
                     ):
                         raise ValueError("reply binding mismatch")
                     conversation_id = self.reply_thread_id
-                    parent_id = require_reference("reply parent", parent_id)
                     if row["is_reply_owned_by_me"]:
                         continue
                 else:

@@ -119,8 +119,12 @@ def test_complete_observation_is_bounded_and_sanitized(setup):
         setup,
         [
             response({"id": "provider"}),
-            response({"data": [reply]}),
-            response({"data": [mention]}),
+            response(
+                {"data": [reply], "paging": {"cursors": {"after": "reply-page-2"}}}
+            ),
+            response(
+                {"data": [mention], "paging": {"cursors": {"after": "mention-page-2"}}}
+            ),
         ],
     )
     assert receipt["outcome"] == "observed"
@@ -131,6 +135,13 @@ def test_complete_observation_is_bounded_and_sanitized(setup):
     assert all(call[0] == "GET" and call[2] is None for call in client.calls)
     assert all("limit=10" in call[1] for call in client.calls[1:])
     assert all(call[3] <= 10 for call in client.calls)
+    from urllib.parse import parse_qs, urlsplit
+
+    assert urlsplit(client.calls[2][1]).path == "/v1.0/provider/mentions"
+    assert parse_qs(urlsplit(client.calls[2][1]).query) == {
+        "fields": ["id,text,media_type,timestamp"],
+        "limit": ["10"],
+    }
 
 
 @pytest.mark.parametrize(
@@ -435,3 +446,46 @@ def test_run_cli_checks_its_own_clean_revision_before_authorization(
     assert result["outcome"] == (
         "repository_dirty" if failure == "dirty" else "repository_untrusted"
     )
+
+
+@pytest.mark.parametrize("relation", ["root_post", "replied_to"])
+def test_probe_rejects_mismatched_reply_relationship_before_mentions(setup, relation):
+    row = {
+        "id": "reply",
+        "text": "synthetic",
+        "timestamp": NOW.isoformat(),
+        "root_post": {"id": "thread"},
+        "replied_to": {"id": "thread"},
+        "is_reply_owned_by_me": False,
+    }
+    row[relation] = {"id": "other"}
+    receipt, client = run(
+        setup, [response({"id": "provider"}), response({"data": [row]})]
+    )
+    assert receipt["outcome"] == "contract_malformed"
+    assert len(client.calls) == 2
+
+
+@pytest.mark.parametrize(
+    "path,fields",
+    [
+        ("me/mentions", "id,text,media_type,timestamp"),
+        (
+            "provider/mentions",
+            "id,text,media_type,timestamp,root_post,replied_to,is_reply_owned_by_me",
+        ),
+    ],
+)
+def test_boundary_rejects_unreviewed_mention_alias_and_reply_fields(
+    setup, path, fields
+):
+    from urllib.parse import urlencode
+
+    boundary = probe.ReadBoundary(FakeHTTP([]), setup[0], 30, lambda: 0, lambda: NOW)
+    boundary.requests = 2
+    url = f"https://graph.threads.net/v1.0/{path}?" + urlencode(
+        {"fields": fields, "limit": "10"}
+    )
+    with pytest.raises(probe.ProbeRejected, match="request_rejected"):
+        boundary.request("GET", url, {}, None, 5)
+    assert boundary.client.calls == []

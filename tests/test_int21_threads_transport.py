@@ -308,7 +308,7 @@ def test_reply_poll_rejects_wrong_root_without_advancing(tmp_path):
         "text": "Привет",
         "timestamp": NOW.isoformat(),
         "root_post": {"id": "other-root"},
-        "replied_to": {"id": "parent-1"},
+        "replied_to": {"id": "root-1"},
         "is_reply_owned_by_me": False,
     }
     fake = FakeHTTP(response(200, {"data": [row]}))
@@ -458,7 +458,7 @@ def test_valid_reply_and_mention_parent_are_preserved(tmp_path):
         "text": "Привет",
         "timestamp": NOW.isoformat(),
         "root_post": {"id": "root-1"},
-        "replied_to": {"id": "parent-1"},
+        "replied_to": {"id": "root-1"},
         "is_reply_owned_by_me": False,
     }
     mention = {
@@ -476,7 +476,7 @@ def test_valid_reply_and_mention_parent_are_preserved(tmp_path):
         svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-1")
         .new_events[0]
         .parent_message_id
-        == "parent-1"
+        == "root-1"
     )
     event = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2").new_events[
         0
@@ -905,17 +905,29 @@ def test_failed_account_preflight_has_proven_no_write(tmp_path, profile_reply):
     assert fake.calls == []
 
 
-def test_terminal_page_after_cursor_does_not_fetch_again(tmp_path):
-    row = {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
+@pytest.mark.parametrize("stream", [InboundKind.REPLY, InboundKind.MENTION])
+def test_cursors_only_pages_continue_without_next_link(tmp_path, stream):
+    row = {"id": "inbound-1", "text": "Привет", "timestamp": NOW.isoformat()}
+    if stream is InboundKind.REPLY:
+        row.update(
+            root_post={"id": "root-1"},
+            replied_to={"id": "root-1"},
+            is_reply_owned_by_me=False,
+        )
     fake = FakeHTTP(
-        response(200, {"data": [row], "paging": {"cursors": {"after": "terminal"}}})
+        response(200, {"data": [row], "paging": {"cursors": {"after": "opaque/+="}}}),
+        response(200, {"data": []}),
     )
     svc, _ = service(tmp_path, fake)
-    result = svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-1")
-    assert result.pages == 1
-    assert result.final_cursor is None
-    assert [event.event_id for event in result.new_events] == ["mention-1"]
-    assert len(fake.calls) == 1
+    result = svc.poll(stream, now=NOW, correlation_id="poll-1")
+    assert result.pages == 2
+    assert [event.event_id for event in result.new_events] == ["inbound-1"]
+    assert "after=opaque%2F%2B%3D" in fake.calls[1][1]
+    assert (
+        result.final_cursor is None
+        if stream is InboundKind.MENTION
+        else result.final_cursor is not None
+    )
 
 
 def test_publication_id_is_durable_before_readback_interruption(tmp_path, monkeypatch):
@@ -1083,7 +1095,7 @@ def test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor(tmp_path):
             "text": "Привет",
             "timestamp": NOW.isoformat(),
             "root_post": {"id": "root-1"},
-            "replied_to": {"id": "parent-1"},
+            "replied_to": {"id": "root-1"},
             "is_reply_owned_by_me": False,
         }
 
@@ -1097,13 +1109,12 @@ def test_forward_reply_poll_reaches_new_arrivals_after_saved_cursor(tmp_path):
         ),
         response(
             200,
-            {"data": [reply("reply-2")], "paging": {"cursors": {"after": "terminal"}}},
+            {"data": [reply("reply-2")]},
         ),
         response(
             200,
             {
                 "data": [reply("reply-2"), reply("reply-3")],
-                "paging": {"cursors": {"after": "terminal-2"}},
             },
         ),
     )
@@ -1129,7 +1140,7 @@ def test_long_opaque_provider_cursor_persists_and_resumes(tmp_path):
                 "data": [
                     {"id": "mention-1", "text": "Привет", "timestamp": NOW.isoformat()}
                 ],
-                "paging": {"next": "next-page", "cursors": {"after": raw_cursor}},
+                "paging": {"cursors": {"after": raw_cursor}},
             },
         ),
         response(200, {"data": [], "paging": {}}),
@@ -1274,7 +1285,7 @@ def test_owned_reply_is_skipped_and_cursor_advances(tmp_path):
             "text": "Привет",
             "timestamp": NOW.isoformat(),
             "root_post": {"id": "root-1"},
-            "replied_to": {"id": "parent-1"},
+            "replied_to": {"id": "root-1"},
             "is_reply_owned_by_me": owned,
         }
 
@@ -1410,7 +1421,7 @@ def test_media_only_item_is_skipped_and_cursor_advances(tmp_path, stream):
         for row in (media, textual):
             row.update(
                 root_post={"id": "root-1"},
-                replied_to={"id": "parent-1"},
+                replied_to={"id": "root-1"},
                 is_reply_owned_by_me=False,
             )
     fake = FakeHTTP(
@@ -1459,3 +1470,101 @@ def test_stop_during_account_preflight_is_rechecked_before_write(tmp_path, monke
         svc.dispatch("operation-1", approval, now=NOW)
     assert svc.store.get("operation-1").state is OutboxState.READY
     assert fake.calls == []
+
+
+@pytest.mark.parametrize("stream", [InboundKind.REPLY, InboundKind.MENTION])
+def test_poll_uses_documented_fields_for_each_read_stream(stream):
+    from urllib.parse import parse_qs, urlsplit
+
+    fake = FakeHTTP(response(200, {"data": []}))
+    transport(fake).poll(stream, None)
+    method, url, body = fake.calls[0]
+    parsed = urlsplit(url)
+    fields = "id,text,media_type,timestamp"
+    expected = {"fields": [fields], "limit": ["10"]}
+    if stream is InboundKind.REPLY:
+        expected["fields"] = [fields + ",root_post,replied_to,is_reply_owned_by_me"]
+        expected["reverse"] = ["false"]
+        assert parsed.path == "/v1.0/root-1/replies"
+    else:
+        assert parsed.path == "/v1.0/user-1/mentions"
+    assert (method, parsed.scheme, parsed.netloc, body) == (
+        "GET",
+        "https",
+        "graph.threads.net",
+        None,
+    )
+    assert parse_qs(parsed.query) == expected
+
+
+@pytest.mark.parametrize("owned", [False, True])
+def test_reply_poll_rejects_non_root_parent_without_advancing(tmp_path, owned):
+    row = {
+        "id": "reply-1",
+        "text": "Привет",
+        "timestamp": NOW.isoformat(),
+        "root_post": {"id": "root-1"},
+        "replied_to": {"id": "unrelated-parent"},
+        "is_reply_owned_by_me": owned,
+    }
+    fake = FakeHTTP(response(200, {"data": [row]}))
+    svc, _ = service(tmp_path, fake)
+    with pytest.raises(ProviderFailure, match="poll_page_invalid"):
+        svc.poll(InboundKind.REPLY, now=NOW, correlation_id="poll-1")
+    assert svc.store.cursor("account-1", InboundKind.REPLY) is None
+    assert svc.store.pending_inbound_events("account-1", InboundKind.REPLY) == ()
+
+
+@pytest.mark.parametrize(
+    "stream,legacy_cursor",
+    [
+        (
+            InboundKind.REPLY,
+            "c-6bb9fb37a62a0754845b29a650f59f37acbee3fc39f46912cb4f2a60b544133a_b2xkLys9Y2hlY2twb2ludA",
+        ),
+        (
+            InboundKind.MENTION,
+            "c-a9f2e58cc9692935764039530fbdb2371b673aff7f10d42c1ff3fac982416546_b2xkLys9Y2hlY2twb2ludA",
+        ),
+    ],
+)
+def test_saved_cursor_encoding_survives_cursor_only_pagination(
+    tmp_path, stream, legacy_cursor
+):
+    fake = FakeHTTP(
+        response(
+            200,
+            {
+                "data": [],
+                "paging": {
+                    "next": "old-link",
+                    "cursors": {"after": "old/+=checkpoint"},
+                },
+            },
+        ),
+        response(200, {"data": []}),
+    )
+    svc, _ = service(tmp_path, fake)
+    first = svc.poll(stream, now=NOW, correlation_id="poll-1", max_pages=1)
+    assert first.final_cursor == legacy_cursor
+    assert svc.store.cursor("account-1", stream) == legacy_cursor
+    svc, _ = service(tmp_path, fake)
+    assert svc.simulator.owns_cursor(stream, legacy_cursor)
+    svc.poll(stream, now=NOW, correlation_id="poll-2")
+    assert "after=old%2F%2B%3Dcheckpoint" in fake.calls[1][1]
+
+
+@pytest.mark.parametrize("after", [None, "", 17, "\ud800"])
+def test_malformed_cursor_without_link_preserves_saved_state(tmp_path, after):
+    fake = FakeHTTP(
+        response(200, {"data": [], "paging": {"cursors": {"after": "checkpoint"}}}),
+        response(200, {"data": [], "paging": {"cursors": {"after": after}}}),
+    )
+    svc, _ = service(tmp_path, fake)
+    saved = svc.poll(
+        InboundKind.MENTION, now=NOW, correlation_id="poll-1", max_pages=1
+    ).final_cursor
+    assert saved is not None
+    with pytest.raises(ProviderFailure, match="poll_cursor_invalid"):
+        svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
+    assert svc.store.cursor("account-1", InboundKind.MENTION) == saved
