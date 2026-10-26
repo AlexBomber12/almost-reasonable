@@ -38,6 +38,33 @@
 (() => {
   const form = document.getElementById('message-form');
   if (!form) return;
+  const viewport = window.visualViewport;
+  if (viewport) {
+    const shell = document.querySelector('.chat-shell');
+    let queued = false;
+    function fitViewport() {
+      queued = false;
+      // Native focus scrolling can pan the visible viewport independently of dvh.
+      // Leave pinch zoom to the browser rather than reflowing into the zoomed area.
+      if (viewport.scale !== 1) {
+        for (const name of ['--chat-height', '--chat-top', '--chat-safe-bottom']) shell.style.removeProperty(name);
+        return;
+      }
+      const reduced = viewport.height < document.documentElement.clientHeight;
+      shell.style.setProperty('--chat-height', `${viewport.height}px`);
+      shell.style.setProperty('--chat-top', `${viewport.offsetTop}px`);
+      if (reduced) shell.style.setProperty('--chat-safe-bottom', '0px');
+      else shell.style.removeProperty('--chat-safe-bottom');
+    }
+    function scheduleViewport() {
+      if (!queued) { queued = true; requestAnimationFrame(fitViewport); }
+    }
+    viewport.addEventListener('resize', scheduleViewport);
+    viewport.addEventListener('scroll', scheduleViewport);
+    window.addEventListener('resize', scheduleViewport);
+    window.addEventListener('pageshow', scheduleViewport);
+    fitViewport();
+  }
   const textarea = document.getElementById('message-content');
   const sendButton = document.getElementById('send-button');
   const statusLine = document.getElementById('model-status');
@@ -95,6 +122,26 @@
       row.before(dateSeparator(row.dataset.occurredAt)); previousDay = day;
     }
   }
+  // Remember intent while geometry is still valid. Layout can shrink before the
+  // viewport callback, and textarea growth can resize history without that callback.
+  let following = nearBottom();
+  let scrollPosition = conversation.scrollTop;
+  function followsConversation() {
+    const position = conversation.scrollTop;
+    // A queued scroll event after a resize need not represent a new user position.
+    if (position !== scrollPosition) {
+      following = nearBottom();
+      scrollPosition = position;
+    }
+    return following;
+  }
+  function restoreConversation(follow = followsConversation()) {
+    if (follow) conversation.scrollTop = conversation.scrollHeight;
+    scrollPosition = conversation.scrollTop;
+    following = follow;
+  }
+  conversation.addEventListener('scroll', followsConversation);
+  if (window.ResizeObserver) new ResizeObserver(() => restoreConversation()).observe(conversation);
   const storageKey = 'ar-chat-recovery-v1';
   const retentionMs = 30 * 60 * 1000;
   let account = null;
@@ -189,7 +236,7 @@
     body.append(speaker, content); row.append(body); return row;
   }
   function showHistory(messages) {
-    const follow = nearBottom();
+    const follow = followsConversation();
     const fragment = document.createDocumentFragment();
     let previous = '';
     for (const item of messages) {
@@ -205,7 +252,7 @@
     clearOptimistic();
     historyList.replaceChildren(fragment);
     if (emptyState) emptyState.hidden = historyList.childElementCount > 0;
-    if (follow) conversation.scrollTop = conversation.scrollHeight;
+    restoreConversation(follow);
   }
 
   async function refreshHistory() {
@@ -282,7 +329,7 @@
       retain();
     }
     const submitted = pendingMessage;
-    const follow = nearBottom();
+    const follow = followsConversation();
     // A retry may already be in persisted history. Only fresh submissions are optimistic.
     if (isRetry) {
       clearOptimistic();
@@ -297,7 +344,7 @@
     textarea.readOnly = true;
     updateControls();
     announce('');
-    if (follow) conversation.scrollTop = conversation.scrollHeight;
+    restoreConversation(follow);
     try {
       const response = await fetch('/api/messages', {
         method: 'POST', credentials: 'same-origin',
