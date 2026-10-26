@@ -353,40 +353,41 @@ services:
             )
         except BaseException:
             pytest.fail(run("docker", "logs", seed))
-        # The ordinary deployment already has the independent B09D controls.
-        # Start and admit each store user before the next, matching the runbook.
-        for services, service, probe in (
+        # Admit every shared-store user together. Readiness polling never
+        # restarts a failed container or retries a failed startup.
+        run(
+            *combined,
+            "up",
+            "-d",
+            "--no-deps",
+            "--no-build",
+            "--pull",
+            "never",
+            "worker-telemetry",
+            "worker-stop",
+            "owner-console",
+            "provider-worker",
+            "research-worker",
+            "private-app",
+        )
+        for service, probe in (
             (
-                ("worker-telemetry", "worker-stop", "owner-console"),
                 "owner-console",
                 f"import http.client; c=http.client.HTTPConnection('127.0.0.1',{port}); c.request('GET','/login',headers={{'Host':'owner.test','X-Forwarded-For':'127.0.0.1'}}); print(c.getresponse().status)",
             ),
             (
-                ("provider-worker",),
                 "provider-worker",
                 "from pathlib import Path; print(Path('/run/pilot-ipc/worker.sock').is_socket())",
             ),
             (
-                ("research-worker",),
                 "research-worker",
                 "from pathlib import Path; print(Path('/run/pilot-research-ipc/research.sock').is_socket())",
             ),
             (
-                ("private-app",),
                 "private-app",
                 "import http.client; c=http.client.HTTPConnection('127.0.0.1',8000); c.request('GET','/login',headers={'Host':'chat.test'}); print(c.getresponse().status)",
             ),
         ):
-            run(
-                *combined,
-                "up",
-                "-d",
-                "--no-deps",
-                "--no-build",
-                "--pull",
-                "never",
-                *services,
-            )
             eventually(
                 lambda: run(
                     *combined, "exec", "-T", service, "python", "-c", probe, check=False
@@ -536,14 +537,26 @@ c.close()
     journal_before = inspect_seed(
         "import sqlite3; print(sqlite3.connect('/seed/worker/research-authority.sqlite3').execute('SELECT * FROM reservations').fetchall())"
     )
-    # Match the documented sequenced startup of processes sharing provider.sqlite3.
-    # Parallel restart has produced SIGBUS in EventStore initialization; verify
-    # each socket before starting the next process, without a provider operation.
-    for service, path in (
-        ("provider-worker", "/run/pilot-ipc/worker.sock"),
-        ("research-worker", "/run/pilot-research-ipc/research.sock"),
-    ):
-        run(*command, "restart", service)
+    provider_snapshot = """
+import json, sqlite3
+with sqlite3.connect('/seed/worker/provider.sqlite3') as db:
+    print(json.dumps({table: db.execute(
+        'SELECT * FROM ' + table + ' ORDER BY attempt_id').fetchall()
+        for table in ('provider_usage_attempts', 'provider_attempt_reservations')}))
+"""
+    provider_before = inspect_seed(provider_snapshot)
+    # Restart all ordinary processes together, preserving their shared stores.
+    run(
+        *command,
+        "restart",
+        "provider-worker",
+        "research-worker",
+        "private-app",
+        "owner-console",
+        "worker-telemetry",
+        "worker-stop",
+    )
+    for path in ("/run/pilot-ipc/worker.sock", "/run/pilot-research-ipc/research.sock"):
         eventually(
             lambda: execute(
                 "private-app",
@@ -551,14 +564,26 @@ c.close()
             )
             == "True"
         )
-    run(*command, "restart", "private-app")
     eventually(
         lambda: chat("print(json.dumps(browser.request('GET','/login')[0]))") == "200"
     )
-    run(*command, "restart", "owner-console", "worker-telemetry", "worker-stop")
+    assert (
+        inspect_seed("""
+import sqlite3
+for path in ('app/events.db','app/ipc-state.db','app/ledger.db','app/auth.db',
+             'app/owner/owner.sqlite','worker/provider.sqlite3',
+             'worker/research-authority.sqlite3'):
+    with sqlite3.connect('/seed/' + path) as db:
+        assert db.execute('PRAGMA integrity_check').fetchall() == [('ok',)], path
+        assert db.execute('PRAGMA foreign_key_check').fetchall() == [], path
+print('ok')
+""")
+        == "ok"
+    )
     assert submit("first")["response"] == first["response"]
     eventually(lambda: status()["worker"]["available"])
     assert status()["worker"]["provider"] == usage
+    assert inspect_seed(provider_snapshot) == provider_before
     assert (
         inspect_seed(
             "import sqlite3; print(sqlite3.connect('/seed/worker/research-authority.sqlite3').execute('SELECT * FROM reservations').fetchall())"

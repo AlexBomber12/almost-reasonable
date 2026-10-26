@@ -12,6 +12,8 @@ import sqlite3
 import stat
 import time
 
+from .sqlite_files import chmod_sqlite_metadata, sqlite_metadata_handle
+
 from .shared_schema import SCHEMA_V6 as _SCHEMA_V6, SCHEMA_V11 as _SCHEMA_V11
 
 from .events import (
@@ -898,7 +900,7 @@ class EventStore:
         database_path = Path(database_path)
         if database_path == Path(":memory:"):
             raise ValueError("in-memory databases are not supported")
-        self._database_path = database_path.resolve()
+        self._database_path = database_path.parent.resolve() / database_path.name
         self._busy_timeout_ms = busy_timeout_ms
         self._fault_injector = fault_injector
         self._verify_database_parent_security()
@@ -924,13 +926,17 @@ class EventStore:
 
     def _secure_database_file(self) -> None:
         try:
-            descriptor = os.open(
-                self._database_path,
-                os.O_CREAT | os.O_RDWR,
-                0o600,
-            )
+            descriptor = sqlite_metadata_handle(self._database_path, create=True)
             try:
-                os.fchmod(descriptor, 0o600)
+                status = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(status.st_mode)
+                    or status.st_uid != os.geteuid()
+                    or status.st_nlink != 1
+                ):
+                    raise EventStoreError("event store operation failed")
+                self._database_identity = (status.st_dev, status.st_ino)
+                chmod_sqlite_metadata(descriptor, 0o600)
             finally:
                 os.close(descriptor)
         except OSError:
@@ -938,7 +944,7 @@ class EventStore:
 
     def _verify_database_file_security(self) -> None:
         try:
-            database_status = self._database_path.stat()
+            database_status = self._database_path.lstat()
         except OSError:
             raise EventStoreError("event store operation failed") from None
         security = (
@@ -946,14 +952,18 @@ class EventStore:
             database_status.st_uid == os.geteuid(),
             stat.S_IMODE(database_status.st_mode),
         )
-        if security != (True, True, 0o600):
+        if (
+            security != (True, True, 0o600)
+            or (database_status.st_dev, database_status.st_ino)
+            != self._database_identity
+        ):
             raise EventStoreError("event store operation failed")
 
     def _secure_database_sidecars(self) -> None:
         for suffix in ("-wal", "-shm"):
             sidecar_path = Path(f"{self._database_path}{suffix}")
             try:
-                descriptor = os.open(sidecar_path, os.O_RDWR | os.O_NOFOLLOW)
+                descriptor = sqlite_metadata_handle(sidecar_path)
             except FileNotFoundError:
                 continue
             except OSError:
@@ -964,15 +974,20 @@ class EventStore:
                     stat.S_ISREG(sidecar_status.st_mode),
                     sidecar_status.st_uid == os.geteuid(),
                 )
-                if identity != (True, True):
+                # The last SQLite connection may unlink an optional sidecar
+                # after it was pinned. Its detached inode is still safe to check.
+                if identity != (True, True) or sidecar_status.st_nlink > 1:
                     raise EventStoreError("event store operation failed")
-                os.fchmod(descriptor, 0o600)
+                chmod_sqlite_metadata(descriptor, 0o600)
             except OSError:
                 raise EventStoreError("event store operation failed") from None
             finally:
                 os.close(descriptor)
 
     def _open(self) -> sqlite3.Connection:
+        self._verify_database_parent_security()
+        self._verify_database_file_security()
+        self._secure_database_sidecars()
         try:
             connection = sqlite3.connect(
                 self._database_path,

@@ -254,8 +254,20 @@ def test_wal_sidecar_permission_errors_are_sanitized(tmp_path, monkeypatch):
     def fail_to_chmod(*_args, **_kwargs):
         raise OSError("synthetic sidecar chmod failure")
 
-    monkeypatch.setattr(store_module.os, "fchmod", fail_to_chmod)
+    monkeypatch.setattr(store_module, "chmod_sqlite_metadata", fail_to_chmod)
 
+    with pytest.raises(EventStoreError, match="event store operation failed"):
+        store._secure_database_sidecars()
+
+
+def test_sidecar_open_permission_errors_are_sanitized(tmp_path, monkeypatch):
+    store = object.__new__(EventStore)
+    store._database_path = tmp_path / "events.sqlite3"
+
+    def denied(*_args, **_kwargs):
+        raise PermissionError("synthetic sidecar access failure")
+
+    monkeypatch.setattr(store_module, "sqlite_metadata_handle", denied)
     with pytest.raises(EventStoreError, match="event store operation failed"):
         store._secure_database_sidecars()
 
@@ -1446,3 +1458,27 @@ def test_malformed_event_objects_are_rejected(tmp_path, replacement, message):
 
     with pytest.raises(EventValidationError, match=message):
         store.append_private_input(principal("a"), event)
+
+
+def test_sidecar_unlinked_by_last_sqlite_close_during_security_check(
+    tmp_path, monkeypatch
+):
+    store = EventStore(tmp_path / "events.sqlite3")
+    holder = store._open()
+    holder.execute("SELECT version FROM schema_metadata").fetchone()
+    real_handle = store_module.sqlite_metadata_handle
+
+    def close_last_connection_after_pin(path, **kwargs):
+        descriptor = real_handle(path, **kwargs)
+        if str(path).endswith("-wal"):
+            holder.close()  # SQLite normally removes both optional sidecars.
+        return descriptor
+
+    monkeypatch.setattr(
+        store_module, "sqlite_metadata_handle", close_last_connection_after_pin
+    )
+    try:
+        store._secure_database_sidecars()
+    finally:
+        holder.close()
+    assert not Path(str(store.database_path) + "-wal").exists()

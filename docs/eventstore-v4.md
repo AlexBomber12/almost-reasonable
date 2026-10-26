@@ -71,3 +71,83 @@ INT-04 adds metadata-only v5 resolution/release and input-sequence tables withou
 v4 draft columns. See [the runtime lifecycle](private-conversation-runtime.md).
 Exact v4 backups and transactional upgrade remain supported; held drafts alone
 remain non-deliverable.
+
+
+## SQLite security handles and concurrent processes (B09E)
+
+The supported ordinary deployment is Linux/glibc (glibc 2.28 or newer) with `/proc/self/fd`, `O_PATH`,
+atomic [`renameat2(RENAME_NOREPLACE)`](https://man7.org/linux/man-pages/man2/rename.2.html), working local filesystem advisory locks
+and private trusted state directories.
+App, owner, inference and research processes can use their shared stores
+concurrently; correctness does not require starting them one by one. SQLite's
+existing WAL mode, busy limits and transaction boundaries remain unchanged.
+Readiness must still be checked before submitting work. Database replacement,
+unlinking live SQLite files, network filesystems with unreliable locks and
+multiple SQLite libraries in one process are not supported concurrency modes.
+
+[SQLite documents](https://sqlite.org/howtocorrupt.html#posix_advisory_locks_canceled_by_a_separate_thread_doing_close_)
+that closing an unrelated ordinary descriptor can cancel all POSIX record locks
+on that inode in the process. Opening/closing `-shm` during EventStore security
+checks released an active WAL writer's lock; securing the database itself also
+broke rollback-mode writer exclusion. No longer timeout or operator sequencing
+can correct this.
+
+`app/core/sqlite_files.py` supplies Linux metadata-only `O_PATH | O_NOFOLLOW`
+handles. Linux excludes these handles from the lock cleanup in
+[`filp_close`](https://github.com/torvalds/linux/blob/v6.12/fs/open.c).
+Checks still inspect the pinned inode's file type and owner. Chmod resolves
+`/proc/self/fd/<handle>` to that inode without opening an ordinary descriptor;
+it cannot chmod a replacement reached through the original filename. New
+0600 files are closed under a unique staging name before atomic no-overwrite
+rename publication at the database name. Another constructor can admit the
+published database before the publisher resumes; no transient second hard link
+is exposed. Losing a creation race leaves the winning file intact. Staging names
+are removed on success and failure.
+
+The trace covers EventStore construction, `_open`, sidecar checks, diagnostics
+and repeat initialization; the related AuthStore setup, PrivacyLedger sidecar
+validation/configuration and retained database pin, and AuthorityJournal's
+retained admission pin use the same helper. PrivacyLedger keeps its existing
+constructor serialization on the pinned parent directory's flock rather than a
+raw database handle. Regular transactions still use SQLite. Owner reply and
+worker telemetry diagnostics use metadata queries and SQLite-managed read-only
+connections, including live WAL reads; they do not acquire raw data descriptors
+for the observed EventStore. Standalone backup/quarantine code has separate
+snapshot/descriptor lifetimes and is not a concurrent in-process diagnostic API;
+run the documented owner CLI in its own process. This task does not change its
+snapshot, quarantine or writer-fencing protocol.
+
+`tests/test_sqlite_lock_security.py` synchronizes a fresh interpreter over pipes
+before each immediate writer attempt. The writer must remain blocked before and
+after file/sidecar security checks, another normal connection, constructor
+admission and diagnostics, then succeed after commit or rollback. Both WAL and
+rollback journals are exercised. Additional cases cover privacy checks and pin
+finalization, authentication setup and research admission pin finalization.
+Four explicitly synchronized processes initialize an empty or v2 store,
+migrate, write/read concurrently, close and reopen. Exact event/operation IDs,
+reservations, token totals, integrity and foreign keys must survive.
+A deterministic last-connection close also removes sidecars after pinning,
+without rejecting that normal SQLite lifecycle. `tests/test_sqlite_files.py`
+retains unsafe-file failures and verifies pinned
+chmod during filename substitution. Existing permission, unsafe-directory,
+schema/migration, Stop and private/research tests remain in the full CI gate.
+
+The offline Compose fixture in `tests/test_b05d_research_deployment.py` exercises
+simultaneous admission/restart with synthetic durable state and fake providers.
+No production deployment, real participant data, credentials, paid provider call
+or Meta request is needed. Passing this regression establishes lock preservation
+and the tested deployment behavior. It does not establish that the previously
+reported SIGBUS crashes had this exact cause, nor certify untested hosts.
+
+The focused lock/security suite passed with host SQLite 3.45.1 and with SQLite
+3.53.1 built separately from the official `sqlite-autoconf-3530100.tar.gz`
+(SHA-256 `83e6b2020a034e9a7ad4a72feea59e1ad52f162e09cbd26735a3ffb98359fc4f`).
+The unchanged-main sidecar regression also fails with that 3.53.1 library:
+the independent writer acquires the transaction before its owner finishes.
+This test-only library is outside the repository and does not change runtime
+SQLite or dependency pins. The shipped pinned Docker base uses SQLite 3.40.1.
+
+One controlled run of the same simultaneous Docker rehearsal against unchanged
+main also passed. Neither that baseline run nor the corrected rehearsal
+reproduced SIGBUS; the deterministic independent-writer failure is the evidence
+for the lock-loss fix, rather than an inferred crash-causality claim.

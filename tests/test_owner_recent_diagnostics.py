@@ -497,3 +497,15 @@ def test_diagnostics_protocol_rejects_private_text_in_time():
                 {"version": "worker-diagnostics-v1", "available": True, "rows": [row]}
             ).encode()
         )
+
+
+def test_application_diagnostics_rejects_hard_link_added_after_admission(tmp_path):
+    args = settings(tmp_path)
+    store = EventStore(args.event_db)
+    alias = tmp_path / "alias.db"
+    os.link(store.database_path, alias)
+    try:
+        assert application_replies(store) == {"available": False, "rows": []}
+    finally:
+        alias.unlink()
+    assert application_replies(store)["available"] is True

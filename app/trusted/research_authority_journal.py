@@ -7,6 +7,8 @@ import sqlite3
 import stat
 import weakref
 
+from app.core.sqlite_files import sqlite_metadata_handle
+
 from app.core.public_research_authority import validate_trusted_directories
 from app.core.public_research_profile import ResearchProfile
 from app.core.public_research_profile import PUBLIC_PURPOSE
@@ -34,7 +36,7 @@ class AuthorityJournal:
         ):
             raise ValueError("unsafe authority journal")
         self._path = path
-        self._descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        self._descriptor = sqlite_metadata_handle(path)
         self._finalizer = weakref.finalize(self, os.close, self._descriptor)
         pinned = os.fstat(self._descriptor)
         self._identity = (pinned.st_dev, pinned.st_ino)
