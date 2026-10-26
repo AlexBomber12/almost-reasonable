@@ -1,6 +1,7 @@
 """Bounded same-operation model assessments; no independent page content."""
 
 import json
+import re
 
 from app.behavior.russian_gate import _URL
 
@@ -15,6 +16,9 @@ from .synthesis import (
 MAX_PUBLIC_EVIDENCE_BYTES = 24 * 1024
 MAX_ASSESSMENT_BYTES = 12 * 1024
 MAX_CLAIMS = 6
+# The language gate deliberately excludes parentheses. Evidence binding must
+# retain the complete URI before recognizing surrounding prose delimiters.
+_PROSE_URL = re.compile(r"(?<![\w@])https?://[^\s<>]+|" + _URL.pattern, _URL.flags)
 _RELATIONS = {"supports", "contradicts", "insufficient", "unassessed"}
 ASSESSMENT_INSTRUCTIONS = (
     " Return only a JSON object with main_finding (Russian), uncertainty (Russian), "
@@ -228,9 +232,9 @@ def prose_urls_are_recorded(texts, recorded_urls):
         any(
             url is not None
             and match.group(0).startswith(url)
-            and all(char in ".,;»”’\"'" for char in match.group(0)[len(url) :])
+            and all(char in ".,;»”’\"')]`" for char in match.group(0)[len(url) :])
             for url in recorded_urls
         )
         for text in texts
-        for match in _URL.finditer(text)
+        for match in _PROSE_URL.finditer(text)
     )

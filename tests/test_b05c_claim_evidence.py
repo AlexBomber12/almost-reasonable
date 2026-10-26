@@ -534,3 +534,36 @@ def test_quoted_url_suffix_handling_does_not_accept_unavailable_or_altered_urls(
     assert not prose_urls_are_recorded([f"«{url}?changed=1»."], {url})
     assert not prose_urls_are_recorded([f"«{url}/other»."], {url})
     assert prose_urls_are_recorded([f"«{url}»."], {None, url})
+
+
+@pytest.mark.parametrize(
+    "wrapper", [("", ""), ("(", ")"), ("«", "»"), ("[", "]"), ("`", "`")]
+)
+@pytest.mark.parametrize("altered", [False, True])
+def test_parentheses_in_recorded_prose_urls_preserve_complete_binding(
+    tmp_path, wrapper, altered
+):
+    from app.private_web.research_bridge import render_report
+
+    raw = assessed_raw()
+    old_url = list(PAGES)[0]
+    url = "https://example.org/Temperature_(physics)"
+    raw["output"][0]["action"]["sources"][0]["url"] = url
+    output = raw["output"][1]["content"][0]
+    output["annotations"][0]["url"] = url
+    draft = json.loads(output["text"].replace(old_url, url))
+    prose_url = url + "?altered=1" if altered else url
+    draft["main_finding"] += f" Источник: {wrapper[0]}{prose_url}{wrapper[1]}."
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == ("invalid_response" if altered else "completed")
+    if not altered:
+        assert render_report(result["report"]) is not None
+
+
+def test_prose_url_matching_does_not_truncate_unrecorded_parenthesized_paths():
+    from app.research.assessment import prose_urls_are_recorded
+
+    url = "https://example.org/path"
+    assert not prose_urls_are_recorded([url + "(unrecorded)"], {url})
+    assert not prose_urls_are_recorded([url + "_(unrecorded)"], {url})
