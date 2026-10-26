@@ -536,7 +536,21 @@ c.close()
     journal_before = inspect_seed(
         "import sqlite3; print(sqlite3.connect('/seed/worker/research-authority.sqlite3').execute('SELECT * FROM reservations').fetchall())"
     )
-    run(*command, "restart", "provider-worker", "research-worker")
+    # Match the documented sequenced startup of processes sharing provider.sqlite3.
+    # Parallel restart has produced SIGBUS in EventStore initialization; verify
+    # each socket before starting the next process, without a provider operation.
+    for service, path in (
+        ("provider-worker", "/run/pilot-ipc/worker.sock"),
+        ("research-worker", "/run/pilot-research-ipc/research.sock"),
+    ):
+        run(*command, "restart", service)
+        eventually(
+            lambda: execute(
+                "private-app",
+                f"from pathlib import Path; print(Path({path!r}).is_socket())",
+            )
+            == "True"
+        )
     run(*command, "restart", "private-app")
     eventually(
         lambda: chat("print(json.dumps(browser.request('GET','/login')[0]))") == "200"

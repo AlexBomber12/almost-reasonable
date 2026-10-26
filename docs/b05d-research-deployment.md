@@ -186,11 +186,16 @@ the ordinary deployment/domain and retained B09D owner project.
 ## Restart and disabling
 
 Use the same complete research command and current stores. Sequence readiness:
-restart workers and verify sockets; restart app and wait for HTTP; restart owner
+restart inference and verify its socket, then research and verify its socket;
+restart app and wait for HTTP; restart owner
 controls separately only if needed. Concurrent app/owner initialization produced
 a pre-existing SQLite SIGBUS in the rehearsal, including with native storage;
 this procedure avoids that trigger and does not claim unrestricted concurrent
-startup safety. The separate B09D project stays running during ordinary extension
+startup safety. A later B05E current-HEAD CI run also observed an inference
+worker SIGBUS during parallel inference/research restart against the shared
+provider database; the deployment regression now verifies each worker's socket
+before restarting the next process. This is readiness sequencing, not a general
+SQLite concurrency fix. The separate B09D project stays running during ordinary extension
 startup. No restart clears Stop or consumes/renews authority merely by starting.
 
 For an abrupt exit, stop the specific service and verify no process/container
