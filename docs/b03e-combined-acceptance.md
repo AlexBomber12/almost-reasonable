@@ -24,7 +24,9 @@ deletion. Fake-provider HTTP/IPC tests retain permission, participant isolation,
 Stop, spending, reply holds, restart/recovery and exact accounting assertions.
 The ordinary web application and credential-owning worker remain separate.
 Narrative permission and activation formats, memory semantics and provider
-contracts are unchanged. The general AI/fiction disclosure permits invented
+contracts are unchanged. B05E extends these offline checks to the ordinary bounded-research configuration
+without a new acceptance deployment; see [operation and limits](b05d-research-deployment.md#b05e-memory-narrative-and-research-in-one-conversation).
+The general AI/fiction disclosure permits invented
 first-person memories; direct reality questions require truthful answers.
 
 `tests/test_combined_narrative_memory.py` retains the successful 20-operation

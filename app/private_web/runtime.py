@@ -631,7 +631,10 @@ class _DurableConversationRuntime(ConversationService):
                             and isinstance(result.validation.proposal, ResearchProposal)
                         ):
                             persisted = self._research_turn(
-                                route, reserved.operation, result.validation.proposal
+                                route,
+                                reserved.operation,
+                                result.validation.proposal,
+                                context=context,
                             )
                         else:
                             persisted = self._gate.authorized(
@@ -1076,7 +1079,11 @@ class _DurableConversationRuntime(ConversationService):
             reply = self._gate.authorized(
                 lambda: self._outputs.read_reply(principal, reply_operation_id)
             )
-            if reply is not None and reply.result_state is ResultState.PERSISTED:
+            if self._research_evidence(reply_operation_id) is not None:
+                # Intent precedes research contact and persistence. A research
+                # report never acknowledges the projected fictional episode.
+                self._narrative_audit.finish(operation_id, "rejected")
+            elif reply is not None and reply.result_state is ResultState.PERSISTED:
                 self._commit_narrative(principal, event_id, operation_id, audit)
             elif reply is None or not self._provider.attempt_exists(
                 "ipc:" + reply_operation_id
@@ -1830,7 +1837,9 @@ class _DurableConversationRuntime(ConversationService):
 
         return ClientResult("", "", outcome, 0, None)
 
-    def _research_screening(self, route, operation, canonical_question=None):
+    def _research_screening(
+        self, route, operation, canonical_question=None, context=None
+    ):
         """Capture material dependencies solely for local output rejection.
 
         A conversation audience authorizes shared abstractions, never foreign raw
@@ -1878,10 +1887,34 @@ class _DurableConversationRuntime(ConversationService):
                         WHERE e.event_id IN ({placeholders}) ORDER BY e.event_id""",
                     tuple(sorted(source_ids)),
                 ).fetchall()
+                context_texts = []
+                if type(context) is MemoryModelRequest:
+                    context_texts.extend(
+                        segment.content for segment in context.conversation.conversation
+                    )
+                    context_texts.extend(episode.text for episode in context.episodes)
+                    for memory in context.memories:
+                        context_texts.extend(
+                            value
+                            for value in (
+                                memory.text,
+                                memory.revision_reason,
+                                memory.reason_for_interest,
+                                memory.rationale,
+                                memory.review_condition,
+                                *memory.alternatives,
+                                *memory.constraints,
+                            )
+                            if value is not None
+                        )
                 base = self._research._screening
                 protected_texts = tuple(
                     remaining
-                    for text in [*(row[1] for row in rows), *shared_texts]
+                    for text in [
+                        *(row[1] for row in rows),
+                        *shared_texts,
+                        *context_texts,
+                    ]
                     if _normalized(
                         remaining := (
                             _without_reviewed_question(text, canonical_question)
@@ -1893,7 +1926,9 @@ class _DurableConversationRuntime(ConversationService):
                 return ResearchScreeningContext(
                     private_canaries=base.private_canaries
                     + tuple(sorted(source_ids))
-                    + operation.shared_operation_ids,
+                    + operation.shared_operation_ids
+                    + operation.generic_operation_ids
+                    + operation.narrative_operation_ids,
                     participant_identifiers=base.participant_identifiers
                     + tuple(
                         sorted({identifier for row in rows for identifier in row[2:]})
@@ -1914,7 +1949,7 @@ class _DurableConversationRuntime(ConversationService):
         finally:
             db.close()
 
-    def _research_turn(self, route, operation, proposal):
+    def _research_turn(self, route, operation, proposal, *, context=None):
         public = type(self._research) is PublicResearchBridge
         if public:
             subject = proposal.brief
@@ -1933,7 +1968,7 @@ class _DurableConversationRuntime(ConversationService):
             if public and self._research._profile is not None:
                 topic = self._research._profile.topic(subject)
                 canonical = topic.question if topic is not None else None
-            screening = self._research_screening(route, operation, canonical)
+            screening = self._research_screening(route, operation, canonical, context)
             return self._provider.reserve_attempt(
                 intent_id(operation.operation_id), worker_id, self._clock()
             ), screening
@@ -1958,6 +1993,17 @@ class _DurableConversationRuntime(ConversationService):
             return False
         if reservation is not AttemptReservationStatus.CREATED:
             return False
+        if getattr(self, "_narrative_audit", None) is not None:
+            narrative_id = "narrative:" + operation.operation_id.removeprefix("reply:")
+            if (
+                self._narrative_audit.status(
+                    narrative_id,
+                    route.principal.principal_id.value,
+                    operation.initiating_event_id,
+                )
+                == "received"
+            ):
+                self._narrative_audit.finish(narrative_id, "rejected")
         self._checkpoint("after_research_intent")
 
         def current():
@@ -1978,6 +2024,10 @@ class _DurableConversationRuntime(ConversationService):
             if (
                 not caps.private_reply_drafts_enabled
                 or not self._current_request.get()()
+                or (
+                    getattr(self, "_narrative_audit", None) is not None
+                    and not self._narrative_permission()
+                )
             ):
                 return "research_unavailable"
             if not self._research.permits(route.principal, operation, subject):
@@ -2443,11 +2493,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise ValueError("shared proposals require shared intelligence")
         if narrative_enabled and shared_proposals_enabled:
             raise ValueError("narrative mode cannot combine with shared proposals")
-        if narrative_enabled and (
-            kwargs.get("shared_intelligence") is not None
-            or kwargs.get("research_bridge") is not None
-        ):
-            raise ValueError("narrative mode cannot combine with shared or research")
+        if narrative_enabled and kwargs.get("shared_intelligence") is not None:
+            raise ValueError("narrative mode cannot combine with shared intelligence")
         if os.path.samefile(
             provider_state._event_store.database_path, event_store.database_path
         ):

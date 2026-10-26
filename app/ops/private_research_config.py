@@ -24,7 +24,6 @@ def extension_command(config, scope):
             or type(command) is not list
             or command[:5] != ["python", "-B", "-m", "app.private_web.cli", "serve"]
             or "--worker-socket" not in command
-            or "--enable-narrative" in command
             or any("public-research" in item for item in command)
             or provider_command[provider_command.index("--provider-database") + 1]
             != "/var/lib/pilot-worker/provider.sqlite3"

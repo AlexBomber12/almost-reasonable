@@ -224,6 +224,7 @@ def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_receiv
 ):
     state = []
     fake = SimpleNamespace(
+        _research_evidence=lambda _operation: None,
         _event_store=SimpleNamespace(database_path=tmp_path / "events.db"),
         _narrative_audit=SimpleNamespace(
             read=lambda *_args: (_ for _ in ()).throw(ValueError("conflict"))
@@ -251,6 +252,7 @@ def test_narrative_reconciliation_ignores_conflicting_receipt_and_commits_receiv
 def test_received_narrative_waits_for_existing_reply_attempt(tmp_path):
     finished = []
     fake = SimpleNamespace(
+        _research_evidence=lambda _operation: None,
         _event_store=SimpleNamespace(database_path=tmp_path / "events.db"),
         _narrative_audit=SimpleNamespace(
             read=lambda *_args: NarrativeAudit("received"),
