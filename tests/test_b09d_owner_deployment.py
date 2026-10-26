@@ -97,7 +97,7 @@ def test_compose_resolves_only_control_services_with_narrow_mounts(
             "/run/pilot-worker-stop": ("PILOT_STOP_SOCKET_DIR", True),
         },
         "worker-telemetry": {
-            "/var/lib/pilot-worker": ("PILOT_WORKER_STATE_DIR", True),
+            "/var/lib/pilot-worker": ("PILOT_WORKER_STATE_DIR", False),
             "/run/almost-reasonable-private-pilot/control": ("PILOT_CONTROL_DIR", True),
             "/run/pilot-worker-status": ("PILOT_TELEMETRY_SOCKET_DIR", False),
         },
@@ -144,8 +144,9 @@ def test_compose_resolves_only_control_services_with_narrow_mounts(
         assert owner[owner.index(option) + 1] == value
 
 
-# Keep a WAL writer open: the telemetry must see committed usage beyond the main
-# database inode through its read-only directory mount. This process never runs
+# Keep a WAL writer open initially: telemetry must see committed usage beyond
+# the main database inode, then keep working when the last writer closes.
+# This process never runs
 # the provider worker and has no provider configuration or network.
 SEED = r"""
 from datetime import UTC, datetime
@@ -205,7 +206,11 @@ for directory in ('app', 'worker', 'control', 'telemetry', 'stop-ipc'):
     os.chown(p / directory, uid, 11020 if directory in ('telemetry','stop-ipc') else uid)
 (p / 'ready').touch()
 while True:
-    time.sleep(1)
+    if connection is not None and (p / 'close-writer').exists():
+        connection.close()
+        connection = None
+        (p / 'writer-closed').touch()
+    time.sleep(0.05)
 """
 
 
@@ -318,7 +323,7 @@ c.close()
 """
         return tuple(json.loads(exec_python("owner-console", code)))
 
-    def snapshot():
+    def snapshot(*, sidecars=True):
         return run(
             "docker",
             "exec",
@@ -326,13 +331,14 @@ c.close()
             "python",
             "-B",
             "-c",
-            r"""
+            f"""
 from pathlib import Path
 from hashlib import sha256
 p = Path('/seed')
 print([(str(f.relative_to(p)), sha256(f.read_bytes()).hexdigest())
        for d in ('worker', 'control') for f in sorted((p / d).iterdir())
-       if f.name != 'emergency-stop.json' and not f.name.endswith('-shm')])
+       if f.name != 'emergency-stop.json' and not f.name.endswith('-shm')
+       and ({sidecars!r} or not f.name.endswith('-wal'))])
 """,
         )
 
@@ -504,6 +510,39 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
         eventually(lambda: observed()["worker"]["available"])
         assert observed()["worker"]["stop"]["active"] is True
         assert snapshot() == before
+        # A stopped worker normally closes its last writer and checkpoints away
+        # WAL/SHM. The same deployed reader must still report the recorded usage.
+        run(
+            "docker",
+            "exec",
+            seed,
+            "python",
+            "-B",
+            "-c",
+            "from pathlib import Path; Path('/seed/close-writer').touch()",
+        )
+        eventually(lambda: (root / "writer-closed").exists())
+        run(
+            "docker",
+            "exec",
+            seed,
+            "python",
+            "-B",
+            "-c",
+            "from pathlib import Path; assert not list(Path('/seed/worker').glob('*-wal')); assert not list(Path('/seed/worker').glob('*-shm'))",
+        )
+        checkpointed = snapshot(sidecars=False)
+        cold_status = observed()
+        provider = cold_status["worker"]["provider"]
+        assert provider["available"] is True
+        assert cold_status["recent"]["worker"]["available"] is True
+        assert provider["attempt_count"] == 1
+        assert provider["recorded_tokens"]["total_tokens"] == "15"
+        assert provider["unresolved_reservations"] == 1
+        assert snapshot(sidecars=False) == checkpointed
+        run(*command, "restart", "worker-telemetry")
+        eventually(lambda: observed()["worker"]["provider"]["available"])
+        assert snapshot(sidecars=False) == checkpointed
         for service in ("worker-stop", "worker-telemetry"):
             exec_python(
                 service,
@@ -513,7 +552,9 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
             "owner-console",
             "import os; assert os.getuid() == 11022; assert 11020 in os.getgroups()",
         )
-        # Real mounts enforce the owner/Stop boundary and read-only telemetry.
+        # Real mounts enforce the owner/Stop boundary and telemetry's read-only
+        # control directory. Its provider directory permits SQLite sidecars;
+        # the unchanged database hashes above verify read-only accounting.
         exec_python(
             "owner-console",
             "from pathlib import Path; assert not Path('/var/lib/pilot-worker').exists(); assert not Path('/run/secrets').exists(); assert not Path('/run/almost-reasonable-private-pilot/control').exists()",
@@ -524,7 +565,7 @@ assert os.statvfs('/').f_flag & os.ST_RDONLY
         )
         exec_python(
             "worker-telemetry",
-            "from pathlib import Path\ntry:\n Path('/var/lib/pilot-worker/forbidden').touch()\nexcept OSError:\n pass\nelse:\n raise AssertionError('telemetry state mount is writable')",
+            "from pathlib import Path\ntry:\n Path('/run/almost-reasonable-private-pilot/control/forbidden').touch()\nexcept OSError:\n pass\nelse:\n raise AssertionError('telemetry control mount is writable')",
         )
     except BaseException:
         print(run("docker", "logs", seed, check=False))

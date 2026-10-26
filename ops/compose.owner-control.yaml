@@ -95,7 +95,8 @@ services:
       - type: bind
         source: ${PILOT_WORKER_STATE_DIR:?set existing worker state directory}
         target: /var/lib/pilot-worker
-        read_only: true
+        # SQLite mode=ro still needs to recreate WAL/SHM after the last writer
+        # closes. The existing service enforces read-only database queries.
         bind: {create_host_path: false}
       - type: bind
         source: ${PILOT_CONTROL_DIR:?set existing worker control directory}

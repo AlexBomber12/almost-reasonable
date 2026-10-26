@@ -22,11 +22,21 @@ activation, allowance or credential mount. The control services run as
 same supplementary group. IPC directories are worker owned `0710`, sockets
 `0660`. Both clients and services retain their existing `SO_PEERCRED` checks.
 
-Telemetry mounts the existing worker-state and control **directories read-only**
-so committed SQLite WAL data and atomic Stop replacement remain visible. It
-queries only `provider.sqlite3` and reads only `emergency-stop.json`. These
-are directory-level mounts: other files co-located there are readable under the
-worker UID, including allowance or activation if present. Do not put credentials
+Telemetry mounts the existing worker-state **directory writable**: SQLite's
+`mode=ro` reader must recreate WAL/SHM bookkeeping when the last writer closes
+and removes the sidecars, as described in [SQLite's read-only WAL rules](https://www.sqlite.org/wal.html#read_only_databases).
+Its existing implementation opens the database with
+`mode=ro` and `PRAGMA query_only=ON`; it never initializes a database or issues
+write queries. Do not replace this with `immutable=1`, a stale copy or a
+single-file mount: live committed WAL usage must remain observable. The worker
+control **directory is read-only** for telemetry, so atomic Stop replacement
+remains visible without permitting control writes. It queries only
+`provider.sqlite3` and reads only `emergency-stop.json`.
+
+These are directory-level mounts under the worker UID. Co-located allowance
+files have the worker-state directory's filesystem write exposure; co-located
+activation remains readable in the control directory. The fixed telemetry
+protocol exposes neither file and never changes either. Do not put credentials
 in either directory. The Stop service receives only the existing control directory
 writable, required for atomic replacement and directory sync; it gets no worker
 state, allowance database or credential mount and no network. Its existing fixed
@@ -226,7 +236,8 @@ Existing owner/telemetry/Stop behavioral tests cover protocol faults, dropped
 acknowledgements, admission checks and provider gates. The additional test
 resolves the actual Compose model, then uses its exact commands and mounts
 with real sockets, production numeric UIDs/GIDs and disposable synthetic state.
-It keeps committed usage in SQLite WAL, authenticates over real owner HTTP,
+It keeps committed usage in SQLite WAL, then closes the last writer and verifies
+usage and diagnostics after SQLite removes the sidecars. It authenticates over real owner HTTP,
 asserts both Stops, tests unauthorized kernel peers, graceful restart/atomic
 replacement, unavailable services and accounting preservation with no inference
 worker, provider credentials or external network calls.
