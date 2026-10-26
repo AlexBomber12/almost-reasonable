@@ -75,6 +75,7 @@ def service(tmp_path, fake, *, authorization=None):
                 "threads_basic",
                 "threads_content_publish",
                 "threads_read_replies",
+                "threads_manage_replies",
                 "threads_manage_mentions",
             }
         ),
@@ -124,6 +125,8 @@ def ready(svc, auth, *, operation_id="operation-1", parent=None):
 def details(parent=None):
     value = {"id": "post-1", "owner": {"id": "user-1"}}
     if parent:
+        value.pop("owner")
+        value["is_reply_owned_by_me"] = True
         value["replied_to"] = {"id": parent}
     return value
 
@@ -831,7 +834,7 @@ def test_known_id_with_wrong_parent_remains_unresolved(tmp_path):
         response(200, {"id": "container-1"}),
         response(200, {"id": "post-1"}),
         TimeoutError("readback lost"),
-        response(200, details("wrong-parent")),
+        response(200, {**details(), "replied_to": {"id": "wrong-parent"}}),
     )
     svc, auth = service(tmp_path, fake)
     approval = ready(svc, auth)
@@ -930,16 +933,19 @@ def test_cursors_only_pages_continue_without_next_link(tmp_path, stream):
     )
 
 
-def test_publication_id_is_durable_before_readback_interruption(tmp_path, monkeypatch):
+@pytest.mark.parametrize("parent", [None, "parent-1"])
+def test_publication_id_is_durable_before_readback_interruption(
+    tmp_path, monkeypatch, parent
+):
     from app.threads.simulator import SimulatedCrash
 
     fake = FakeHTTP(
         response(200, {"id": "container-1"}),
         response(200, {"id": "post-1"}),
-        response(200, details()),
+        response(200, details(parent)),
     )
     svc, auth = service(tmp_path, fake)
-    approval = ready(svc, auth)
+    approval = ready(svc, auth, parent=parent)
     monkeypatch.setattr(
         svc.simulator,
         "verify_publication",

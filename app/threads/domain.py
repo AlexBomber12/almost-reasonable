@@ -176,6 +176,12 @@ class AccountPolicy:
             REQUIRED_REPLY_READ_SCOPES <= self.scopes
         ):
             blockers.append("required reply scopes are unavailable")
+        if (
+            live_transport_enabled
+            and publication_type is PublicationType.REPLY
+            and "threads_manage_replies" not in self.scopes
+        ):
+            blockers.append("required reply publication scope is unavailable")
         if not self.privacy_gate_available:
             blockers.append("privacy gate is unavailable")
         if not self.russian_output_gate_available:

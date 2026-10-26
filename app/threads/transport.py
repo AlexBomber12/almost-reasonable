@@ -301,13 +301,7 @@ class ThreadsHTTPTransport:
     def verify_publication(
         self, item: OutboxItem, container_id: str, publication_id: str
     ) -> PublishEvidence:
-        details = self._call(
-            "GET",
-            publication_id,
-            {"fields": "id,owner,replied_to"},
-            container_id=container_id,
-            publication_id=publication_id,
-        )
+        details = self._publication_details(item, publication_id, container_id)
         if not self._publication_matches(item, publication_id, details):
             raise ProviderFailure(
                 EffectClass.UNCERTAIN_DISPATCH,
@@ -327,12 +321,7 @@ class ThreadsHTTPTransport:
             "publication ID", item.provider_publication_id
         )
         try:
-            details = self._call(
-                "GET",
-                publication_id,
-                {"fields": "id,owner,replied_to"},
-                publication_id=publication_id,
-            )
+            details = self._publication_details(item, publication_id)
         except ProviderFailure:
             return ReconciliationResult.UNRESOLVED
         if self._publication_matches(item, publication_id, details):
@@ -340,6 +329,36 @@ class ThreadsHTTPTransport:
                 publication_id, "provider_publication_details_verified"
             )
         return ReconciliationResult.UNRESOLVED
+
+    def _publication_details(
+        self, item: OutboxItem, publication_id: str, container_id: str | None = None
+    ) -> dict:
+        fields = "id,owner,replied_to"
+        if item.publication_type is PublicationType.REPLY:
+            # Reply ownership is relative to the token user, including after restart.
+            # These reads follow a possible write: failures must retain its IDs.
+            profile = self._call(
+                "GET",
+                "me",
+                {"fields": "id"},
+                publication_id=publication_id,
+                container_id=container_id,
+            )
+            if profile.get("id") != self.provider_user_id:
+                raise ProviderFailure(
+                    EffectClass.UNCERTAIN_DISPATCH,
+                    "provider_account_mismatch",
+                    publication_id=publication_id,
+                    container_id=container_id,
+                )
+            fields = "id,is_reply_owned_by_me,replied_to"
+        return self._call(
+            "GET",
+            publication_id,
+            {"fields": fields},
+            publication_id=publication_id,
+            container_id=container_id,
+        )
 
     def _publication_matches(
         self, item: OutboxItem, publication_id: str, details: dict
@@ -364,8 +383,12 @@ class ThreadsHTTPTransport:
             return False
         return (
             details.get("id") == publication_id
-            and isinstance(owner, dict)
-            and owner.get("id") == self.provider_user_id
+            and (
+                details.get("is_reply_owned_by_me") is True
+                if item.publication_type is PublicationType.REPLY
+                else isinstance(owner, dict)
+                and owner.get("id") == self.provider_user_id
+            )
             and actual_parent == expected_parent
         )
 

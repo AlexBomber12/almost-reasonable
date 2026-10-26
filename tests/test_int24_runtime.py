@@ -52,12 +52,14 @@ class FakeHTTP:
         self.calls = []
         self.parent = None
         self.fail_readback = False
+        self.readback_value = None
+        self.profile_id = "user-1"
         self.reply_rows = None
 
     def request(self, method, url, headers, body, timeout):
         self.calls.append((method, url, body))
         if "/me?fields=id" in url:
-            value = {"id": "user-1"}
+            value = {"id": self.profile_id}
         elif "/replies?" in url:
             value = {
                 "data": self.reply_rows
@@ -85,7 +87,11 @@ class FakeHTTP:
                 return HTTPResponse(500, b"{}")
             value = {"id": "post-1", "owner": {"id": "user-1"}}
             if self.parent is not None:
+                value.pop("owner")
+                value["is_reply_owned_by_me"] = True
                 value["replied_to"] = {"id": self.parent}
+            if self.readback_value is not None:
+                value = self.readback_value
         return HTTPResponse(200, json.dumps(value).encode())
 
 
@@ -118,6 +124,7 @@ def setup(
                 "threads_basic",
                 "threads_content_publish",
                 "threads_read_replies",
+                "threads_manage_replies",
                 "threads_manage_mentions",
             }
         ),
