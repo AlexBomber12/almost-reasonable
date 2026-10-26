@@ -75,7 +75,7 @@ Normal input/output token usage is recorded by the existing worker accounting.
 There is no added provider operation or evaluator charge, and no paid call,
 live Threads call, merge or deployment is part of this implementation.
 
-Local validation: `scripts/ci.sh` passed all 5,334 tests with 100% line and
+Local validation: `scripts/ci.sh` passed all 5,349 tests with 100% line and
 branch coverage, lint and formatting checks. The run used four pytest workers
 and a short task-specific temporary directory to stay within the existing
 Unix socket path limit. All tests and coverage requirements remained enabled.

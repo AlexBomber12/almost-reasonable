@@ -13,7 +13,7 @@ import threading
 import time
 import unicodedata
 
-from app.behavior.russian_gate import RussianOutputPolicy, _URL
+from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.provider_contract import (
     CostEstimateStatus,
     default_openai_provider_config,
@@ -29,6 +29,7 @@ from app.research.assessment import (
     build_assessed_synthesis,
     validate_assessment,
     assessment_russian_texts,
+    prose_urls_are_recorded,
 )
 from app.research.brief import (
     ResearchQuestion,
@@ -660,11 +661,7 @@ class PublicResearchBoundary:
                     response_id=safe_response_id,
                 )
             recorded_urls = {source.url for source in evidence.sources}
-            if any(
-                match.group(0).rstrip(".,;") not in recorded_urls
-                for text in texts
-                for match in _URL.finditer(text)
-            ):
+            if not prose_urls_are_recorded(texts, recorded_urls):
                 return finish(
                     _response("invalid_response", 1, usage=usage),
                     response_id=safe_response_id,

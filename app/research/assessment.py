@@ -2,6 +2,8 @@
 
 import json
 
+from app.behavior.russian_gate import _URL
+
 from .provenance import ResearchEvidence
 from .synthesis import (
     ClaimKind,
@@ -218,3 +220,17 @@ def assessment_russian_texts(assessment):
             for item in claim["evidence"]
         ),
     ]
+
+
+def prose_urls_are_recorded(texts, recorded_urls):
+    """Match literal recorded URLs followed only by prose punctuation or quotes."""
+    return all(
+        any(
+            url is not None
+            and match.group(0).startswith(url)
+            and all(char in ".,;»”’\"'" for char in match.group(0)[len(url) :])
+            for url in recorded_urls
+        )
+        for text in texts
+        for match in _URL.finditer(text)
+    )

@@ -491,3 +491,46 @@ def test_transformed_synthesis_is_screened_before_delivery(tmp_path, monkeypatch
     assert len(sdk.calls) == 1
     assert store.usage_attempt("int20-ocean").outcome == "invalid_response"
     assert transformed_calls == ["r"]
+
+
+@pytest.mark.parametrize(
+    "quotes", [("«", "»"), ("“", "”"), ("‘", "’"), ('"', '"'), ("'", "'")]
+)
+@pytest.mark.parametrize("known", [True, False])
+def test_quoted_prose_urls_preserve_binding_and_reject_unknown_sources(
+    tmp_path, quotes, known
+):
+    from app.private_web.research_bridge import render_report
+
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    draft = json.loads(output["text"])
+    url = list(PAGES)[0] if known else "https://example.org/unrecorded"
+    draft["claims"][0]["evidence"][0]["explanation"] += (
+        f" Источник: {quotes[0]}{url}{quotes[1]}."
+    )
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == ("completed" if known else "invalid_response")
+    if known:
+        assert render_report(result["report"]) is not None
+
+
+@pytest.mark.parametrize("suffix", ["'", "»", ",", "."])
+def test_prose_url_matching_retains_literal_recorded_url_suffixes(suffix):
+    from app.research.assessment import prose_urls_are_recorded
+
+    url = "https://example.org/path" + suffix
+    assert prose_urls_are_recorded(["Источник: " + url], {url})
+    assert prose_urls_are_recorded(["Источник: " + url + "."], {url})
+    assert not prose_urls_are_recorded(["Источник: https://example.org/other»."], {url})
+
+
+def test_quoted_url_suffix_handling_does_not_accept_unavailable_or_altered_urls():
+    from app.research.assessment import prose_urls_are_recorded
+
+    url = "https://example.org/path"
+    assert not prose_urls_are_recorded([url], {None})
+    assert not prose_urls_are_recorded([f"«{url}?changed=1»."], {url})
+    assert not prose_urls_are_recorded([f"«{url}/other»."], {url})
+    assert prose_urls_are_recorded([f"«{url}»."], {None, url})

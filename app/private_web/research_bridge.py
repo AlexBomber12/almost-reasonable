@@ -17,11 +17,15 @@ import socket
 import stat
 import time
 
-from app.behavior.russian_gate import RussianOutputPolicy, _URL
+from app.behavior.russian_gate import RussianOutputPolicy
 from app.core.agent_proposals import MAX_PROPOSAL_TEXT_UTF8_BYTES
 from app.core.provider_contract import CostEstimateStatus
 from app.core.provider_spend import ProviderAttemptRecord, ProviderStateStore
-from app.research.assessment import assessment_russian_texts, validate_assessment
+from app.research.assessment import (
+    assessment_russian_texts,
+    validate_assessment,
+    prose_urls_are_recorded,
+)
 from app.research.authorization import SyntheticPublicResearchFixture
 from app.research.brief import ResearchScreeningContext, _screen
 from app.research.provenance import _valid_https_url, _valid_identifier
@@ -285,11 +289,7 @@ def render_report(report, screening=ResearchScreeningContext()):
     ):
         return None
     recorded_urls = {source["url"] for source in sources}
-    if any(
-        match.group(0).rstrip(".,;") not in recorded_urls
-        for text in prose
-        for match in _URL.finditer(text)
-    ):
+    if not prose_urls_are_recorded(prose, recorded_urls):
         return None
     metadata = {
         key: report[key] for key in ("claim_status", "semantic_support", "sources")
