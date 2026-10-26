@@ -165,13 +165,12 @@ class ReadBoundary:
     ) -> HTTPResponse:
         c = self.config
         expected = ["https://graph.threads.net/v1.0/me?fields=id"]
-        fields = (
-            "id,text,media_type,timestamp,root_post,replied_to,is_reply_owned_by_me"
-        )
+        fields = "id,text,media_type,timestamp"
+        reply_fields = fields + ",root_post,replied_to,is_reply_owned_by_me"
         for stream in c["streams"]:
             if stream == "reply":
                 expected.append(
-                    f"https://graph.threads.net/v1.0/{c['reply_thread_id']}/replies?{parse.urlencode({'fields': fields, 'limit': '10', 'reverse': 'false'})}"
+                    f"https://graph.threads.net/v1.0/{c['reply_thread_id']}/replies?{parse.urlencode({'fields': reply_fields, 'limit': '10', 'reverse': 'false'})}"
                 )
             else:
                 expected.append(
