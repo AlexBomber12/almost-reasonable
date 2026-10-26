@@ -8,6 +8,7 @@ import argparse
 from datetime import UTC, datetime, time, timedelta
 import json
 from pathlib import Path
+import signal
 from uuid import uuid4
 
 from app.behavior.scheduler import WakeupEvent, WakeupPolicy
@@ -17,6 +18,8 @@ from app.core.public_behavior_mission import PublicMissionContext
 from app.core.public_research_client import PublicResearchClient
 from app.core.store import EventStore
 from app.integration.threads_runtime import LocalOperator, ThreadsRuntime
+from app.integration.public_window import PublicOperatingWindow, WindowSpec
+from app.core.public_research_profile import PUBLIC_PURPOSE, load_research_profile
 from app.owner_control.store import OwnerStore
 from app.privacy.ledger import PrivacyLedger
 from app.threads.domain import AccountPolicy, InboundKind, Stage
@@ -107,12 +110,49 @@ def _runtime(config):
     )
 
 
+def _window_spec(config):
+    if config.get("operating_window_reviewed") is not True:
+        raise ValueError("reviewed operating window is absent")
+    if config.get("enable_public_mission_evolution"):
+        raise ValueError("operating windows require a fixed reviewed mission")
+    value = config["operating_window"]
+    return WindowSpec(
+        **(value | {"expires_at": datetime.fromisoformat(value["expires_at"])})
+    )
+
+
+def _window_plan(config, spec):
+    research_limit = 0
+    if config.get("enable_public_research"):
+        profile = load_research_profile(
+            config["public_research_profile"], role="application"
+        )
+        if (
+            profile.purpose != PUBLIC_PURPOSE
+            or profile.account_ref != config["account_ref"]
+            or profile.application_scope != config["public_research_scope"]
+        ):
+            raise ValueError("public research authority mismatch")
+        research_limit = profile.aggregate_limit
+    return {
+        "active": False,
+        "window": json.loads(spec.encoded()),
+        "maximum_work": spec.maximum_work(research_limit=research_limit),
+    }
+
+
+def _interrupt(_signal, _frame):
+    raise KeyboardInterrupt
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "command",
         choices=(
             "readiness",
+            "window-plan",
+            "run-window",
             "wakeup",
             "poll",
             "process",
@@ -132,6 +172,12 @@ def main(argv=None):
     parser.add_argument("--activate-live", action="store_true")
     parser.add_argument("--expires-minutes", type=int, default=15)
     args = parser.parse_args(argv)
+    if args.command == "window-plan":
+        if args.config is None:
+            parser.error("reviewed configuration is required")
+        config = _config(args.config)
+        print(json.dumps(_window_plan(config, _window_spec(config))))
+        return 0
     if not args.activate_live:
         if args.command != "readiness":
             parser.error("live operations require --activate-live")
@@ -146,7 +192,9 @@ def main(argv=None):
         return 0
     if args.config is None:
         parser.error("reviewed configuration is required")
-    app = _runtime(_config(args.config))
+    config = _config(args.config)
+    window = _window_spec(config) if args.command == "run-window" else None
+    app = _runtime(config)
     if args.command == "readiness":
         result = {
             "ready": False,
@@ -158,6 +206,12 @@ def main(argv=None):
                 "authorized_live_smoke",
             ],
         }
+    elif args.command == "run-window":
+        previous = signal.signal(signal.SIGTERM, _interrupt)
+        try:
+            result = PublicOperatingWindow(app, window).run()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
     elif args.command == "wakeup":
         result = app.run(
             (WakeupEvent(args.value, app.clock.now(), "operator scheduled wakeup"),)

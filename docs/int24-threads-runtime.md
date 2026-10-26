@@ -52,3 +52,10 @@ The tests use fake SDK and fake HTTP responses. They establish code-path behavio
 | `tests/test_int24_runtime_guards.py::test_approval_capacity_revocation_and_missing_approval_guard` | `INT-24-EXACT-APPROVAL-GUARD` |
 | `tests/test_int24_runtime_guards.py::test_stage0_journal_and_foreign_intents_cannot_authorize_public_runtime` | `INT-24-SYNTHETIC-ISOLATION` |
 | `tests/test_int24_runtime_guards.py::test_runtime_marker_and_intent_version_are_verified_on_restart` | `INT-24-VERSIONED-JOURNAL` |
+
+## Bounded supervised operation
+
+The existing operator also supports `window-plan` and explicitly activated
+`run-window`. See [B11C's prerequisites, limits and stop/resume procedure](b11c-public-operating-window.md).
+The runner reuses these journals, scheduler, polling and workers; every draft
+still awaits the independent approval/publication boundary described above.
