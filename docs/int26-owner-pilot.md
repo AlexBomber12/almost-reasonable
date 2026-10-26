@@ -1,5 +1,8 @@
 # INT-26 owner console for the bounded private pilot
 
+For the reproducible owner, telemetry and worker Stop deployment and migration
+from a manually launched container, use [the B09D runbook](b09d-owner-compose.md).
+
 The owner console is an explicit companion to the INT-22 application. It uses
 the existing `OwnerStore`, the conversation EventStore for bounded diagnostics,
 the application IPC EventStore for application-observed spend state, and the

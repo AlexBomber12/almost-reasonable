@@ -1,0 +1,133 @@
+# Separate project: no inference service or dependency can be started here.
+name: almost-reasonable-owner-control
+
+x-hardening: &hardening
+  image: ${PILOT_OWNER_CONTROL_IMAGE:?set an explicit approved release tag or digest}
+  read_only: true
+  security_opt: ["no-new-privileges:true"]
+  cap_drop: [ALL]
+  pids_limit: 64
+  mem_limit: 256m
+  stop_grace_period: 10s
+
+services:
+  owner-console:
+    <<: *hardening
+    user: "${PILOT_APP_UID:-11022}:${PILOT_APP_GID:-11022}"
+    group_add: ["${PILOT_IPC_GID:-11020}"]
+    network_mode: host
+    command:
+      - python
+      - -B
+      - -m
+      - app.ops.int26_owner_pilot
+      - --event-db
+      - /var/lib/pilot-app/events.db
+      - --ipc-state-db
+      - /var/lib/pilot-app/ipc-state.db
+      - --privacy-ledger
+      - /var/lib/pilot-app/ledger.db
+      - --owner-directory
+      - /var/lib/pilot-app/owner
+      - --allowed-host
+      - "${PILOT_OWNER_ALLOWED_HOST:?set approved owner HTTPS host}"
+      - --allowed-origin
+      - "${PILOT_OWNER_ALLOWED_ORIGIN:?set approved owner HTTPS origin}"
+      - --participant-origin
+      - "${PILOT_OWNER_PARTICIPANT_ORIGIN:?set participant HTTPS origin}"
+      - --allowed-client
+      - "${PILOT_OWNER_ALLOWED_CLIENT:?set approved owner client address}"
+      - --trusted-proxy
+      - "${PILOT_OWNER_TRUSTED_PROXY:-127.0.0.1}"
+      - --worker-telemetry-socket
+      - /run/pilot-worker-status/status.sock
+      - --worker-telemetry-uid
+      - "${PILOT_WORKER_UID:-11021}"
+      - --worker-stop-socket
+      - /run/pilot-worker-stop/stop.sock
+      - --worker-stop-uid
+      - "${PILOT_WORKER_UID:-11021}"
+      - --listen-host
+      - 127.0.0.1
+      - --port
+      - "18026"
+    volumes:
+      - type: bind
+        source: ${PILOT_APP_STATE_DIR:?set existing application state directory}
+        target: /var/lib/pilot-app
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_TELEMETRY_SOCKET_DIR:?set separate telemetry socket directory}
+        target: /run/pilot-worker-status
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_STOP_SOCKET_DIR:?set separate Stop socket directory}
+        target: /run/pilot-worker-stop
+        read_only: true
+        bind: {create_host_path: false}
+
+  worker-telemetry:
+    <<: *hardening
+    user: "${PILOT_WORKER_UID:-11021}:${PILOT_WORKER_GID:-11021}"
+    group_add: ["${PILOT_IPC_GID:-11020}"]
+    network_mode: none
+    command:
+      - python
+      - -B
+      - -m
+      - app.trusted.worker_telemetry
+      - --socket
+      - /run/pilot-worker-status/status.sock
+      - --provider-db
+      - /var/lib/pilot-worker/provider.sqlite3
+      - --stop-file
+      - /run/almost-reasonable-private-pilot/control/emergency-stop.json
+      - --allow-uid
+      - "${PILOT_APP_UID:-11022}"
+      - --socket-group-gid
+      - "${PILOT_IPC_GID:-11020}"
+    volumes:
+      - type: bind
+        source: ${PILOT_TELEMETRY_SOCKET_DIR:?set separate telemetry socket directory}
+        target: /run/pilot-worker-status
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_WORKER_STATE_DIR:?set existing worker state directory}
+        target: /var/lib/pilot-worker
+        # SQLite mode=ro still needs to recreate WAL/SHM after the last writer
+        # closes. The existing service enforces read-only database queries.
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_CONTROL_DIR:?set existing worker control directory}
+        target: /run/almost-reasonable-private-pilot/control
+        read_only: true
+        bind: {create_host_path: false}
+
+  worker-stop:
+    <<: *hardening
+    user: "${PILOT_WORKER_UID:-11021}:${PILOT_WORKER_GID:-11021}"
+    group_add: ["${PILOT_IPC_GID:-11020}"]
+    network_mode: none
+    command:
+      - python
+      - -B
+      - -m
+      - app.trusted.worker_stop
+      - --socket
+      - /run/pilot-worker-stop/stop.sock
+      - --stop-file
+      - /run/almost-reasonable-private-pilot/control/emergency-stop.json
+      - --allow-uid
+      - "${PILOT_APP_UID:-11022}"
+      - --socket-group-gid
+      - "${PILOT_IPC_GID:-11020}"
+    volumes:
+      - type: bind
+        source: ${PILOT_STOP_SOCKET_DIR:?set separate Stop socket directory}
+        target: /run/pilot-worker-stop
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_CONTROL_DIR:?set existing worker control directory}
+        target: /run/almost-reasonable-private-pilot/control
+        bind: {create_host_path: false}

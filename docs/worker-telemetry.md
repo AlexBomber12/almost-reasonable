@@ -1,5 +1,8 @@
 # Read-only worker telemetry for the owner console
 
+The [B09D Compose runbook](b09d-owner-compose.md) deploys this service alongside
+the existing owner and worker Stop service without starting inference.
+
 Start `app.trusted.worker_telemetry` explicitly under the **worker OS UID**. It
 is a separate process and AF_UNIX socket from inference. It needs only the
 worker provider-state SQLite database and the worker emergency Stop JSON file.
