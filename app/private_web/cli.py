@@ -1,6 +1,8 @@
 """Operator-only account provisioning and local WSGI server commands."""
 
 import argparse
+from contextlib import closing
+import sqlite3
 import json
 from collections.abc import Callable, Sequence
 from getpass import getpass
@@ -30,7 +32,7 @@ from app.cognition.shared import SharedIntelligence
 from app.trusted.private_pilot import read_pilot_control, _unique, PilotAuthorityError
 from app.trusted.openai_credential_files import TrustedTransportConfigurationError
 
-from .auth import AuthStore
+from .auth import AuthStore, SCHEMA_VERSION as AUTH_SCHEMA_VERSION
 from .conversation import ConversationService, _utc_now
 from .privacy import ParticipantPrivacyControls
 from .runtime import WorkerConversationRuntime
@@ -152,6 +154,38 @@ def _narrative_permission_current(path: Path, pilot_id: str) -> bool:
         return False
 
 
+def _require_initialized_research_stores(args):
+    """Research activation cannot bootstrap replacement application databases."""
+    try:
+        for path in (args.event_db, args.ipc_state_db):
+            with closing(
+                sqlite3.connect(Path(path).absolute().as_uri() + "?mode=ro", uri=True)
+            ) as db:
+                EventStore._verify_current_schema(db)
+        with closing(
+            sqlite3.connect(
+                Path(args.privacy_ledger).absolute().as_uri() + "?mode=ro", uri=True
+            )
+        ) as db:
+            if not PrivacyLedger._has_valid_schema(db):
+                raise ValueError("uninitialized privacy ledger")
+        for path, table, version in (
+            (Path(args.auth_db), "auth_schema", AUTH_SCHEMA_VERSION),
+            (Path(args.owner_directory) / "owner.sqlite", "owner_schema", 1),
+        ):
+            with closing(
+                sqlite3.connect(path.absolute().as_uri() + "?mode=ro", uri=True)
+            ) as db:
+                if db.execute(f"SELECT version FROM {table}").fetchall() != [
+                    (version,)
+                ]:
+                    raise ValueError("uninitialized authentication store")
+    except (sqlite3.Error, RuntimeError, ValueError):
+        raise SystemExit(
+            "research mode requires initialized application stores"
+        ) from None
+
+
 def main(
     argv: Sequence[str] | None = None,
     *,
@@ -252,6 +286,8 @@ def main(
             raise SystemExit(
                 "public research requires explicit enablement, socket, UID and approval"
             )
+        if args.enable_public_research:
+            _require_initialized_research_stores(args)
     elif (
         args.privacy_ledger is not None
         or args.owner_directory is not None

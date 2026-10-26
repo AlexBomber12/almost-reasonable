@@ -5,6 +5,7 @@ text nor HTTP data can issue it. Intent uses existing payload-free provider rows
 all result payloads belong to the existing reply store and its erasure graph.
 """
 
+from copy import deepcopy
 from dataclasses import dataclass, replace
 from datetime import timedelta
 import hashlib
@@ -255,12 +256,10 @@ class SyntheticResearchBridge:
 
 def render_report(report, screening=ResearchScreeningContext()):
     """Bound untrusted prose and preserve source views without factual approval."""
+    # Validate original bindings before replacing opaque provider identities in
+    # the participant view. Every visible byte is still screened below.
+    report = deepcopy(report)
     sources = report["sources"]
-    values = [report["main_finding"], report["uncertainty"]]
-    for source in sources:
-        values.extend(
-            value for value in (source["reference"], source["url"]) if value is not None
-        )
     if "assessment" in report:
         try:
             validate_assessment(
@@ -268,9 +267,6 @@ def render_report(report, screening=ResearchScreeningContext()):
             )
         except (TypeError, ValueError):
             return None
-        values.extend(assessment_russian_texts(report["assessment"]))
-    if _screen(values, screening) is not None:
-        return None
     references = [source["reference"] for source in sources]
     if len(set(references)) != len(references) or any(
         not _valid_identifier(source["reference"])
@@ -279,6 +275,22 @@ def render_report(report, screening=ResearchScreeningContext()):
         or not _valid_https_url(source["url"])
         for source in sources
     ):
+        return None
+    labels = {
+        reference: f"source:{index}" for index, reference in enumerate(references, 1)
+    }
+    for source in sources:
+        source["reference"] = labels[source["reference"]]
+    if "assessment" in report:
+        for claim in report["assessment"]["claims"]:
+            for evidence in claim["evidence"]:
+                evidence["reference"] = labels[evidence["reference"]]
+    values = [report["main_finding"], report["uncertainty"]]
+    for source in sources:
+        values.extend((source["reference"], source["url"]))
+    if "assessment" in report:
+        values.extend(assessment_russian_texts(report["assessment"]))
+    if _screen(values, screening) is not None:
         return None
     prose = [report["main_finding"]]
     if "assessment" in report:
@@ -294,6 +306,7 @@ def render_report(report, screening=ResearchScreeningContext()):
     metadata = {
         key: report[key] for key in ("claim_status", "semantic_support", "sources")
     }
+    metadata["reference_scope"] = "reply_local"
     if "assessment" in report:
         metadata["assessment"] = report["assessment"]
     text = (

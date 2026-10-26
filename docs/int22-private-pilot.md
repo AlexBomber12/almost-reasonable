@@ -7,6 +7,11 @@ service deployed, or participant enrolled while implementing INT-22. Ordinary
 smoke authorization, artifact, socket and operation remain separate and unchanged.
 INT-22 does not authorize production participants or public effects.
 
+For the optional reusable public-research connection on the ordinary deployment,
+see [B05D research deployment](b05d-research-deployment.md). It preserves the
+effective protected overrides, historical allowance, shared worker usage and
+owner emergency Stop. It does not authorize deployment or a paid check.
+
 ## Contract and limits
 
 The application uses the explicit INT-19 `--worker-socket` composition. It

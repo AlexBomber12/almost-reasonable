@@ -1,0 +1,76 @@
+# Append after ALL existing protected pilot overrides; also append the generated
+# app command file. See docs/b05d-research-deployment.md. No provider-worker change.
+services:
+  private-app:
+    image: ${PILOT_RESEARCH_APP_IMAGE:?set approved app release tag or digest}
+    volumes:
+      - type: bind
+        source: ${PILOT_RESEARCH_SOCKET_DIR:?set separate research IPC directory}
+        target: /run/pilot-research-ipc
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_RESEARCH_APP_PROFILE_DIR:?set protected application catalog directory}
+        target: /run/pilot-research-application
+        read_only: true
+        bind: {create_host_path: false}
+
+  research-worker:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile.private-pilot-worker
+    image: ${PILOT_RESEARCH_WORKER_IMAGE:?set approved worker release tag or digest}
+    user: "11021:11021"
+    group_add: ["11020"]
+    command:
+      - python
+      - -B
+      - -m
+      - app.trusted.public_research_worker
+      - --socket
+      - /run/pilot-research-ipc/research.sock
+      - --provider-database
+      - /var/lib/pilot-worker/provider.sqlite3
+      - --profile
+      - /run/pilot-research-worker/profile.json
+      - --authority-journal
+      - /var/lib/pilot-worker/research-authority.sqlite3
+      - --pilot-stop-file
+      - /run/almost-reasonable-private-pilot/control/emergency-stop.json
+      - --project-id
+      - ${PILOT_RESEARCH_PROJECT_ID:?set reviewed provider project}
+      - --organization-id
+      - ${PILOT_RESEARCH_ORGANIZATION_ID:?set reviewed provider organization}
+      - --socket-group-gid
+      - "11020"
+    read_only: true
+    networks: [provider-egress]
+    volumes:
+      - type: bind
+        source: ${PILOT_RESEARCH_SOCKET_DIR:?set separate research IPC directory}
+        target: /run/pilot-research-ipc
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_WORKER_STATE_DIR:?set existing worker state directory}
+        target: /var/lib/pilot-worker
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_RESEARCH_WORKER_PROFILE_DIR:?set protected worker catalog directory}
+        target: /run/pilot-research-worker
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_CONTROL_DIR:?set existing pilot control directory}
+        target: /run/almost-reasonable-private-pilot/control
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${PILOT_SECRET_DIR:?set existing worker credential directory}
+        target: /run/secrets
+        read_only: true
+        bind: {create_host_path: false}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    pids_limit: 64
+    mem_limit: 256m
+    stop_grace_period: 10s
