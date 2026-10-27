@@ -115,12 +115,15 @@ def _window_spec(config):
         raise ValueError("reviewed operating window is absent")
     if not config.get("public_mission_path"):
         raise ValueError("reviewed public mission is required")
-    if config.get("enable_public_mission_evolution"):
-        raise ValueError("operating windows require a fixed reviewed mission")
     value = config["operating_window"]
-    return WindowSpec(
+    spec = WindowSpec(
         **(value | {"expires_at": datetime.fromisoformat(value["expires_at"])})
     )
+    if spec.mission_evolution != config.get("enable_public_mission_evolution", False):
+        raise ValueError(
+            "window mission mode requires matching runtime (fixed or evolving)"
+        )
+    return spec
 
 
 def _window_plan(config, spec):

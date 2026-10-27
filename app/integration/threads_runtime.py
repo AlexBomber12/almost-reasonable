@@ -1086,11 +1086,12 @@ class ThreadsRuntime(ThreadsStage0):
             )
 
     def recover(self):
-        blocked = super().recover(
-            operations=None
+        operations = (
+            None
             if self.operating_window is None
             else self.operating_window.operations()
         )
+        blocked = super().recover(operations=operations)
         if self.mission_evolution is not None:
             with self.journal.transaction() as db:
                 rows = db.execute(
@@ -1098,7 +1099,9 @@ class ThreadsRuntime(ThreadsStage0):
                 ).fetchall()
             for row in rows:
                 payload = json.loads(row["payload"])
-                if payload.get("decision") == AgentDecision.REVISE_MISSION.value:
+                if payload.get("decision") == AgentDecision.REVISE_MISSION.value and (
+                    operations is None or row["operation"] in operations
+                ):
                     self._record_mission_outcome(row["operation"], payload)
         return blocked
 

@@ -52,6 +52,11 @@ class PublicMissionContext:
         current = document.current
         if current == root:
             return text, binding
+        return current.text, self.binding(current)
+
+    @staticmethod
+    def binding(current):
+        """Canonical binding for a validated evolved mission."""
         value = {
             "version": current.version,
             "purpose": current.purpose.value,
@@ -60,7 +65,7 @@ class PublicMissionContext:
             "parent_version": current.parent_version,
         }
         canonical = json.dumps(value, sort_keys=True, ensure_ascii=True).encode()
-        return current.text, {
+        return {
             "version": current.version,
             "digest": hashlib.sha256(canonical).hexdigest(),
             "purpose": current.purpose.value,

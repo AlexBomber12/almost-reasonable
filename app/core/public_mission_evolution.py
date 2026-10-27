@@ -438,6 +438,10 @@ class PublicMissionEvolution:
                 db.execute("RELEASE mission_effect")
                 self._hold_in(db, operation)
                 return False
+            if app.operating_window is not None:
+                app.operating_window.bind_transition(
+                    db, operation, payload, repository.load().current
+                )
             db.execute("RELEASE mission_effect")
             db.execute(
                 "UPDATE intents SET phase='linked' WHERE operation=? AND phase='intent'",

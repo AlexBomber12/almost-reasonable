@@ -3,8 +3,8 @@
 The existing INT24 operator can now run a reviewed, finite operating window.
 It offers due wakeups to `DurableScheduler`, alternates bounded reply/mention
 polls, and processes verified stored inbound events through `ThreadsRuntime`.
-Decisions can be no action, approved-catalog research, or a publication/reply
-draft. No action completes that deliberation; it does not trigger another
+Decisions can be no action, approved-catalog research, a publication/reply
+draft, or an explicitly enabled mission transition. No action completes that deliberation; it does not trigger another
 attempt. Every draft remains in the existing outbox awaiting independent
 approval. The runner never approves, dispatches, reconciles, resets UNKNOWN,
 or clears an account pause.
@@ -12,14 +12,17 @@ or clears an account pause.
 ## Prerequisites and bounds
 
 Use the ordinary deployment's existing protected INT24 operator configuration,
-operator UID, account, journals, public worker and approved fixed public mission.
+operator UID, account, journals, public worker and approved public mission.
 Existing account grants, INT27 read-only verification, token validity, disclosure,
 Stop, spend, privacy, mission and worker controls remain prerequisites. Public
 research is optional and needs the existing B05B public-only application/worker
 profiles, catalog, finite aggregate/per-topic quotas and research worker. Private
 conversation profiles, memory, narrative and participant text do not supply
-public research authority. Mission evolution is outside this window's three
-outcomes; a configuration enabling it is rejected before activation.
+public research authority. Fixed mission is the default. To enable B06B mission
+evolution, set `mission_evolution: true` inside `operating_window` and
+`enable_public_mission_evolution: true` at the configuration root. Both modes
+must match. Evolution also requires enabled public research, an authorized
+profile and a parentless trusted root as described in [B06A](b06a-public-mission-evolution.md).
 
 Default `readiness` remains inert. The new `window-plan` command reads the
 protected configuration and, if enabled, the public research profile; it reads
@@ -37,6 +40,7 @@ not supply or modify any production configuration.
 | `max_poll_pages` | 0–4096 total admitted polls, each at most one page and one GET. Zero disables polling. |
 | `max_inbound_events` | 0–4096 total admitted inbound deliberations, also charged to the model limit. Zero disables inbound processing. |
 | `poll_interval_seconds` | Integer 1–3600 between polls, alternating replies and mentions across restart. |
+| `mission_evolution` | Optional boolean, default false. Persisted mode; must match the runtime evolution setting. |
 | `page_size` | Optional integer 1–10, default 10. Each page fetches at most this many verified events. |
 
 For example, limits of 6 model calls, 4 poll pages, 3 inbound events and page
@@ -65,7 +69,7 @@ before new work; interruption can arrive while idle or in a bounded external cal
 
 ## Later operator procedure
 
-1. Review the fixed mission, maximum work, public-only authority and backlog.
+1. Review the mission, selected evolution mode, maximum work, public-only authority and backlog.
    Set the stable identity, absolute expiry and explicit limits in the protected
    configuration. Keep credentials in their existing protected files. Record the
    reviewed Git revision and configuration privately. Do not put credentials in
@@ -88,15 +92,19 @@ before new work; interruption can arrive while idle or in a bounded external cal
    runner using these account journals returns `busy` without admitting work.
 4. Use Ctrl-C or normal SIGTERM to stop the foreground command. The JSON summary
    classifies the exit, consumed limits, next scheduled work, scheduler outcomes, decisions, polling
-   and research outcomes, and pending draft/operation IDs. It contains neither
+   and research outcomes, bounded mission status (mode, admitted active binding and
+   pending proposal ID), and pending draft/operation IDs. The active binding is
+   the window's committed binding; a denied exit does not certify live authority. It contains neither
    draft content nor raw inbound/provider data. Owner Stop also stops admission;
    this command does not clear it. A failed or interrupted command never proves
    that a started paid operation had no effect.
 5. Resume by running the **same command with the same configuration and stores**
    while the original expiry and controls still permit it. Reusing the window
-   ID with changed limits or expiry is rejected. Privacy generation, mission and
-   public research authority remain bound to the first activation. A changed
-   binding is denied, rather than renewed on restart. Do not reset journals,
+   ID with changed limits, expiry or mission mode is rejected. Privacy generation,
+   trusted mission root and public research authority remain bound to first
+   activation. The active mission binding advances only with an authorized
+   transition from an operation admitted to this window. External mission changes
+   are denied, rather than adopted on restart. Do not reset journals,
    invent replacement IDs or create another window to recover uncertain work.
    A fresh operating window needs its own independent review and authority.
 6. Inspect a returned pending operation with the existing command:
@@ -119,6 +127,28 @@ The journal's existing single-host OS lock serializes window runners across
 processes and is released on process exit; no SQLite transaction spans HTTP or
 worker calls. Recovery is limited to the current window's admitted operations.
 The application requires a verified public mission before window activation.
+
+With evolution enabled, proposal, research and confirmation/rejection each use
+separate admitted deliberations. A proposal leaves the active mission unchanged.
+Confirmation requires the existing eligible research completed after the
+proposal and before the later decision. Recorded provenance and model judgments
+remain unverified evidence, not proof of truth or semantic support. Rejection
+and abandonment retain the active mission; abandonment needs no research and
+remains available after exhausted, denied or uncertain research. No action is
+also valid. A mission discontinuing the optional channel excludes publication
+choices while allowing other authorized deliberation.
+
+The MissionStateMachine transition, linked intent and window binding commit in
+one existing journal transaction. A crash before commit preserves a pending
+intent for guarded recovery; after commit the binding is already durable.
+Restart retains pending proposals, consumed operations and original limits; it
+never repeats inference or uncertain research. Transition recovery still checks
+Stop, expiry, clock watermark, source eligibility and controls. Mission changes
+grant no capabilities, replenish no quotas and extend no deadlines. Root
+replacement, withdrawn confirmation evidence and unexpected external mission
+changes retain denial behavior. These rules also apply when resuming an
+exhausted window; recovery cannot admit another model call.
+
 An absolute model deadline commits with each admitted intent and travels as an
 optional timestamp in the existing secretless public-worker request. The client
 and worker recompute the remaining timeout after control/journal and IPC delays,
