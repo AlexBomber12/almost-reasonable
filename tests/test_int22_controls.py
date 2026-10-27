@@ -148,7 +148,7 @@ def test_extraction_needs_separate_protected_permission_and_bounded_allowance(tm
     assert not gate.extraction_commit_allowed()
 
 
-def test_operator_prepare_inspect_and_cli_keep_stop(tmp_path, capsys, monkeypatch):
+def test_operator_prepare_inspect_and_cli_keep_stop(tmp_path, capsys):
     path, _ = activation_file(tmp_path)
     allowance = tmp_path / "allowance.sqlite3"
     provider = tmp_path / "provider.sqlite3"
@@ -170,9 +170,17 @@ def test_operator_prepare_inspect_and_cli_keep_stop(tmp_path, capsys, monkeypatc
     assert state["ready"] is False
     _stop(stop, False)
     assert private_pilot_ops.inspect(path, allowance, stop, provider)["ready"] is True
-    monkeypatch.setattr(
-        private_pilot_ops.ProviderStateStore, "is_spend_suspended", lambda _self: True
-    )
+    with EventStore(provider)._open() as db:
+        db.execute(
+            "INSERT INTO provider_spend_suspensions VALUES (?, ?, ?, ?, ?)",
+            (
+                "openai",
+                "2026-10-27T10:00:00+00:00",
+                "project_spend_limit_exceeded",
+                "test",
+                "test",
+            ),
+        )
     assert private_pilot_ops.inspect(path, allowance, stop, provider)["ready"] is False
     assert (
         private_pilot_ops.main(

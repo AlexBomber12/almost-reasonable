@@ -27,7 +27,8 @@ from app.trusted.openai_gateway import TrustedOpenAIGateway
 from app.trusted.openai_transport import FakeOpenAITransport
 from app.trusted.openai_worker_server import OpenAIWorkerServer, WorkerServerConfig
 from app.trusted.private_pilot import PilotAllowance, load_activation
-from app.trusted.private_pilot_worker import PilotRequestGate, PilotStop
+from app.trusted.private_pilot_worker import PilotRequestGate, PilotStop, build_worker
+from app.trusted import private_pilot_worker
 from app.trusted.public_research import PublicResearchBoundary, PublicResearchServer
 from app.trusted.public_research_transport import PublicResearchTransport
 from app.trusted.research_authority_journal import AuthorityJournal
@@ -52,8 +53,10 @@ def episode(text=EPISODE):
     return _result({"decision": "create", "handle": None, "episode": text})
 
 
-@pytest.fixture
-def combined(tmp_path):
+@pytest.fixture(params=["legacy", "ordinary"])
+def combined(tmp_path, request, monkeypatch):
+    ordinary_grant = request.param == "ordinary"
+    clock = SimpleNamespace(now=NOW)
     activation_path, value = activation_file(tmp_path)
     value.update(
         version="private-pilot-activation-b03e-v1",
@@ -63,8 +66,19 @@ def combined(tmp_path):
             "%Y-%m-%dT%H:%M:%SZ"
         ),
     )
+    if ordinary_grant:
+        value.update(
+            version="private-operating-grant-v1",
+            not_before=NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            expires_at=(NOW + timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        )
+        del value["task"]
     _rewrite(activation_path, value)
-    activation = load_activation(activation_path, allow_memory_acceptance=True)
+    activation = load_activation(
+        activation_path,
+        allow_memory_acceptance=not ordinary_grant,
+        now=NOW if ordinary_grant else None,
+    )
 
     def permission(name, version):
         path = activation_path.parent / (name + ".json")
@@ -78,7 +92,12 @@ def combined(tmp_path):
 
     evolution = permission("evolution", "private-memory-evolution-permission-v1")
     typed = permission("typed", "private-typed-memory-permission-v1")
-    narrative = permission("narrative", "private-narrative-permission-v2")
+    narrative = permission(
+        "narrative",
+        "private-narrative-permission-v3"
+        if ordinary_grant
+        else "private-narrative-permission-v2",
+    )
     stop_path = activation_path.parent / "stop.json"
     stop_path.write_text(
         json.dumps(dict(version="private-pilot-emergency-stop-v1", stop=False))
@@ -96,6 +115,7 @@ def combined(tmp_path):
         evolution_permission_path=evolution,
         typed_permission_path=typed,
         narrative_permission_path=narrative,
+        clock=lambda: clock.now if ordinary_grant else datetime.now(UTC),
     )
     directory = tmp_path / "ipc"
     directory.mkdir(mode=0o700)
@@ -112,7 +132,7 @@ def combined(tmp_path):
         transport=PublicResearchTransport(sdk),
         enabled=True,
         emergency_stop=stop.active,
-        utcnow=lambda: NOW,
+        utcnow=lambda: clock.now,
     )
     boundary.install_profile(
         load_research_profile(worker_path, role="worker"),
@@ -131,9 +151,12 @@ def combined(tmp_path):
                     paid_calls_enabled=True,
                     max_attempts=1,
                 ),
-                emergency_stop=stop.active,
+                emergency_stop=request_gate.paid_transport_blocked,
             ),
             request_guard=request_gate.authorize,
+            response_guard=(lambda: not request_gate.paid_transport_blocked())
+            if ordinary_grant
+            else None,
             evolution_enabled=True,
             evolution_commit_guard=request_gate.evolution_commit_allowed,
             typed_enabled=True,
@@ -165,7 +188,7 @@ def combined(tmp_path):
                 directory / "research.sock", expected_worker_uid=os.geteuid()
             ),
             enabled=True,
-            clock=lambda: NOW,
+            clock=lambda: clock.now,
             approval_path=app_path,
             application_scope="test-private-chat",
         )
@@ -185,7 +208,7 @@ def combined(tmp_path):
             ),
             research_bridge=bridge,
             emergency_stop=stop.active,
-            clock=lambda: NOW,
+            clock=lambda: clock.now,
             context_limits=ContextLimits(32000, 1),
         )
         app._privacy = ParticipantPrivacyControls(
@@ -202,7 +225,39 @@ def combined(tmp_path):
         ), body
         return json.loads(body)
 
+    def restart_worker():
+        done.set()
+        for thread, server in zip(threads, servers):
+            thread.join(5)
+            server.close()
+            assert not thread.is_alive()
+        monkeypatch.setattr(
+            private_pilot_worker, "build_worker_openai_transport", lambda **_scope: fake
+        )
+        servers[0] = build_worker(
+            socket_path=socket,
+            provider_database=tmp_path / "provider.db",
+            allowance_database=allowance.path,
+            activation_path=activation_path,
+            stop_path=stop_path,
+            evolution_permission_path=evolution,
+            typed_permission_path=typed,
+            narrative_permission_path=narrative,
+            memory_acceptance=not ordinary_grant,
+            clock=lambda: clock.now if ordinary_grant else datetime.now(UTC),
+        )
+        done.clear()
+        threads.clear()
+        for server in servers:
+            server.start()
+            thread = Thread(target=server.serve, kwargs={"should_stop": done.is_set})
+            thread.start()
+            threads.append(thread)
+        restart()
+
     state = SimpleNamespace(
+        clock=clock,
+        restart_worker=restart_worker,
         events=events,
         app=app,
         browser=browser,
@@ -267,7 +322,26 @@ def test_same_chat_memory_fiction_research_restart_and_deletion(combined):
     )
     assert (
         c.send(
-            "fact", "Запомни: мой проект Рубин.", [first, _typed_no_change(), reply()]
+            "fact",
+            "Запомни: мой проект Рубин, мне интересны шестерни Ладога.",
+            [
+                first,
+                _result(
+                    dict(
+                        decision="new_memory",
+                        handle=None,
+                        kind="durable_interest",
+                        source_role="supporting",
+                        fields=dict(
+                            topic="Шестерни Ладога",
+                            strength=80,
+                            status="active",
+                            reason_for_interest="Участник увлечён шестернями серии Ладога",
+                        ),
+                    )
+                ),
+                reply(),
+            ],
         )["model_state"]
         == "completed"
     )
@@ -349,7 +423,9 @@ def test_same_chat_memory_fiction_research_restart_and_deletion(combined):
         "fictional story",
     ):
         assert private not in public
-    c.restart()
+    if c.activation.ordinary:
+        c.clock.now += timedelta(hours=3)
+    c.restart_worker()
     recall = "Твой проект — Сапфир. Компас был частью вымысла; это не происходило в действительности."
     assert (
         c.send(
@@ -357,6 +433,8 @@ def test_same_chat_memory_fiction_research_restart_and_deletion(combined):
         )["response"]
         == recall
     )
+    typed_shown = json.loads(c.fake.calls[-2].request.input_text)
+    assert typed_shown["memories"][0]["fields"]["topic"] == "Шестерни Ладога"
     shown = json.loads(c.fake.calls[-1].request.input_text)
     assert shown["fictional_episodes"][0]["text"] == EPISODE
     assert shown["memories"][0]["text"] == MEMORY
@@ -476,7 +554,14 @@ def test_interrupted_research_never_commits_projected_episode_or_repeats_calls(
     )
     assert c.allowance.remaining() == 16
     with sqlite3.connect(c.allowance.path) as db:
-        consumed = [row[0] for row in db.execute("SELECT operation_id FROM consumed")]
+        consumed = [
+            row[0]
+            for row in db.execute(
+                "SELECT operation_id FROM operating_consumed"
+                if c.activation.ordinary
+                else "SELECT operation_id FROM consumed"
+            )
+        ]
     assert len(consumed) == 4
     assert not any(value.startswith("reply_hold:") for value in consumed)
 
@@ -602,7 +687,14 @@ def test_interruption_before_research_keeps_consumed_or_held_reply_slot(combined
     assert len(c.fake.calls) == (3 if cut == "narrative_receipt" else 4)
     assert c.allowance.remaining() == 16  # uncertain work is never refunded
     with sqlite3.connect(c.allowance.path) as db:
-        values = [row[0] for row in db.execute("SELECT operation_id FROM consumed")]
+        values = [
+            row[0]
+            for row in db.execute(
+                "SELECT operation_id FROM operating_consumed"
+                if c.activation.ordinary
+                else "SELECT operation_id FROM consumed"
+            )
+        ]
     assert sum(value.startswith("reply_hold:") for value in values) == (
         cut == "narrative_receipt"
     )

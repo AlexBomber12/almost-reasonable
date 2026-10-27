@@ -12,6 +12,10 @@ see [B05D research deployment](b05d-research-deployment.md). It preserves the
 effective protected overrides, historical allowance, shared worker usage and
 owner emergency Stop. It does not authorize deployment or a paid check.
 
+For sustained ordinary private conversation, see [ordinary operating grants](private-operating-grant.md).
+That explicit versioned path preserves these short-pilot limits and the historical
+allowance; this document remains the legacy rehearsal contract.
+
 ## Contract and limits
 
 The application uses the explicit INT-19 `--worker-socket` composition. It

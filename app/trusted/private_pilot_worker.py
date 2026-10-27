@@ -1,6 +1,9 @@
 """Explicit credential-holding worker for the bounded INT-22 private pilot."""
 
 import argparse
+from contextlib import closing
+import sqlite3
+from datetime import UTC, datetime
 from collections.abc import Callable
 import json
 from pathlib import Path
@@ -49,6 +52,7 @@ EXTRACTION_PERMISSION_VERSION = "private-memory-extraction-permission-v1"
 EVOLUTION_PERMISSION_VERSION = "private-memory-evolution-permission-v1"
 TYPED_PERMISSION_VERSION = "private-typed-memory-permission-v1"
 NARRATIVE_PERMISSION_VERSION = "private-narrative-permission-v1"
+OPERATING_NARRATIVE_PERMISSION_VERSION = "private-narrative-permission-v3"
 COMBINED_NARRATIVE_PERMISSION_VERSION = "private-narrative-permission-v2"
 SHARED_PERMISSION_VERSION = "private-shared-proposal-permission-v1"
 
@@ -114,7 +118,9 @@ class PilotRequestGate:
         typed_permission_path: Path | None = None,
         narrative_permission_path: Path | None = None,
         shared_permission_path: Path | None = None,
+        clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
+        self.clock = clock
         self.activation = activation
         self.allowance = allowance
         self.activation_path = activation_path
@@ -143,7 +149,9 @@ class PilotRequestGate:
     def narrative_limit(self) -> int | None:
         return self._memory_limit(
             self.narrative_permission_path,
-            COMBINED_NARRATIVE_PERMISSION_VERSION
+            OPERATING_NARRATIVE_PERMISSION_VERSION
+            if self.activation.ordinary
+            else COMBINED_NARRATIVE_PERMISSION_VERSION
             if self.activation.combined_acceptance
             else NARRATIVE_PERMISSION_VERSION,
         )
@@ -190,13 +198,12 @@ class PilotRequestGate:
 
     def current(self) -> bool:
         try:
-            return (
-                load_activation(
-                    self.activation_path,
-                    allow_memory_acceptance=self.activation.memory_acceptance,
-                )
-                == self.activation
-            )
+            return load_activation(
+                self.activation_path,
+                allow_memory_acceptance=self.activation.memory_acceptance,
+                now=self.clock(),
+                require_current=not self.activation.ordinary,
+            ) == self.activation and self.allowance.current(self.clock())
         except PilotAuthorityError:
             return False
 
@@ -302,11 +309,15 @@ def build_worker(
     narrative_permission_path: Path | None = None,
     shared_permission_path: Path | None = None,
     memory_acceptance: bool = False,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> OpenAIWorkerServer:
     """Live entry point; only the protected credential-file factory creates SDK."""
 
     activation = load_activation(
-        activation_path, allow_memory_acceptance=memory_acceptance
+        activation_path,
+        allow_memory_acceptance=memory_acceptance,
+        require_current=False,
+        now=clock(),
     )
     if memory_acceptance and (
         not activation.memory_acceptance
@@ -323,6 +334,12 @@ def build_worker(
     ):
         raise PilotAuthorityError("invalid memory acceptance scope")
     allowance = PilotAllowance(allowance_database, activation)
+    if not activation.ordinary:
+        load_activation(
+            activation_path, allow_memory_acceptance=memory_acceptance, now=clock()
+        )
+    if not allowance.current(clock()):
+        raise PilotAuthorityError("operating grant is inactive")
     provider_identity = _require_provider_database(provider_database)
 
     def provider_state_current() -> bool:
@@ -331,12 +348,22 @@ def build_worker(
         except PilotAuthorityError:
             return False
 
+    try:
+        with closing(
+            sqlite3.connect(provider_database.as_uri() + "?mode=ro", uri=True)
+        ) as existing:
+            EventStore._verify_current_schema(existing)
+    except (sqlite3.Error, RuntimeError):
+        raise PilotAuthorityError(
+            "existing initialized provider database required"
+        ) from None
     provider_store = ProviderStateStore(EventStore(provider_database))
     gate = PilotRequestGate(
         activation,
         allowance,
         activation_path=activation_path,
         stop=PilotStop(stop_path),
+        clock=clock,
         provider_state_current=provider_state_current,
         provider_spend_suspended=provider_store.is_spend_suspended,
         extraction_permission_path=extraction_permission_path,
@@ -363,6 +390,9 @@ def build_worker(
         ),
         gateway,
         request_guard=gate.authorize,
+        response_guard=(lambda: not gate.paid_transport_blocked())
+        if activation.ordinary
+        else None,
         extraction_enabled=extraction_permission_path is not None,
         extraction_commit_guard=gate.extraction_commit_allowed,
         evolution_enabled=evolution_permission_path is not None,
@@ -386,6 +416,7 @@ def _require_provider_database(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Run the bounded private pilot worker")
+    parser.add_argument("--activation", type=Path, default=ACTIVATION_PATH)
     parser.add_argument("--socket", required=True, type=Path)
     parser.add_argument("--provider-database", required=True, type=Path)
     parser.add_argument("--allowance-database", required=True, type=Path)
@@ -398,6 +429,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--memory-acceptance", action="store_true")
     args = parser.parse_args(argv)
     worker = build_worker(
+        activation_path=args.activation,
         socket_path=args.socket,
         provider_database=args.provider_database,
         allowance_database=args.allowance_database,

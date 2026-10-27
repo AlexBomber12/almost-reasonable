@@ -97,6 +97,7 @@ class OpenAIWorkerServer:
         *,
         request_guard: Callable[[InferenceRequest], WorkerResponse | None]
         | None = None,
+        response_guard: Callable[[], bool] | None = None,
         extraction_enabled: bool = False,
         extraction_commit_guard: Callable[[], bool] | None = None,
         evolution_enabled: bool = False,
@@ -114,6 +115,8 @@ class OpenAIWorkerServer:
             raise TypeError("gateway must be a TrustedOpenAIGateway")
         if request_guard is not None and not callable(request_guard):
             raise TypeError("request_guard must be callable")
+        if response_guard is not None and not callable(response_guard):
+            raise TypeError("response_guard must be callable")
         if type(extraction_enabled) is not bool:
             raise TypeError("extraction_enabled must be a bool")
         if extraction_commit_guard is not None and not callable(
@@ -141,6 +144,7 @@ class OpenAIWorkerServer:
         self._config = config
         self._gateway = gateway
         self._request_guard = request_guard
+        self._response_guard = response_guard
         self._extraction_enabled = extraction_enabled
         self._extraction_commit_guard = extraction_commit_guard
         self._evolution_enabled = evolution_enabled
@@ -387,6 +391,21 @@ class OpenAIWorkerServer:
                                 _INVALID_REQUEST_RU,
                                 None,
                                 shared_operation=True,
+                            )
+                        if (
+                            self._response_guard is not None
+                            and not self._response_guard()
+                        ):
+                            response = WorkerResponse(
+                                "authorization_rejected",
+                                response.attempts,
+                                _INVALID_REQUEST_RU,
+                                None,
+                                extraction_operation=response.extraction_operation,
+                                evolution_operation=response.evolution_operation,
+                                typed_operation=response.typed_operation,
+                                narrative_operation=response.narrative_operation,
+                                shared_operation=response.shared_operation,
                             )
             try:
                 send_frame(
