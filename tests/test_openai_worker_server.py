@@ -166,6 +166,9 @@ def test_server_rejects_invalid_guard_configuration_and_return(tmp_path):
     with pytest.raises(TypeError, match="request_guard"):
         OpenAIWorkerServer(config, instance, request_guard=object())
 
+    with pytest.raises(TypeError, match="response_guard"):
+        OpenAIWorkerServer(config, instance, response_guard=object())
+
     server = OpenAIWorkerServer(
         config, instance, request_guard=lambda _request: object()
     )

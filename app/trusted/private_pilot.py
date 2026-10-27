@@ -17,6 +17,8 @@ from app.trusted.openai_credential_files import (
 
 
 ACTIVATION_VERSION = "private-pilot-activation-v1"
+OPERATING_GRANT_VERSION = "private-operating-grant-v1"
+MAX_OPERATING_OPERATIONS = 2**63 - 1
 MEMORY_ACTIVATION_VERSION = "private-pilot-activation-b03d-v1"
 MEMORY_TASK = "synthetic-private-robot-memory-b03d"
 COMBINED_ACTIVATION_VERSION = "private-pilot-activation-b03e-v1"
@@ -122,6 +124,7 @@ class PilotActivation:
     digest: str
     memory_acceptance: bool = False
     combined_acceptance: bool = False
+    ordinary: bool = False
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -140,7 +143,11 @@ def _utc_second(value: object) -> datetime:
 
 
 def load_activation(
-    path: Path, *, now: datetime | None = None, allow_memory_acceptance: bool = False
+    path: Path,
+    *,
+    now: datetime | None = None,
+    allow_memory_acceptance: bool = False,
+    require_current: bool = True,
 ) -> PilotActivation:
     """Read an exact worker-owned 0400 artifact on every authorization check."""
 
@@ -149,6 +156,7 @@ def load_activation(
         value = json.loads(payload, object_pairs_hook=_unique)
         if type(value) is not dict or type(allow_memory_acceptance) is not bool:
             raise ValueError("invalid activation fields")
+        ordinary = value.get("version") == OPERATING_GRANT_VERSION
         combined_acceptance = (
             allow_memory_acceptance
             and set(value) == _FIELDS | {"task"}
@@ -171,7 +179,9 @@ def load_activation(
         valid = (
             value["version"]
             == (
-                COMBINED_ACTIVATION_VERSION
+                OPERATING_GRANT_VERSION
+                if ordinary
+                else COMBINED_ACTIVATION_VERSION
                 if combined_acceptance
                 else MEMORY_ACTIVATION_VERSION
                 if memory_acceptance
@@ -193,7 +203,9 @@ def load_activation(
             and 1
             <= value["max_operations"]
             <= (
-                MAX_COMBINED_ACCEPTANCE_OPERATIONS
+                MAX_OPERATING_OPERATIONS
+                if ordinary
+                else MAX_COMBINED_ACCEPTANCE_OPERATIONS
                 if combined_acceptance
                 else MAX_MEMORY_ACCEPTANCE_OPERATIONS
                 if memory_acceptance
@@ -205,14 +217,17 @@ def load_activation(
             )
             and value["max_attempts_per_operation"] == 1
             and type(value["max_attempts_per_operation"]) is int
-            and 0
-            < (end - start).total_seconds()
-            <= (
-                MAX_MEMORY_ACCEPTANCE_WINDOW_SECONDS
-                if memory_acceptance
-                else MAX_WINDOW_SECONDS
+            and start < end
+            and (
+                ordinary
+                or (end - start).total_seconds()
+                <= (
+                    MAX_MEMORY_ACCEPTANCE_WINDOW_SECONDS
+                    if memory_acceptance
+                    else MAX_WINDOW_SECONDS
+                )
             )
-            and start <= current.astimezone(UTC) < end
+            and (not require_current or start <= current.astimezone(UTC) < end)
         )
         if not valid:
             raise ValueError("invalid or stale activation")
@@ -227,6 +242,7 @@ def load_activation(
             sha256(payload).hexdigest(),
             memory_acceptance,
             combined_acceptance,
+            ordinary,
         )
     except (
         PilotAuthorityError,
@@ -282,6 +298,8 @@ class PilotAllowance:
                     "INSERT INTO authority VALUES (?, ?)",
                     (activation.digest, activation.max_operations),
                 )
+            if activation.ordinary:
+                cls.replace(path, activation)
             return cls(path, activation)
         except (OSError, sqlite3.Error):
             raise PilotAuthorityError("allowance initialization failed") from None
@@ -296,6 +314,10 @@ class PilotAllowance:
         extraction_limit: int | None = None,
         reserve_reply: bool = False,
     ) -> int | bool:
+        if self.activation.ordinary:
+            return self._operating_transact(
+                operation_id, extraction_limit, reserve_reply
+            )
         self._inspect_file()
         try:
             with sqlite3.connect(
@@ -313,6 +335,8 @@ class PilotAllowance:
                 used = connection.execute("SELECT count(*) FROM consumed").fetchone()[0]
                 result = max(0, self.activation.max_operations - used)
                 if operation_id is not None:
+                    if self._has_operating_grants(connection):
+                        return False
                     result = False
                     reply_hold = "reply_hold:" + operation_id.removeprefix("reply:")
                     if (
@@ -359,6 +383,192 @@ class PilotAllowance:
                                 result = True
             self._inspect_file()
             return result
+        except sqlite3.Error:
+            raise PilotAuthorityError("allowance state unavailable") from None
+
+    @staticmethod
+    def _has_operating_grants(connection: sqlite3.Connection) -> bool:
+        return (
+            connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operating_grants'"
+            ).fetchone()
+            is not None
+        )
+
+    @classmethod
+    def replace(cls, path: Path, activation: PilotActivation) -> None:
+        """Explicit operator selection; retain legacy rows and retire prior grants."""
+        if type(activation) is not PilotActivation or not activation.ordinary:
+            raise PilotAuthorityError("ordinary grant required")
+        identity = protected_state_identity(path)
+        try:
+            with sqlite3.connect(path.as_uri() + "?mode=rw", uri=True) as db:
+                db.execute("PRAGMA synchronous=FULL")
+                db.execute("BEGIN IMMEDIATE")
+                # Require an existing allowance, never a substitute empty database.
+                if (
+                    len(
+                        db.execute(
+                            "SELECT digest, max_operations FROM authority"
+                        ).fetchall()
+                    )
+                    != 1
+                ):
+                    raise PilotAuthorityError("invalid historical allowance")
+                db.execute("SELECT operation_id FROM consumed LIMIT 1")
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS operating_grants (digest TEXT PRIMARY KEY, pilot_id TEXT UNIQUE NOT NULL, max_operations INTEGER NOT NULL, last_seen TEXT NOT NULL, expired INTEGER NOT NULL, retired INTEGER NOT NULL)"
+                )
+                db.execute(
+                    "CREATE TABLE IF NOT EXISTS operating_consumed (operation_id TEXT PRIMARY KEY, digest TEXT NOT NULL)"
+                )
+                if db.execute(
+                    "SELECT 1 FROM operating_grants WHERE digest=? OR pilot_id=?",
+                    (activation.digest, activation.pilot_id),
+                ).fetchone():
+                    raise PilotAuthorityError("grant already prepared or retired")
+                db.execute("UPDATE operating_grants SET retired=1")
+                db.execute(
+                    "INSERT INTO operating_grants VALUES (?, ?, ?, ?, 0, 0)",
+                    (
+                        activation.digest,
+                        activation.pilot_id,
+                        activation.max_operations,
+                        activation.not_before.isoformat(),
+                    ),
+                )
+                if protected_state_identity(path) != identity:
+                    raise PilotAuthorityError("allowance location changed")
+        except sqlite3.Error:
+            raise PilotAuthorityError("grant preparation failed") from None
+
+    def _operating_transact(
+        self,
+        operation_id: str | None,
+        extraction_limit: int | None = None,
+        reserve_reply: bool = False,
+        *,
+        now: datetime | None = None,
+        observe: bool = True,
+    ) -> int | bool:
+        self._inspect_file()
+        try:
+            with sqlite3.connect(
+                self.path.as_uri() + "?mode=rw", uri=True, timeout=5
+            ) as db:
+                db.execute("PRAGMA synchronous=FULL")
+                db.execute("BEGIN IMMEDIATE")
+                row = db.execute(
+                    "SELECT pilot_id, max_operations, last_seen, expired, retired FROM operating_grants WHERE digest=?",
+                    (self.activation.digest,),
+                ).fetchone()
+                if row is None or row[:2] != (
+                    self.activation.pilot_id,
+                    self.activation.max_operations,
+                ):
+                    raise PilotAuthorityError("allowance binding changed")
+                pilot_id, maximum, last_seen, expired, retired = row
+                if now is not None:
+                    instant = now.astimezone(UTC)
+                    watermark = datetime.fromisoformat(last_seen)
+                    expired = expired or instant >= self.activation.expires_at
+                    if observe:
+                        db.execute(
+                            "UPDATE operating_grants SET last_seen=?, expired=? WHERE digest=?",
+                            (
+                                max(instant, watermark).isoformat(),
+                                int(expired),
+                                self.activation.digest,
+                            ),
+                        )
+                    result = (
+                        not retired
+                        and not expired
+                        and watermark <= instant < self.activation.expires_at
+                    )
+                else:
+                    used = db.execute(
+                        "SELECT count(*) FROM operating_consumed WHERE digest=?",
+                        (self.activation.digest,),
+                    ).fetchone()[0]
+                    result = max(0, maximum - used)
+                    if operation_id is not None:
+                        result = False
+                        hold = "reply_hold:" + operation_id.removeprefix("reply:")
+                        suffix = operation_id.split(":", 1)[1]
+                        paired_reply = (
+                            "reply:" + suffix if reserve_reply else operation_id
+                        )
+                        identities = (
+                            operation_id,
+                            "reply_hold:" + suffix,
+                            paired_reply,
+                        )
+                        existing = {
+                            row[0]
+                            for row in db.execute(
+                                "SELECT operation_id FROM consumed WHERE operation_id IN (?, ?, ?) UNION ALL SELECT operation_id FROM operating_consumed WHERE operation_id IN (?, ?, ?)",
+                                identities + identities,
+                            )
+                        }
+                        own_hold = (
+                            operation_id.startswith("reply:")
+                            and operation_id not in existing
+                            and db.execute(
+                                "SELECT 1 FROM operating_consumed WHERE operation_id=? AND digest=?",
+                                (hold, self.activation.digest),
+                            ).fetchone()
+                            is not None
+                        )
+                        extracted = db.execute(
+                            "SELECT count(*) FROM operating_consumed WHERE digest=? AND operation_id NOT LIKE 'reply:%' AND operation_id NOT LIKE 'reply_hold:%'",
+                            (self.activation.digest,),
+                        ).fetchone()[0]
+                        if not retired and not expired:
+                            if own_hold:
+                                db.execute(
+                                    "DELETE FROM operating_consumed WHERE operation_id=?",
+                                    (hold,),
+                                )
+                                db.execute(
+                                    "INSERT INTO operating_consumed VALUES (?, ?)",
+                                    (operation_id, self.activation.digest),
+                                )
+                                result = True
+                            elif (
+                                not existing
+                                and used + (2 if reserve_reply else 1) <= maximum
+                                and (
+                                    extraction_limit is None
+                                    or extracted < extraction_limit
+                                )
+                            ):
+                                db.execute(
+                                    "INSERT INTO operating_consumed VALUES (?, ?)",
+                                    (operation_id, self.activation.digest),
+                                )
+                                if reserve_reply:
+                                    db.execute(
+                                        "INSERT INTO operating_consumed VALUES (?, ?)",
+                                        (
+                                            "reply_hold:" + suffix,
+                                            self.activation.digest,
+                                        ),
+                                    )
+                                result = True
+            self._inspect_file()
+            return result
+        except (sqlite3.Error, ValueError):
+            raise PilotAuthorityError("operating allowance state unavailable") from None
+
+    def current(self, now: datetime, *, observe: bool = True) -> bool:
+        """Persist time high-water/expiry even on rejection, shared across processes."""
+        if self.activation.ordinary:
+            return bool(self._operating_transact(None, now=now, observe=observe))
+        self._inspect_file()
+        try:
+            with sqlite3.connect(self.path.as_uri() + "?mode=ro", uri=True) as db:
+                return not self._has_operating_grants(db)
         except sqlite3.Error:
             raise PilotAuthorityError("allowance state unavailable") from None
 

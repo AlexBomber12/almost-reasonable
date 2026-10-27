@@ -135,6 +135,7 @@ def _narrative_permission_current(path: Path, pilot_id: str) -> bool:
             in {
                 "private-narrative-permission-v1",
                 "private-narrative-permission-v2",
+                "private-narrative-permission-v3",
             }
             and value["pilot_id"] == pilot_id
             and type(value["max_operations"]) is int
@@ -142,6 +143,8 @@ def _narrative_permission_current(path: Path, pilot_id: str) -> bool:
                 value["max_operations"] == 1
                 if value["version"] == "private-narrative-permission-v1"
                 else value["max_operations"] == 20
+                if value["version"] == "private-narrative-permission-v2"
+                else 1 <= value["max_operations"] <= 2**63 - 1
             )
         )
     except (

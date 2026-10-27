@@ -76,6 +76,11 @@ An empty/corrupt existing file is rejected without initializing a replacement.
 Configuration preparation still reads no databases. Synthetic fixtures explicitly
 initialize their own stores; deployed startup does not.
 
+For a separately approved sustained inference interval/quota, use the
+[ordinary operating grant procedure](private-operating-grant.md). Retain this
+research catalog and all four original Compose inputs; the grant adds no research
+authority and does not replace the selected historical allowance.
+
 ## Later operator runbook
 
 No deployment, credential access or paid call was performed by this task. Use
