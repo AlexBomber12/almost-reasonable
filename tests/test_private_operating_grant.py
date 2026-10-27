@@ -445,3 +445,49 @@ def test_competing_processes_and_reopened_state_cannot_exceed_quota(tmp_path):
         )
     assert sum(results) == 3
     assert allowance.remaining() == PilotAllowance(db, authority).remaining() == 0
+
+
+@pytest.mark.parametrize("legacy", [True, False])
+@pytest.mark.parametrize("old_bug_hold", [True, False])
+def test_replacement_cannot_rearm_started_reply_through_new_narrative_hold(
+    tmp_path, legacy, old_bug_hold
+):
+    if legacy:
+        path, value = activation_file(tmp_path)
+        historical = load_activation(path)
+    else:
+        path, value, historical = grant(tmp_path)
+    db = tmp_path / "allowance.db"
+    original = PilotAllowance.initialize(db, historical)
+    suffix = "a" * 64
+    # Simulate interruption after allowance commit, before provider reservation.
+    assert original.reserve("reply:" + suffix)
+    value.update(
+        version="private-operating-grant-v1",
+        pilot_id="new-grant",
+        max_operations=40,
+        not_before=NOW.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        expires_at=(NOW + timedelta(days=2)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    )
+    _rewrite(path, value)
+    current = load_activation(path, now=NOW)
+    PilotAllowance.replace(db, current)
+    allowance = PilotAllowance(db, current)
+    if old_bug_hold:
+        # Retain and safely handle a hold created by the pre-fix implementation.
+        with sqlite3.connect(db) as connection:
+            connection.executemany(
+                "INSERT INTO operating_consumed VALUES (?, ?)",
+                [
+                    (prefix + suffix, current.digest)
+                    for prefix in ("narrative:", "reply_hold:")
+                ],
+            )
+    before = allowance.remaining()
+    assert not allowance.reserve(
+        "narrative:" + suffix, extraction_limit=40, reserve_reply=True
+    )
+    assert not allowance.reserve("reply:" + suffix)
+    assert allowance.remaining() == before
+    assert not PilotAllowance(db, current).reserve("reply:" + suffix)
+    assert original.remaining() == historical.max_operations - 1

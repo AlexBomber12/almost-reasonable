@@ -496,17 +496,24 @@ class PilotAllowance:
                         result = False
                         hold = "reply_hold:" + operation_id.removeprefix("reply:")
                         suffix = operation_id.split(":", 1)[1]
-                        existing = db.execute(
-                            "SELECT 1 FROM consumed WHERE operation_id IN (?, ?) UNION ALL SELECT 1 FROM operating_consumed WHERE operation_id IN (?, ?)",
-                            (
-                                operation_id,
-                                "reply_hold:" + suffix,
-                                operation_id,
-                                "reply_hold:" + suffix,
-                            ),
-                        ).fetchone()
+                        paired_reply = (
+                            "reply:" + suffix if reserve_reply else operation_id
+                        )
+                        identities = (
+                            operation_id,
+                            "reply_hold:" + suffix,
+                            paired_reply,
+                        )
+                        existing = {
+                            row[0]
+                            for row in db.execute(
+                                "SELECT operation_id FROM consumed WHERE operation_id IN (?, ?, ?) UNION ALL SELECT operation_id FROM operating_consumed WHERE operation_id IN (?, ?, ?)",
+                                identities + identities,
+                            )
+                        }
                         own_hold = (
                             operation_id.startswith("reply:")
+                            and operation_id not in existing
                             and db.execute(
                                 "SELECT 1 FROM operating_consumed WHERE operation_id=? AND digest=?",
                                 (hold, self.activation.digest),
@@ -529,7 +536,7 @@ class PilotAllowance:
                                 )
                                 result = True
                             elif (
-                                existing is None
+                                not existing
                                 and used + (2 if reserve_reply else 1) <= maximum
                                 and (
                                     extraction_limit is None
