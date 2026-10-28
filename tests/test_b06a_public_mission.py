@@ -507,19 +507,19 @@ def test_generation_change_inside_mission_transaction_rolls_back(tmp_path, monke
             "correlation": "generation-race",
         }
         _staged_intent(app, "generation-race", payload)
-        calls = []
+        generation = [payload["generation"]]
+        original = MissionStateMachine.propose
 
-        def generation():
-            calls.append(None)
-            return (
-                payload["generation"] if len(calls) <= 2 else payload["generation"] + 1
-            )
+        def change_after_save(machine, proposal):
+            result = original(machine, proposal)
+            generation[0] += 1
+            return result
 
         with monkeypatch.context() as patch:
-            patch.setattr(app.ledger, "control_generation", generation)
+            patch.setattr(app.ledger, "control_generation", lambda: generation[0])
+            patch.setattr(MissionStateMachine, "propose", change_after_save)
             with pytest.raises(ValueError, match="controls changed"):
                 app.mission_evolution.apply("generation-race", payload)
-        assert len(calls) >= 2
         assert app.mission_evolution.document().proposals == ()
         assert app.journal.read("generation-race")["phase"] == "held"
     finally:

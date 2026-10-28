@@ -11,6 +11,7 @@ import json
 import math
 import re
 
+from app.core.public_experience import PublicExperience
 from app.research.assessment import MAX_PUBLIC_EVIDENCE_BYTES
 from app.threads.domain import require_aware_time, require_reference
 from app.behavior.deliberation import (
@@ -39,6 +40,8 @@ class PublicBehaviorRequest:
     evidence: tuple[str, ...] = ()
     mission_evolution: tuple[str, ...] = ()
     deadline_at: datetime | None = None
+
+    experience: PublicExperience | None = None
 
     def encode(self) -> bytes:
         require_reference("operation ID", self.operation_id)
@@ -102,6 +105,10 @@ class PublicBehaviorRequest:
             "catalog": self.catalog,
             "evidence": self.evidence,
         }
+        if self.experience is not None:
+            if type(self.experience) is not PublicExperience:
+                raise ValueError("invalid public experience")
+            value["experience"] = self.experience.value()
         if self.reservation is not None:
             if type(self.reservation) is not dict or set(self.reservation) != {
                 "account",
@@ -134,7 +141,7 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
         value = json.loads(data, object_pairs_hook=_unique_fields)
         if (
             type(value) is not dict
-            or set(value) - {"mission_evolution", "deadline_at"}
+            or set(value) - {"mission_evolution", "deadline_at", "experience"}
             not in (
                 {
                     "version",
@@ -183,6 +190,9 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
             tuple(value.get("mission_evolution", ())),
             datetime.fromisoformat(value["deadline_at"])
             if "deadline_at" in value
+            else None,
+            PublicExperience.parse(value["experience"])
+            if "experience" in value
             else None,
         )
         request.encode()

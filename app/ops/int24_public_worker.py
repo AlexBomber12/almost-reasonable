@@ -11,6 +11,7 @@ from app.core.store import EventStore
 from app.integration.threads_stage0 import _identity
 from app.integration.threads_runtime import PUBLIC_RUNTIME_VERSION
 from app.core.public_behavior import public_context_digest
+from app.core.public_experience import inference_context_digest
 from app.trusted.openai_credential_files import read_protected_worker_file
 from app.trusted.openai_transport import OPENAI_API_BASE_URL
 from app.trusted.public_behavior_worker import PublicSDKAdapter, PublicWorkerServer
@@ -76,7 +77,12 @@ def _attestor(account):
             and value.get("runtime_version") == PUBLIC_RUNTIME_VERSION
             and request.trigger
             == ("autonomous_wakeup" if value["kind"] == "wake" else "public_message")
-            and public_context_digest(request.context) == value["context_digest"]
+            and (
+                public_context_digest(request.context)
+                if request.experience is None
+                else inference_context_digest(request.context, request.experience)
+            )
+            == value["context_digest"]
             and request.mission == tuple(value["mission"])
             and 0 < request.deadline_seconds <= value["timeout"]
         )

@@ -244,3 +244,17 @@ context and conservative result recovery. Real-model resistance, fluent-human H/
 calibration, operator review, live providers and production activation remain absent.
 
 Qualitative permissibility, reviewer doubts or insufficient context, provisional quality scores, and deterministic G outcomes are distinct. A score below 0.75 does not automatically make a response impermissible. An ambiguous answer without an identified factual or policy error may be `acceptable_with_doubts`. No subjective verdict overrides failed authorization, privacy, capability, stop, or spending checks.
+
+## Durable public experience evidence
+
+The [INT24 continuity slice](int24-threads-runtime.md#durable-public-experience-continuity)
+connects locally verified public events, confirmed owned publications/replies and
+no-action decisions to subsequent real worker/SDK input, including after restart.
+`tests/test_public_experience.py` maps to the public-context portions of M2/M4/M5
+and SCN-04/05/10/11/12. It covers bounded deterministic selection, exact-operation
+attestation, withdrawal, uncertainty and legacy preservation using synthetic local
+persistence, IPC, fake SDK and fake HTTP. Existing publication/window/rootless
+startup suites remain required. This evidence does not satisfy full MVP acceptance:
+private-to-shared evolution, general beliefs/goals, semantic continuity quality,
+autonomous publication mode and authorized live validation remain separate gaps.
+Per-draft human approval is retained for this intermediate implementation.

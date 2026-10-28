@@ -32,6 +32,7 @@ class PublicBehaviorClient:
         self.reservation_evidence = None
         self.provider_store = None
         self.public_context = None
+        self.public_experience = None
         self.mission_evolution_context = None
         self.operation_deadline = None
         self.utc_now = lambda: datetime.now(UTC)
@@ -55,6 +56,8 @@ class PublicBehaviorClient:
             )
         if self.operation_deadline is not None:
             public = replace(public, deadline_at=self.operation_deadline(operation))
+        if self.public_experience is not None:
+            public = replace(public, experience=self.public_experience(operation))
         if self.reservation_evidence is not None:
             public = replace(public, reservation=self.reservation_evidence(public))
         if public.deadline_at is not None:

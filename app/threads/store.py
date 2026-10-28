@@ -1596,6 +1596,16 @@ class ThreadsStore:
             _linked_mission=True,
         )
 
+    def public_experience_events(self, account_ref):
+        """Application-owned verified inbound records, including processed events."""
+        require_reference("account reference", account_ref)
+        with self._open() as connection:
+            rows = connection.execute(
+                "SELECT * FROM threads_inbound_events WHERE account_ref=?",
+                (account_ref,),
+            ).fetchall()
+        return tuple(_inbound_event(row) for row in rows)
+
     def inbound_event(
         self, account_ref: str, stream: InboundKind, event_id: str
     ) -> InboundEvent | None:

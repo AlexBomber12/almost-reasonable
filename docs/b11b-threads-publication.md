@@ -59,3 +59,12 @@ Use the ordinary reviewed checkout and existing INT24 installation, protected co
 Publication effects and model costs are separate. `draft`, `approve`, `dispatch`, reconciliation and recovery invoke no model. New `wakeup` / `process` work may incur existing public-worker model charges, and any already enabled research path has its own authorized requests/costs; review the configured budget and backlog first. Neither draft generation nor an INT27 receipt authorizes publication. No token grant, live readback, upload timing, semantic safety, autonomous readiness or deployment is established by offline success.
 
 For the first top-level post on an empty profile, follow the [ordinary startup sequence](int24-threads-runtime.md#ordinary-startup-with-an-empty-profile). A reply root is optional for top-level publication and mention-only checks; configure it only after confirmed ownership readback.
+
+## Later deliberation continuity
+
+The [INT24 public experience projection](int24-threads-runtime.md#durable-public-experience-continuity)
+now makes eligible stored publications/replies available to later worker inference.
+Only provider-confirmed records with publication-details verification qualify;
+proposed/approved/sending/failed/UNKNOWN draft text is omitted. Existing per-draft
+approval, UNKNOWN pause, original-ID reconciliation and no-resend rules are unchanged.
+A dependent draft also rechecks its admitted history sources before publication.

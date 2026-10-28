@@ -325,3 +325,13 @@ These must be resolved before their affected production stage; this document doe
 12. Quantitative thresholds and human calibration process for probabilistic behavioral evaluations.
 
 The detailed journeys and test mapping are defined in `behavior-scenarios.md` and `mvp-acceptance.md`.
+
+### Implemented public continuity slice
+
+The INT24 public runtime now supplies bounded durable public experience to later
+wakeups and verified inbound deliberations, including after restart. See
+[int24-threads-runtime.md](int24-threads-runtime.md#durable-public-experience-continuity)
+for the exact projection, authorization, snapshot, compatibility and recovery
+contract. This supports the public history portion of §4.4 and §7; it does not
+complete shared intellectual development, private-to-public promotion or
+unattended publication. The complete behavioral requirements above remain intact.

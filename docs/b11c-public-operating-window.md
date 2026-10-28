@@ -178,3 +178,12 @@ autonomous deliberation contracts. They do not establish actual Meta access,
 live model quality, publication/readback, unattended publication authorization,
 ordinary-host deployment readiness or complete MVP acceptance. No deployment,
 production configuration, credential or live OpenAI/Meta call is part of B11C.
+
+## Public experience in window decisions
+
+Window deliberations now use the same [durable public experience projection](int24-threads-runtime.md#durable-public-experience-continuity)
+as ordinary wakeups and verified inbound work. Snapshot admission shares the
+existing journal transaction with the started intent and consumed window slot.
+Restart retains that selection and consumed identity; history never admits another
+model call or replenishes a counter. No additional HTTP/model calls construct
+history. Drafts still require independent exact approval and dispatch.
