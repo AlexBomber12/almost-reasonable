@@ -489,3 +489,33 @@ def test_boundary_rejects_unreviewed_mention_alias_and_reply_fields(
     with pytest.raises(probe.ProbeRejected, match="request_rejected"):
         boundary.request("GET", url, {}, None, 5)
     assert boundary.client.calls == []
+
+
+@pytest.mark.parametrize("root", [None, "omitted"])
+def test_mention_only_without_root(setup, root):
+    config, save, *_ = setup
+    config.update(streams=["mention"], reply_thread_id=root)
+    if root == "omitted":
+        del config["reply_thread_id"]
+    save()
+    receipt, client = run(setup, [response({"id": "provider"}), response({"data": []})])
+    assert receipt["outcome"] == "observed"
+    assert receipt["configuration_binding"]["reply_thread_id"] is None
+    assert len(client.calls) == 2
+    assert all(call[0] == "GET" for call in client.calls)
+    assert "/provider/mentions?" in client.calls[-1][1]
+    config["streams"] = ["reply"]
+    save()
+    receipt, client = run(setup, [])
+    assert receipt["outcome"] == "configuration_invalid"
+    assert client.calls == []
+
+
+@pytest.mark.parametrize("root", ["", "bad/root", 0, False])
+def test_mention_only_still_validates_supplied_root(setup, root):
+    config, save, *_ = setup
+    config.update(streams=["mention"], reply_thread_id=root)
+    save()
+    receipt, client = run(setup, [])
+    assert receipt["outcome"] == "configuration_invalid"
+    assert client.calls == []

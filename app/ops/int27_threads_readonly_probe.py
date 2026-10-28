@@ -72,7 +72,9 @@ def _protected_file(path: Path, maximum: int) -> bytes:
 def _config(path: Path, revision: str, now: datetime) -> dict:
     try:
         value = json.loads(_protected_file(path, 8192))
-        if type(value) is not dict or set(value) != FIELDS:
+        if type(value) is not dict or set(value) - {"reply_thread_id"} != FIELDS - {
+            "reply_thread_id"
+        }:
             raise ValueError
         if (
             value["version"] != VERSION
@@ -90,8 +92,11 @@ def _config(path: Path, revision: str, now: datetime) -> dict:
             value["streams"]
         ) <= {"reply", "mention"}:
             raise ValueError
-        for field in ("account_ref", "provider_user_id", "reply_thread_id"):
+        for field in ("account_ref", "provider_user_id"):
             require_reference(field, value[field])
+        value.setdefault("reply_thread_id", None)
+        if value["reply_thread_id"] is not None or "reply" in value["streams"]:
+            require_reference("reply_thread_id", value["reply_thread_id"])
         for field in ("owner_directory", "token_file"):
             if type(value[field]) is not str or not Path(value[field]).is_absolute():
                 raise ValueError

@@ -52,7 +52,7 @@ def _runtime(config):
     transport = ThreadsHTTPTransport(
         account_ref=config["account_ref"],
         provider_user_id=config["provider_user_id"],
-        reply_thread_id=config["reply_thread_id"],
+        reply_thread_id=config.get("reply_thread_id"),
         token=token,
         client=HTTPSClient(),
     )

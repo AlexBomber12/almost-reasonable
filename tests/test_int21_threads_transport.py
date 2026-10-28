@@ -1574,3 +1574,57 @@ def test_malformed_cursor_without_link_preserves_saved_state(tmp_path, after):
     with pytest.raises(ProviderFailure, match="poll_cursor_invalid"):
         svc.poll(InboundKind.MENTION, now=NOW, correlation_id="poll-2")
     assert svc.store.cursor("account-1", InboundKind.MENTION) == saved
+
+
+@pytest.mark.parametrize("root", ["", "bad/root", 0, False])
+def test_optional_root_still_validates_supplied_values(root):
+    with pytest.raises(ValueError, match="reply thread ID"):
+        ThreadsHTTPTransport(
+            account_ref="account-1",
+            provider_user_id="user-1",
+            token=TOKEN,
+            client=FakeHTTP(),
+            reply_thread_id=root,
+        )
+
+
+def test_rootless_transport_rejects_reply_before_http_and_preserves_cursor(tmp_path):
+    svc, _ = service(
+        tmp_path,
+        FakeHTTP(
+            response(
+                200,
+                {
+                    "data": [],
+                    "paging": {"next": "next", "cursors": {"after": "reply-page"}},
+                },
+            )
+        ),
+    )
+    old_cursor = svc.poll(
+        InboundKind.REPLY, now=NOW, correlation_id="old", max_pages=1
+    ).final_cursor
+    fake = FakeHTTP(
+        response(200, {"data": [], "paging": {"cursors": {"after": "mention-page"}}})
+    )
+    rootless = ThreadsHTTPTransport(
+        account_ref="account-1", provider_user_id="user-1", token=TOKEN, client=fake
+    )
+    svc = ThreadsService(svc.store, rootless, svc.policy, live_enabled=True)
+    with pytest.raises(ValueError, match="reply thread ID"):
+        rootless.poll(InboundKind.REPLY, old_cursor)
+    with pytest.raises(ValueError, match="reply thread ID"):
+        svc.poll(InboundKind.REPLY, now=NOW, correlation_id="no-root")
+    assert svc.store.cursor("account-1", InboundKind.REPLY) == old_cursor
+    assert fake.calls == []
+    cursor = svc.poll(
+        InboundKind.MENTION, now=NOW, correlation_id="mention", max_pages=1
+    ).final_cursor
+    assert cursor is not None
+    configured = transport(fake)
+    assert configured.owns_cursor(InboundKind.MENTION, cursor)
+    assert not configured.owns_cursor(InboundKind.REPLY, cursor)
+    other_account = ThreadsHTTPTransport(
+        account_ref="account-2", provider_user_id="user-2", token=TOKEN, client=fake
+    )
+    assert not other_account.owns_cursor(InboundKind.MENTION, cursor)

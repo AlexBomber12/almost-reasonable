@@ -35,7 +35,7 @@ from app.research.assessment import MAX_PUBLIC_EVIDENCE_BYTES
 from test_int24_runtime import NOW, run_once, setup
 
 
-def _setup(tmp_path, proposal, *, purpose=MissionPurpose.GENERAL_INQUIRY):
+def _setup(tmp_path, proposal, *, purpose=MissionPurpose.GENERAL_INQUIRY, **kwargs):
     mission_path = tmp_path / "mission.json"
     mission_path.write_text(
         json.dumps(
@@ -50,7 +50,7 @@ def _setup(tmp_path, proposal, *, purpose=MissionPurpose.GENERAL_INQUIRY):
     )
     mission_path.chmod(0o600)
     mission = PublicMissionContext(mission_path, clock=lambda: NOW)
-    return setup(tmp_path, proposal, mission=mission)
+    return setup(tmp_path, proposal, mission=mission, **kwargs)
 
 
 def _profile(tmp_path):

@@ -151,13 +151,17 @@ class ThreadsHTTPTransport:
         account_ref: str,
         provider_user_id: str,
         token: str,
-        reply_thread_id: str,
+        reply_thread_id: str | None = None,
         client: HTTPClient,
         timeout: float = 5.0,
     ):
         self.account_ref = require_reference("account reference", account_ref)
         self.provider_user_id = require_reference("provider user ID", provider_user_id)
-        self.reply_thread_id = require_reference("reply thread ID", reply_thread_id)
+        self.reply_thread_id = (
+            None
+            if reply_thread_id is None
+            else require_reference("reply thread ID", reply_thread_id)
+        )
         if not isinstance(token, str) or not token or any(c.isspace() for c in token):
             raise ValueError("invalid transport credential")
         if type(timeout) not in (int, float) or not 0 < timeout <= 10:
@@ -432,6 +436,8 @@ class ThreadsHTTPTransport:
             type(timeout) not in {int, float} or not 0 < timeout <= 30
         ):
             raise ValueError("invalid provider page timeout")
+        if stream is InboundKind.REPLY and self.reply_thread_id is None:
+            raise ValueError("reply polling requires a configured reply thread ID")
         raw_cursor = None
         if cursor is not None:
             if not isinstance(cursor, str) or len(cursor) > _MAX_CURSOR_LENGTH:
