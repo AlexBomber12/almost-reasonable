@@ -327,8 +327,13 @@ class PublicOperatingWindow:
         offered = self._due("poll")
         if offered is not None:
             identity, _, sequence = offered
+            streams = (
+                (InboundKind.MENTION,)
+                if self.app.simulator.reply_thread_id is None
+                else (InboundKind.REPLY, InboundKind.MENTION)
+            )
             self.app.poll(
-                (InboundKind.REPLY, InboundKind.MENTION)[sequence % 2],
+                streams[sequence % len(streams)],
                 correlation_id=identity,
                 max_pages=1,
                 max_events=self.spec.page_size,

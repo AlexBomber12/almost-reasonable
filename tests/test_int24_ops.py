@@ -377,6 +377,12 @@ def test_operator_protected_config_and_runtime_use_application_owned_state(
         == tmp_path / "app-events.sqlite"
     )
     assert seen[-1][1]["mission"] is None
+    assert seen[-1][1]["transport"].reply_thread_id == "root-1"
+    del config["reply_thread_id"]
+    module._runtime(config)
+    assert seen[-1][1]["transport"].reply_thread_id is None
+    module._runtime(config | {"reply_thread_id": None})
+    assert seen[-1][1]["transport"].reply_thread_id is None
     monkeypatch.setattr(module, "PublicMissionContext", lambda *_a, **_k: "mission")
     module._runtime(config | {"public_mission_path": str(tmp_path / "mission.json")})
     assert seen[-1][1]["mission"] == "mission"

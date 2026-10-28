@@ -15,8 +15,8 @@ from test_b05b_public_runtime import _setup as mission_setup
 NO_ACTION = {"decision": "no_action", "reason_category": "not_warranted"}
 
 
-def setup(tmp_path, proposal):
-    parts = mission_setup(tmp_path, proposal)
+def setup(tmp_path, proposal, **kwargs):
+    parts = mission_setup(tmp_path, proposal, **kwargs)
     parts[1].utc_now = parts[4].now
     return parts
 
@@ -1254,5 +1254,48 @@ def test_expiry_observation_is_latched_before_cleanup_clock_resample(
             }
         )
         assert sdk.calls == http.calls == []
+    finally:
+        worker.close()
+
+
+def test_rootless_window_uses_all_poll_capacity_and_resumes(tmp_path):
+    app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION, reply_thread_id=None)
+    window_spec = spec(max_model_calls=4, max_poll_pages=2)
+    thread = serve(worker, 1)
+    try:
+
+        def interrupt(_seconds):
+            raise KeyboardInterrupt
+
+        first = PublicOperatingWindow(app, window_spec).run(wait=interrupt)
+        finish(thread)
+        assert first["state"] == "interrupted"
+        assert first["consumed"] == {
+            "model_calls": 1,
+            "poll_pages": 1,
+            "inbound_events": 0,
+        }
+    finally:
+        worker.close()
+    restarted, worker, sdk, http, clock = setup(
+        tmp_path, NO_ACTION, reply_thread_id=None
+    )
+    clock.advance(timedelta(seconds=5))
+    thread = serve(worker, 3)
+    try:
+        result = PublicOperatingWindow(restarted, window_spec).run(
+            wait=lambda seconds: clock.advance(timedelta(seconds=seconds))
+        )
+        finish(thread)
+        assert result["state"] == "exhausted"
+        assert result["consumed"] == {
+            "model_calls": 4,
+            "poll_pages": 2,
+            "inbound_events": 0,
+        }
+        assert len(sdk.calls) == 3
+        assert len(http.calls) == 1
+        assert "/mentions?" in http.calls[0][1]
+        assert "after=mention-next" in http.calls[0][1]
     finally:
         worker.close()

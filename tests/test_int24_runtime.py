@@ -60,6 +60,13 @@ class FakeHTTP:
         self.calls.append((method, url, body))
         if "/me?fields=id" in url:
             value = {"id": self.profile_id}
+        elif "/mentions?" in url:
+            value = {
+                "data": [],
+                "paging": {}
+                if "after=" in url
+                else {"cursors": {"after": "mention-next"}},
+            }
         elif "/replies?" in url:
             value = {
                 "data": self.reply_rows
@@ -107,6 +114,7 @@ def setup(
     research_profile_path=None,
     research_scope=None,
     research_enabled=False,
+    reply_thread_id="root-1",
 ):
     clock = MutableClock(NOW)
     owner = OwnerStore(tmp_path / "owner", clock=clock.now)
@@ -137,7 +145,7 @@ def setup(
         account_ref="account-1",
         provider_user_id="user-1",
         token="fake-token",
-        reply_thread_id="root-1",
+        reply_thread_id=reply_thread_id,
         client=http,
     )
     client = PublicBehaviorClient(tmp_path / "worker.sock", expected_uid=os.getuid())
@@ -680,5 +688,53 @@ def test_model_draft_above_response_envelope_is_durably_rejected(tmp_path):
         operation = app.wakeup_operation("wake-1")
         assert app.journal.read(operation)["phase"] == "rejected"
         assert http.calls == []
+    finally:
+        worker.close()
+
+
+def test_empty_profile_draft_approval_publication_restart_and_owned_root(tmp_path):
+    proposal = {"decision": "propose_publication", "draft": "Новый публичный черновик."}
+    app, worker, sdk, http, _ = setup(tmp_path, proposal, reply_thread_id=None)
+    try:
+        assert app.readiness() == ()
+        with pytest.raises(ValueError, match="reply thread ID"):
+            app.poll(InboundKind.REPLY, correlation_id="unavailable-reply")
+        assert http.calls == []
+        assert app.service.store.cursor(app.account, InboundKind.REPLY) is None
+        app.poll(InboundKind.MENTION, correlation_id="mentions", max_pages=1)
+        mention_cursor = app.service.store.cursor(app.account, InboundKind.MENTION)
+        assert mention_cursor is not None
+        run_once(app, worker)
+        operation = app.wakeup_operation("wake-1")
+        assert app.draft(operation).state is OutboxState.AWAITING_APPROVAL
+        with pytest.raises(Exception):
+            app.dispatch(operation)
+        assert len(http.calls) == 1
+        app.approve(operation, expires_at=NOW + timedelta(minutes=5))
+    finally:
+        worker.close()
+    app, worker, sdk, http, _ = setup(tmp_path, proposal, reply_thread_id=None)
+    try:
+        assert app.dispatch(operation).state is OutboxState.CONFIRMED
+        assert not sdk.calls
+        assert all("reply_to_id" not in call[1] for call in http.calls)
+        assert app.draft(operation).provider_publication_id == "post-1"
+    finally:
+        worker.close()
+    app, worker, sdk, http, _ = setup(tmp_path, proposal, reply_thread_id="post-1")
+    try:
+        assert app.recover() == ()
+        assert app.draft(operation).state is OutboxState.CONFIRMED
+        app.run((WakeupEvent("wake-1", NOW, "public initiative"),))
+        assert sdk.calls == []
+        assert (
+            app.service.store.cursor(app.account, InboundKind.MENTION) == mention_cursor
+        )
+        app.poll(InboundKind.MENTION, correlation_id="mentions-after-root")
+        assert "after=mention-next" in http.calls[-1][1]
+        http.reply_rows = []
+        app.poll(InboundKind.REPLY, correlation_id="owned-root")
+        assert "/post-1/replies?" in http.calls[-1][1]
+        assert "after=" not in http.calls[-1][1]
     finally:
         worker.close()
