@@ -2311,7 +2311,9 @@ class _DurableConversationRuntime(ConversationService):
         ):
             return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
         if self._intellectual is not None and not self._intellectual.valid(
-            route.principal, operation_id
+            route.principal,
+            operation_id,
+            revisions=resolution != ("completed", f"release:{operation_id}"),
         ):
             return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
         evidence = self._research_evidence(operation_id)

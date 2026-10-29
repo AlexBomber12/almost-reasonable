@@ -81,7 +81,13 @@ initiating operation, actual configured worker model, prompt/protocol and Core
 Self versions, and exact context/projection bindings. Compare-and-swap checks
 reject competing changes. An operation's own accepted revision is distinguished
 from another operation's revision: it retains its original inference projection
-and still needs independent authorization for any pending action.
+and still needs independent authorization for any pending action. New snapshots
+use a fixed-size fingerprint of eligible heads, with bounded selected-revision
+records; old list snapshots retain their original validation. Accumulating state
+items cannot overflow the heads representation. Replaying an already authenticated
+server-released reply rechecks sources and authorization without requiring its
+historical inference snapshot to match today's revisions. Pending first releases
+still require current revision checks.
 
 The local receipt and revision write commit together. A crash before that commit
 leaves consumed inference authority and no revision; a crash afterward preserves

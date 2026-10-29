@@ -223,13 +223,14 @@ class PrivateIntellectualState:
             ),
         )
 
-    def valid(self, principal, operation):
+    def valid(self, principal, operation, *, revisions=True):
         with closing(self.app._event_store._open()) as db:
             return self.state(principal).validate(
                 db,
                 operation,
                 self.sources(principal, db),
                 self.controls(),
+                revisions=revisions,
             )
 
     def commit(self, principal, operation, validation):

@@ -294,7 +294,7 @@ class IntellectualStateStore:
         snapshot = {
             "projection": result,
             "selected": selected,
-            "heads": [[h[0], h[1]] for h in heads],
+            "heads": digest(sorted([h[0], h[1]] for h in heads)),
             "dependencies": dependencies,
             "source_keys": source_keys,
         }
@@ -315,6 +315,16 @@ class IntellectualStateStore:
             return False
         if not revisions:
             return True
+        if type(snapshot["heads"]) is str:
+            # Undo only this operation's own accepted transition for comparison
+            # with its immutable admission. Another operation's revision conflicts.
+            heads = [
+                [item, revision - 1 if own == operation else revision]
+                for item, revision, _payload, _deps, own in self._heads(db, sources)
+                if own != operation or revision > 1
+            ]
+            return digest(sorted(heads)) == snapshot["heads"]
+        # Existing receipts retain their original list representation.
         expected = dict(snapshot["heads"])
         for item, revision, _payload, _deps, own in self._heads(db, sources):
             if expected.pop(item, None) != revision and own != operation:

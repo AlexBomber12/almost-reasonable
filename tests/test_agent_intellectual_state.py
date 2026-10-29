@@ -1906,3 +1906,98 @@ def test_mission_document_change_after_state_commit_holds_public_action(tmp_path
             )
     finally:
         worker.close()
+
+
+@pytest.mark.parametrize("released", [True, False])
+def test_historical_reply_replay_distinguishes_release_from_pending_state(
+    tmp_path, released
+):
+    app, a, _b, events, _ledger, _gate, sdk, server = private_setup(tmp_path)
+    runtime = app._conversations
+    try:
+        if not released:
+
+            def withhold(point):
+                if point == "before_release":
+                    raise RuntimeError("withheld before authenticated release")
+
+            runtime._checkpoint = withhold
+        first = (
+            private_submit(server, a, "original", "Обсудим архитектуру.")
+            if released
+            else None
+        )
+        if not released:
+            from threading import Thread
+
+            thread = Thread(target=server.serve_once)
+            thread.start()
+            assert (
+                a.submit("original", "Обсудим архитектуру.")[0]
+                == "500 Internal Server Error"
+            )
+            thread.join(5)
+            assert not thread.is_alive()
+        runtime._checkpoint = lambda _point: None
+        sdk.change = proposal()
+        private_submit(server, a, "later-state", "Что тебя заинтересовало?")
+        response = a.submit("original", "Обсудим архитектуру.")
+        assert response[0] == "200 OK"
+        replay = json.loads(response[2])
+        assert replay["model_state"] == ("completed" if released else "unavailable")
+        assert replay.get("response") == (first["response"] if released else None)
+        assert len(sdk.calls) == 2
+        with events._open() as db:
+            assert db.execute(
+                "SELECT COUNT(*) FROM agent_reply_resolutions WHERE outcome='completed'"
+            ).fetchone() == (2 if released else 1,)
+    finally:
+        server.close()
+
+
+def test_thousand_state_heads_keep_admission_bounded_and_conflict_safe(tmp_path):
+    from app.core.intellectual_state import encoded
+
+    db, state = store(tmp_path)
+    sources = {"event:1": source()}
+    for index in range(1001):
+        operation = "reply:" + "a" * 64 + f"{index:04}"
+        state.reserve(db, operation, sources, "ctx", "controls")
+        assert accept(db, state, operation, proposal(), sources) == "accepted"
+    value = state.reserve(db, "later", sources, "ctx", "controls")
+    assert len(value["states"]) == 6
+    row = state._operation(db, "later")
+    assert len(row[2].encode()) < 65536
+    assert len(encoded(json.loads(row[2])["heads"]).encode()) < 1024
+    state.reserve(db, "competing", sources, "ctx", "controls")
+    assert accept(db, state, "later", proposal(target="i0"), sources) == "accepted"
+    assert state.validate(db, "later", sources, "controls")
+    assert not state.validate(db, "competing", sources, "controls")
+
+
+def test_legacy_head_lists_keep_their_original_revision_checks(tmp_path):
+    db, state = store(tmp_path)
+    sources = {"event:1": source()}
+    state.reserve(db, "first", sources, "ctx", "controls")
+    assert accept(db, state, "first", proposal(), sources) == "accepted"
+    value = state.reserve(db, "legacy", sources, "ctx", "controls")
+    snapshot = json.loads(state._operation(db, "legacy")[2])
+    snapshot["heads"] = [["agent:first", 1]]
+    db.execute(
+        "UPDATE agent_intellectual_operations SET snapshot=? WHERE operation='legacy'",
+        (json.dumps(snapshot),),
+    )
+    assert state.validate(db, "legacy", sources, "controls")
+    state.reserve(db, "other", sources, "ctx", "controls")
+    assert accept(db, state, "other", proposal(), sources) == "accepted"
+    assert not state.validate(db, "legacy", sources, "controls")
+    assert value["states"][0]["subject"] == "agent"
+    state.reserve(db, "legacy-own", sources, "ctx", "controls")
+    snapshot = json.loads(state._operation(db, "legacy-own")[2])
+    snapshot["heads"] = [["agent:first", 1], ["agent:other", 1]]
+    db.execute(
+        "UPDATE agent_intellectual_operations SET snapshot=? WHERE operation='legacy-own'",
+        (json.dumps(snapshot),),
+    )
+    assert accept(db, state, "legacy-own", proposal(target="i0"), sources) == "accepted"
+    assert state.validate(db, "legacy-own", sources, "controls")
