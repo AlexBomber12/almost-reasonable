@@ -1130,7 +1130,7 @@ def test_http_deletion_cascades_memory_reply_and_old_backup(journey, tmp_path):
         auth.authenticate(a.cookies["ar_session"]).trusted_context
     )
     backup = tmp_path / "before-delete.db"
-    create_sqlite_backup(store.database_path, backup, 13, clock())
+    create_sqlite_backup(store.database_path, backup, 14, clock())
     payload = {"operation_id": "delete-backed", "source": source, "confirm": "delete"}
     assert (
         json.loads(post(a, "/api/privacy/deletions", payload)[2])["status"] == "applied"
@@ -1150,7 +1150,7 @@ def test_http_deletion_cascades_memory_reply_and_old_backup(journey, tmp_path):
     a.submit("later", "О чём поговорим дальше?")
     assert "CANARY-A-PRIVACY-13" not in fake.calls[-1].request.input_text
     quarantine = tmp_path / "quarantine.db"
-    result = QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter).restore(
         backup, quarantine, clock()
     )
     assert result.activation_eligible
@@ -1204,7 +1204,7 @@ def test_http_deletion_cascades_generic_contextual_descendants(journey, tmp_path
         assert engine.process(principal, source).status.value == "persisted"
     assert len(GenericMemoryStore(store).current(principal)) == 3
     backup = tmp_path / "generic-before.db"
-    create_sqlite_backup(store.database_path, backup, 13, clock())
+    create_sqlite_backup(store.database_path, backup, 14, clock())
     payload = {
         "operation_id": "delete-generic",
         "source": sources[0],
@@ -1217,7 +1217,7 @@ def test_http_deletion_cascades_generic_contextual_descendants(journey, tmp_path
     assert GenericMemoryStore(store).current(principal) == ()
     quarantine = tmp_path / "generic-quarantine.db"
     assert (
-        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter)
         .restore(backup, quarantine, clock())
         .activation_eligible
     )

@@ -1,7 +1,7 @@
 """Trusted, bounded gateway from secretless model requests to untrusted proposals."""
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
 import json
@@ -482,7 +482,12 @@ class TrustedOpenAIGateway:
             model_identifier=self._config.model,
             provider_config_version=self._config.version,
             prompt_version=(
-                "private-evolution-v2"
+                "agent-intellectual-state-v1"
+                if getattr(
+                    getattr(request, "private", request), "intellectual_state", None
+                )
+                is not None
+                else "private-evolution-v2"
                 if type(request) is EvolutionModelRequest
                 else "private-typed-v1"
                 if type(request) is TypedModelRequest
@@ -792,7 +797,10 @@ def _parse_response(
                 diagnostic_code=error.code,
             )
         return _ParsedResponse(GatewayOutcome.COMPLETED, None, typed=parsed_typed)
-    if type(payload) is not dict or set(payload) != {"proposal"}:
+    if type(payload) is not dict or set(payload) not in (
+        {"proposal"},
+        {"proposal", "intellectual", "intellectual_version"},
+    ):
         return _ParsedResponse(
             GatewayOutcome.INVALID_RESPONSE,
             None,
@@ -800,6 +808,13 @@ def _parse_response(
         )
     proposal = payload["proposal"]
     validation = parse_agent_proposal(proposal)
+    if "intellectual_version" in payload:
+        validation = replace(
+            validation,
+            intellectual=payload["intellectual"]
+            if payload["intellectual_version"] == "agent-intellectual-state-v1"
+            else {"invalid_protocol": True},
+        )
     if not validation.valid:
         reason = RejectionReason(validation.invalid_reason.value)
         if reason is RejectionReason.UNKNOWN_FIELDS and type(proposal) is dict:

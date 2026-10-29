@@ -84,6 +84,18 @@ class PublicSDKAdapter:
         self.last_usage = None
         self.last_response_id = None
         core = initial_core_self()
+        from app.core.intellectual_state import INSTRUCTIONS, intellectual_format
+
+        selected_format = (
+            MISSION_PROPOSAL_FORMAT
+            if request.mission_evolution
+            else PUBLIC_PROPOSAL_FORMAT
+        )
+        if request.intellectual_state is not None:
+            selected_format = {
+                **selected_format,
+                "schema": intellectual_format(selected_format["schema"]),
+            }
         raw = self.sdk.responses.create(
             model=self.model,
             input=[
@@ -118,6 +130,11 @@ class PublicSDKAdapter:
                         + "For research use only an exact topic_id from the authorized catalog. "
                         "Use supplied public experience for claims about prior public actions; "
                         "do not invent memories or undisclosed identity. Core Self: "
+                        + (
+                            INSTRUCTIONS
+                            if request.intellectual_state is not None
+                            else ""
+                        )
                         + json.dumps(
                             {
                                 "version": core.version,
@@ -139,6 +156,11 @@ class PublicSDKAdapter:
                             "prior_untrusted_public_evidence": request.evidence,
                         }
                         | (
+                            {"intellectual_state": request.intellectual_state}
+                            if request.intellectual_state is not None
+                            else {}
+                        )
+                        | (
                             {"public_experience": request.experience.value()}
                             if request.experience is not None
                             else {}
@@ -153,11 +175,7 @@ class PublicSDKAdapter:
                 },
             ],
             tools=[],
-            text={
-                "format": MISSION_PROPOSAL_FORMAT
-                if request.mission_evolution
-                else PUBLIC_PROPOSAL_FORMAT
-            },
+            text={"format": selected_format},
             store=False,
             max_output_tokens=512,
             timeout=request.deadline_seconds,
@@ -190,6 +208,27 @@ class PublicSDKAdapter:
         if type(text) is not str or len(text.encode()) > 4096:
             raise ValueError("invalid public model output")
         value = json.loads(text, object_pairs_hook=_unique_fields)
+        intellectual = None
+        if request.intellectual_state is not None and type(value) is dict:
+            intellectual = value.pop("intellectual", None)
+            intellectual_version = value.pop("intellectual_version", None)
+            if (
+                intellectual is not None
+                and intellectual_version != "agent-intellectual-state-v1"
+            ):
+                intellectual = {"invalid_protocol": True}
+
+        def result(proposal):
+            return (
+                proposal
+                if request.intellectual_state is None
+                else {
+                    "version": "agent-intellectual-state-v1",
+                    "action": proposal,
+                    "state": intellectual,
+                }
+            )
+
         fields = {
             "decision",
             "content",
@@ -214,7 +253,7 @@ class PublicSDKAdapter:
                 proposal = {"decision": "mission", "action": action, "purpose": purpose}
                 if not parse_public_proposal(proposal, evolution=True).valid:
                     raise ValueError("invalid public mission selection")
-                return proposal
+                return result(proposal)
             if action is not None or purpose is not None:
                 raise ValueError("invalid public mission selection")
         if decision == "research":
@@ -237,7 +276,7 @@ class PublicSDKAdapter:
                 )
             ):
                 raise ValueError("invalid public research selection")
-            return {"decision": "research", "brief": topic}
+            return result({"decision": "research", "brief": topic})
         fields = {
             "reply": ("content", "draft", "reason_category"),
             "propose_publication": ("draft", "content", "reason_category"),
@@ -255,7 +294,7 @@ class PublicSDKAdapter:
         }
         if not parse_behavior_proposal(proposal).valid:
             raise ValueError("invalid public model proposal")
-        return proposal
+        return result(proposal)
 
 
 class PublicWorkerServer:
@@ -452,7 +491,9 @@ class PublicWorkerServer:
             provider=PROVIDER_NAME,
             model_identifier=getattr(self.adapter, "model", "public-model-unknown"),
             provider_config_version="threads-public-worker-v1",
-            prompt_version="threads-public-prompt-v1",
+            prompt_version="threads-public-intellectual-prompt-v1"
+            if request.intellectual_state is not None
+            else "threads-public-prompt-v1",
             core_self_version=CORE_SELF_VERSION,
             provider_response_id=getattr(self.adapter, "last_response_id", None),
             started_at=started_at,

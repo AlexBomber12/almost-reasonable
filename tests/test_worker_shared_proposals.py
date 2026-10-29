@@ -1167,7 +1167,7 @@ def test_source_deletion_erases_received_shared_receipt_and_old_backup(
             "SELECT source_event_id FROM private_extraction_receipts"
         ).fetchone()[0]
     backup = tmp_path / "old-events.db"
-    create_sqlite_backup(events.database_path, backup, 13, NOW)
+    create_sqlite_backup(events.database_path, backup, 14, NOW)
     outcome = DeletionCoordinator(ledger, EventStoreErasureAdapter(events)).delete(
         deletion_context(), deletion_request(content_reference=source)
     )
@@ -1178,7 +1178,7 @@ def test_source_deletion_erases_received_shared_receipt_and_old_backup(
         ).fetchone() == (0,)
     restored = tmp_path / "restored.db"
     assert (
-        QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
+        QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter)
         .restore(backup, restored, NOW)
         .activation_eligible
     )

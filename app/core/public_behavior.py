@@ -42,6 +42,7 @@ class PublicBehaviorRequest:
     deadline_at: datetime | None = None
 
     experience: PublicExperience | None = None
+    intellectual_state: dict | None = None
 
     def encode(self) -> bytes:
         require_reference("operation ID", self.operation_id)
@@ -105,6 +106,10 @@ class PublicBehaviorRequest:
             "catalog": self.catalog,
             "evidence": self.evidence,
         }
+        if self.intellectual_state is not None:
+            from app.core.intellectual_state import projection
+
+            value["intellectual_state"] = projection(self.intellectual_state)
         if self.experience is not None:
             if type(self.experience) is not PublicExperience:
                 raise ValueError("invalid public experience")
@@ -120,7 +125,11 @@ class PublicBehaviorRequest:
                 "context_digest",
                 "mission",
                 "timeout",
-            }:
+            } | (
+                {"intellectual_digest"}
+                if self.intellectual_state is not None
+                else set()
+            ):
                 raise ValueError("invalid application reservation evidence")
             value["reservation"] = self.reservation
         if self.mission_evolution:
@@ -141,7 +150,8 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
         value = json.loads(data, object_pairs_hook=_unique_fields)
         if (
             type(value) is not dict
-            or set(value) - {"mission_evolution", "deadline_at", "experience"}
+            or set(value)
+            - {"mission_evolution", "deadline_at", "experience", "intellectual_state"}
             not in (
                 {
                     "version",
@@ -194,6 +204,7 @@ def decode_public_request(data: bytes) -> PublicBehaviorRequest:
             PublicExperience.parse(value["experience"])
             if "experience" in value
             else None,
+            value.get("intellectual_state"),
         )
         request.encode()
         return request
@@ -226,6 +237,12 @@ class PublicMissionChoice:
 
 def parse_public_proposal(value: object, *, evolution: bool = False):
     """Public-only closed mission choice, without model-selected authority fields."""
+    if (
+        type(value) is dict
+        and set(value) == {"version", "action", "state"}
+        and value["version"] == "agent-intellectual-state-v1"
+    ):
+        value = value["action"]
     if type(value) is dict and value.get("decision") == "mission":
         if not evolution or set(value) != {"decision", "action", "purpose"}:
             return BehaviorProposalValidation(

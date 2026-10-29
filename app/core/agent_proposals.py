@@ -92,6 +92,9 @@ class ProposalValidation:
 
     proposal: AgentProposal | None
     invalid_reason: ProposalInvalidReason | None
+    intellectual: object = None
+    intellectual_model: str | None = None
+    intellectual_prompt: str | None = None
 
     @property
     def valid(self) -> bool:

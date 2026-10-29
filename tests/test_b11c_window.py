@@ -1093,6 +1093,7 @@ def test_request_deadline_is_bound_to_the_durable_operation(tmp_path):
                 1,
                 deadline_at=deadline,
                 experience=app.inference_public_experience(operation),
+                intellectual_state=app.inference_intellectual_context(operation),
             )
             assert app.attest_worker_request(request)
             assert not app.attest_worker_request(

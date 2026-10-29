@@ -1205,14 +1205,14 @@ def test_old_backup_quarantine_does_not_restore_typed_receipt(tmp_path):
     second = append_event(events, who, "pending", "I now read more")
     audit.reserve("typed:pending", who, second, "I now read more")
     backup = tmp_path / "old-backup.db"
-    create_sqlite_backup(events.database_path, backup, 13, NOW)
+    create_sqlite_backup(events.database_path, backup, 14, NOW)
     ledger = PrivacyLedger(tmp_path / "privacy.db")
     deletion = DeletionCoordinator(ledger, EventStoreErasureAdapter(events)).delete(
         deletion_context(), deletion_request(content_reference=first)
     )
     assert deletion.disposition.value == "applied"
     quarantine = tmp_path / "quarantine.db"
-    restored = QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter).restore(
+    restored = QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter).restore(
         backup, quarantine, NOW
     )
     assert restored.activation_eligible
@@ -1269,7 +1269,7 @@ def test_v9_typed_provenance_migration_is_atomic(tmp_path):
         assert schema_objects(db) == before
         assert db.execute("PRAGMA user_version").fetchone() == (9,)
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 13
+    assert upgraded.diagnostics().schema_version == 14
     assert (
         SelfStateStore(upgraded).retrieve_private_candidates(who)[0].topic
         == "Historical art"
@@ -2361,7 +2361,7 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
                     "SELECT event_id FROM event_envelopes WHERE source_message_id='robot-revision'"
                 ).fetchone()[0]
             backup = tmp_path / "before-deletion.db"
-            create_sqlite_backup(reopened.database_path, backup, 13, NOW)
+            create_sqlite_backup(reopened.database_path, backup, 14, NOW)
             disposition = (
                 DeletionCoordinator(ledger, EventStoreErasureAdapter(reopened))
                 .delete(deletion_context(), deletion_request(content_reference=source))
@@ -2370,7 +2370,7 @@ def test_combined_memory_http_ipc_restart_eviction_and_deletion(tmp_path):
             assert app._conversations._gate.reconcile()
             quarantine = tmp_path / "quarantine.db"
             assert (
-                QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
+                QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter)
                 .restore(backup, quarantine, NOW)
                 .activation_eligible
             )

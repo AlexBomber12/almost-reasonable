@@ -206,6 +206,7 @@ class MemoryModelRequest:
     narrative_operation_ids: tuple[str, ...] = ()
     projected_narrative_operation_ids: tuple[str, ...] = ()
     narrative_mode: bool = False
+    intellectual_state: dict | None = None
 
     def serialize(self) -> str:
         serialized = self._serialized()
@@ -234,6 +235,10 @@ class MemoryModelRequest:
             if self.conversation.contract_version == TRANSCRIPT_MODEL_CONTRACT_VERSION
             else MEMORY_MODEL_CONTRACT_VERSION
         )
+        if self.intellectual_state is not None:
+            from app.core.intellectual_state import projection
+
+            data["intellectual_state"] = projection(self.intellectual_state)
         data["memories"] = [memory.structured() for memory in self.memories]
         data["memories_omitted"] = self.memories_omitted
         if self.narrative_mode:

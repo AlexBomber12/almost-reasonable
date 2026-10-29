@@ -288,6 +288,12 @@ def _erase_invalidated_shared(db: sqlite3.Connection) -> None:
         "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id IN "
         "(SELECT operation_id FROM agent_reply_operations WHERE retention_status='invalidated')"
     )
+    from app.core.intellectual_state import erase_source
+
+    for (operation,) in db.execute(
+        "SELECT operation_id FROM agent_reply_operations WHERE retention_status='invalidated'"
+    ):
+        erase_source(db, "context:" + operation)
     db.execute(
         """UPDATE shared_mission_document SET status='reassessment', document=NULL
         WHERE EXISTS (SELECT 1 FROM protected_mission_shared m JOIN shared_operations o

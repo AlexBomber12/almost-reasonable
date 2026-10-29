@@ -444,6 +444,7 @@ class OpenAIRequest:
     max_output_tokens: int
     _authority: object
     purpose: str = "agent"
+    intellectual: bool = False
 
     def to_sdk_kwargs(self) -> dict[str, object]:
         if self._authority is not _OPENAI_REQUEST_AUTHORITY:
@@ -454,6 +455,21 @@ class OpenAIRequest:
         narrative = self.purpose == "narrative_evolution"
         narrative_reply = self.purpose == "narrative_reply"
         shared = self.purpose == "shared_abstraction_proposal"
+        from app.core.intellectual_state import INSTRUCTIONS, intellectual_format
+
+        if self.intellectual:
+            base = OpenAIRequest(
+                self.model,
+                self.input_text,
+                self.max_output_tokens,
+                self._authority,
+                self.purpose,
+            ).to_sdk_kwargs()
+            base["instructions"] += INSTRUCTIONS
+            base["text"]["format"]["schema"] = intellectual_format(
+                base["text"]["format"]["schema"]
+            )
+            return base
         return {
             "model": self.model,
             "instructions": _NARRATIVE_INSTRUCTIONS
@@ -618,6 +634,10 @@ def _build_openai_request(request, config: OpenAIProviderConfig) -> OpenAIReques
         input_text=input_text,
         max_output_tokens=config.max_output_tokens,
         _authority=_OPENAI_REQUEST_AUTHORITY,
+        intellectual=getattr(
+            getattr(request, "private", request), "intellectual_state", None
+        )
+        is not None,
         purpose="memory_extraction"
         if type(request) is ExtractionModelRequest
         else "memory_evolution"

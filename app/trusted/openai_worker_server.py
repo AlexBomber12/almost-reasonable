@@ -407,6 +407,18 @@ class OpenAIWorkerServer:
                                 narrative_operation=response.narrative_operation,
                                 shared_operation=response.shared_operation,
                             )
+            if response.validation is not None:
+                model_request = request.model_request
+                private = getattr(model_request, "private", model_request)
+                if getattr(private, "intellectual_state", None) is not None:
+                    response = replace(
+                        response,
+                        validation=replace(
+                            response.validation,
+                            intellectual_model=self._gateway._config.model,
+                            intellectual_prompt="agent-intellectual-state-v1",
+                        ),
+                    )
             try:
                 send_frame(
                     connection,

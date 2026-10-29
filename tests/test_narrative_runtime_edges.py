@@ -404,6 +404,7 @@ def test_narrative_current_rejects_missing_reply_or_source_binding(case):
 def test_narrative_reply_commit_rechecks_permission():
     outcomes = []
     fake = SimpleNamespace(
+        _intellectual=None,
         _capabilities=_caps,
         _worker=object(),
         _shared_consent_live=lambda *_args: True,

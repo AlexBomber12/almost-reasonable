@@ -608,7 +608,7 @@ def test_http_worker_combines_memory_and_fiction_across_restart_and_deletion(tmp
                 "SELECT event_id FROM event_envelopes WHERE source_message_id='story'"
             ).fetchone()[0]
         backup = tmp_path / "before-deletion.db"
-        create_sqlite_backup(reopened.database_path, backup, 13, NOW)
+        create_sqlite_backup(reopened.database_path, backup, 14, NOW)
         assert (
             DeletionCoordinator(ledger, EventStoreErasureAdapter(reopened))
             .delete(
@@ -646,7 +646,7 @@ def test_http_worker_combines_memory_and_fiction_across_restart_and_deletion(tmp
         send(a, "after-project-deletion", "What is my current project and preference?")
         assert json.loads(fake.calls[-1].request.input_text)["memories"] == []
         assert (
-            QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter)
+            QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter)
             .restore(backup, tmp_path / "restored.db", NOW)
             .activation_eligible
         )

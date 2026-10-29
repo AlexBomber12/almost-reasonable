@@ -193,18 +193,25 @@ def _validate_graph(
         raise ApplicationPrivacyError("application_integrity_failure")
     if db.execute("PRAGMA foreign_key_check").fetchone() is not None:
         raise ApplicationPrivacyError("orphaned_application_data")
-    if schema_version in {6, 7, 8, 9, 10, 11, 12, 13}:
+    if schema_version == 14:
+        from app.core.intellectual_state import validate_private_graph
+
+        try:
+            validate_private_graph(db)
+        except (ValueError, TypeError, KeyError, IndexError):
+            raise ApplicationPrivacyError("invalid_intellectual_graph") from None
+    if schema_version in {6, 7, 8, 9, 10, 11, 12, 13, 14}:
         try:
             validate_shared_graph(db)
         except ValueError as error:
             raise ApplicationPrivacyError(str(error)) from None
-    if schema_version in {7, 8, 9, 10, 11, 12, 13}:
+    if schema_version in {7, 8, 9, 10, 11, 12, 13, 14}:
         try:
             validate_generic_graph(db)
         except (ValueError, KeyError, TypeError, IndexError) as error:
             raise ApplicationPrivacyError("invalid_generic_graph") from error
     if (
-        schema_version in {9, 10, 11, 12, 13}
+        schema_version in {9, 10, 11, 12, 13, 14}
         and db.execute(
             """SELECT 1 FROM private_extraction_receipts r
         JOIN event_envelopes e ON e.event_id=r.source_event_id
@@ -223,9 +230,9 @@ def _validate_graph(
         is not None
     ):
         raise ApplicationPrivacyError("invalid_extraction_receipt")
-    if schema_version in {10, 11, 12, 13}:
+    if schema_version in {10, 11, 12, 13, 14}:
         _validate_typed_receipts(db)
-    if schema_version in {12, 13}:
+    if schema_version in {12, 13, 14}:
         try:
             validate_narrative_graph(db)
             _validate_narrative_receipts(db)
@@ -442,6 +449,9 @@ def _erase(
             raise ApplicationPrivacyError("source_ownership_mismatch")
         # All revisions of an affected item are tainted, including later revisions
         # whose direct edges no longer mention this event. Preserve identity rows.
+        from app.core.intellectual_state import erase_source
+
+        erase_source(db, "event:" + request.content_reference)
         items = db.execute(
             "SELECT DISTINCT r.item_key FROM state_revisions r "
             "JOIN protected_state_provenance s USING(revision_key) WHERE s.event_id=?",
@@ -474,9 +484,9 @@ def _erase(
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (operation_id,),
             )
-        if schema_version in {7, 8, 9, 10, 11, 12, 13}:
+        if schema_version in {7, 8, 9, 10, 11, 12, 13, 14}:
             erase_generic_source(db, request.content_reference)
-        if schema_version in {12, 13}:
+        if schema_version in {12, 13, 14}:
             erase_narrative_source(db, request.content_reference)
             db.execute(
                 """DELETE FROM private_narrative_receipts WHERE source_event_id=?
@@ -486,9 +496,9 @@ def _erase(
                 ) WHERE value=?)""",
                 (request.content_reference, request.content_reference),
             )
-        if schema_version in {6, 7, 8, 9, 10, 11, 12, 13}:
+        if schema_version in {6, 7, 8, 9, 10, 11, 12, 13, 14}:
             erase_shared_source(db, request.content_reference)
-        if schema_version in {9, 10, 11, 12, 13}:
+        if schema_version in {9, 10, 11, 12, 13, 14}:
             db.execute(
                 """DELETE FROM private_extraction_receipts
                 WHERE source_event_id=? OR EXISTS (

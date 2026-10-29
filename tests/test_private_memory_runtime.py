@@ -348,7 +348,7 @@ def test_multisource_memory_beyond_history_and_old_backup_remain_erased(
     runtime.submit(principal("b"), "independent", "Независимый разговор")
     before_b = runtime.history(principal("b"))
     backup = tmp_path / "old.db"
-    create_sqlite_backup(store.database_path, backup, 13, NOW)
+    create_sqlite_backup(store.database_path, backup, 14, NOW)
     assert delete_source(setup, first).disposition.value == "applied"
     assert gate.reconcile()
     assert gate.read_reply(principal("a"), runtime._operation_id(later)) is None
@@ -356,7 +356,7 @@ def test_multisource_memory_beyond_history_and_old_backup_remain_erased(
     assert runtime.history(principal("b")) == before_b
     with pytest.raises(PrivacyReadBlocked):
         runtime.submit(principal("a"), "evidence", "Дополнительные наблюдения звёзд")
-    result = QuarantinedRestore(ledger, 13, EventStoreRestoreAdapter).restore(
+    result = QuarantinedRestore(ledger, 14, EventStoreRestoreAdapter).restore(
         backup, tmp_path / "quarantine.db", NOW
     )
     assert result.activation_eligible

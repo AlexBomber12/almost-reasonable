@@ -41,6 +41,8 @@ class FakeSDK:
             and kwargs["text"]["format"]["name"] == "threads_public_mission_proposal_v1"
         ):
             proposal.update(topic_id=None, mission_action=None, mission_purpose=None)
+        if "intellectual" in self.proposal:
+            proposal["intellectual_version"] = "agent-intellectual-state-v1"
         proposal.update(self.proposal)
         return type(
             "Response", (), {"status": "completed", "output_text": json.dumps(proposal)}
@@ -92,7 +94,7 @@ class FakeHTTP:
         else:
             if self.fail_readback:
                 return HTTPResponse(500, b"{}")
-            value = {"id": "post-1", "owner": {"id": "user-1"}}
+            value = {"id": "post-1", "owner": {"id": self.profile_id}}
             if self.parent is not None:
                 value.pop("owner")
                 value["is_reply_owned_by_me"] = True
@@ -115,6 +117,7 @@ def setup(
     research_scope=None,
     research_enabled=False,
     reply_thread_id="root-1",
+    account="account-1",
 ):
     clock = MutableClock(NOW)
     owner = OwnerStore(tmp_path / "owner", clock=clock.now)
@@ -123,7 +126,7 @@ def setup(
     provider = ProviderStateStore(EventStore(tmp_path / "events.sqlite"))
     ledger = PrivacyLedger(tmp_path / "ledger.sqlite")
     policy = AccountPolicy(
-        "account-1",
+        account,
         Stage.STAGE_3,
         False,
         True,
@@ -141,9 +144,10 @@ def setup(
         True,
     )
     http = FakeHTTP()
+    http.profile_id = "user-1" if account == "account-1" else "provider-" + account
     transport = ThreadsHTTPTransport(
-        account_ref="account-1",
-        provider_user_id="user-1",
+        account_ref=account,
+        provider_user_id=http.profile_id,
         token="fake-token",
         reply_thread_id=reply_thread_id,
         client=http,

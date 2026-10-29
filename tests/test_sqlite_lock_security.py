@@ -69,12 +69,12 @@ def test_security_checks_preserve_independent_writer_exclusion(
             with closing(store._open()) as other:
                 assert other.execute(
                     "SELECT version FROM schema_metadata"
-                ).fetchone() == (13,)
+                ).fetchone() == (14,)
         elif check == "construct":
             with pytest.raises(EventStoreBusyError):
                 EventStore(store.database_path, busy_timeout_ms=1)
         else:
-            assert store.diagnostics().schema_version == 13
+            assert store.diagnostics().schema_version == 14
             assert application_replies(store)["available"]
             assert _diagnostics(store.database_path)["available"]
         assert owner.in_transaction
@@ -168,7 +168,7 @@ for number in range(3):
     store.append_private_input(principal('a'), private_input(identifier, 'synthetic'))
     assert store.retrieve_private_events(principal('a'))
     assert ledger.control_generation() == 0
-    assert store.diagnostics().schema_version == 13
+    assert store.diagnostics().schema_version == 14
 print('done', flush=True)
 """
 
