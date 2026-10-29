@@ -844,7 +844,7 @@ def test_private_quarantine_graph_rejects_forged_scope_and_origin(tmp_path):
             for statement in (
                 "UPDATE agent_intellectual_schema SET version='future'",
                 "DELETE FROM agent_intellectual_schema",
-                "UPDATE agent_intellectual_operations SET owner='another-participant'",
+                "UPDATE agent_intellectual_operations SET owner='another-participant' WHERE status='no_change'",
                 "UPDATE agent_intellectual_revisions SET payload=json_set(payload,'$.subject','participant')",
                 "UPDATE agent_intellectual_revisions SET payload=json_set(payload,'$.metadata.context_binding','forged')",
                 "UPDATE agent_intellectual_revisions SET payload=json_set(payload,'$.fields.topic','forged')",
@@ -2001,3 +2001,21 @@ def test_legacy_head_lists_keep_their_original_revision_checks(tmp_path):
     )
     assert accept(db, state, "legacy-own", proposal(target="i0"), sources) == "accepted"
     assert state.validate(db, "legacy-own", sources, "controls")
+
+
+def test_quarantine_rejects_orphan_agent_revisions(tmp_path):
+    from app.privacy.application import _validate_graph, ApplicationPrivacyError
+
+    app, a, _b, events, _ledger, _gate, sdk, server = private_setup(tmp_path)
+    try:
+        sdk.change = proposal()
+        private_submit(server, a, "owned-state", "Обсудим архитектуру.")
+        with events._open() as db:
+            _validate_graph(db)
+            db.execute("DELETE FROM agent_intellectual_operations")
+            with pytest.raises(
+                ApplicationPrivacyError, match="invalid_intellectual_graph"
+            ):
+                _validate_graph(db)
+    finally:
+        server.close()

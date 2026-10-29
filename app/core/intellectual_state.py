@@ -586,6 +586,17 @@ def validate_private_graph(db):
         is not None
     ):
         raise ValueError("invalid intellectual schema")
+    if (
+        db.execute(
+            """SELECT 1 FROM agent_intellectual_revisions r
+        WHERE r.audience!='private' OR NOT EXISTS(
+            SELECT 1 FROM agent_intellectual_operations o
+            WHERE o.audience=r.audience AND o.owner=r.owner AND o.operation=r.operation
+        ) LIMIT 1"""
+        ).fetchone()
+        is not None
+    ):
+        raise ValueError("orphaned intellectual revision")
     for (
         audience,
         owner,
