@@ -122,8 +122,10 @@ Public history and cached research context are also filtered as whole records
 against the transitive provenance budget before SDK context binding. Optional
 outcomes cannot displace required context dependencies. Repeated no-change turns
 therefore retain ordinary inference admission without dropping ancestry behind
-any visible record. Storage applies separate receipt, metadata, revision and
-snapshot byte limits.
+any visible record. Private selection also budgets complete inherited shared, generic-memory and
+narrative operation unions against their existing limits, including a reserved
+new narrative slot. A whole optional record is omitted when its provenance cannot
+fit. Storage applies separate receipt, metadata, revision and snapshot byte limits.
 
 `tests/test_agent_intellectual_state.py` exercises real SQLite persistence,
 authenticated private HTTP, AF_UNIX worker exchange and actual fake-SDK input.

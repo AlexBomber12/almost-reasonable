@@ -201,6 +201,7 @@ class IntellectualStateStore:
         budget=MAX_PROJECTION_BYTES,
         required_dependencies=None,
         query="",
+        dependencies_fit=None,
     ):
         existing = self._operation(db, operation)
         if existing is not None:
@@ -219,6 +220,11 @@ class IntellectualStateStore:
                     required_dependencies[key] = source["binding"]
         if len(required_dependencies) > MAX_DEPENDENCIES:
             raise IntellectualCapacityError("intellectual dependencies exceed bound")
+        if dependencies_fit is None:
+
+            def dependencies_fit(_dependencies):
+                return True
+
         visible, selected, dependencies, source_keys = (
             [],
             [],
@@ -256,7 +262,9 @@ class IntellectualStateStore:
                     continue
             except ValueError:
                 continue
-            if len(dependencies.keys() | deps.keys()) > MAX_DEPENDENCIES:
+            if len(
+                dependencies.keys() | deps.keys()
+            ) > MAX_DEPENDENCIES or not dependencies_fit({**dependencies, **deps}):
                 continue
             visible.append(record)
             selected.append([item, revision])
@@ -267,7 +275,9 @@ class IntellectualStateStore:
             if visible_keys is not None and key not in visible_keys:
                 continue
             additions = {**source["dependencies"], key: source["binding"]}
-            if len(dependencies.keys() | additions.keys()) > MAX_DEPENDENCIES:
+            if len(
+                dependencies.keys() | additions.keys()
+            ) > MAX_DEPENDENCIES or not dependencies_fit({**dependencies, **additions}):
                 continue
             record = {
                 "handle": f"s{len(records)}",

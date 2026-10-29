@@ -105,7 +105,17 @@ class PrivateIntellectualState:
                 del result[key]
         return result
 
-    def attach(self, db, principal, operation, request, event_ids):
+    def attach(
+        self,
+        db,
+        principal,
+        operation,
+        request,
+        event_ids,
+        *,
+        operation_groups=None,
+        reserve_narrative_slot=False,
+    ):
         state = self.state(principal)
         sources = self.sources(principal, db)
         visible = {"event:" + event for event in event_ids}
@@ -133,6 +143,22 @@ class PrivateIntellectualState:
                 (shared_operation,),
             ):
                 required["event:" + event] = event
+        base_groups = operation_groups or (
+            shared,
+            private.generic_operation_ids,
+            private.narrative_operation_ids,
+        )
+        limits = (16, 16, 15 if reserve_narrative_slot else 16)
+
+        def dependencies_fit(dependencies):
+            inherited = self.inherited_operations(
+                db, principal, operation, dependencies=dependencies
+            )
+            return all(
+                len(set(base) | extra) <= limit
+                for base, extra, limit in zip(base_groups, inherited, limits)
+            )
+
         try:
             value = state.reserve(
                 db,
@@ -144,6 +170,7 @@ class PrivateIntellectualState:
                 budget=budget,
                 required_dependencies=required,
                 query=private.conversation.conversation[-1].content,
+                dependencies_fit=dependencies_fit,
             )
         except IntellectualCapacityError:
             return request, event_ids
@@ -169,9 +196,11 @@ class PrivateIntellectualState:
         }
         return result, tuple(sorted(set(event_ids) | own_roots))
 
-    def inherited_operations(self, db, principal, operation):
+    def inherited_operations(self, db, principal, operation, *, dependencies=None):
         groups = [set(), set(), set()]
-        for key in self.state(principal).dependencies(db, operation):
+        if dependencies is None:
+            dependencies = self.state(principal).dependencies(db, operation)
+        for key in dependencies:
             if key.startswith("context:") and key != "context:" + operation:
                 reply = self.app._outputs._read(
                     db, principal, key.removeprefix("context:")

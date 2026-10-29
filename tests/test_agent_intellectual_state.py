@@ -2143,3 +2143,71 @@ def test_cached_research_context_also_respects_transitive_capacity(
             )
     finally:
         worker.close()
+
+
+def test_private_intellectual_selection_respects_generic_operation_union(tmp_path):
+    from dataclasses import replace
+    from app.core.context import ContextLimits
+    from test_generic_memory import proposal as generic_proposal, commit_direct
+
+    app, a, _b, events, _ledger, _gate, sdk, server = private_setup(tmp_path)
+    runtime = app._conversations
+    runtime._limits = ContextLimits(32_000, 50)
+    owner = app._auth_store.authenticate(a.cookies["ar_session"]).trusted_context
+    try:
+        private_submit(server, a, "source", "Архитектура и история форм.")
+        source_id = events.retrieve_private_events_in_commit_order(owner)[-1].event_id
+        for index in range(16):
+            commit_direct(
+                events,
+                replace(
+                    generic_proposal(
+                        source_id, f"memory-{index:02}", f"generic-{index:02}"
+                    ),
+                    statement=f"Архитектура и формы {index}.",
+                ),
+                owner,
+            )
+        sdk.change = proposal()
+        private_submit(server, a, "learn-sixteen", "Расскажи про архитектуру и формы.")
+        learned_input = json.loads(sdk.calls[-1]["input"])
+        assert len(learned_input["memories"]) == 16
+        learned_event = events.retrieve_private_events_in_commit_order(owner)[-1]
+        learned_operation = runtime._operation_id(learned_event.event_id)
+        with events._open() as db:
+            assert (
+                len(
+                    runtime._outputs._read(
+                        db, owner, learned_operation
+                    ).operation.generic_operation_ids
+                )
+                == 16
+            )
+        commit_direct(
+            events,
+            replace(
+                generic_proposal(source_id, "new-space-memory", "generic-space"),
+                statement="Космос, звезды и галактики.",
+            ),
+            owner,
+        )
+        sdk.change = None
+        result = private_submit(
+            server, a, "new-memory", "Обсудим космос, звезды и галактики."
+        )
+        assert result["model_state"] == "completed"
+        value = json.loads(sdk.calls[-1]["input"])
+        assert any("Космос" in memory["text"] for memory in value["memories"])
+        assert value["intellectual_state"]["states"] == []
+        current_event = events.retrieve_private_events_in_commit_order(owner)[-1]
+        current_operation = runtime._operation_id(current_event.event_id)
+        with events._open() as db:
+            current = runtime._outputs._read(db, owner, current_operation)
+            assert len(current.operation.generic_operation_ids) <= 16
+            dependencies = runtime._intellectual.state(owner).dependencies(
+                db, current_operation
+            )
+            assert "context:" + learned_operation not in dependencies
+        assert len(sdk.calls) == 3
+    finally:
+        server.close()

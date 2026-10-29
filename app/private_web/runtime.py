@@ -734,7 +734,17 @@ class _DurableConversationRuntime(ConversationService):
                     )
                 if self._intellectual is not None:
                     request, sources = self._intellectual.attach(
-                        db, principal, operation_id, request, sources
+                        db,
+                        principal,
+                        operation_id,
+                        request,
+                        sources,
+                        operation_groups=(
+                            shared_operations,
+                            generic_operations,
+                            narrative_operations,
+                        ),
+                        reserve_narrative_slot=reserve_narrative_slot,
                     )
                     inherited_shared, inherited_generic, inherited_narrative = (
                         self._intellectual.inherited_operations(
