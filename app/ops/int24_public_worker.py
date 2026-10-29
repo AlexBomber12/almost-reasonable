@@ -50,7 +50,9 @@ def _attestor(account):
             "context_digest",
             "mission",
             "timeout",
-        }:
+        } | (
+            {"intellectual_digest"} if request.intellectual_state is not None else set()
+        ):
             return False
         if (
             value["account"] != account
@@ -72,8 +74,14 @@ def _attestor(account):
                 "resume" if value.get("resumed") else "initial",
             )
         )
+        from app.core.intellectual_state import digest
+
         return (
-            request.operation_id == expected == request.correlation_id
+            (
+                request.intellectual_state is None
+                or value["intellectual_digest"] == digest(request.intellectual_state)
+            )
+            and request.operation_id == expected == request.correlation_id
             and value.get("runtime_version") == PUBLIC_RUNTIME_VERSION
             and request.trigger
             == ("autonomous_wakeup" if value["kind"] == "wake" else "public_message")

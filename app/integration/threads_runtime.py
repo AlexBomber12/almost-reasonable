@@ -181,6 +181,7 @@ class PublicAuthorization:
                 and payload.get("content") == item.content
                 and item.account_ref == self.app.account
                 and item.source_provenance is SourceProvenance.PUBLIC
+                and self.app.intellectual.valid(item.operation_id)
                 and self.app.source_valid(payload)
             )
             if valid:
@@ -359,6 +360,10 @@ class ThreadsRuntime(ThreadsStage0):
             )
         self.mission_evolution = None
         self.experience_history = PublicExperienceHistory(self)
+        from app.integration.intellectual_state import PublicIntellectualState
+
+        self.intellectual = PublicIntellectualState(self)
+        self.model.intellectual_context = self.inference_intellectual_context
         self.engine = DeliberationEngine(
             model,
             clock.now,
@@ -456,7 +461,7 @@ class ThreadsRuntime(ThreadsStage0):
         if profile is None and payload.get("offered_profile_digest") is None:
             return (), ()
         if profile is None or profile.digest != payload.get("offered_profile_digest"):
-            if self.mission_evolution is not None:
+            if self.mission_evolution is not None or "intellectual_digest" in payload:
                 raise PublicInferenceContextChanged(
                     "public research profile changed during inference"
                 )
@@ -467,6 +472,10 @@ class ThreadsRuntime(ThreadsStage0):
             raise PublicInferenceContextChanged(
                 "public mission evidence changed during inference"
             ) from error
+        if not self.intellectual.auxiliary_matches(payload, catalog, evidence, source):
+            raise PublicInferenceContextChanged(
+                "public intellectual context changed during inference"
+            )
         if self.mission_evolution is not None and (
             source != payload.get("mission_evidence_operation")
             or public_context_digest(evidence) != payload.get("mission_evidence_digest")
@@ -580,6 +589,14 @@ class ThreadsRuntime(ThreadsStage0):
         except ValueError as error:
             raise PublicInferenceContextChanged("public experience changed") from error
 
+    def inference_intellectual_context(self, operation):
+        try:
+            return self.intellectual.context(operation)
+        except ValueError as error:
+            raise PublicInferenceContextChanged(
+                "public intellectual state changed"
+            ) from error
+
     def source_valid(self, payload):
         if not super().source_valid(payload):
             return False
@@ -587,7 +604,10 @@ class ThreadsRuntime(ThreadsStage0):
             self.experience_history.load(
                 payload.get("experience_operation", payload["correlation"]), payload
             )
-            return True
+            return self.intellectual.valid(
+                payload.get("experience_operation", payload["correlation"]),
+                revisions=False,
+            )
         except ValueError:
             return False
 
@@ -610,6 +630,8 @@ class ThreadsRuntime(ThreadsStage0):
                 )
                 and self.inference_public_experience(request.operation_id)
                 == request.experience
+                and self.inference_intellectual_context(request.operation_id)
+                == request.intellectual_state
                 and tuple(payload["mission_text"]) == request.mission
                 and self.inference_public_context(request.operation_id)
                 == (request.catalog, request.evidence)
@@ -661,6 +683,11 @@ class ThreadsRuntime(ThreadsStage0):
             "context_digest": payload["context_digest"],
             "mission": payload["mission_text"],
             "timeout": payload["timeout"],
+            **(
+                {"intellectual_digest": payload["intellectual_digest"]}
+                if "intellectual_digest" in payload
+                else {}
+            ),
         }
 
     def inference_deadline(self, operation):
@@ -711,10 +738,11 @@ class ThreadsRuntime(ThreadsStage0):
         offered_profile = self.current_research_profile()
         mission_evidence_operation = None
         mission_evidence_digest = public_context_digest(())
+        offered_catalog, offered_evidence, offered_research_source = (
+            self._public_context_with_source(offered_profile)
+        )
         if self.mission_evolution is not None:
-            _, offered_evidence, mission_evidence_operation = (
-                self._public_context_with_source(offered_profile)
-            )
+            mission_evidence_operation = offered_research_source
             mission_evidence_digest = public_context_digest(offered_evidence)
         experience_generation = self.ledger.control_generation()
         selected_experience, experience = self.experience_history.select(origin)
@@ -725,6 +753,10 @@ class ThreadsRuntime(ThreadsStage0):
             if offered_profile is None
             else offered_profile.digest,
             "trigger": trigger,
+            "intellectual_research_source": offered_research_source,
+            "intellectual_auxiliary_digest": self.intellectual.auxiliary_digest(
+                offered_catalog, offered_evidence
+            ),
             "context_digest": inference_context_digest(context, experience),
             "experience_digest": experience.digest,
             "experience_mission_root": None
@@ -815,7 +847,11 @@ class ThreadsRuntime(ThreadsStage0):
                 return
         try:
             self.inference_public_experience(operation)
-        except PublicInferenceContextChanged:
+            self.inference_public_context(operation)
+            self.inference_intellectual_context(operation)
+            self.intellectual.commit(operation)
+            self.checkpoint("after_intellectual_commit")
+        except ValueError:
             self.journal.finish(
                 operation,
                 {**origin, "reason": "public_inference_context_changed"},
@@ -995,6 +1031,8 @@ class ThreadsRuntime(ThreadsStage0):
         self.checkpoint("after_intent")
 
     def _start_public_operation(self, operation, origin, selected_experience=None):
+        intellectual_sources = self.intellectual.sources()
+
         def admit(db, operation, origin):
             if (
                 self.operating_window is not None
@@ -1010,6 +1048,12 @@ class ThreadsRuntime(ThreadsStage0):
                         serialized(selected_experience).decode(),
                     ),
                 )
+            intellectual_projection = self.intellectual.reserve(
+                db, operation, origin, selected_experience or [], intellectual_sources
+            )
+            from app.core.intellectual_state import digest
+
+            origin["intellectual_digest"] = digest(intellectual_projection)
             return True
 
         started = self.journal.start(operation, origin, admit=admit)
@@ -1044,6 +1088,7 @@ class ThreadsRuntime(ThreadsStage0):
             raise PolicyDeniedError("public mission changed") from error
         if (
             not self.source_valid(payload)
+            or not self.intellectual.valid(operation)
             or self.ledger.control_generation() != payload["generation"]
         ):
             raise PolicyDeniedError("public source changed")

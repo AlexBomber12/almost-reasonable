@@ -13,7 +13,17 @@ def remove_v11(db):
         db.execute(f"DROP TABLE {table}")
 
 
+def remove_v14(db):
+    for table in (
+        "agent_intellectual_schema",
+        "agent_intellectual_operations",
+        "agent_intellectual_revisions",
+    ):
+        db.execute(f"DROP TABLE {table}")
+
+
 def remove_v12(db):
+    remove_v14(db)
     db.execute("ALTER TABLE provider_usage_attempts DROP COLUMN rejection_reason")
     db.execute("DROP INDEX narrative_sources_event")
     for table in (

@@ -12,6 +12,8 @@ import sqlite3
 import stat
 import time
 
+from .intellectual_schema import SCHEMA_V14 as _SCHEMA_V14
+
 from .sqlite_files import chmod_sqlite_metadata, sqlite_metadata_handle
 
 from .shared_schema import SCHEMA_V6 as _SCHEMA_V6, SCHEMA_V11 as _SCHEMA_V11
@@ -32,7 +34,7 @@ from .events import (
 )
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 DEFAULT_BUSY_TIMEOUT_MS = 5_000
 MAX_BUSY_TIMEOUT_MS = 2_147_483_647
 MAX_PRIVATE_PAYLOAD_BYTES = 64 * 1024
@@ -85,6 +87,7 @@ class FaultPoint(StrEnum):
     BEFORE_V10_MIGRATION_COMMIT = "before_v10_migration_commit"
     BEFORE_V11_MIGRATION_COMMIT = "before_v11_migration_commit"
     BEFORE_V12_MIGRATION_COMMIT = "before_v12_migration_commit"
+    BEFORE_V14_MIGRATION_COMMIT = "before_v14_migration_commit"
     BEFORE_V13_MIGRATION_COMMIT = "before_v13_migration_commit"
     AFTER_REPLY_PAYLOAD_INSERT = "after_reply_payload_insert"
     AFTER_REPLY_COMMIT = "after_reply_commit"
@@ -870,6 +873,7 @@ def _expected_schemas() -> dict[int, dict[tuple[str, str, str], str]]:
                 _SCHEMA_V11,
                 _SCHEMA_V12,
                 _SCHEMA_V13,
+                _SCHEMA_V14,
             ),
             start=1,
         ):
@@ -1013,7 +1017,7 @@ class EventStore:
         connection = self._open()
         try:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
-            if version not in {*range(13), SCHEMA_VERSION}:
+            if version not in {*range(14), SCHEMA_VERSION}:
                 raise UnsupportedSchemaVersionError(version)
             self._enable_wal(connection)
             self._secure_database_sidecars()
@@ -1022,7 +1026,7 @@ class EventStore:
             with connection:
                 connection.execute("BEGIN IMMEDIATE")
                 version = connection.execute("PRAGMA user_version").fetchone()[0]
-                if version not in {*range(13), SCHEMA_VERSION}:
+                if version not in {*range(14), SCHEMA_VERSION}:
                     raise UnsupportedSchemaVersionError(version)
                 if (
                     connection.execute("PRAGMA foreign_key_check").fetchone()
@@ -1046,6 +1050,7 @@ class EventStore:
                         *_SCHEMA_V11,
                         *_SCHEMA_V12,
                         *_SCHEMA_V13,
+                        *_SCHEMA_V14,
                     ):
                         connection.execute(statement)
                     connection.execute(
@@ -1067,6 +1072,7 @@ class EventStore:
                         (11, _SCHEMA_V11, FaultPoint.BEFORE_V11_MIGRATION_COMMIT),
                         (12, _SCHEMA_V12, FaultPoint.BEFORE_V12_MIGRATION_COMMIT),
                         (13, _SCHEMA_V13, FaultPoint.BEFORE_V13_MIGRATION_COMMIT),
+                        (14, _SCHEMA_V14, FaultPoint.BEFORE_V14_MIGRATION_COMMIT),
                     )
                     for target, statements, fault_point in migrations:
                         if target > version:

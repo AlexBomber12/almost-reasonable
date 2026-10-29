@@ -545,6 +545,7 @@ def _parse_context_request(
         shared = (
             value.get("contract_version") == "model-contract-shared-intelligence-v3"
         )
+    intellectual = value.get("intellectual_state")
     base_fields = {
         "contract_version",
         "task",
@@ -555,6 +556,8 @@ def _parse_context_request(
         "memories",
         "memories_omitted",
     }
+    if "intellectual_state" in value:
+        base_fields.add("intellectual_state")
     _require_exact_dict(
         value,
         base_fields | {"shared_intellectual_state", "shared_omitted"}
@@ -574,7 +577,10 @@ def _parse_context_request(
     )
     if value["contract_version"] != expected:
         raise WorkerProtocolError("invalid context contract")
-    base = {key: value[key] for key in base_fields - {"memories", "memories_omitted"}}
+    base = {
+        key: value[key]
+        for key in base_fields - {"memories", "memories_omitted", "intellectual_state"}
+    }
     base["contract_version"] = (
         "model-contract-conversation-transcript-v4"
         if transcript
@@ -619,6 +625,7 @@ def _parse_context_request(
         value["memories_omitted"],
         episodes=episodes,
         narrative_mode=narrative,
+        intellectual_state=intellectual,
     )
     if shared:
         records = value["shared_intellectual_state"]
@@ -887,7 +894,26 @@ def decode_response(payload: bytes) -> WorkerResponse:
             raise WorkerProtocolError("invalid worker response") from None
         return response
     proposal = value["agent_proposal"]
+    metadata = None
+    if (
+        type(proposal) is dict
+        and proposal.get("version") == "agent-intellectual-state-v1"
+    ):
+        _require_exact_dict(proposal, {"version", "action", "state", "model", "prompt"})
+        require_identifier("intellectual model", proposal["model"])
+        require_identifier("intellectual prompt", proposal["prompt"])
+        metadata = proposal
+        proposal = proposal["action"]
     validation = None if proposal is None else parse_agent_proposal(proposal)
+    if validation is not None and metadata is not None:
+        from dataclasses import replace
+
+        validation = replace(
+            validation,
+            intellectual=metadata["state"],
+            intellectual_model=metadata["model"],
+            intellectual_prompt=metadata["prompt"],
+        )
     if validation is not None and not validation.valid:
         raise WorkerProtocolError("invalid worker proposal")
     response = WorkerResponse(
@@ -1021,6 +1047,16 @@ def _proposal_data(validation: ProposalValidation | None) -> dict[str, str] | No
         return None
     if type(validation) is not ProposalValidation or not validation.valid:
         raise ValueError("response proposal is not valid")
+    if validation.intellectual_model is not None:
+        from dataclasses import replace
+
+        return {
+            "version": "agent-intellectual-state-v1",
+            "state": validation.intellectual,
+            "model": validation.intellectual_model,
+            "prompt": validation.intellectual_prompt,
+            "action": _proposal_data(replace(validation, intellectual_model=None)),
+        }
     proposal = validation.proposal
     if type(proposal) is NoActionProposal:
         return {

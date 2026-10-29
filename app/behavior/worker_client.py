@@ -33,6 +33,8 @@ class PublicBehaviorClient:
         self.provider_store = None
         self.public_context = None
         self.public_experience = None
+        self.intellectual_context = None
+        self.intellectual_results = {}
         self.mission_evolution_context = None
         self.operation_deadline = None
         self.utc_now = lambda: datetime.now(UTC)
@@ -58,6 +60,10 @@ class PublicBehaviorClient:
             public = replace(public, deadline_at=self.operation_deadline(operation))
         if self.public_experience is not None:
             public = replace(public, experience=self.public_experience(operation))
+        if self.intellectual_context is not None:
+            public = replace(
+                public, intellectual_state=self.intellectual_context(operation)
+            )
         if self.reservation_evidence is not None:
             public = replace(public, reservation=self.reservation_evidence(public))
         if public.deadline_at is not None:
@@ -146,7 +152,9 @@ class PublicBehaviorClient:
                 PROVIDER_NAME,
                 telemetry["model_identifier"],
                 "threads-public-worker-v1",
-                "threads-public-prompt-v1",
+                "threads-public-intellectual-prompt-v1"
+                if public.intellectual_state is not None
+                else "threads-public-prompt-v1",
                 CORE_SELF_VERSION,
                 telemetry["provider_response_id"],
                 started,
@@ -193,4 +201,12 @@ class PublicBehaviorClient:
             value["proposal"], evolution=bool(public.mission_evolution)
         ).valid:
             raise ValueError("invalid public worker proposal")
+        if (
+            type(value["proposal"]) is dict
+            and value["proposal"].get("version") == "agent-intellectual-state-v1"
+        ):
+            self.intellectual_results[operation] = (
+                value["proposal"]["state"],
+                telemetry["model_identifier"],
+            )
         return value["proposal"]

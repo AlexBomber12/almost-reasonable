@@ -242,6 +242,7 @@ class _DurableConversationRuntime(ConversationService):
         )
         self._gate = privacy_gate
         self._outputs = AgentOutputStore(event_store)
+        self._intellectual = None
         self._provider = provider_state or ProviderStateStore(event_store)
         self._stop = emergency_stop
         self._delivery = delivery_enabled
@@ -425,6 +426,8 @@ class _DurableConversationRuntime(ConversationService):
             self._reconcile_shared_proposal(principal, event_id, content, operation_id)
         if getattr(self, "_narrative_audit", None) is not None:
             self._reconcile_narrative(principal, event_id, content, operation_id)
+        if self._intellectual is not None and existing is not None:
+            self._intellectual.commit(principal, operation_id, None)
         if existing is not None and (
             getattr(self, "_extraction_audit", None) is not None
             or getattr(self, "_evolution_audit", None) is not None
@@ -635,6 +638,7 @@ class _DurableConversationRuntime(ConversationService):
                                 reserved.operation,
                                 result.validation.proposal,
                                 context=context,
+                                validation=result.validation,
                             )
                         else:
                             persisted = self._gate.authorized(
@@ -683,6 +687,15 @@ class _DurableConversationRuntime(ConversationService):
                 db.execute("BEGIN IMMEDIATE")
                 self._event_store._verify_current_schema(db)
                 private_limits = self._limits
+                if self._intellectual is not None:
+                    private_limits = replace(
+                        self._limits,
+                        max_utf8_bytes=max(
+                            minimum_context_utf8_bytes(),
+                            self._limits.max_utf8_bytes
+                            - min(8192, self._limits.max_utf8_bytes // 3),
+                        ),
+                    )
                 if self._shared is not None:
                     private_limits = replace(
                         self._limits,
@@ -719,6 +732,24 @@ class _DurableConversationRuntime(ConversationService):
                         db,
                         self._limits.max_utf8_bytes,
                     )
+                if self._intellectual is not None:
+                    request, sources = self._intellectual.attach(
+                        db, principal, operation_id, request, sources
+                    )
+                    inherited_shared, inherited_generic, inherited_narrative = (
+                        self._intellectual.inherited_operations(
+                            db, principal, operation_id
+                        )
+                    )
+                    shared_operations = tuple(
+                        sorted(set(shared_operations) | inherited_shared)
+                    )
+                    generic_operations = tuple(
+                        sorted(set(generic_operations) | inherited_generic)
+                    )
+                    narrative_operations = tuple(
+                        sorted(set(narrative_operations) | inherited_narrative)
+                    )
                 operation = ReplyOperation(
                     operation_id,
                     event_id,
@@ -737,9 +768,14 @@ class _DurableConversationRuntime(ConversationService):
                     generic_operations,
                     narrative_operations,
                 )
-                return self._outputs.reserve_reply(
+                reserved = self._outputs.reserve_reply(
                     principal, operation, _connection=db
-                ), request
+                )
+                if self._intellectual is not None:
+                    self._intellectual.bind_context(
+                        db, principal, operation_id, request
+                    )
+                return reserved, request
         finally:
             db.close()
 
@@ -769,9 +805,23 @@ class _DurableConversationRuntime(ConversationService):
                     return "authorization_rejected"
                 if not self._inference_consent_live(principal, operation_id):
                     return "consent_unavailable"
-                return self._provider.reserve_attempt(
+                if self._intellectual is not None and not self._intellectual.valid(
+                    principal, operation_id
+                ):
+                    return "consent_unavailable"
+                admitted = self._provider.reserve_attempt(
                     marker, "worker-ipc", self._clock()
                 )
+                if (
+                    admitted is AttemptReservationStatus.CREATED
+                    and self._intellectual is not None
+                ):
+                    with self._event_store._open() as db, db:
+                        db.execute("BEGIN IMMEDIATE")
+                        self._intellectual.bind_context(
+                            db, principal, operation_id, request
+                        )
+                return admitted
 
             self._checkpoint("before_worker_admission")
             reservation = self._gate.authorized(admit_worker)
@@ -1949,7 +1999,9 @@ class _DurableConversationRuntime(ConversationService):
         finally:
             db.close()
 
-    def _research_turn(self, route, operation, proposal, *, context=None):
+    def _research_turn(
+        self, route, operation, proposal, *, context=None, validation=None
+    ):
         public = type(self._research) is PublicResearchBridge
         if public:
             subject = proposal.brief
@@ -1964,6 +2016,10 @@ class _DurableConversationRuntime(ConversationService):
         # A short fence captures current authority and sources and commits intent.
         # No privacy fence or SQLite transaction remains held across IPC.
         def admission():
+            if self._intellectual is not None:
+                self._intellectual.commit(
+                    route.principal, operation.operation_id, validation
+                )
             canonical = None
             if public and self._research._profile is not None:
                 topic = self._research._profile.topic(subject)
@@ -2028,6 +2084,10 @@ class _DurableConversationRuntime(ConversationService):
                     getattr(self, "_narrative_audit", None) is not None
                     and not self._narrative_permission()
                 )
+            ):
+                return "research_unavailable"
+            if self._intellectual is not None and not self._intellectual.valid(
+                route.principal, operation.operation_id
             ):
                 return "research_unavailable"
             if not self._research.permits(route.principal, operation, subject):
@@ -2136,6 +2196,24 @@ class _DurableConversationRuntime(ConversationService):
 
     def _commit(self, route, operation, result):
         caps = self._capabilities()
+        if self._intellectual is not None and not self._intellectual.valid(
+            route.principal, operation.operation_id
+        ):
+            self._outputs.resolve_without_reply(
+                route.principal, operation.operation_id, "unavailable"
+            )
+            return
+        if (
+            self._intellectual is not None
+            and result.outcome == GatewayOutcome.COMPLETED
+            and self._current_request.get()()
+            and not caps.emergency_stop_active
+            and not caps.provider_spend_suspended
+        ):
+            self._intellectual.commit(
+                route.principal, operation.operation_id, result.validation
+            )
+            self._checkpoint("after_intellectual_commit")
         if caps.emergency_stop_active or caps.provider_spend_suspended:
             outcome = (
                 ("stopped" if caps.emergency_stop_active else "spend_suspended")
@@ -2230,6 +2308,10 @@ class _DurableConversationRuntime(ConversationService):
         if (
             getattr(self, "_narrative_audit", None) is not None
             and not self._narrative_permission()
+        ):
+            return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
+        if self._intellectual is not None and not self._intellectual.valid(
+            route.principal, operation_id
         ):
             return SubmittedMessage(message_status, ModelState.UNAVAILABLE)
         evidence = self._research_evidence(operation_id)
@@ -2507,6 +2589,9 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         super().__init__(
             event_store, privacy_gate, client, provider_state=provider_state, **kwargs
         )
+        from .intellectual import PrivateIntellectualState
+
+        self._intellectual = PrivateIntellectualState(self)
         self._extraction_audit = (
             ExtractionAuditStore(provider_state, event_store)
             if memory_extraction_enabled and not memory_evolution_enabled

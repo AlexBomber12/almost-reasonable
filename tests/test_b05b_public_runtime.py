@@ -595,13 +595,13 @@ def test_profile_change_during_inference_cannot_rebind_topic(tmp_path, monkeypat
     try:
         run_once(app, worker)
         assert calls == []
-        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "rejected"
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "held"
     finally:
         worker.close()
 
 
 def test_profile_change_before_inference_hides_old_catalog(tmp_path, monkeypatch):
-    app, worker, _, _, _ = _setup(
+    app, worker, sdk, _, _ = _setup(
         tmp_path, {"decision": "research", "topic_id": "ocean"}
     )
     calls = _attach_fake_research(app, tmp_path, monkeypatch)
@@ -616,9 +616,10 @@ def test_profile_change_before_inference_hides_old_catalog(tmp_path, monkeypatch
 
     app.checkpoint = checkpoint
     try:
-        run_once(app, worker)
+        app.run((WakeupEvent("wake-1", NOW, "public initiative"),))
+        assert sdk.calls == []
         assert calls == []
-        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "started"
+        assert app.journal.read(app.wakeup_operation("wake-1"))["phase"] == "held"
     finally:
         worker.close()
 

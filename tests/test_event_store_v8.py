@@ -32,7 +32,7 @@ def test_v7_worker_outcome_migration_is_atomic(tmp_path):
         assert db.execute("PRAGMA user_version").fetchone() == (7,)
         assert db.execute("SELECT version FROM schema_metadata").fetchone() == (7,)
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 13
+    assert upgraded.diagnostics().schema_version == 14
     with upgraded._open() as db:
         assert (
             "spend_suspended"
@@ -63,7 +63,7 @@ def test_v8_extraction_receipt_migration_is_atomic(tmp_path):
         assert schema_objects(db) == before
         assert db.execute("PRAGMA user_version").fetchone() == (8,)
     upgraded = EventStore(path)
-    assert upgraded.diagnostics().schema_version == 13
+    assert upgraded.diagnostics().schema_version == 14
     with upgraded._open() as db:
         assert db.execute(
             "SELECT count(*) FROM private_extraction_audit"

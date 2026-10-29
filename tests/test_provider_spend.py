@@ -110,10 +110,10 @@ def test_v2_to_v3_migration_is_atomic_and_preserves_existing_data(tmp_path):
     store = EventStore(database)
     reopened = EventStore(database)
 
-    assert store.diagnostics().schema_version == SCHEMA_VERSION == 13
-    assert reopened.diagnostics().schema_version == 13
+    assert store.diagnostics().schema_version == SCHEMA_VERSION == 14
+    assert reopened.diagnostics().schema_version == 14
     with sqlite3.connect(database) as connection:
-        assert connection.execute("PRAGMA user_version").fetchone() == (13,)
+        assert connection.execute("PRAGMA user_version").fetchone() == (14,)
         assert connection.execute(
             "SELECT event_id FROM event_envelopes"
         ).fetchone() == ("event-v2",)
@@ -162,7 +162,7 @@ def test_failed_v3_migration_rolls_back_to_recoverable_v2(tmp_path):
             "WHERE type = 'table' AND name = 'provider_usage_attempts'"
         ).fetchone() == (0,)
 
-    assert EventStore(database).diagnostics().schema_version == 13
+    assert EventStore(database).diagnostics().schema_version == 14
 
 
 def test_concurrent_v2_initialization_is_safe(tmp_path):
@@ -185,7 +185,7 @@ def test_concurrent_v2_initialization_is_safe(tmp_path):
     for thread in threads:
         thread.join()
 
-    assert outcomes == [13, 13]
+    assert outcomes == [14, 14]
 
 
 def test_confirmed_spend_suspension_and_telemetry_are_atomic_and_durable(tmp_path):
@@ -221,6 +221,9 @@ def test_v12_usage_and_spend_controls_survive_reason_migration(tmp_path):
         confirmed_spend_limit_code="project_spend_limit_exceeded",
     )
     with sqlite3.connect(database) as connection:
+        from shared_schema_helpers import remove_v14
+
+        remove_v14(connection)
         connection.execute(
             "ALTER TABLE provider_usage_attempts DROP COLUMN rejection_reason"
         )

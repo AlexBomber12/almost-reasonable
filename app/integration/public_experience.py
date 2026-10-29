@@ -63,6 +63,11 @@ class PublicExperienceHistory:
         )
 
     def candidates(self):
+        candidates = self._candidates()
+        eligible = self.app.intellectual.sources(_candidates=candidates)
+        return {key: value for key, value in candidates.items() if key in eligible}
+
+    def _candidates(self):
         """Authorize every source before relevance ranking, count or byte limits."""
         app = self.app
         candidates = {}

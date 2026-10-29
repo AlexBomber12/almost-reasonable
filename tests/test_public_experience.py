@@ -500,6 +500,7 @@ def test_runtime_and_worker_bind_complete_experience(tmp_path):
                 (),
                 5,
                 experience=app.inference_public_experience(operation),
+                intellectual_state=app.inference_intellectual_context(operation),
             )
             assert app.attest_worker_request(request)
             reservation = app.reservation_evidence(request)

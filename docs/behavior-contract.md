@@ -335,3 +335,13 @@ for the exact projection, authorization, snapshot, compatibility and recovery
 contract. This supports the public history portion of §4.4 and §7; it does not
 complete shared intellectual development, private-to-public promotion or
 unattended publication. The complete behavioral requirements above remain intact.
+
+### PR2 intellectual-state implementation evidence
+
+The [agent intellectual-state extension](agent-intellectual-state.md) connects
+optional same-call proposals, source-bound durable revisions and subsequent
+private/public SDK projections. Private release, audience, deletion, one-use
+recovery, and independent external-action authorization remain application
+boundaries. This intermediate evidence does not replace the full contract or
+complete-MVP behavioral acceptance; private-to-shared integration and authorized
+real-model evaluation remain separate work.
