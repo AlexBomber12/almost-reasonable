@@ -29,6 +29,15 @@ from app.core.agent_proposals import (
 )
 from app.core.core_self import initial_core_self
 from app.core.public_behavior import MAX_CONTEXT, public_context_digest
+from app.core.public_experience import (
+    inference_context_digest,
+    serialized,
+    EXPERIENCE_VERSION,
+)
+from app.integration.public_experience import (
+    PublicExperienceHistory,
+    initialize_experience_storage,
+)
 from app.core.public_behavior import PublicMissionChoice, parse_public_proposal
 from app.core.public_behavior_mission import PublicMissionContext
 from app.core.public_mission_evolution import PublicMissionEvolution
@@ -275,6 +284,7 @@ class ThreadsRuntime(ThreadsStage0):
         self.research_profile_path = research_profile_path
         self.research_scope = research_scope
         self.model.public_context = self.inference_public_context
+        self.model.public_experience = self.inference_public_experience
         self.model.operation_deadline = self.inference_deadline
         self.model.utc_now = clock.now
         if mission is not None and type(mission) is not PublicMissionContext:
@@ -317,6 +327,7 @@ class ThreadsRuntime(ThreadsStage0):
                 "at TEXT NOT NULL, reference TEXT NOT NULL)"
             )
             _initialize_research_storage(db)
+            initialize_experience_storage(db)
             db.execute(
                 "CREATE TABLE IF NOT EXISTS public_research_completions("
                 "operation TEXT PRIMARY KEY, completed_at TEXT NOT NULL)"
@@ -347,6 +358,7 @@ class ThreadsRuntime(ThreadsStage0):
                 "persisted public mission evolution requires enabled configuration"
             )
         self.mission_evolution = None
+        self.experience_history = PublicExperienceHistory(self)
         self.engine = DeliberationEngine(
             model,
             clock.now,
@@ -557,6 +569,28 @@ class ThreadsRuntime(ThreadsStage0):
             if counts.get(topic.topic_id, 0) < topic.limit
         )
 
+    def inference_public_experience(self, operation):
+        payload = self.journal.read(operation)
+        try:
+            self.guard()
+            self.require_mission(payload)
+            if not super().source_valid(payload):
+                raise ValueError("public trigger changed")
+            return self.experience_history.load(operation, payload)
+        except ValueError as error:
+            raise PublicInferenceContextChanged("public experience changed") from error
+
+    def source_valid(self, payload):
+        if not super().source_valid(payload):
+            return False
+        try:
+            self.experience_history.load(
+                payload.get("experience_operation", payload["correlation"]), payload
+            )
+            return True
+        except ValueError:
+            return False
+
     def attest_worker_request(self, request):
         try:
             payload = self.journal.read(request.operation_id)
@@ -568,7 +602,14 @@ class ThreadsRuntime(ThreadsStage0):
                 and payload.get("runtime_version") == PUBLIC_RUNTIME_VERSION
                 and request.operation_id == request.correlation_id
                 and payload["trigger"] == request.trigger
-                and payload["context_digest"] == public_context_digest(request.context)
+                and payload["context_digest"]
+                == (
+                    public_context_digest(request.context)
+                    if request.experience is None
+                    else inference_context_digest(request.context, request.experience)
+                )
+                and self.inference_public_experience(request.operation_id)
+                == request.experience
                 and tuple(payload["mission_text"]) == request.mission
                 and self.inference_public_context(request.operation_id)
                 == (request.catalog, request.evidence)
@@ -675,6 +716,8 @@ class ThreadsRuntime(ThreadsStage0):
                 self._public_context_with_source(offered_profile)
             )
             mission_evidence_digest = public_context_digest(offered_evidence)
+        experience_generation = self.ledger.control_generation()
+        selected_experience, experience = self.experience_history.select(origin)
         trigger = "autonomous_wakeup" if origin["kind"] == "wake" else "public_message"
         origin = {
             **origin,
@@ -682,7 +725,13 @@ class ThreadsRuntime(ThreadsStage0):
             if offered_profile is None
             else offered_profile.digest,
             "trigger": trigger,
-            "context_digest": public_context_digest(context),
+            "context_digest": inference_context_digest(context, experience),
+            "experience_digest": experience.digest,
+            "experience_mission_root": None
+            if self.mission is None
+            else self.mission._root_snapshot()[1],
+            "experience_generation": experience_generation,
+            "experience_operation": operation,
             "mission_text": mission_text,
             "mission_evolution": evolution_context,
             "timeout": timeout,
@@ -692,7 +741,7 @@ class ThreadsRuntime(ThreadsStage0):
             origin["mission_pending_id"] = mission_pending_id
             origin["mission_evidence_operation"] = mission_evidence_operation
             origin["mission_evidence_digest"] = mission_evidence_digest
-        if not self._start_public_operation(operation, origin):
+        if not self._start_public_operation(operation, origin, selected_experience):
             return
         self.checkpoint("after_started")
         self.guard()
@@ -764,6 +813,15 @@ class ThreadsRuntime(ThreadsStage0):
                     held=True,
                 )
                 return
+        try:
+            self.inference_public_experience(operation)
+        except PublicInferenceContextChanged:
+            self.journal.finish(
+                operation,
+                {**origin, "reason": "public_inference_context_changed"},
+                held=True,
+            )
+            return
         payload = {
             **origin,
             "generation": generation,
@@ -936,20 +994,33 @@ class ThreadsRuntime(ThreadsStage0):
         )
         self.checkpoint("after_intent")
 
-    def _start_public_operation(self, operation, origin):
-        if self.operating_window is None:
-            return self.journal.start(operation, origin)
-        if not self.journal.start(
-            operation,
-            origin,
-            admit=self.operating_window.admit_deliberation,
-        ):
+    def _start_public_operation(self, operation, origin, selected_experience=None):
+        def admit(db, operation, origin):
+            if (
+                self.operating_window is not None
+                and not self.operating_window.admit_deliberation(db, operation, origin)
+            ):
+                return False
+            if selected_experience is not None:
+                db.execute(
+                    "INSERT INTO public_experience_snapshots VALUES(?,?,?)",
+                    (
+                        operation,
+                        EXPERIENCE_VERSION,
+                        serialized(selected_experience).decode(),
+                    ),
+                )
+            return True
+
+        started = self.journal.start(operation, origin, admit=admit)
+        if not started and self.operating_window is not None:
             raise ValueError("operating window admission unavailable")
-        return True
+        return started
 
     def _handoff(self, operation, payload):
         if self.mission_evolution is None:
-            return self._handoff_with_mission_fence(operation, payload)
+            with self.service.store.conversation_control_effect_fence():
+                return self._handoff_with_mission_fence(operation, payload)
         with self.journal.handoff_lock("mission-evolution"):
             if AgentDecision(payload["decision"]) in (
                 AgentDecision.REVISE_MISSION,
@@ -1355,7 +1426,8 @@ class ThreadsRuntime(ThreadsStage0):
         if approval is None:
             raise PolicyDeniedError("public approval unavailable")
         if self.mission_evolution is None:
-            return self.service.dispatch(operation, approval, now=self.clock.now())
+            with self.service.store.conversation_control_effect_fence():
+                return self.service.dispatch(operation, approval, now=self.clock.now())
         with (
             self.journal.handoff_lock("mission-evolution"),
             self.service.store.conversation_control_effect_fence(),

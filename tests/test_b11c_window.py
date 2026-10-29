@@ -1092,6 +1092,7 @@ def test_request_deadline_is_bound_to_the_durable_operation(tmp_path):
                 tuple(payload["mission_text"]),
                 1,
                 deadline_at=deadline,
+                experience=app.inference_public_experience(operation),
             )
             assert app.attest_worker_request(request)
             assert not app.attest_worker_request(

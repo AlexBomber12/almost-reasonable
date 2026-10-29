@@ -265,3 +265,17 @@ These journeys refine the contract into implementation and acceptance behavior. 
 **Failure modes:** Russian/English/Unicode or Base64 bypass, multi-turn escalation, indirect hosted-search/tool injection, secret context sent to research, future first-party SSRF, delayed memory/mission activation, self-state instruction injection, parser differential, unjustified global shutdown, or audit leakage.
 
 **Acceptance tests:** Run a versioned corpus covering both languages, mixed scripts, invisible characters, encodings, nested documents, hosted-tool injection, false owner identity, multi-turn attacks, Core Self/mission/memory poisoning, promotional links, and exfiltration canaries. G oracles assert no forbidden action/data flow regardless of model output, no secret/private content in research, two-phase mission resistance, and no text-only global shutdown. Fuzz closed schemas and, for any future first-party fetcher, URLs/DNS/redirects. Score H detection separately from G containment and document residual risk—never absolute immunity.
+
+## Public continuity implementation mapping
+
+`tests/test_public_experience.py` supplies connected offline evidence for a bounded
+part of SCN-04 (confirmed publication reaches the next wakeup after restart),
+SCN-05 (relevant public conversation reaches the reply inference while the current
+verified event owns routing), SCN-10 (no-action remains a distinct durable decision),
+and SCN-11/12 (authorized source selection, closed projection, snapshot binding and
+withdrawal denial). It also exercises unconfirmed outcomes, Russian byte bounds,
+interruption and legacy journal migration. See the
+[INT24 continuity contract](int24-threads-runtime.md#durable-public-experience-continuity).
+These tests establish data flow and deterministic controls, not the full scenarios'
+semantic qualities or autonomous publication acceptance. All scenario requirements
+and existing acceptance tests remain required.

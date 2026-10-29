@@ -99,3 +99,78 @@ The root is a read route, not publication authority.
 
 These are manual steps under existing authority; this documentation and its
 fake-provider tests authorize no live check or publication.
+
+## Durable public experience continuity
+
+New public deliberations now receive an explicit `public-experience-v1` data
+projection through the existing application → Unix worker → SDK path. Previously,
+wakeups received no public event context; stored publications and conversations
+could not inform the next inference. The application now selects from its existing
+verified inbound events, linked provider-confirmed publications/replies and linked
+`no_action` decisions. Confirmation requires the stored publication ID and
+`provider_publication_details_verified` evidence. External assertions remain
+assertions; an agent publication establishes publication, not factual truth or
+present availability on Meta. No-action is a decision, not a publication.
+Proposed, approved, sending, failed, held and UNKNOWN draft text is omitted.
+UNKNOWN retains its existing pause and reconciliation rules.
+
+Authorization precedes ranking: the configured account, verified public transport
+source, public provenance, current privacy generation and trusted mission root where recorded,
+active draft source and unsuppressed conversation must permit reuse. No private
+conversation, memory, narrative, owner-role marker, credential or protected source
+reference is queried for this projection. Public message, parent and conversation
+IDs come from stored application/provider evidence; they are data. The current
+verified triggering event still supplies the actual reply route.
+
+Inbound selection retains the same conversation and its related owned activity,
+excluding the current event already supplied as trigger context. Wakeups consider
+permitted prior public experience across conversations. Both order newest first
+by parsed aware timestamp, then stable source identity descending. Oversized
+records are skipped without starving smaller ones. Bounds are six records,
+1,536 UTF-8 bytes per complete serialized record and 8,192 UTF-8 bytes for the
+complete versioned projection, including JSON escaping and envelope overhead.
+The triggering event and mission each retain their existing 2,048-byte limit;
+the complete worker frame retains its 65,536-byte limit. Selection makes no
+model, search or HTTP call, and deliberation still permits one model call.
+
+An additive, transactional `public_experience_schema` v1 migration adds
+`public_experience_snapshots` in the existing runtime journal. Admission commits
+the bounded protected source keys, source bindings and exact projection in the
+same journal transaction as the started intent and optional window slot. The
+snapshot has a 16,384-byte storage limit; the intent keeps only its operation,
+privacy-generation and SHA-256 bindings, preserving the existing 4,096-character
+intent limit. The authenticated reservation's context digest uses a new domain
+binding both the trigger and complete experience projection. Legacy
+`public_context_digest` retains its original meaning for research, mission and
+legacy request bindings. The closed worker protocol gains an optional typed,
+versioned experience field; unknown fields remain rejected. App and worker must
+run the same reviewed revision.
+
+Before model exchange, after inference, at dependent handoff and at publication
+authorization, the application rechecks selected sources and controls. It checks
+the original selection rather than replacing it with newer records. Changed or
+withdrawn sources hold/deny dependent work; no replacement inference is admitted.
+Historical experience survives authorized mission evolution under the same trusted
+root; the dependent operation still checks its exact active mission and its
+evidence authority. Conversation effects retain the existing control fence. Independent journal,
+privacy and Threads commits remain independent; no transaction spans model/HTTP
+calls and an already in-flight action cannot be recalled by a later withdrawal.
+Only locally recorded validity is checked, without asserting remote availability.
+
+Restart reconstructs new selections from durable records and checks existing
+snapshots against their original sources. Existing started/uncertain operations
+remain consumed and are never reinferred. Legacy operations without an experience
+binding keep their original protocol, approvals, quotas, scheduler/cursor state
+and recovery identities; they never acquire a new snapshot. Eligible old confirmed
+publications can inform new work; insufficient old publication evidence is omitted.
+Missing/changed snapshots on new operations fail closed. Unknown future experience
+schema versions are rejected without resetting existing state.
+
+`tests/test_public_experience.py` exercises confirmed publication → later SDK input,
+restart, inbound conversation and routing, unconfirmed outcomes, deterministic
+Russian byte limits, source withdrawal at inference/handoff/dispatch, snapshot
+attestation, interrupted work and additive legacy migration. These are offline
+synthetic data-flow guarantees. They do not establish semantic model quality,
+shared private-to-public intellectual evolution, autonomous publication authority,
+self-chosen cadence or a complete persistent autonomous personality. Per-draft
+approval remains mandatory in this intermediate slice. No action remains valid.

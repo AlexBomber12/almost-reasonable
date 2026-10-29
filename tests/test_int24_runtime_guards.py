@@ -202,13 +202,19 @@ def test_started_identity_is_single_use_and_public_control_change_holds_intent(
         operation = app.wakeup_operation("direct-1")
         origin = {"kind": "wake", "event": "direct-1", "correlation": operation}
         app.engine.deliberate = lambda _request: no_action_result()
-        values = iter((0, 1))
-        app.ledger.control_generation = lambda: next(values)
+        generation = [0]
+
+        def change_generation(_request):
+            generation[0] = 1
+            return no_action_result()
+
+        app.engine.deliberate = change_generation
+        app.ledger.control_generation = lambda: generation[0]
         app._decide(operation, origin, ())
         assert app.journal.read(operation)["phase"] == "held"
         app._decide(operation, origin, ())
         assert app.journal.read(operation)["phase"] == "held"
-        app.journal.start = lambda *_args: False
+        app.journal.start = lambda *_args, **_kwargs: False
         app._decide(
             app.wakeup_operation("direct-2"),
             {"kind": "wake", "event": "direct-2", "correlation": "direct-2"},
@@ -473,7 +479,7 @@ def test_concurrent_oversized_claim_never_contacts_worker(tmp_path):
         tmp_path, {"decision": "no_action", "reason_category": "other"}
     )
     try:
-        app.journal.start = lambda *_args: False
+        app.journal.start = lambda *_args, **_kwargs: False
         operation = app.wakeup_operation("large-1")
         app._decide(
             operation,
@@ -540,7 +546,7 @@ def test_privacy_generation_change_during_authorization_snapshot_denies_effect(
         item = app.draft(operation)
         generation = app.ledger.control_generation()
         values = iter((generation, generation + 1))
-        app.ledger.control_generation = lambda: next(values)
+        app.ledger.control_generation = lambda: next(values, generation + 1)
         snapshot = app.authorization.current_publication_authorization(
             item=item, approval_reference=item.approval_reference, now=NOW
         )
