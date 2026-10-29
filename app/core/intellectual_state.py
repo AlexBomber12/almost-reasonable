@@ -592,6 +592,8 @@ def validate_private_graph(db):
         WHERE r.audience!='private' OR NOT EXISTS(
             SELECT 1 FROM agent_intellectual_operations o
             WHERE o.audience=r.audience AND o.owner=r.owner AND o.operation=r.operation
+            AND (r.payload IS NULL OR (o.snapshot IS NOT NULL AND o.proposal IS NOT NULL
+                AND o.metadata IS NOT NULL AND o.status='accepted'))
         ) LIMIT 1"""
         ).fetchone()
         is not None

@@ -167,27 +167,40 @@ class PublicIntellectualState:
             and payload["intellectual_research_source"] == source
         )
 
+    def context_dependencies(
+        self, origin, sources, selected=(), *, research_source=None
+    ):
+        keys = {item["key"] for item in selected}
+        if origin["kind"] != "wake":
+            keys.add(f"event:{origin['kind']}:{origin['event']}")
+        if research_source is not None:
+            key = "research:" + research_source
+            if key not in sources:
+                raise ValueError("intellectual research context unavailable")
+            keys.add(key)
+        required = {}
+        for key in keys:
+            if key in sources:
+                required.update(sources[key]["dependencies"])
+                required[key] = sources[key]["binding"]
+        return required
+
     def reserve(self, db, operation, origin, selected, sources):
+        required = self.context_dependencies(
+            origin,
+            sources,
+            selected,
+            research_source=origin.get("intellectual_research_source"),
+        )
         visible = {item["key"] for item in selected}
+        if origin["kind"] != "wake":
+            visible.add(f"event:{origin['kind']}:{origin['event']}")
+        # Outcomes are optional new projection records, not already visible context.
         visible.update(
             sorted(
                 (key for key in sources if key.startswith("outcome:")), reverse=True
             )[:2]
         )
-        if origin["kind"] != "wake":
-            visible.add(f"event:{origin['kind']}:{origin['event']}")
-        required = {}
-        for key in visible:
-            if key in sources:
-                required.update(sources[key]["dependencies"])
-                required[key] = sources[key]["binding"]
-        research = origin.get("intellectual_research_source")
-        if research is not None:
-            key = "research:" + research
-            if key not in sources:
-                raise ValueError("intellectual research context unavailable")
-            required.update(sources[key]["dependencies"])
-            required[key] = sources[key]["binding"]
         return self.state.reserve(
             db,
             operation,

@@ -1602,8 +1602,8 @@ def test_source_withdrawal_between_public_selection_and_admission_holds_inferenc
         draft = app.draft(original).draft_id
         select = app.experience_history.select
 
-        def selected_then_withdrawn(origin):
-            selected = select(origin)
+        def selected_then_withdrawn(origin, **kwargs):
+            selected = select(origin, **kwargs)
             app.journal.revoke_source(draft)
             return selected
 
@@ -2019,3 +2019,127 @@ def test_quarantine_rejects_orphan_agent_revisions(tmp_path):
                 _validate_graph(db)
     finally:
         server.close()
+
+
+@pytest.mark.parametrize("missing", ["snapshot", "proposal", "metadata"])
+def test_quarantine_requires_receipts_for_every_live_revision(tmp_path, missing):
+    from app.privacy.application import _validate_graph, ApplicationPrivacyError
+
+    app, a, _b, events, _ledger, _gate, sdk, server = private_setup(tmp_path)
+    try:
+        sdk.change = proposal()
+        private_submit(server, a, "state", "Обсудим архитектуру.")
+        with events._open() as db:
+            _validate_graph(db)
+            db.execute(f"UPDATE agent_intellectual_operations SET {missing}=NULL")
+            with pytest.raises(
+                ApplicationPrivacyError, match="invalid_intellectual_graph"
+            ):
+                _validate_graph(db)
+    finally:
+        server.close()
+
+
+def test_long_public_no_change_history_trims_whole_context_without_losing_taint(
+    tmp_path, monkeypatch
+):
+    from threading import Thread
+    from datetime import timedelta
+    from app.behavior.scheduler import WakeupEvent
+    from app.threads.domain import InboundKind
+    from app.core.intellectual_state import MAX_DEPENDENCIES
+
+    app, worker, sdk, http, clock = setup(
+        tmp_path, {"decision": "no_action", "reason_category": "other"}
+    )
+    worker.listener.settimeout(10)
+
+    def turn(identity):
+        def serve():
+            try:
+                worker.serve_once()
+            except TimeoutError:
+                pass
+
+        thread = Thread(target=serve, daemon=True)
+        thread.start()
+        clock.advance(timedelta(seconds=2))
+        try:
+            app.run((WakeupEvent(identity, clock.now(), "public initiative"),))
+        finally:
+            thread.join(11)
+            assert not thread.is_alive()
+        assert app.journal.read(app.wakeup_operation(identity))["phase"] == "linked"
+
+    try:
+        app.poll(InboundKind.REPLY, correlation_id="root-public-experience")
+        for index in range(MAX_DEPENDENCIES + 3):
+            turn(f"continuity-{index}")
+        assert len(sdk.calls) == MAX_DEPENDENCIES + 3
+        value = json.loads(sdk.calls[-1]["input"][1]["content"])
+        assert value["public_experience"]["records"]
+        assert value["intellectual_state"]["states"] == []
+        with app.journal.transaction() as db:
+            snapshots = db.execute(
+                "SELECT operation,snapshot FROM agent_intellectual_operations"
+            ).fetchall()
+            for operation, raw in snapshots:
+                snapshot = json.loads(raw)
+                assert len(snapshot["dependencies"]) <= MAX_DEPENDENCIES
+                selected = json.loads(
+                    db.execute(
+                        "SELECT sources FROM public_experience_snapshots WHERE operation=?",
+                        (operation,),
+                    ).fetchone()[0]
+                )
+                assert {record["key"] for record in selected} <= snapshot[
+                    "dependencies"
+                ].keys()
+        monkeypatch.setattr(
+            app.experience_history, "_event_allowed", lambda _event: False
+        )
+        turn("withdrawn-root")
+        value = json.loads(sdk.calls[-1]["input"][1]["content"])
+        assert value["public_experience"]["records"] == []
+        assert value["intellectual_state"]["sources"] == []
+        assert len(sdk.calls) == MAX_DEPENDENCIES + 4
+        assert len(http.calls) == 1
+    finally:
+        worker.close()
+
+
+def test_cached_research_context_also_respects_transitive_capacity(
+    tmp_path, monkeypatch
+):
+    from test_b05b_public_runtime import _setup, _attach_fake_research
+    from test_public_experience import wake
+    import app.core.intellectual_state as intellectual
+
+    monkeypatch.setattr(intellectual, "MAX_DEPENDENCIES", 5)
+    app, worker, sdk, _http, clock = _setup(
+        tmp_path, {"decision": "no_action", "reason_category": "other"}
+    )
+    calls = _attach_fake_research(app, tmp_path, monkeypatch)
+    worker.listener.settimeout(2)
+    try:
+        for index in range(8):
+            wake(app, worker, clock, f"bounded-before-research-{index}")
+        sdk.proposal = {"decision": "research", "topic_id": "ocean"}
+        wake(app, worker, clock, "bounded-research")
+        assert len(calls) == 1
+        sdk.proposal = {"decision": "no_action", "reason_category": "other"}
+        wake(app, worker, clock, "after-bounded-research")
+        value = json.loads(sdk.calls[-1]["input"][1]["content"])
+        assert value["prior_untrusted_public_evidence"] == []
+        assert len(sdk.calls) == 10
+        with app.journal.transaction() as db:
+            assert (
+                len(
+                    app.intellectual.state.dependencies(
+                        db, app.wakeup_operation("after-bounded-research")
+                    )
+                )
+                <= 5
+            )
+    finally:
+        worker.close()

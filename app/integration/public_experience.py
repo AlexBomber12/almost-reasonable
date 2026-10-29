@@ -63,9 +63,14 @@ class PublicExperienceHistory:
         )
 
     def candidates(self):
+        return self._eligible()[0]
+
+    def _eligible(self):
         candidates = self._candidates()
         eligible = self.app.intellectual.sources(_candidates=candidates)
-        return {key: value for key, value in candidates.items() if key in eligible}
+        return {
+            key: value for key, value in candidates.items() if key in eligible
+        }, eligible
 
     def _candidates(self):
         """Authorize every source before relevance ranking, count or byte limits."""
@@ -154,8 +159,13 @@ class PublicExperienceHistory:
                     )
         return candidates
 
-    def select(self, origin):
-        candidates = self.candidates()
+    def select(self, origin, *, research_source=None):
+        from app.core.intellectual_state import MAX_DEPENDENCIES
+
+        candidates, sources = self._eligible()
+        dependencies = self.app.intellectual.context_dependencies(
+            origin, sources, research_source=research_source
+        )
         conversation = origin.get("conversation")
         current = origin.get("event") if origin["kind"] != "wake" else None
         ranked = []
@@ -176,12 +186,16 @@ class PublicExperienceHistory:
         )
         selected, records = [], []
         for key, record, binding in ranked:
+            additions = {**sources[key]["dependencies"], key: binding}
+            if len(dependencies.keys() | additions.keys()) > MAX_DEPENDENCIES:
+                continue
             try:
                 PublicExperience(tuple([*records, record])).value()
             except ValueError:
                 continue  # Skip an oversized record without starving smaller records.
             selected.append({"key": key, "binding": binding, "record": record.value()})
             records.append(record)
+            dependencies.update(additions)
             if len(records) == MAX_RECORDS:
                 break
         return selected, PublicExperience(tuple(records))

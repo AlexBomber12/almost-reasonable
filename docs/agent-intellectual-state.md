@@ -101,8 +101,10 @@ while retaining protected identity and dependency metadata for replay. Shared
 source revocation invalidates dependent private state through the inherited
 context edges. Quarantine validation checks scope, source bindings, selected
 revisions, projection and receipt bindings before an old backup becomes eligible.
-Public source withdrawal or changed controls prevent future use and dependent
-effects. Rephrasing or citing an earlier agent response does not bypass an
+Every live private revision must retain a matching operation snapshot, receipt
+and attribution; quarantine rejects missing, orphaned or tombstoned authority
+behind a non-erased payload. Public source withdrawal or changed controls prevent
+future use and dependent effects. Rephrasing or citing an earlier agent response does not bypass an
 invalid ancestor.
 
 ## Bounds and evidence
@@ -116,7 +118,12 @@ against the actual serialized conversation frame. Required context dependencies
 are reserved before optional state/experience selection. If that union has no
 room for the extension, the ordinary conversation retains its full existing
 source set and acquires no intellectual write authority. Taint is never dropped.
-Storage applies separate receipt, metadata, revision and snapshot byte limits.
+Public history and cached research context are also filtered as whole records
+against the transitive provenance budget before SDK context binding. Optional
+outcomes cannot displace required context dependencies. Repeated no-change turns
+therefore retain ordinary inference admission without dropping ancestry behind
+any visible record. Storage applies separate receipt, metadata, revision and
+snapshot byte limits.
 
 `tests/test_agent_intellectual_state.py` exercises real SQLite persistence,
 authenticated private HTTP, AF_UNIX worker exchange and actual fake-SDK input.

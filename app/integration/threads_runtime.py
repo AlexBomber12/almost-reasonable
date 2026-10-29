@@ -554,6 +554,18 @@ class ThreadsRuntime(ThreadsStage0):
                     self.source_valid(payload)
                     and self.ledger.control_generation() == payload["generation"]
                 ):
+                    from app.core.intellectual_state import MAX_DEPENDENCIES
+
+                    dependencies = self.intellectual.state.dependencies(
+                        db, row["operation"]
+                    )
+                    # Cached evidence is optional context. Keep room for a current
+                    # inbound event and omit the whole report when ancestry cannot fit.
+                    if (
+                        len(dependencies.keys() | {"research:" + row["operation"]})
+                        >= MAX_DEPENDENCIES
+                    ):
+                        continue
                     return (row["evidence"],), row["operation"]
             except ValueError:
                 continue
@@ -745,7 +757,9 @@ class ThreadsRuntime(ThreadsStage0):
             mission_evidence_operation = offered_research_source
             mission_evidence_digest = public_context_digest(offered_evidence)
         experience_generation = self.ledger.control_generation()
-        selected_experience, experience = self.experience_history.select(origin)
+        selected_experience, experience = self.experience_history.select(
+            origin, research_source=offered_research_source
+        )
         trigger = "autonomous_wakeup" if origin["kind"] == "wake" else "public_message"
         origin = {
             **origin,
