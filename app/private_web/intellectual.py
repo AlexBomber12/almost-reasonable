@@ -295,14 +295,17 @@ class PrivateIntellectualState:
             inherited = self.inherited_operations(
                 db, principal, operation, dependencies=dependencies, sources=sources
             )
-            from app.core.public_intellectual_receipt import collect
+            from app.core.public_intellectual_receipt import (
+                collect,
+                MAX_PROTECTED_BYTES,
+            )
             from app.core.intellectual_state import encoded
 
             protected = {
                 "dependencies": dependencies,
                 "external_receipts": collect(dependencies, sources),
             }
-            return len(encoded(protected).encode()) <= 45056 and all(
+            return len(encoded(protected).encode()) <= MAX_PROTECTED_BYTES and all(
                 len(set(base) | extra) <= limit
                 for base, extra, limit in zip(base_groups, inherited, limits)
             )
