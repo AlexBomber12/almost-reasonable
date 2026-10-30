@@ -19,7 +19,7 @@ from app.core.public_research_client import PublicResearchClient
 from app.core.store import EventStore
 from app.integration.threads_runtime import LocalOperator, ThreadsRuntime
 from app.integration.public_window import PublicOperatingWindow, WindowSpec
-from app.core.public_research_profile import PUBLIC_PURPOSE, load_research_profile
+from app.core.public_research_profile import PUBLIC_PURPOSES, load_research_profile
 from app.owner_control.store import OwnerStore
 from app.privacy.ledger import PrivacyLedger
 from app.threads.domain import AccountPolicy, InboundKind, Stage
@@ -133,7 +133,7 @@ def _window_plan(config, spec):
             config["public_research_profile"], role="application"
         )
         if (
-            profile.purpose != PUBLIC_PURPOSE
+            profile.purpose not in PUBLIC_PURPOSES
             or profile.account_ref != config["account_ref"]
             or profile.application_scope != config["public_research_scope"]
         ):

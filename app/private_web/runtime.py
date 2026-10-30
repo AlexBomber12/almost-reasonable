@@ -1983,12 +1983,33 @@ class _DurableConversationRuntime(ConversationService):
                         )
                     )
                 )
+                private_words = {
+                    word
+                    for text in protected_texts
+                    for word in re.findall(r"\w{16,}", text)
+                }
+                profile = getattr(self._research, "_profile", None)
+                if profile is not None and profile.question_policy is not None:
+                    # New free questions have no independent catalog review.
+                    # Conservatively withhold name-shaped private tokens too.
+                    functional = set(
+                        "a an the this that these those what how why when where which could would should please thanks and but not for from with without you your our their его её это этот эта эти как что почему когда где который которая пожалуйста спасибо привет обсудим".split()
+                    )
+                    private_words.update(
+                        word
+                        for text in protected_texts
+                        for word in re.findall(
+                            r"\b(?:[A-ZА-ЯЁ][a-zа-яё]{2,}|[A-ZА-ЯЁ]{3,})\b", text
+                        )
+                        if word.casefold() not in functional
+                    )
                 return ResearchScreeningContext(
                     private_canaries=base.private_canaries
                     + tuple(sorted(source_ids))
                     + operation.shared_operation_ids
                     + operation.generic_operation_ids
-                    + operation.narrative_operation_ids,
+                    + operation.narrative_operation_ids
+                    + tuple(sorted(private_words)),
                     participant_identifiers=base.participant_identifiers
                     + tuple(
                         sorted({identifier for row in rows for identifier in row[2:]})
@@ -2031,10 +2052,42 @@ class _DurableConversationRuntime(ConversationService):
                     route.principal, operation.operation_id, validation
                 )
             canonical = None
-            if public and self._research._profile is not None:
+            if (
+                public
+                and self._research._profile is not None
+                and self._research._profile.question_policy is None
+            ):
                 topic = self._research._profile.topic(subject)
                 canonical = topic.question if topic is not None else None
             screening = self._research_screening(route, operation, canonical, context)
+            if (
+                public
+                and self._research._profile is not None
+                and self._research._profile.question_policy is not None
+                and self._research._profile.topic(subject) is not None
+            ):
+                from app.research.brief import (
+                    build_safe_research_brief,
+                    ResearchRecordSet,
+                    ResearchQuestion,
+                )
+                from .research_questions import bind
+
+                built = build_safe_research_brief(
+                    ResearchRecordSet((ResearchQuestion(subject),)),
+                    result_budget=3,
+                    trusted_config_version="public-research-brief-v1",
+                    screening=screening,
+                )
+                if built.brief is not None and built.brief.question == subject:
+                    with self._event_store._open() as db, db:
+                        db.execute("BEGIN IMMEDIATE")
+                        bind(
+                            db,
+                            operation.operation_id,
+                            subject,
+                            self._research._profile.digest,
+                        )
             return self._provider.reserve_attempt(
                 intent_id(operation.operation_id), worker_id, self._clock()
             ), screening
@@ -2351,7 +2404,9 @@ class _DurableConversationRuntime(ConversationService):
                 grant = self._research._grants.get(operation_id)
                 subject = grant.request.question if grant is not None else None
                 if self._research._profile is not None:
-                    subject = self._research.evidence_choice(evidence.model_identifier)
+                    subject = self._research.evidence_choice(
+                        evidence.model_identifier, operation_id=operation_id
+                    )
             else:
                 try:
                     subject = SyntheticPublicResearchFixture(evidence.model_identifier)
@@ -2510,7 +2565,9 @@ class _DurableConversationRuntime(ConversationService):
             grant = self._research._grants.get(reply.operation.operation_id)
             subject = grant.request.question if grant is not None else None
             if self._research._profile is not None:
-                subject = self._research.evidence_choice(evidence.model_identifier)
+                subject = self._research.evidence_choice(
+                    evidence.model_identifier, operation_id=reply.operation.operation_id
+                )
         else:
             try:
                 subject = SyntheticPublicResearchFixture(evidence.model_identifier)

@@ -1,6 +1,7 @@
 """Application-local binding between an authenticated input and public approval."""
 
 from datetime import datetime
+from contextlib import closing
 import hashlib
 import os
 import sqlite3
@@ -140,7 +141,7 @@ class PublicResearchBridge:
                     db.close()
             except (OSError, ValueError, TypeError, UnicodeError, sqlite3.Error):
                 return False
-            return (
+            allowed = (
                 self.enabled
                 and enabled_now(profile, self._clock())
                 and profile.topic(question) is not None
@@ -154,6 +155,20 @@ class PublicResearchBridge:
                     operation.initiating_event_id
                 )
             )
+            if not allowed or profile.question_policy is None:
+                return allowed
+            try:
+                from .research_questions import read
+
+                with closing(self._store._open()) as db:
+                    data = read(db, operation.operation_id)
+                return (
+                    data is not None
+                    and data["question"] == question
+                    and data["profile_digest"] == profile.digest
+                )
+            except (ValueError, TypeError, UnicodeError, sqlite3.Error):
+                return False
         grant = self._grants.get(operation.operation_id)
         try:
             if load_operator_approval(self._approval_path, role="application") != grant:
@@ -184,7 +199,7 @@ class PublicResearchBridge:
             return self._client.execute(self._profile.request(operation_id, choice))
         return self._client.execute(self._grants[operation_id].request)
 
-    def evidence_choice(self, model_identifier):
+    def evidence_choice(self, model_identifier, *, operation_id=None):
         """Accept old reply evidence only under its original reviewed profile."""
         if self._profile is None:
             return None
@@ -192,6 +207,26 @@ class PublicResearchBridge:
         if type(model_identifier) is not str or not model_identifier.startswith(prefix):
             return None
         fingerprint = model_identifier.removeprefix(prefix)
+        if self._profile.question_policy is not None:
+            if operation_id is None:
+                return None
+            from .research_questions import read
+
+            try:
+                with closing(self._store._open()) as db:
+                    data = read(db, operation_id)
+                if data is None or data["profile_digest"] != self._profile.digest:
+                    return None
+                topic = self._profile.topic(data["question"])
+                return (
+                    data["question"]
+                    if topic is not None
+                    and hashlib.sha256(topic.topic_id.encode()).hexdigest()[:24]
+                    == fingerprint
+                    else None
+                )
+            except (ValueError, TypeError, UnicodeError, sqlite3.Error):
+                return None
         return next(
             (
                 topic.topic_id
@@ -208,6 +243,20 @@ class PublicResearchBridge:
         model_identifier = CONFIG
         if self._profile is not None:
             topic = self._profile.topic(question)
+            if self._profile.question_policy is not None:
+                from .research_questions import read
+
+                try:
+                    with closing(self._store._open()) as db:
+                        data = read(db, operation.operation_id)
+                    if (
+                        data is None
+                        or data["question"] != question
+                        or data["profile_digest"] != self._profile.digest
+                    ):
+                        topic = None
+                except (ValueError, TypeError, UnicodeError, sqlite3.Error):
+                    topic = None
             if topic is not None:
                 fingerprint = hashlib.sha256(topic.topic_id.encode()).hexdigest()[:24]
                 model_identifier = (

@@ -232,6 +232,15 @@ def _validate_graph(
         raise ApplicationPrivacyError("invalid_extraction_receipt")
     if schema_version in {10, 11, 12, 13, 14}:
         _validate_typed_receipts(db)
+    if schema_version in {9, 10, 11, 12, 13, 14}:
+        from app.private_web.research_questions import validate_receipts
+
+        try:
+            validate_receipts(db)
+        except (ValueError, TypeError, KeyError, UnicodeError, sqlite3.Error) as error:
+            raise ApplicationPrivacyError(
+                "invalid_research_question_receipt"
+            ) from error
     if schema_version in {12, 13, 14}:
         try:
             validate_narrative_graph(db)

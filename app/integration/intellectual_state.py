@@ -147,11 +147,7 @@ class PublicIntellectualState:
         if profile is None:
             return (), (), None
         choices = app._available_topics_in(db, profile)
-        catalog = tuple(
-            (topic.topic_id, topic.question)
-            for topic in profile.topics
-            if topic.topic_id in choices
-        )
+        catalog = profile.catalog(choices)
         pending = (
             None
             if app.mission_evolution is None

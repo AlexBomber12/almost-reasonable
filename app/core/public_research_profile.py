@@ -18,7 +18,14 @@ from app.trusted.public_research import PublicResearchRequest, encode_public_req
 from app.research.provider import default_hosted_search_config
 
 VERSION = "public-research-profile-v1"
+AUTONOMOUS_VERSION = "public-research-profile-v2"
 PUBLIC_PURPOSE = "public-deliberation-catalog-research-v1"
+AUTONOMOUS_PUBLIC_PURPOSE = "public-deliberation-autonomous-research-v1"
+PUBLIC_PURPOSES = frozenset({PUBLIC_PURPOSE, AUTONOMOUS_PUBLIC_PURPOSE})
+FREE_QUESTION_CHOICE = (
+    "agent-public-question",
+    "Choose your own minimized public research question (up to 512 UTF-8 bytes).",
+)
 _TOKEN = re.compile(r"[0-9a-f]{64}\Z")
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 
@@ -36,6 +43,26 @@ class CatalogTopic:
     topic_id: str
     question: str
     limit: int
+
+
+@dataclass(frozen=True, slots=True)
+class QuestionPolicy:
+    max_question_bytes: int
+    per_question_limit: int
+
+
+def valid_free_question(choice, *, max_bytes=512):
+    if type(choice) is not str:
+        return False
+    try:
+        if len(choice.encode("utf-8")) > max_bytes:
+            return False
+        encode_public_request(
+            PublicResearchRequest("question-validation", choice, "0" * 64)
+        )
+    except (ValueError, UnicodeError):
+        return False
+    return True
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -56,10 +83,21 @@ class ResearchProfile:
     authenticated_source_ref: str | None = None
     purpose: str = PURPOSE
     account_ref: str | None = None
+    question_policy: QuestionPolicy | None = None
 
     def topic(self, choice: str) -> CatalogTopic | None:
         if type(choice) is not str:
             return None
+        if self.question_policy is not None:
+            if not valid_free_question(
+                choice, max_bytes=self.question_policy.max_question_bytes
+            ):
+                return None
+            return CatalogTopic(
+                "question:" + hashlib.sha256(choice.encode("utf-8")).hexdigest(),
+                choice,
+                self.question_policy.per_question_limit,
+            )
         return next(
             (
                 topic
@@ -67,6 +105,17 @@ class ResearchProfile:
                 if choice in {topic.topic_id, topic.question}
             ),
             None,
+        )
+
+    def catalog(self, available):
+        if self.question_policy is not None:
+            return (
+                (FREE_QUESTION_CHOICE,) if FREE_QUESTION_CHOICE[0] in available else ()
+            )
+        return tuple(
+            (topic.topic_id, topic.question)
+            for topic in self.topics
+            if topic.topic_id in available
         )
 
     def request(self, operation_id: str, choice: str) -> PublicResearchRequest:
@@ -134,13 +183,19 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
     private = {"principal_id", "authenticated_source_ref"}
     if type(data) is not dict:
         raise ValueError("invalid profile fields")
+    autonomous = data.get("version") == AUTONOMOUS_VERSION
+    if autonomous:
+        common.remove("topics")
+        common.add("question_policy")
     purpose = data.get("purpose")
-    if purpose not in (PURPOSE, PUBLIC_PURPOSE) or set(data) != common | (
+    if purpose not in {PURPOSE, *PUBLIC_PURPOSES} or set(data) != common | (
         private if purpose == PURPOSE and role == "application" else set()
-    ) | ({"account_ref"} if purpose == PUBLIC_PURPOSE else set()):
+    ) | ({"account_ref"} if purpose in PUBLIC_PURPOSES else set()):
         raise ValueError("invalid profile fields")
     if (
-        data["version"] != VERSION
+        data["version"] not in {VERSION, AUTONOMOUS_VERSION}
+        or (purpose == AUTONOMOUS_PUBLIC_PURPOSE and not autonomous)
+        or (purpose == PUBLIC_PURPOSE and autonomous)
         or data["role"] != role
         or data["purpose"] != purpose
         or data["configuration"] != CONFIG
@@ -171,8 +226,24 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         or not reviewed <= issued < expires <= issued + timedelta(days=30)
     ):
         raise ValueError("invalid profile interval")
-    values = data["topics"]
-    if type(values) is not list or not 1 <= len(values) <= 16:
+    policy = None
+    if autonomous:
+        raw_policy = data["question_policy"]
+        if (
+            type(raw_policy) is not dict
+            or set(raw_policy) != {"mode", "max_question_bytes", "per_question_limit"}
+            or raw_policy["mode"] != "agent_generated_public_questions"
+            or type(raw_policy["max_question_bytes"]) is not int
+            or raw_policy["max_question_bytes"] != 512
+            or type(raw_policy["per_question_limit"]) is not int
+            or not 1 <= raw_policy["per_question_limit"] <= data["aggregate_limit"]
+        ):
+            raise ValueError("invalid finite question policy")
+        policy = QuestionPolicy(
+            raw_policy["max_question_bytes"], raw_policy["per_question_limit"]
+        )
+    values = data.get("topics", [])
+    if type(values) is not list or (not autonomous and not 1 <= len(values) <= 16):
         raise ValueError("invalid profile catalog")
     topics = []
     for value in values:
@@ -189,7 +260,7 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
             "profile-validation", value["question"], data["authorization"]
         )
         encode_public_request(request)
-        if purpose == PUBLIC_PURPOSE and len(value["question"].encode("utf-8")) > 512:
+        if purpose in PUBLIC_PURPOSES and len(value["question"].encode("utf-8")) > 512:
             raise ValueError("public catalog question exceeds deliberation bound")
         topics.append(CatalogTopic(value["id"], value["question"], value["limit"]))
     if len({topic.topic_id for topic in topics}) != len(topics) or len(
@@ -199,7 +270,7 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
     if {topic.topic_id for topic in topics} & {topic.question for topic in topics}:
         raise ValueError("ambiguous catalog choice")
     principal = source = account_ref = None
-    if purpose == PUBLIC_PURPOSE:
+    if purpose in PUBLIC_PURPOSES:
         account_ref = data["account_ref"]
         if type(account_ref) is not str or _IDENTIFIER.fullmatch(account_ref) is None:
             raise ValueError("invalid public profile account")
@@ -213,7 +284,7 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         ):
             raise ValueError("invalid private profile scope")
     public = {key: data[key] for key in common if key != "role"}
-    if purpose == PUBLIC_PURPOSE:
+    if purpose in PUBLIC_PURPOSES:
         public["account_ref"] = account_ref
     digest = hashlib.sha256(
         json.dumps(
@@ -237,4 +308,5 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         source,
         purpose,
         account_ref,
+        policy,
     )
