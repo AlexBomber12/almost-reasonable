@@ -4,6 +4,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime
 import hashlib
 import hmac
+import json
 import os
 from pathlib import Path
 import secrets
@@ -73,6 +74,73 @@ class OwnerStore:
         with self._connection() as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS owner_worker_operations(operation_id TEXT PRIMARY KEY, session_digest TEXT NOT NULL, actor_reference TEXT NOT NULL, expires_at INTEGER NOT NULL, application_result TEXT NOT NULL, worker_result TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS owner_worker_registries(operation TEXT PRIMARY KEY,fingerprint TEXT NOT NULL,names TEXT NOT NULL)"
+            )
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS owner_worker_targets(operation TEXT NOT NULL,name TEXT NOT NULL,result TEXT NOT NULL,PRIMARY KEY(operation,name))"
+            )
+
+    def bind_worker_registry(self, token, operation, fingerprint, names):
+        self.worker_operation(token, operation)
+        with self._connection() as db:
+            self._worker_actor(db, token, operation)
+            db.execute(
+                "INSERT INTO owner_worker_registries VALUES(?,?,?)",
+                (operation, fingerprint, json.dumps(names)),
+            )
+
+    def worker_registry_operation(self, token, operation):
+        self.worker_operation(token, operation)
+        with self._connection() as db:
+            row = db.execute(
+                "SELECT fingerprint,names FROM owner_worker_registries WHERE operation=?",
+                (operation,),
+            ).fetchone()
+            results = dict(
+                db.execute(
+                    "SELECT name,result FROM owner_worker_targets WHERE operation=?",
+                    (operation,),
+                )
+            )
+        return (
+            None
+            if row is None
+            else {
+                "fingerprint": row[0],
+                "names": json.loads(row[1]),
+                "results": results,
+            }
+        )
+
+    def record_worker_targets(self, token, operation, results):
+        with self._connection() as db:
+            db.execute("BEGIN IMMEDIATE")
+            self._worker_actor(db, token, operation)
+            row = db.execute(
+                "SELECT names FROM owner_worker_registries WHERE operation=?",
+                (operation,),
+            ).fetchone()
+            if (
+                row is None
+                or set(results) != set(json.loads(row[0]))
+                or any(
+                    value not in {"confirmed", "uncertain", "unavailable"}
+                    for value in results.values()
+                )
+            ):
+                raise ValueError("invalid worker registry outcome")
+            for name, result in results.items():
+                db.execute(
+                    "INSERT INTO owner_worker_targets VALUES(?,?,?) ON CONFLICT(operation,name) DO UPDATE SET result=CASE WHEN result='confirmed' THEN result WHEN result='uncertain' AND excluded.result='unavailable' THEN result ELSE excluded.result END",
+                    (operation, name, result),
+                )
+            return dict(
+                db.execute(
+                    "SELECT name,result FROM owner_worker_targets WHERE operation=?",
+                    (operation,),
+                )
             )
 
     @contextmanager

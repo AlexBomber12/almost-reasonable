@@ -260,6 +260,7 @@ class ThreadsRuntime(ThreadsStage0):
         mission_evolution_enabled=False,
         free_missions_enabled=False,
         autonomous_publication_enabled=False,
+        agent_cadence_enabled=False,
         shared_intellectual_source=None,
         enabled=False,
         live_enabled=False,
@@ -415,6 +416,17 @@ class ThreadsRuntime(ThreadsStage0):
         from app.integration.intellectual_state import PublicIntellectualState
 
         self.intellectual = PublicIntellectualState(self)
+        with self.journal.transaction() as db:
+            db.execute(
+                "CREATE TABLE IF NOT EXISTS public_runtime_binding(name TEXT PRIMARY KEY,value TEXT NOT NULL)"
+            )
+            db.execute(
+                "INSERT OR REPLACE INTO public_runtime_binding VALUES('owner_directory',?)",
+                (str(owner.directory),),
+            )
+        from app.integration.agent_cadence import AgentCadence
+
+        self.agent_cadence = AgentCadence(self, agent_cadence_enabled, wakeup_policy)
         self.model.intellectual_context = self.inference_intellectual_context
         self.engine = DeliberationEngine(
             model,
@@ -479,6 +491,7 @@ class ThreadsRuntime(ThreadsStage0):
             raise PolicyDeniedError("public runtime controls deny operation")
         if self.operating_window is not None:
             self.operating_window.guard()
+        self.agent_cadence.guard()
 
     def publication_guard(self):
         self.guard()
@@ -1193,6 +1206,7 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise PolicyDeniedError("public source changed")
         decision = AgentDecision(payload["decision"])
+        self.agent_cadence.apply(operation, payload)
         if decision is AgentDecision.REVISE_MISSION:
             if self.mission_evolution is None:
                 raise PolicyDeniedError("public mission evolution disabled")

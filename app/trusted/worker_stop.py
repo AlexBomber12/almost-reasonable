@@ -18,13 +18,15 @@ from app.trusted.private_pilot import (
     _unique,
 )
 from app.trusted.worker_telemetry import _peer_uid, _safe_socket_directory
-from app.worker_stop_protocol import ACK, REQUEST
+from app.worker_stop_protocol import ACK, REQUEST, STOP_VERSIONS
 
 STOP_VERSION = "private-pilot-emergency-stop-v1"
 
 
-def assert_stop(path):
+def assert_stop(path, *, stop_version=STOP_VERSION):
     """Replace only an existing, valid worker owned Stop file, then sync it."""
+    if stop_version not in STOP_VERSIONS:
+        raise ValueError("invalid worker Stop version")
     ancestry = protected_ancestry(path)
     original = path.lstat()
     if (
@@ -40,7 +42,7 @@ def assert_stop(path):
     if (
         type(value) is not dict
         or set(value) != {"version", "stop"}
-        or value["version"] != STOP_VERSION
+        or value["version"] != stop_version
         or type(value["stop"]) is not bool
     ):
         raise ValueError("invalid stop file")
@@ -75,7 +77,9 @@ def assert_stop(path):
             os.fchmod(descriptor, 0o400)
             with os.fdopen(descriptor, "wb", closefd=False) as output:
                 output.write(
-                    b'{"version":"private-pilot-emergency-stop-v1","stop":true}'
+                    json.dumps(
+                        {"version": stop_version, "stop": True}, separators=(",", ":")
+                    ).encode()
                 )
                 output.flush()
                 os.fsync(descriptor)
@@ -97,6 +101,23 @@ def assert_stop(path):
         os.close(parent)
 
 
+class WorkerStop:
+    def __init__(self, path, stop_version):
+        if (
+            not isinstance(path, Path)
+            or not path.is_absolute()
+            or stop_version not in STOP_VERSIONS
+        ):
+            raise ValueError("invalid worker Stop reader")
+        self.path, self.stop_version = path, stop_version
+
+    def active(self):
+        from app.trusted.worker_telemetry import _stop
+
+        status = _stop(self.path, self.stop_version)
+        return not status["valid"] or status["active"]
+
+
 class WorkerStopServer:
     def __init__(
         self,
@@ -105,7 +126,11 @@ class WorkerStopServer:
         owner_uid: int,
         *,
         socket_group_gid=None,
+        stop_version=STOP_VERSION,
     ):
+        if stop_version not in STOP_VERSIONS:
+            raise ValueError("invalid worker Stop version")
+        self.stop_version = stop_version
         if (
             not hasattr(socket, "SO_PEERCRED")
             or not isinstance(socket_path, Path)
@@ -172,7 +197,7 @@ class WorkerStopServer:
                     request.extend(chunk)
                 if bytes(request) != REQUEST:
                     return True
-                assert_stop(self.stop_path)
+                assert_stop(self.stop_path, stop_version=self.stop_version)
                 connection.settimeout(max(0.001, deadline - monotonic()))
                 connection.sendall(ACK)
             except (
@@ -209,12 +234,16 @@ def main(argv=None):
     parser.add_argument("--stop-file", type=Path, required=True)
     parser.add_argument("--allow-uid", type=int, required=True)
     parser.add_argument("--socket-group-gid", type=int)
+    parser.add_argument(
+        "--stop-version", choices=sorted(STOP_VERSIONS), default=STOP_VERSION
+    )
     args = parser.parse_args(argv)
     server = WorkerStopServer(
         args.socket,
         args.stop_file,
         args.allow_uid,
         socket_group_gid=args.socket_group_gid,
+        stop_version=args.stop_version,
     )
     stopping = False
 

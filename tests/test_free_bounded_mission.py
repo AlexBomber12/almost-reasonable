@@ -299,7 +299,7 @@ def test_free_direction_resolves_after_restart_without_paid_research(
         assert pending.proposal.model_identifier == "fake-model"
         assert (
             pending.proposal.prompt_version
-            == "threads-public-free-mission-intellectual-v1"
+            == "threads-public-free-mission-intellectual-v2"
         )
         assert app.mission.snapshot() == before
         app = reopen_free(app, tmp_path, worker)

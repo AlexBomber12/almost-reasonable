@@ -80,6 +80,7 @@ class PublicPublicationGrants:
         return json.dumps(
             {
                 "account": app.account,
+                "owner_directory": str(app.owner.directory),
                 "provider_user": app.simulator.provider_user_id,
                 "generation": app.ledger.control_generation(),
                 "root": root,

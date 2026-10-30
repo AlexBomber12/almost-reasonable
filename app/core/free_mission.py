@@ -117,7 +117,7 @@ def free_context(proposal):
 def public_prompt_version(context, intellectual):
     if is_free_context(context):
         return (
-            "threads-public-free-mission-intellectual-v1"
+            "threads-public-free-mission-intellectual-v2"
             if intellectual
             else "threads-public-free-mission-prompt-v1"
         )

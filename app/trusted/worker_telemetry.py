@@ -11,6 +11,7 @@ import socket
 import sqlite3
 import stat
 import struct
+from app.worker_stop_protocol import STOP_VERSIONS
 from time import monotonic
 
 from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT, require_identifier
@@ -191,15 +192,17 @@ def _safe_socket_directory(path, group_gid):
         raise ValueError("telemetry socket already exists")
 
 
-def _stop(path):
+def _stop(path, stop_version=STOP_VERSION):
     try:
+        if stop_version not in STOP_VERSIONS:
+            raise ValueError("invalid Stop version")
         value = json.loads(
             read_pilot_control(path, maximum_bytes=1024), object_pairs_hook=_unique
         )
         if (
             type(value) is not dict
             or set(value) != {"version", "stop"}
-            or value["version"] != STOP_VERSION
+            or value["version"] != stop_version
             or type(value["stop"]) is not bool
         ):
             raise ValueError("invalid stop control")
@@ -455,7 +458,11 @@ class WorkerTelemetryServer:
         allowed_uids: frozenset[int],
         *,
         socket_group_gid: int | None = None,
+        stop_version=STOP_VERSION,
     ):
+        if stop_version not in STOP_VERSIONS:
+            raise ValueError("invalid worker Stop version")
+        self.stop_version = stop_version
         if (
             not hasattr(socket, "SO_PEERCRED")
             or any(
@@ -565,7 +572,7 @@ class WorkerTelemetryServer:
                     "version": VERSION,
                     "available": True,
                     "collected_at": datetime.now(UTC).isoformat(),
-                    "stop": _stop(self.stop_path),
+                    "stop": _stop(self.stop_path, self.stop_version),
                     "provider": _provider(self.provider_db),
                 }
                 connection.sendall(encode(response))
@@ -604,6 +611,9 @@ def main(argv=None):
     parser.add_argument("--stop-file", required=True, type=Path)
     parser.add_argument("--allow-uid", action="append", required=True, type=int)
     parser.add_argument("--socket-group-gid", type=int)
+    parser.add_argument(
+        "--stop-version", choices=sorted(STOP_VERSIONS), default=STOP_VERSION
+    )
     args = parser.parse_args(argv)
     server = WorkerTelemetryServer(
         args.socket,
@@ -611,6 +621,7 @@ def main(argv=None):
         args.stop_file,
         frozenset(args.allow_uid),
         socket_group_gid=args.socket_group_gid,
+        stop_version=args.stop_version,
     )
     stopping = False
 

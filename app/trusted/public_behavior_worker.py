@@ -385,6 +385,7 @@ class PublicWorkerServer:
         provider_store: ProviderStateStore,
         socket_gid=None,
         utc_now=lambda: datetime.now(UTC),
+        emergency_stop=lambda: False,
     ):
         if (
             not socket_path.is_absolute()
@@ -393,10 +394,12 @@ class PublicWorkerServer:
             or not 0 <= permitted_uid <= 2**32 - 2
             or not callable(attest)
             or not callable(utc_now)
+            or not callable(emergency_stop)
             or type(provider_store) is not ProviderStateStore
         ):
             raise ValueError("invalid worker server configuration")
         self.socket_path, self.attempts_path = socket_path, attempts_path
+        self._stop = emergency_stop
         if socket_gid is not None and (
             type(socket_gid) is not int or not 0 <= socket_gid <= 2**32 - 2
         ):
@@ -490,7 +493,7 @@ class PublicWorkerServer:
                 request = decode_public_request(
                     receive_frame(connection, deadline=deadline, io_timeout=10)
                 )
-                if not self.attest(request):
+                if not self.attest(request) or self._stop():
                     return
                 with sqlite3.connect(self.attempts_path) as db:
                     db.execute(
@@ -523,6 +526,8 @@ class PublicWorkerServer:
                         deadline_seconds=min(request.deadline_seconds, remaining),
                     )
                 try:
+                    if self._stop():
+                        return
                     proposal = self.adapter.complete(request)
                 except Exception as error:
                     code = _sanitized_sdk_error(error).error_code
@@ -544,6 +549,8 @@ class PublicWorkerServer:
                     )
                     return
                 record = self._record_attempt(request, started_at, began, "completed")
+                if self._stop():
+                    return
                 self._send_result(
                     connection,
                     deadline,

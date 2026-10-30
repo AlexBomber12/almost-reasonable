@@ -1,6 +1,7 @@
 'use strict';
 let csrf = null;
 const byId = id => document.getElementById(id);
+const primaryWorker = data => data.worker.available ? data.worker : ((data.workers || []).find(entry => entry.name === 'private-model') || {}).status || data.worker;
 const message = text => { byId('message').textContent = text; };
 try {
   const theme = localStorage.getItem('ar-theme');
@@ -60,7 +61,7 @@ let receivedAt = 0;
 function tile(id, text, state) { byId(id).textContent = text; byId(id).dataset.state = state; }
 function renderTiles() {
   if (!snapshot) return;
-  const data = snapshot, worker = data.worker;
+  const data = snapshot, worker = primaryWorker(data);
   const stale = Date.now() - receivedAt > 30000;
   const workerFresh = !stale && worker.available && Number.isFinite(Date.parse(worker.collected_at)) && Math.abs(Date.now() - Date.parse(worker.collected_at)) <= 30000;
   tile('application-state', stale ? 'Данные устарели' : data.application_stop.active ? 'Stop включён' : 'Stop выключен', stale ? 'unknown' : data.application_stop.active ? 'stopped' : 'observed');
@@ -139,7 +140,23 @@ async function refresh() {
     show('Токены последней приостановки', usage.total_tokens === null ? 'Нет данных' : String(usage.total_tokens));
     show('Оценка стоимости', usage.estimated_cost === null ? 'Нет данных' : `${usage.estimated_cost} ${usage.currency || ''}`);
   }
-  const worker = data.worker;
+  const worker = primaryWorker(data);
+  for (const entry of (data.workers || [])) {
+    const state = entry.status;
+    show(`${entry.name}: наблюдение`, state.available ? dateText(state.collected_at) : 'Недоступно');
+    show(`${entry.name}: Stop`, state.stop.valid ? (state.stop.active ? 'Включён' : 'Выключен') : 'Не подтверждён');
+    show(`${entry.name}: попытки`, state.provider.available ? String(state.provider.attempt_count) : 'Нет данных');
+    show(`${entry.name}: записанные токены`, state.provider.available && state.provider.recorded_tokens ? String(state.provider.recorded_tokens.total_tokens) : 'Нет данных');
+    show(`${entry.name}: неизвестный расход`, state.provider.available ? String(state.provider.unknown_usage_attempts) : 'Нет данных');
+  }
+  const publicState = data.public_runtime;
+  if (publicState && publicState.available) {
+    show('Публичный цикл: ритм', !publicState.cadence_observed ? 'Нет наблюдения' : publicState.cadence_seconds === null ? 'Интервал по умолчанию' : `${publicState.cadence_seconds} с`);
+    for (const grant of publicState.grants) show(`Публичное разрешение ${grant.reference}`, `${grant.publications_reserved}/${grant.publication_limit} публикаций, ${grant.http_requests_reserved}/${grant.http_limit} HTTP-запросов; ${grant.revoked ? 'отозвано' : Date.parse(grant.expires_at) <= Date.now() ? 'срок истёк' : 'срок: ' + dateText(grant.expires_at)}`);
+    const decisions = {no_action:'Без публикации', reply:'Ответ', propose_publication:'Предложение публикации', research:'Исследование', revise_mission:'Пересмотр направления'};
+    const phases = {linked:'Сохранено', held:'Приостановлено', rejected:'Отклонено', started:'Начато', intent:'Ожидает применения'};
+    for (const decision of publicState.recent) show(`Публичное решение ${decision.reference}`, `${decisions[decision.decision] || 'Неизвестное решение'}, ${phases[decision.phase] || 'Статус неизвестен'}; ${dateText(decision.time)}`);
+  }
   const recent = data.recent || {};
   recentList('recent-application', recent.application, 'Ответ приложения');
   recentList('recent-worker', recent.worker, 'Попытка воркера');
@@ -204,7 +221,7 @@ async function change(active) {
 }
 byId('stop').addEventListener('click', () => change(true));
 byId('emergency-stop').addEventListener('click', async () => {
-  if (!await ask('Остановить приложение и воркер?', 'Уже отправленный провайдеру запрос и его стоимость не отменяются.', 'Остановить всё')) return;
+  if (!await ask(snapshot && snapshot.workers && snapshot.workers.length ? 'Остановить приложение и настроенные воркеры?' : 'Остановить приложение и воркер?', 'Уже отправленный провайдеру запрос и его стоимость не отменяются.', 'Остановить всё')) return;
   const button = byId('emergency-stop');
   button.disabled = true;
   byId('emergency-result').textContent = 'Приложение: ожидается; воркер: ожидается.';
@@ -212,6 +229,7 @@ byId('emergency-stop').addEventListener('click', async () => {
     const operation = await api('/worker-stop-operation', 'POST', null, csrf);
     const result = await api('/emergency-stop', 'POST', {operation_id: operation.operation_id}, csrf);
     byId('emergency-result').textContent = `Приложение: ${stopResult(result.application)}; воркер: ${stopResult(result.worker)}.`;
+    if (result.workers) byId('emergency-result').textContent += ' ' + Object.entries(result.workers).map(([name, outcome]) => `${name}: ${stopResult(outcome)}`).join('; ');
     try {await refresh();}
     catch {message('Не удалось обновить состояние. Результат команды показан выше.');}
   } catch (error) {

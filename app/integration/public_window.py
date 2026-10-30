@@ -278,6 +278,7 @@ class PublicOperatingWindow:
         cadence = self.app.scheduler.repository.current_cadence(
             self.app.scheduler.policy.cadence
         )
+        last_deliberation = self.app.scheduler.repository.load().last_deliberation_at
         with self.app.journal.transaction() as db:
             row = self._row(db)
             now = self._check(row)
@@ -287,6 +288,12 @@ class PublicOperatingWindow:
             if lane == "poll" and counts["poll_pages"] >= self.spec.max_poll_pages:
                 return None
             if now.isoformat() < row["next_" + lane]:
+                return None
+            if (
+                lane == "wake"
+                and last_deliberation is not None
+                and now < last_deliberation + cadence
+            ):
                 return None
             sequence = row["ticks" if lane == "wake" else "polls"]
             identity = _identity(

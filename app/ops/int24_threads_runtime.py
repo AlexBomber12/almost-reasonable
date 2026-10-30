@@ -112,6 +112,7 @@ def _runtime(config):
         autonomous_publication_enabled=config.get(
             "enable_autonomous_publication", False
         ),
+        agent_cadence_enabled=config.get("enable_agent_cadence", False),
         enabled=True,
         live_enabled=True,
     )

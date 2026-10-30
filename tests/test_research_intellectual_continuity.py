@@ -104,7 +104,7 @@ def test_public_report_can_revise_or_retain_state_in_next_sdk_call(
             assert len(rows) == 2
             saved = json.loads(rows[-1][0])
             assert saved["fields"] == fields(kind, revised=not retain)
-            assert saved["metadata"]["prompt"] == "agent-intellectual-state-prompt-v2"
+            assert saved["metadata"]["prompt"] == "agent-intellectual-state-prompt-v3"
             assert (
                 next(
                     s
@@ -301,7 +301,7 @@ def test_private_full_report_counterevidence_and_revision_survive_restart(
                     "SELECT payload FROM agent_intellectual_revisions WHERE revision=2"
                 ).fetchone()[0]
             )["metadata"]["prompt"]
-            == "agent-intellectual-state-prompt-v2"
+            == "agent-intellectual-state-prompt-v3"
         )
     private_submit(server, b, "other", "Что ты узнал?")
     assert json.loads(sdk.calls[-1]["input"])["intellectual_state"]["states"] == []
