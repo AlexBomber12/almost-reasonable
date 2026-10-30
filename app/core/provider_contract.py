@@ -470,7 +470,7 @@ class OpenAIRequest:
                 base["text"]["format"]["schema"]
             )
             return base
-        return {
+        payload = {
             "model": self.model,
             "instructions": _NARRATIVE_INSTRUCTIONS
             if narrative
@@ -524,6 +524,9 @@ class OpenAIRequest:
             "max_output_tokens": self.max_output_tokens,
             "truncation": "disabled",
         }
+        if self.model == "gpt-6.1-sol":
+            payload["reasoning"] = {"effort": "low"}
+        return payload
 
 
 def default_openai_provider_config() -> OpenAIProviderConfig:

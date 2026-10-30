@@ -22,6 +22,7 @@ def plan(activation_path: Path, *, now: datetime | None = None) -> dict[str, obj
     current = datetime.now(UTC) if now is None else now
     return {
         "pilot_id": activation.pilot_id,
+        "model": activation.model,
         "digest": activation.digest,
         "ordinary": activation.ordinary,
         "not_before": activation.not_before.isoformat(),
@@ -86,6 +87,7 @@ def inspect(
     stopped = PilotStop(stop_path).active()
     return {
         "pilot_id": activation.pilot_id,
+        "model": activation.model,
         "application_peer_uid": activation.application_peer_uid,
         "expires_at": activation.expires_at.isoformat(),
         "remaining_operations": remaining,

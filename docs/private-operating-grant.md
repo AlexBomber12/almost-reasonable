@@ -51,10 +51,39 @@ approved peer UID/project/organization, `not_before`, `expires_at` and
 `YYYY-MM-DDTHH:MM:SSZ`, start must precede end, and the quota must be an integer
 from 1 through 9223372036854775807 (SQLite's representational limit, not a
 recommended operating quota). There is no 600/3600-second acceptance ceiling.
-The fixed provider config/model, request bounds and one-attempt policy remain
-unchanged. This grants private inference only, with no research, sharing or
+The provider config version and one-attempt policy remain fixed. The protected
+`model` selects `gpt-6-luna` or `gpt-6.1-sol` for ordinary grants; legacy pilot and
+acceptance artifacts remain pinned to Luna. The worker uses this exact model
+for replies and every enabled memory operation. Sol uses Responses with explicit
+`reasoning.effort: low` and a finite 2048-token output ceiling, including reasoning;
+Luna retains its 512-token ceiling. Strict JSON, tools disabled, `store: false`,
+timeouts and one attempt remain unchanged. These bounds can still produce an
+incomplete response; offline regressions do not prove real model quality or
+account availability. This grants private inference only, with no research, sharing or
 publication authority. Existing participant consent and privacy gates still apply.
 No grant is shipped or enabled by default.
+
+### Switching the private model without increasing remaining authority
+
+Model selection is protected authority, not an environment override. Changing
+the existing artifact in place changes its digest and fails closed against the
+allowance. Use the existing explicit replacement procedure below, with a new
+ordinary `pilot_id`, the requested approved model and the same project, peer UID
+and expiry. After stopping writers and taking a consistent backup, inspect the
+old grant in the retained allowance. Set the replacement `max_operations` to
+**no more than that remaining count**, including already consumed uncertain
+holds; do not initialize a fresh allowance. An exhausted or expired grant needs
+separate renewal authorization. The replacement mechanism accepts an explicitly
+approved quota; it does not calculate or enforce this migration ceiling itself.
+
+Keep the original artifact and every consumed row. Retire the old grant through
+`replace`, update existing enabled per-family permission IDs and cap their quotas
+at the replacement ceiling, then update app and worker selections together.
+Check both selections, Stop, model and remaining allowance before reopening
+inference. Keep public/research authority and credentials unchanged. A model
+change can alter cost and latency: an operation quota is not a currency budget,
+and Sol's per-call output ceiling is higher. The operator must authorize the
+target model; do not automatically refill operations or extend the expiry.
 
 Evolution and typed memory retain their existing permission formats, matching
 `pilot_id` and positive `max_operations` no greater than the grant quota. Repeated
@@ -89,10 +118,10 @@ python -B -m app.ops.private_pilot_ops inspect \
   --provider-database /var/lib/pilot-worker/provider.sqlite3
 ```
 
-`plan` reads only the candidate and reports digest, interval, quota and calendar
+`plan` reads only the candidate and reports model, digest, interval, quota and calendar
 validity. It does not install authority or infer remaining allowance. `inspect`
 requires the existing allowance and current provider schema; it reads no secret,
-initializes no store and reports remaining operations, current authority, Stop,
+initializes no store and reports model, remaining operations, current authority, Stop,
 spend suspension and readiness even for expired/exhausted or retired grants.
 Status is a bounded snapshot, not permission to send a request. It does not renew
 authority or change quotas. Retain original artifacts at distinct paths so they

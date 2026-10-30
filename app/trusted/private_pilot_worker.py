@@ -57,14 +57,14 @@ COMBINED_NARRATIVE_PERMISSION_VERSION = "private-narrative-permission-v2"
 SHARED_PERMISSION_VERSION = "private-shared-proposal-permission-v1"
 
 
-def provider_config() -> OpenAIProviderConfig:
+def provider_config(model: str = MODEL) -> OpenAIProviderConfig:
     return OpenAIProviderConfig(
         version=PROVIDER_CONFIG_VERSION,
-        model=MODEL,
+        model=model,
         prompt_version=PROMPT_VERSION,
         deployment_stage=DeploymentStage.STAGE_1,
         paid_calls_enabled=True,
-        max_output_tokens=512,
+        max_output_tokens=2048 if model == "gpt-6.1-sol" else 512,
         timeout_seconds=30.0,
         overall_timeout_seconds=40.0,
         max_attempts=1,
@@ -381,7 +381,7 @@ def build_worker(
     gateway = TrustedOpenAIGateway(
         store=provider_store,
         transport=transport,
-        config=provider_config(),
+        config=provider_config(activation.model),
         emergency_stop=gate.paid_transport_blocked,
     )
     return OpenAIWorkerServer(
