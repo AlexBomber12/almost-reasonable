@@ -2,6 +2,7 @@
 
 from collections.abc import Callable
 from contextvars import ContextVar
+from contextlib import closing
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
@@ -2595,11 +2596,43 @@ class _DurableConversationRuntime(ConversationService):
         return self._gate.authorized(read)
 
     def _shared_consent_live(self, operation, principal):
-        return (
+        return self._public_intellectual_dependencies_live(
+            operation.operation_id, principal
+        ) and (
             not operation.shared_operation_ids
             or self._shared_guard.operations_consent_live(
                 operation.shared_operation_ids, principal
             )
+        )
+
+    def _public_intellectual_dependencies_live(self, operation, principal):
+        from app.core.intellectual_state import IntellectualStateStore
+
+        with closing(self._event_store._open()) as db:
+            dependencies = IntellectualStateStore(
+                "private", principal.principal_id.value
+            ).dependencies(db, operation)
+        required = {
+            key: value
+            for key, value in dependencies.items()
+            if key.startswith("public-state:")
+        }
+        if not required:
+            return True
+        source = getattr(self, "_public_intellectual_source", None)
+        with closing(self._event_store._open()) as db:
+            current = (
+                {}
+                if source is None
+                else source.sources(
+                    principal=principal,
+                    _private_db=db,
+                    required_keys=frozenset(required),
+                )
+            )
+        return all(
+            key in current and current[key]["binding"] == value
+            for key, value in required.items()
         )
 
     def _narrative_reply_permitted(self, operation):
@@ -2680,6 +2713,7 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         narrative_permission_current=None,
         shared_proposals_enabled=False,
         shared_proposal_audience=(),
+        public_intellectual_source=None,
         **kwargs,
     ):
         if type(client) is not OpenAIWorkerClient:
@@ -2714,6 +2748,28 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         super().__init__(
             event_store, privacy_gate, client, provider_state=provider_state, **kwargs
         )
+        from app.integration.public_intellectual_source import PublicIntellectualSource
+
+        if (
+            public_intellectual_source is not None
+            and type(public_intellectual_source) is not PublicIntellectualSource
+        ):
+            raise TypeError("exact public intellectual source required")
+        self._public_intellectual_source = public_intellectual_source
+        if public_intellectual_source is not None:
+            shared_source = public_intellectual_source.view.shared_intellectual_source
+            if shared_source is not None and (
+                not os.path.samefile(
+                    shared_source.shared._events.database_path,
+                    event_store.database_path,
+                )
+                or not os.path.samefile(
+                    shared_source.shared._gate._ledger.path, privacy_gate._ledger.path
+                )
+            ):
+                raise ValueError(
+                    "public intellectual ancestry must use the same private store and ledger"
+                )
         from .intellectual import PrivateIntellectualState
 
         self._intellectual = PrivateIntellectualState(self)

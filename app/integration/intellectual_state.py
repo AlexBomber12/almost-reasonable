@@ -11,13 +11,14 @@ from app.core.intellectual_state import (
 
 
 class PublicIntellectualState:
-    def __init__(self, app):
+    def __init__(self, app, *, read_only=False):
         self.app = app
         self.state = IntellectualStateStore("public", app.account)
-        with app.journal.transaction() as db:
-            initialize(db)
+        if not read_only:
+            with app.journal.transaction() as db:
+                initialize(db)
 
-    def sources(self, *, _candidates=None):
+    def sources(self, *, _candidates=None, _shared_sources=None):
         from app.integration.agent_cadence import cadence_sources
 
         result = cadence_sources(
@@ -101,7 +102,11 @@ class PublicIntellectualState:
         # Transitive protected bindings are flattened at admission, including sources
         # behind an earlier agent expression. A self-reference cannot restore them.
         if self.app.shared_intellectual_source is not None:
-            result.update(self.app.shared_intellectual_source.sources())
+            result.update(
+                self.app.shared_intellectual_source.sources()
+                if _shared_sources is None
+                else _shared_sources
+            )
         for _ in range(len(result)):
             invalid = [
                 key

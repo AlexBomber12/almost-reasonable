@@ -20,6 +20,7 @@ from app.core.provider_spend import ProviderStateStore
 from app.core.public_research_authority import load_operator_approval
 from app.core.public_research_profile import load_research_profile
 from app.core.public_research_client import PublicResearchClient
+from app.integration.public_intellectual_source import PublicIntellectualSource
 from app.core.events import (
     AuthenticatedSourceReference,
     ParticipantId,
@@ -78,6 +79,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--public-research-approval")
     serve.add_argument("--public-research-profile")
     serve.add_argument("--public-research-scope")
+    serve.add_argument("--public-intellectual-config")
     serve.add_argument("--privacy-ledger")
     serve.add_argument("--owner-directory")
     serve.add_argument("--listen-host", default="127.0.0.1")
@@ -314,6 +316,7 @@ def main(
         or args.enable_shared_proposals
         or args.enable_ordinary_abstractions
         or args.shared_proposal_audience
+        or args.public_intellectual_config is not None
     ):
         raise SystemExit("privacy and owner stores require worker mode")
     auth = AuthStore(args.auth_db)
@@ -389,6 +392,14 @@ def main(
             shared_proposals_enabled=args.enable_shared_proposals,
             shared_proposal_audience=tuple(sorted(set(args.shared_proposal_audience))),
             context_limits=ContextLimits(32_000, args.worker_history_events),
+            public_intellectual_source=PublicIntellectualSource.from_config(
+                args.public_intellectual_config,
+                shared=shared,
+                expected_owner_directory=args.owner_directory,
+                clock=_utc_now,
+            )
+            if args.public_intellectual_config is not None
+            else None,
         )
         privacy = ParticipantPrivacyControls(
             auth, event_store, ledger, gate, clock=conversations._clock

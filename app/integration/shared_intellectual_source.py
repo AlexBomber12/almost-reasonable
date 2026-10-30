@@ -28,30 +28,34 @@ class SharedIntellectualSource:
         def read():
             with closing(self.shared._events._open()) as db:
                 db.execute("BEGIN")
-                self.shared._events._verify_current_schema(db)
-                result = {}
-                for record in self.shared.select_audience(db, self.audience):
-                    manifest = db.execute(
-                        "SELECT binding FROM protected_shared_manifests WHERE operation_id=?",
-                        (record.operation_id,),
-                    ).fetchone()
-                    if (
-                        json.loads(manifest[0]).get("ordinary_policy")
-                        != ORDINARY_POLICY_VERSION
-                    ):
-                        continue
-                    result["shared:" + record.operation_id] = {
-                        "kind": "shared_abstract_influence",
-                        "text": "Unverified abstract intellectual influence; not independent public evidence. "
-                        + record.text,
-                        "binding": digest(
-                            [
-                                record.structured(),
-                                self.shared._gate._ledger.control_generation(),
-                            ]
-                        ),
-                        "dependencies": {},
-                    }
-                return result
+                return self._sources_in(db)
 
         return self.shared._gate.authorized(read)
+
+    def _sources_in(self, db):
+        """Trusted private callers already hold this store's privacy fence."""
+        self.shared._events._verify_current_schema(db)
+        result = {}
+        for record in self.shared.select_audience(db, self.audience):
+            manifest = db.execute(
+                "SELECT binding FROM protected_shared_manifests WHERE operation_id=?",
+                (record.operation_id,),
+            ).fetchone()
+            if (
+                json.loads(manifest[0]).get("ordinary_policy")
+                != ORDINARY_POLICY_VERSION
+            ):
+                continue
+            result["shared:" + record.operation_id] = {
+                "kind": "shared_abstract_influence",
+                "text": "Unverified abstract intellectual influence; not independent public evidence. "
+                + record.text,
+                "binding": digest(
+                    [
+                        record.structured(),
+                        self.shared._gate._ledger.control_generation(),
+                    ]
+                ),
+                "dependencies": {},
+            }
+        return result
