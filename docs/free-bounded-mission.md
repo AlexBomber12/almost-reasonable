@@ -74,8 +74,8 @@ Existing closed mission mode and its serialized records retain their behavior.
 The legacy Stage 0/shared mission entrypoints reject free purpose values instead
 of interpreting them without a free-text protocol. Disabling free mode cannot
 reinterpret a persisted free decision as a legacy authorization. Publishing
-continues to use the existing approval boundary until an independently reviewed
-finite autonomous grant is implemented and explicitly enabled.
+uses the existing approval boundary unless the independently reviewed
+[finite autonomous grant](finite-public-grant.md) is explicitly enabled and issued.
 
 ## Validation scope
 
@@ -89,5 +89,5 @@ suites remain part of the full local gate.
 
 These are deterministic integration checks with fake SDKs. Real model quality,
 M1–M6/SCN01–12 acceptance, two actual human participants, public activation and
-production operation remain unverified. This branch combines pending Stages 3,
-4 and 5 before adding Stage 6; none of those PRs is merged by this work.
+production operation remain unverified. Implementing or merging these protocols
+does not activate their runtime flags, supply authority or accept the complete MVP.

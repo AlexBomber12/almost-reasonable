@@ -19,7 +19,7 @@ Only a current, source-valid autonomous wakeup inside a finite operating window
 can apply its accepted preference. Incoming requests cannot directly schedule
 work. Other intellectual changes and no preference leave the interval alone.
 A preference below the owner floor is recorded as a wish without changing the
-schedule. The typed prompt metadata is `agent-intellectual-state-prompt-v3`;
+schedule. The current typed prompt metadata is `agent-intellectual-state-prompt-v4`;
 the composed free-mission intellectual prompt is version 2.
 
 Scheduler choices are durable, operation-bound, idempotent and reject older
@@ -85,8 +85,9 @@ configuration, source withdrawal, cadence recovery and Chromium owner UI at
 desktop/mobile widths. SDK and provider HTTP are fake. This proves deterministic
 implementation behavior only.
 
-Public-to-private intellectual influence needs a complete protected dependency
-representation, erasure closure and quarantined restore support before it can
-be activated. Real-model acceptance, two actual participants, live Meta
+Public-to-private intellectual influence now has the protected dependency
+representation, erasure closure and quarantined restore support described in
+[its source protocol](public-private-intellectual-provenance.md). It still needs
+explicit reviewed deployment wiring. Real-model acceptance, two actual participants, live Meta
 permissions and launch remain separate work. Preparing this PR activates no
 grant, paid provider call, deployment, enrollment or real public post.
