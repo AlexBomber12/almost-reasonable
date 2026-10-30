@@ -77,7 +77,7 @@ class AgentCadence:
             return
         seconds = value["fields"]["seconds"]
         if not self.minimum <= seconds <= 86400:
-            raise PolicyDeniedError("cadence preference exceeds owner bounds")
+            return
         app.guard()
         app.require_mission(payload)
         if not app.source_valid(payload):

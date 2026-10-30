@@ -205,16 +205,72 @@ def test_owner_policy_change_rejects_an_old_slower_or_faster_choice(selected):
     from app.threads.service import PolicyDeniedError
 
     app, _, _, window = selected
-    operation = app.scheduler.repository.active_agent_cadence()
     app.agent_cadence = AgentCadence(
         app, True, replace(app.scheduler.policy, cadence=timedelta(seconds=60))
     )
     app.operating_window = window
     try:
-        with pytest.raises(PolicyDeniedError, match="owner bounds"):
-            app.agent_cadence.apply(operation, app.journal.read(operation))
+        with pytest.raises(PolicyDeniedError, match="cadence source withdrawn"):
+            app.guard()
     finally:
         app.operating_window = None
+
+
+def test_below_floor_wish_does_not_block_publication_handoff_or_recovery(tmp_path):
+    from dataclasses import replace
+    from app.integration.agent_cadence import AgentCadence
+    from app.threads.domain import OutboxState
+
+    app, worker, sdk, http, clock = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Проверим разные объяснения."},
+        agent_cadence_enabled=True,
+    )
+    app.scheduler.policy = replace(app.scheduler.policy, cadence=timedelta(seconds=10))
+    app.agent_cadence = AgentCadence(app, True, app.scheduler.policy)
+    create = sdk.create
+
+    def choose(**kwargs):
+        frame = json.loads(kwargs["input"][1]["content"])["intellectual_state"]
+        capability = next(
+            row for row in frame["sources"] if row["kind"] == "capability_snapshot"
+        )
+        sdk.proposal["intellectual"] = proposal(
+            capability["handle"], kind="cadence_preference", fields={"seconds": 1}
+        )
+        return create(**kwargs)
+
+    sdk.create = choose
+    thread = serve(worker, 1)
+    try:
+        result = PublicOperatingWindow(
+            app, spec(max_model_calls=1, max_poll_pages=0, max_inbound_events=0)
+        ).run(wait=lambda seconds: clock.advance(timedelta(seconds=seconds)))
+        finish(thread)
+        assert result["state"] == "exhausted" and len(sdk.calls) == 1
+        with app.journal.transaction() as db:
+            operation, phase = db.execute(
+                "SELECT operation,phase FROM intents"
+            ).fetchone()
+            revision = json.loads(
+                db.execute(
+                    "SELECT payload FROM agent_intellectual_revisions WHERE operation=?",
+                    (operation,),
+                ).fetchone()[0]
+            )
+        assert (
+            phase == "linked"
+            and app.draft(operation).state is OutboxState.AWAITING_APPROVAL
+        )
+        assert revision["fields"] == {"seconds": 1}
+        assert app.scheduler.repository.active_agent_cadence() is None
+        assert app.scheduler.repository.current_cadence(
+            app.scheduler.policy.cadence
+        ) == timedelta(seconds=10)
+        assert app.recover() == ()
+        assert len(sdk.calls) == 1 and http.calls == []
+    finally:
+        worker.close()
 
 
 def test_other_intellectual_changes_do_not_become_scheduling_authority(tmp_path):
