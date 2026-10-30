@@ -347,6 +347,66 @@ def erase_narrative_source(db: sqlite3.Connection, event_id: str) -> None:
         "SELECT principal_id,operation_id FROM narrative_sources WHERE event_id=?",
         (event_id,),
     ).fetchall()
+    _erase_narrative_operations(db, rows)
+
+
+def erase_shared_narrative(db):
+    """The initiating reply binds generated fiction to its complete shared taint."""
+    roots = db.execute(
+        "SELECT n.principal_id,n.narrative_operation_id FROM protected_reply_narrative n "
+        "JOIN agent_reply_operations r ON r.operation_id=n.reply_operation_id "
+        "WHERE r.retention_status='invalidated' AND "
+        "n.narrative_operation_id='narrative:' || substr(r.operation_id,7)"
+    ).fetchall()
+    _erase_narrative_operations(db, roots)
+    db.execute(
+        "DELETE FROM private_narrative_receipts WHERE operation_id IN ("
+        "SELECT 'narrative:' || substr(operation_id,7) FROM agent_reply_operations WHERE retention_status='invalidated')"
+    )
+
+
+def narrative_creator_replies(db, principal, operation):
+    return tuple(
+        row[0]
+        for row in db.execute(
+            "WITH RECURSIVE ancestors(operation_id) AS (SELECT ? UNION "
+            "SELECT c.context_operation_id FROM narrative_context c JOIN ancestors a "
+            "ON c.operation_id=a.operation_id WHERE c.principal_id=?) "
+            "SELECT n.reply_operation_id FROM ancestors a JOIN protected_reply_narrative n "
+            "ON n.narrative_operation_id=a.operation_id WHERE n.principal_id=? AND "
+            "n.reply_operation_id='reply:' || substr(n.narrative_operation_id,11) "
+            "ORDER BY n.reply_operation_id",
+            (operation, principal, principal),
+        )
+    )
+
+
+def narrative_shared_operations(db, principal, operations):
+    """Existing protected creator edges supply authorization, never model fields."""
+    return {
+        row[0]
+        for operation in operations
+        for reply in narrative_creator_replies(db, principal, operation)
+        for row in db.execute(
+            "SELECT shared_operation FROM protected_reply_shared WHERE operation_id=?",
+            (reply,),
+        )
+    }
+
+
+def _erase_narrative_operations(db, roots):
+    rows = set(roots)
+    pending = list(rows)
+    while pending:
+        principal, operation = pending.pop()
+        for (child,) in db.execute(
+            "SELECT operation_id FROM narrative_context WHERE principal_id=? AND context_operation_id=?",
+            (principal, operation),
+        ):
+            key = (principal, child)
+            if key not in rows:
+                rows.add(key)
+                pending.append(key)
     for principal, operation in rows:
         db.execute(
             "DELETE FROM narrative_payloads WHERE principal_id=? AND operation_id=?",
@@ -376,6 +436,9 @@ def erase_narrative_source(db: sqlite3.Connection, event_id: str) -> None:
                 "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id=?",
                 (reply,),
             )
+            from app.core.intellectual_state import erase_source
+
+            erase_source(db, "context:" + reply)
 
 
 def validate_narrative_graph(db: sqlite3.Connection) -> None:
@@ -502,7 +565,13 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
             raise ValueError("invalid narrative graph")
         for parent in contexts[key]:
             inherited = operations.get(parent)
-            if inherited is None or inherited[1] >= revision and inherited[0] == item:
+            if (
+                inherited is None
+                or inherited[1] >= revision
+                and inherited[0] == item
+                or status == "active"
+                and inherited[2] != "active"
+            ):
                 raise ValueError("invalid narrative graph")
             if not sources[parent] <= sources[key]:
                 raise ValueError("invalid narrative graph")
@@ -542,6 +611,12 @@ def validate_narrative_graph(db: sqlite3.Connection) -> None:
             raise ValueError("invalid narrative graph")
         if row[1] == "active" and narrative[2] != "active":
             raise ValueError("invalid narrative graph")
+        if (
+            operation == "narrative:" + reply.removeprefix("reply:")
+            and row[1] == "invalidated"
+            and narrative[2] == "active"
+        ):
+            raise ValueError("invalid narrative shared lineage")
         if not sources[(principal, operation)] <= reply_sources.get(reply, set()):
             raise ValueError("invalid narrative graph")
     if (

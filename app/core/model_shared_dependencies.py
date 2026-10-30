@@ -9,7 +9,8 @@ def validate_dependencies(db, data):
         type(data) is not dict
         or set(data)
         != {"version", "principal", "sources", "audience", "consents", "reviews"}
-        or data["version"] != "shared-model-dependencies-v1"
+        or data["version"]
+        not in {"shared-model-dependencies-v1", "ordinary-shared-model-dependencies-v1"}
         or type(data["principal"]) is not str
         or any(
             type(data[key]) is not list
@@ -23,6 +24,30 @@ def validate_dependencies(db, data):
         or type(data["consents"]) is not list
     ):
         raise ValueError("invalid shared model dependencies")
+    ordinary = data["version"] == "ordinary-shared-model-dependencies-v1"
+    inherited = set()
+    if ordinary:
+        for operation in data["reviews"]:
+            row = db.execute(
+                "SELECT m.binding FROM shared_operations o JOIN protected_shared_manifests m USING(operation_id) "
+                "JOIN protected_shared_audiences a USING(operation_id) WHERE o.operation_id=? "
+                "AND o.status='active' AND a.principal_id=?",
+                (operation, data["principal"]),
+            ).fetchone()
+            from app.cognition.ordinary_abstract import ORDINARY_POLICY_VERSION
+
+            if (
+                row is None
+                or json.loads(row[0]).get("ordinary_policy") != ORDINARY_POLICY_VERSION
+            ):
+                raise ValueError("ordinary shared input unavailable")
+            inherited.update(
+                row[0]
+                for row in db.execute(
+                    "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                    (operation,),
+                )
+            )
     expected = [
         (source, audience)
         for source in data["sources"]
@@ -40,9 +65,9 @@ def validate_dependencies(db, data):
         if (
             db.execute(
                 "SELECT 1 FROM event_envelopes e JOIN private_payloads p USING(payload_id) "
-                "WHERE e.event_id=? AND e.audience_principal_id=? AND e.event_type='participant_input' "
+                "WHERE e.event_id=? AND (e.audience_principal_id=? OR ?) AND e.event_type='participant_input' "
                 "AND p.retention_status='active'",
-                (source, data["principal"]),
+                (source, data["principal"], int(source in inherited)),
             ).fetchone()
             is None
         ):
@@ -67,7 +92,11 @@ def validate_dependencies(db, data):
             )
         }
         if (
-            row != ("active", data["principal"])
+            (
+                row is None
+                or row[0] != "active"
+                or (not ordinary and row[1] != data["principal"])
+            )
             or not sources <= set(data["sources"])
             or not set(data["audience"]) <= audience
         ):

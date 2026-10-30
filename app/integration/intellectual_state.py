@@ -91,6 +91,8 @@ class PublicIntellectualState:
                     }
         # Transitive protected bindings are flattened at admission, including sources
         # behind an earlier agent expression. A self-reference cannot restore them.
+        if self.app.shared_intellectual_source is not None:
+            result.update(self.app.shared_intellectual_source.sources())
         for _ in range(len(result)):
             invalid = [
                 key
@@ -193,6 +195,7 @@ class PublicIntellectualState:
             research_source=origin.get("intellectual_research_source"),
         )
         visible = {item["key"] for item in selected}
+        visible.update(key for key in sources if key.startswith("shared:"))
         if origin["kind"] != "wake":
             visible.add(f"event:{origin['kind']}:{origin['event']}")
         # Outcomes are optional new projection records, not already visible context.

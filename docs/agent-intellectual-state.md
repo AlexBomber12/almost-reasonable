@@ -51,7 +51,9 @@ output and selected state. Selecting a convenient supporting handle cannot remov
 other dependencies. A/B private scopes and public account scopes remain separate.
 There is no private-to-shared transition in this PR. Public state is consumed by
 public decisions; private state is consumed in its corresponding private scope.
-The broader shared-personality integration remains PR3 work.
+PR3 adds the separately screened [ordinary shared influence](ordinary-shared-intelligence.md)
+adapter. Its safe abstraction is distinct from the private raw experience and
+remains unverified, with live protected ancestry.
 
 ## Persistence, binding, and recovery
 

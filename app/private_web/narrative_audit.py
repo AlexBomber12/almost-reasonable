@@ -165,6 +165,9 @@ class NarrativeAuditStore(ExtractionAuditStore):
         reply_operation,
         context,
     ):
+        from app.cognition.shared_context import SharedModelRequest
+
+        context = context.private if type(context) is SharedModelRequest else context
         principal_id = principal.principal_id.value
         self._check_input(principal_id, source_event_id, content, required=True)
         existing = self.read(operation_id, principal_id, source_event_id, content)

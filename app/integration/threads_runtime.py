@@ -236,6 +236,7 @@ class ThreadsRuntime(ThreadsStage0):
         research_scope=None,
         research_enabled=False,
         mission_evolution_enabled=False,
+        shared_intellectual_source=None,
         enabled=False,
         live_enabled=False,
         checkpoint=lambda _point: None,
@@ -259,6 +260,18 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise ValueError("invalid public mission evolution configuration")
         self.enabled, self.live_enabled = enabled, live_enabled
+        from app.integration.shared_intellectual_source import SharedIntellectualSource
+
+        if shared_intellectual_source is not None and (
+            type(shared_intellectual_source) is not SharedIntellectualSource
+            or shared_intellectual_source.account != policy.account_ref
+        ):
+            raise ValueError("shared intellectual source account mismatch")
+        if shared_intellectual_source is not None and os.path.samefile(
+            shared_intellectual_source.shared._gate._ledger.path, ledger.path
+        ):
+            raise ValueError("shared influence requires independent privacy ledgers")
+        self.shared_intellectual_source = shared_intellectual_source
         self.operating_window = None
         self.account, self.model, self.simulator = policy.account_ref, model, transport
         self.policy, self.owner, self.provider, self.ledger = (
