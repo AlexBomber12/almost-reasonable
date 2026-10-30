@@ -84,7 +84,7 @@ def main(argv=None, *, clock=lambda: datetime.now(UTC)):
                 or args.expires_at
                 or args.trials is not None
                 or args.calibration_digest
-                or len(args.evidence) > 512
+                or len(args.evidence) > 4096
             ):
                 raise ValueError("report requires a frozen plan")
             result = assess(
@@ -94,7 +94,7 @@ def main(argv=None, *, clock=lambda: datetime.now(UTC)):
                 evidence=[_read(path) for path in args.evidence],
                 approval=None
                 if args.approval is None
-                else decode(_read(args.approval, 4194304)),
+                else decode(_read(args.approval, 4194304), maximum=4194304),
                 current=binding,
                 at=now,
                 working_tree_clean=clean,

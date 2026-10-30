@@ -574,3 +574,55 @@ def test_wrong_public_account_unbound_corpus_and_fixture_failures_do_not_qualify
     evidence.append(raw(failed))
     result = evaluate(packet, evidence, approval(packet, evidence))
     assert result["complete_mvp"] == "BLOCKED" and not result["failures"]
+
+
+@pytest.mark.parametrize("incomplete", ["missing_import", "missing_calibration"])
+def test_known_executed_ci_failure_survives_incomplete_other_evidence(incomplete):
+    packet = plan()
+    evidence = bundle(packet, declared_attested=True)
+    failed = json.loads(ci())
+    failed["deterministic_gate"] = "FAIL"
+    execution = raw(failed)
+    policy = approval(packet, evidence)
+    policy["approved_evidence_sha256"].remove(sha(ci()))
+    policy["approved_evidence_sha256"].append(sha(execution))
+    if incomplete == "missing_import":
+        evidence.pop()
+    else:
+        policy["approved_calibration_sha256"] = None
+    result = assess(
+        packet,
+        load_manifest(),
+        ci=execution,
+        evidence=evidence,
+        approval=policy,
+        current=BINDING,
+        at=NOW + timedelta(hours=1),
+    )
+    assert result["complete_mvp"] == "FAIL"
+    assert all(row["assurance"]["G"] == "FAIL" for row in result["scenarios"])
+
+
+def test_actual_runner_failure_without_test_or_coverage_outputs_remains_fail():
+    packet = plan()
+    failed = raw(
+        {
+            "metadata": json.loads(ci())["metadata"],
+            "deterministic_gate": "FAIL",
+            "readiness": "FAIL",
+            "reason": "gate produced no test outcomes; inspect gate.log",
+        }
+    )
+    policy = approval(packet, [])
+    policy["approved_evidence_sha256"] = [sha(failed)]
+    result = assess(
+        packet,
+        load_manifest(),
+        ci=failed,
+        approval=policy,
+        current=BINDING,
+        at=NOW + timedelta(hours=1),
+    )
+    assert result["complete_mvp"] == "FAIL" and all(
+        row["assurance"]["G"] == "FAIL" for row in result["scenarios"]
+    )

@@ -108,8 +108,9 @@ An observation has exactly these fields (null is allowed only where stated):
 | `model_digest`, `account_digest` | Matching model digest for model trials / matching account digest for public conversation; otherwise null |
 
 All digests are lowercase 64-character hex; HEAD is 40-character hex. Each evidence
-file is at most 64 KiB, the package at most 4 MiB. CLI imports at most 512 evidence
-files (the pure evaluator has an additional 4096-item bound). Multiple observations
+file is at most 64 KiB, the package at most 4 MiB. CLI and evaluator import at most
+4096 evidence files, including the full 1200 model trials at the maximum supported
+100 trials per scenario plus required assessments/runtime observations. Multiple observations
 may reference shared protected receipts; the operator must verify they cover the
 specific normative scenario, rather than merely prove an action happened.
 
@@ -150,6 +151,11 @@ A scoped non-fixture failure remains a failure even if its hash was not approved
 An approved but omitted file blocks acceptance. Synthetic observations never
 qualify, even if approved. Missing/expired/stale evidence remains `NOT_RUN`;
 executed failures remain `FAIL`. None is silently waived or marked inapplicable.
+An approved current-binding CI failure remains G/overall `FAIL` even when another
+approved import or semantic calibration is missing. G evidence does not depend on
+semantic calibration; missing evidence cannot hide an executed failure.
+The runner's early lint/collection failure artifact has no test/coverage totals;
+its approved current-binding `deterministic_gate: FAIL` is still a failure.
 An importer cannot discover a receipt that was never provided or declared: the
 human operator must audit completeness, authentic identities, real execution,
 semantic ratings, longitudinal duration and calibration.
