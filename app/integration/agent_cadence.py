@@ -85,3 +85,5 @@ class AgentCadence:
         app.scheduler.repository.select_agent_cadence(
             operation, seconds, datetime.fromisoformat(payload["decided_at"])
         )
+        if app.scheduler.repository.active_agent_cadence() == operation:
+            app.operating_window.cadence_changed()

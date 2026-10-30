@@ -271,6 +271,20 @@ class PublicOperatingWindow:
                 )
             )
 
+    def cadence_changed(self):
+        """Reconcile the window after the independent scheduler commit, also on retry."""
+        cadence = self.app.scheduler.repository.current_cadence(
+            self.app.scheduler.policy.cadence
+        )
+        last = self.app.scheduler.repository.load().last_deliberation_at
+        with self.app.journal.transaction() as db:
+            now = self._check(self._row(db))
+            next_at = min(self.spec.expires_at, max(now, (last or now) + cadence))
+            db.execute(
+                "UPDATE public_windows SET next_wake=? WHERE id=?",
+                (next_at.isoformat(), self.spec.window_id),
+            )
+
     def _due(self, lane):
         self.app.guard()
         # Respect the scheduler's selected cadence; missed intervals coalesce

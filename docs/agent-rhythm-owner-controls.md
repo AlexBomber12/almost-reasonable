@@ -25,8 +25,12 @@ the composed free-mission intellectual prompt is version 2.
 
 Scheduler choices are durable, operation-bound, idempotent and reject older
 decision times. The next wakeup respects the last actual deliberation plus the
-selected interval, including after restart. An active preference retains its
-source lease. Source withdrawal, policy changes or disabling the mode hold
+selected interval, including after restart.
+The finite window recomputes its wakeup deadline when the selected interval
+changes, including a shorter interval and recovery after the scheduler committed
+before the window. Replaying an old preference cannot undo a trusted owner reset.
+An active preference retains its source lease. Source withdrawal, policy changes
+or disabling the mode hold
 further work until an explicit trusted scheduler reset. No automatic reset
 increases activity, and no publication is required.
 
@@ -48,6 +52,10 @@ results persist, and a retry of the same operation does not repeat confirmed
 targets. The operation binds the complete endpoint configuration; configuration
 replacement requires a fresh authenticated operation. Existing owner login,
 origin, CSRF and session boundaries apply.
+
+The emergency control remains available until application Stop and every
+configured worker have fresh, valid Stop observations. A stopped primary worker
+cannot hide the control while another target is active, unavailable or stale.
 
 `app.trusted.worker_stop` and `app.trusted.worker_telemetry` accept an explicit
 `--stop-version` from the closed private-pilot, public-model and public-research

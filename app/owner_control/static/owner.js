@@ -2,6 +2,7 @@
 let csrf = null;
 const byId = id => document.getElementById(id);
 const primaryWorker = data => data.worker.available ? data.worker : ((data.workers || []).find(entry => entry.name === 'private-model') || {}).status || data.worker;
+const workerIsFresh = (worker, stale) => !stale && worker.available && Number.isFinite(Date.parse(worker.collected_at)) && Math.abs(Date.now() - Date.parse(worker.collected_at)) <= 30000;
 const message = text => { byId('message').textContent = text; };
 try {
   const theme = localStorage.getItem('ar-theme');
@@ -63,7 +64,7 @@ function renderTiles() {
   if (!snapshot) return;
   const data = snapshot, worker = primaryWorker(data);
   const stale = Date.now() - receivedAt > 30000;
-  const workerFresh = !stale && worker.available && Number.isFinite(Date.parse(worker.collected_at)) && Math.abs(Date.now() - Date.parse(worker.collected_at)) <= 30000;
+  const workerFresh = workerIsFresh(worker, stale);
   tile('application-state', stale ? 'Данные устарели' : data.application_stop.active ? 'Stop включён' : 'Stop выключен', stale ? 'unknown' : data.application_stop.active ? 'stopped' : 'observed');
   tile('worker-state', !worker.available ? 'Недоступен' : !workerFresh ? 'Данные устарели' : !worker.stop.valid ? 'Stop неизвестен' : worker.stop.active ? 'Stop включён' : 'Stop выключен', workerFresh && worker.stop.valid ? (worker.stop.active ? 'stopped' : 'observed') : 'unknown');
   byId('worker-detail').textContent = worker.available ? `Наблюдение: ${dateText(worker.collected_at)}` : 'Наблюдение воркера недоступно';
@@ -73,7 +74,8 @@ function renderTiles() {
   const bothSuspended = !stale && localSuspended && providerKnown && provider.spend_suspended;
   tile('spend-state', stale ? 'Данные устарели' : bothSuspended ? 'Приостановлены по учёту' : localSuspended || (providerKnown && provider.spend_suspended) ? 'Частичная приостановка' : 'Приостановка не подтверждена', bothSuspended ? 'stopped' : 'unknown');
   byId('spend-detail').textContent = `Попытки IPC: ${data.application_provider.attempt_count}; воркер: ${providerKnown ? provider.attempt_count : 'нет свежих данных'}. Биллинг недоступен.`;
-  const stopped = !stale && data.application_stop.active && workerFresh && worker.stop.valid && worker.stop.active;
+  const configuredWorkers = data.workers && data.workers.length ? data.workers.map(entry => entry.status) : [worker];
+  const stopped = !stale && data.application_stop.active && configuredWorkers.every(entry => workerIsFresh(entry, stale) && entry.stop.valid && entry.stop.active);
   byId('emergency-zone').hidden = stopped; byId('worker-local-stop').hidden = !stopped;
   byId('stop').setAttribute('aria-pressed', String(data.application_stop.active));
   byId('resume').setAttribute('aria-pressed', String(!data.application_stop.active));

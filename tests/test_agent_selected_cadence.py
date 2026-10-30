@@ -295,3 +295,118 @@ def test_other_intellectual_changes_do_not_become_scheduling_authority(tmp_path)
         )
     finally:
         worker.close()
+
+
+@pytest.mark.parametrize("interrupt", [False, True])
+def test_shorter_cadence_advances_window_and_recovers_split_commit(
+    tmp_path, monkeypatch, interrupt
+):
+    app, worker, sdk, http, clock = setup(
+        tmp_path,
+        {"decision": "no_action", "reason_category": "other"},
+        agent_cadence_enabled=True,
+    )
+    create, observed = sdk.create, []
+
+    def choose(**kwargs):
+        observed.append(clock.now())
+        frame = json.loads(kwargs["input"][1]["content"])["intellectual_state"]
+        source = next(
+            row for row in frame["sources"] if row["kind"] == "capability_snapshot"
+        )
+        sdk.proposal["intellectual"] = (
+            proposal(
+                source["handle"],
+                kind="cadence_preference",
+                fields={"seconds": 30 if len(sdk.calls) == 0 else 10},
+            )
+            if len(sdk.calls) < 2
+            else None
+        )
+        return create(**kwargs)
+
+    sdk.create = choose
+    window_spec = spec(max_model_calls=3, max_poll_pages=0, max_inbound_events=0)
+    window = PublicOperatingWindow(app, window_spec)
+    if interrupt:
+
+        def crash():
+            if app.scheduler.repository.current_cadence(
+                timedelta(seconds=1)
+            ) == timedelta(seconds=10):
+                raise SystemExit("after scheduler cadence before window deadline")
+            PublicOperatingWindow.cadence_changed(window)
+
+        monkeypatch.setattr(window, "cadence_changed", crash, raising=False)
+    thread = serve(worker, 3)
+    try:
+        if interrupt:
+            with pytest.raises(SystemExit, match="before window deadline"):
+                window.run(
+                    wait=lambda seconds: clock.advance(timedelta(seconds=seconds))
+                )
+            window = PublicOperatingWindow(app, window_spec)
+        result = window.run(
+            wait=lambda seconds: clock.advance(timedelta(seconds=seconds))
+        )
+        finish(thread)
+        from test_int24_runtime import NOW
+
+        assert observed == [
+            NOW,
+            NOW + timedelta(seconds=30),
+            NOW + timedelta(seconds=40),
+        ]
+        assert result["consumed"]["model_calls"] == 3 and http.calls == []
+    finally:
+        worker.close()
+
+
+def test_owner_reset_is_not_undone_by_replaying_an_applied_preference(selected):
+    app, _, _, window = selected
+    operation = app.scheduler.repository.active_agent_cadence()
+    previous = window.summary("observed")["next_due"]["wakeup"]
+    app.scheduler.repository.select_cadence(timedelta(seconds=10))
+    app.operating_window = window
+    try:
+        app.agent_cadence.apply(operation, app.journal.read(operation))
+        assert app.scheduler.repository.active_agent_cadence() is None
+        assert app.scheduler.repository.current_cadence(
+            timedelta(seconds=1)
+        ) == timedelta(seconds=10)
+        assert window.summary("observed")["next_due"]["wakeup"] == previous
+    finally:
+        app.operating_window = None
+
+
+def test_owner_lengthened_cadence_blocks_an_old_window_deadline(tmp_path):
+    from test_int24_runtime import NOW
+
+    app, worker, sdk, http, clock = setup(
+        tmp_path, {"decision": "no_action", "reason_category": "other"}
+    )
+    create, observed = sdk.create, []
+
+    def record(**kwargs):
+        observed.append(clock.now())
+        return create(**kwargs)
+
+    def interrupt(_seconds):
+        raise KeyboardInterrupt
+
+    sdk.create = record
+    window_spec = spec(max_model_calls=2, max_poll_pages=0, max_inbound_events=0)
+    thread = serve(worker, 2)
+    try:
+        first = PublicOperatingWindow(app, window_spec).run(wait=interrupt)
+        assert first["state"] == "interrupted" and observed == [NOW]
+        app.scheduler.repository.select_cadence(timedelta(seconds=10))
+        clock.advance(timedelta(seconds=2))
+        result = PublicOperatingWindow(app, window_spec).run(
+            wait=lambda seconds: clock.advance(timedelta(seconds=seconds))
+        )
+        finish(thread)
+        assert observed == [NOW, NOW + timedelta(seconds=10)]
+        assert result["consumed"]["model_calls"] == 2 and http.calls == []
+    finally:
+        worker.close()
