@@ -704,16 +704,28 @@ class _DurableConversationRuntime(ConversationService):
                             self._limits.max_utf8_bytes - 200,
                         ),
                     )
+                source_permitted = (
+                    self._intellectual.source_validator(db, principal)
+                    if self._intellectual is not None
+                    else lambda _operation: True
+                )
                 request, sources = MemoryConversationAssembler(
                     self._event_store, private_limits
                 ).build(
                     principal,
                     event_id,
                     db,
+                    episode_permitted=lambda episode: source_permitted(
+                        "reply:" + episode.operation_id.removeprefix("narrative:")
+                    ),
                     reply_permitted=lambda reply: self._current_request.get()()
                     and self._shared_consent_live(reply.operation, principal)
                     and self._narrative_reply_permitted(reply.operation)
-                    and self._research_evidence(reply.operation.operation_id) is None
+                    and (
+                        self._intellectual is not None
+                        or self._research_evidence(reply.operation.operation_id) is None
+                    )
+                    and source_permitted(reply.operation.operation_id)
                     and self._historical_research_permitted(principal, reply),
                     include_memories=True,
                     include_narrative=getattr(self, "_narrative_audit", None)
@@ -1187,6 +1199,12 @@ class _DurableConversationRuntime(ConversationService):
             or not self._current_request.get()()
             or not self._narrative_permission()
             or not self._inference_consent_live(principal, reply_operation.operation_id)
+            or (
+                self._intellectual is not None
+                and not self._intellectual.research_valid(
+                    principal, reply_operation.operation_id
+                )
+            )
         ):
             return False
         current_reply = self._outputs.read_reply(
@@ -1964,8 +1982,28 @@ class _DurableConversationRuntime(ConversationService):
                     context.private if type(context) is SharedModelRequest else context
                 )
                 if type(private) is MemoryModelRequest:
+                    # These exact server-released public reports were absent
+                    # from private comparison material before continuity support.
+                    # Keep their raw private sources and all ordinary responses
+                    # in the H screen; do not reclassify report prose as secrets.
+                    public_reports = set()
+                    for creator in private.released_reply_ids:
+                        prior = self._outputs._read(db, route.principal, creator)
+                        evidence = self._research_evidence(creator)
+                        if (
+                            prior is not None
+                            and evidence is not None
+                            and not isinstance(evidence, str)
+                            and evidence.outcome == "completed"
+                        ):
+                            public_reports.add(prior.content)
                     context_texts.extend(
-                        segment.content for segment in private.conversation.conversation
+                        segment.content
+                        for segment in private.conversation.conversation
+                        if not (
+                            segment.role.value == "agent"
+                            and segment.content in public_reports
+                        )
                     )
                     context_texts.extend(episode.text for episode in private.episodes)
                     for memory in private.memories:
@@ -2540,6 +2578,13 @@ class _DurableConversationRuntime(ConversationService):
                     and self._narrative_reply_permitted(reply.operation)
                     and self._historical_research_permitted(principal, reply)
                 ):
+                    if (
+                        self._intellectual is not None
+                        and not self._intellectual.research_valid(
+                            principal, operation_id
+                        )
+                    ):
+                        continue
                     items.append(
                         HistoryItem(
                             operation_id, event.occurred_at, reply.content, "agent"

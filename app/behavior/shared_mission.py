@@ -273,7 +273,11 @@ class SharedMissionAdapter:
         purpose: MissionPurpose,
         counterevidence_checked: bool,
     ):
-        if counterevidence_checked is not True or type(purpose) is not MissionPurpose:
+        if (
+            counterevidence_checked is not True
+            or type(purpose) is not MissionPurpose
+            or purpose not in _MISSION_PURPOSE_TEXT
+        ):
             raise ValueError("mission counterevidence check required")
 
         def propose(db, repository, machine):

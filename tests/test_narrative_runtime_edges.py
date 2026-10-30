@@ -383,6 +383,7 @@ def test_narrative_current_rejects_missing_reply_or_source_binding(case):
         narrative_operation_ids=(),
     )
     fake = SimpleNamespace(
+        _intellectual=None,
         _capabilities=_caps,
         _current_request=SimpleNamespace(get=lambda: lambda: True),
         _narrative_permission=lambda: True,

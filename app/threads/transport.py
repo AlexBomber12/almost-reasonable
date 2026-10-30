@@ -1,6 +1,8 @@
 """Explicit, credential-bound Threads Graph transport. No ambient token lookup."""
 
 from dataclasses import dataclass
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import datetime
 import base64
 import hashlib
@@ -169,6 +171,17 @@ class ThreadsHTTPTransport:
         self._token = token
         self._client = client
         self._timeout = timeout
+        self._request_admission = ContextVar("threads_request_admission", default=None)
+
+    @contextmanager
+    def bounded_requests(self, admit):
+        if not callable(admit) or self._request_admission.get() is not None:
+            raise ValueError("invalid or nested request admission")
+        token = self._request_admission.set(admit)
+        try:
+            yield
+        finally:
+            self._request_admission.reset(token)
 
     def _call(
         self,
@@ -193,6 +206,19 @@ class ThreadsHTTPTransport:
             if uncertain
             else EffectClass.PROVEN_PRE_DISPATCH
         )
+        admission = self._request_admission.get()
+        if admission is not None:
+            try:
+                admission()
+            except Exception:
+                raise ProviderFailure(
+                    read_failure
+                    if publication_id is not None
+                    else EffectClass.PROVEN_PRE_DISPATCH,
+                    "request_admission_denied",
+                    container_id=container_id,
+                    publication_id=publication_id,
+                ) from None
         try:
             response = self._client.request(
                 method,

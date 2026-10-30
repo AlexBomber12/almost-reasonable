@@ -73,6 +73,9 @@ class SQLiteSchedulerRepository:
                 (_encode_state(SchedulerState()),),
             )
             db.execute(
+                "CREATE TABLE IF NOT EXISTS scheduler_agent_cadence(operation TEXT PRIMARY KEY,seconds INTEGER NOT NULL,at TEXT NOT NULL,active INTEGER NOT NULL)"
+            )
+            db.execute(
                 "CREATE TABLE IF NOT EXISTS scheduler_events(id TEXT PRIMARY KEY, scheduled TEXT NOT NULL, trigger TEXT NOT NULL, status TEXT NOT NULL, recorded TEXT)"
             )
             db.execute(
@@ -117,6 +120,47 @@ class SQLiteSchedulerRepository:
         ) * 1000000 + cadence.microseconds
         with self._transaction() as db:
             db.execute("UPDATE scheduler_state SET cadence=?", (str(microseconds),))
+            db.execute("UPDATE scheduler_agent_cadence SET active=0")
+
+    def select_agent_cadence(self, operation, seconds, at):
+        from app.threads.domain import require_reference, require_aware_time
+
+        require_reference("cadence operation", operation)
+        require_aware_time("cadence decision", at)
+        if type(seconds) is not int or not 1 <= seconds <= 86400:
+            raise ValueError("invalid bounded cadence")
+        decided = at.astimezone(UTC).isoformat()
+        with self._transaction() as db:
+            if db.execute(
+                "SELECT 1 FROM scheduler_agent_cadence WHERE operation=?", (operation,)
+            ).fetchone():
+                return False
+            latest = db.execute(
+                "SELECT MAX(at) FROM scheduler_agent_cadence"
+            ).fetchone()[0]
+            if latest is not None and decided <= latest:
+                return False
+            if (
+                db.execute("SELECT COUNT(*) FROM scheduler_agent_cadence").fetchone()[0]
+                >= MAX_PROCESSED_EVENTS
+            ):
+                raise ValueError("cadence journal capacity reached")
+            db.execute("UPDATE scheduler_agent_cadence SET active=0")
+            db.execute(
+                "INSERT INTO scheduler_agent_cadence VALUES(?,?,?,1)",
+                (operation, seconds, decided),
+            )
+            db.execute(
+                "UPDATE scheduler_state SET cadence=?", (str(seconds * 1000000),)
+            )
+        return True
+
+    def active_agent_cadence(self):
+        with self._transaction() as db:
+            row = db.execute(
+                "SELECT operation FROM scheduler_agent_cadence WHERE active=1"
+            ).fetchone()
+        return None if row is None else row[0]
 
     def current_cadence(self, default: timedelta) -> timedelta:
         with self._transaction() as db:

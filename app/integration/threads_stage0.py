@@ -90,6 +90,7 @@ class VerifiedMissionContext:
             raise ValueError("configured mission stores required")
         if (
             type(initial.purpose) is not MissionPurpose
+            or initial.purpose not in _MISSION_PURPOSE_TEXT
             or initial.text != _MISSION_PURPOSE_TEXT[initial.purpose]
         ):
             raise ValueError("initial mission must be reviewed closed content")

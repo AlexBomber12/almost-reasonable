@@ -7,7 +7,7 @@ withdrawal/change; it does not assert present availability on the provider.
 from datetime import UTC, datetime
 import hashlib
 import json
-import sqlite3
+from app.core.read_only_sqlite import connect_read_only
 
 from app.core.public_experience import (
     EXPERIENCE_VERSION,
@@ -92,7 +92,7 @@ class PublicExperienceHistory:
                 )
         # Read-only access avoids nested writer transactions at the existing
         # authorization/handoff checks. No transaction spans independent stores.
-        with sqlite3.connect(app.journal.path) as db:
+        with connect_read_only(app.journal.path) as db:
             rows = db.execute(
                 "SELECT operation,payload FROM intents WHERE phase='linked'"
             ).fetchall()
@@ -205,7 +205,7 @@ class PublicExperienceHistory:
         if "experience_digest" not in payload:
             return None
         app = self.app
-        with sqlite3.connect(app.journal.path) as db:
+        with connect_read_only(app.journal.path) as db:
             row = db.execute(
                 "SELECT version,sources FROM public_experience_snapshots WHERE operation=?",
                 (operation,),

@@ -61,6 +61,8 @@ class MissionPurpose(StrEnum):
     DIALOGUE = "dialogue"
     REFLECTION = "reflection"
     DISCONTINUE_OPTIONAL_CHANNEL = "discontinue_optional_channel"
+    AGENT_DEFINED = "agent_defined"
+    AGENT_DEFINED_WITHOUT_THREADS = "agent_defined_without_threads"
 
 
 _MISSION_PURPOSE_TEXT = {
@@ -83,6 +85,7 @@ class EvidenceProvenance(StrEnum):
     PUBLIC_SOURCE = "public_source"
     AGENT_OBSERVATION = "agent_observation"
     VERIFIED_SOURCE = "verified_source"
+    AGENT_DELIBERATION = "agent_deliberation"
 
 
 @dataclass(frozen=True, slots=True)
@@ -418,7 +421,19 @@ def _validate_proposal(proposal: MissionProposal) -> None:
     ):
         raise ValueError("proposed_mission does not match its allowed purpose")
     _validate_text_tuple(proposal.supporting_reasons, "supporting_reasons")
-    _validate_text_tuple(proposal.counterevidence, "counterevidence")
+    if proposal.purpose in (
+        MissionPurpose.AGENT_DEFINED,
+        MissionPurpose.AGENT_DEFINED_WITHOUT_THREADS,
+    ):
+        from app.core.free_mission import free_context
+
+        free_context(proposal)
+    _validate_text_tuple(
+        proposal.counterevidence,
+        "counterevidence",
+        allow_empty=proposal.purpose
+        in (MissionPurpose.AGENT_DEFINED, MissionPurpose.AGENT_DEFINED_WITHOUT_THREADS),
+    )
     _validate_aggregate_text(
         (
             proposal.proposed_mission,
@@ -449,7 +464,30 @@ def _validate_confirmation(
         if not _valid_identifier(getattr(confirmation, name)):
             raise ValueError(f"{name} is invalid")
     _validate_text_tuple(confirmation.reasons, "reasons")
-    _validate_text_tuple(confirmation.counterevidence, "counterevidence")
+    if proposal.purpose in (
+        MissionPurpose.AGENT_DEFINED,
+        MissionPurpose.AGENT_DEFINED_WITHOUT_THREADS,
+    ):
+        from app.core.free_mission import parse_free_choice
+
+        parse_free_choice(
+            {
+                "decision": "mission",
+                "action": "confirm"
+                if confirmation.outcome is ConfirmationOutcome.CONFIRMED
+                else "reject",
+                "purpose": None,
+                "text": None,
+                "reasons": list(confirmation.reasons),
+                "counterevidence": list(confirmation.counterevidence),
+            }
+        )
+    _validate_text_tuple(
+        confirmation.counterevidence,
+        "counterevidence",
+        allow_empty=proposal.purpose
+        in (MissionPurpose.AGENT_DEFINED, MissionPurpose.AGENT_DEFINED_WITHOUT_THREADS),
+    )
     if any(
         _contains_forbidden_mission_content(value)
         for value in (*confirmation.reasons, *confirmation.counterevidence)
@@ -518,10 +556,12 @@ def _validate_invariants(value: CapabilityPolicyInvariants) -> None:
         raise ValueError("capability-policy invariants are invalid")
 
 
-def _validate_text_tuple(value: tuple[str, ...], name: str) -> None:
+def _validate_text_tuple(
+    value: tuple[str, ...], name: str, *, allow_empty=False
+) -> None:
     if (
         type(value) is not tuple
-        or not value
+        or (not value and not allow_empty)
         or len(value) > MAX_MISSION_COLLECTION_ITEMS
         or any(not _valid_text(item) for item in value)
     ):
@@ -610,6 +650,17 @@ def _contains_forbidden_mission_content(value: str) -> bool:
 
 
 def _mission_matches_purpose(value: str, purpose: MissionPurpose) -> bool:
+    if purpose in (
+        MissionPurpose.AGENT_DEFINED,
+        MissionPurpose.AGENT_DEFINED_WITHOUT_THREADS,
+    ):
+        from app.core.free_mission import validate_free_text
+
+        try:
+            validate_free_text(value)
+        except ValueError:
+            return False
+        return True
     normalized = unicodedata.normalize("NFKC", value).casefold().strip()
     expected = unicodedata.normalize("NFKC", _MISSION_PURPOSE_TEXT[purpose]).casefold()
     return normalized == expected

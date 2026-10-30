@@ -248,6 +248,7 @@ def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
         "project_id": "proj_reviewed",
         "organization_id": "org-reviewed",
         "openai_key_file": "/unused/key",
+        "stop_file": "/unused/public-stop",
         "socket_path": "/unused/socket",
         "attempts_path": "/unused/attempts",
         "worker_event_store_path": str(tmp_path / "events.sqlite"),

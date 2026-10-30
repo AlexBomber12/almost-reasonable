@@ -15,6 +15,7 @@ from app.core.public_experience import inference_context_digest
 from app.trusted.openai_credential_files import read_protected_worker_file
 from app.trusted.openai_transport import OPENAI_API_BASE_URL
 from app.trusted.public_behavior_worker import PublicSDKAdapter, PublicWorkerServer
+from app.trusted.worker_stop import WorkerStop
 
 
 def _private_config(path):
@@ -106,6 +107,8 @@ def main(argv=None):
     if config.get("worker_enabled") is not True:
         raise ValueError("public worker is disabled")
     project, organization = _billing_scope(config)
+    if not config.get("stop_file"):
+        raise ValueError("public worker requires an explicit native Stop file")
     from openai import OpenAI
 
     key = (
@@ -132,6 +135,9 @@ def main(argv=None):
         provider_store=ProviderStateStore(
             EventStore(Path(config["worker_event_store_path"]))
         ),
+        emergency_stop=WorkerStop(
+            Path(config["stop_file"]), "public-model-stop-v1"
+        ).active,
     )
     server.start()
     try:

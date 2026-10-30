@@ -1,8 +1,13 @@
 """Public account adapter for typed agent state and immutable inference inputs."""
 
-import sqlite3
+from app.core.read_only_sqlite import connect_read_only
+from app.core.free_mission import public_prompt_version
 
-from app.core.intellectual_state import IntellectualStateStore, initialize, digest
+from app.core.intellectual_state import (
+    IntellectualStateStore,
+    initialize,
+    digest,
+)
 
 
 class PublicIntellectualState:
@@ -13,7 +18,11 @@ class PublicIntellectualState:
             initialize(db)
 
     def sources(self, *, _candidates=None):
-        result = {}
+        from app.integration.agent_cadence import cadence_sources
+
+        result = cadence_sources(
+            self.app.journal.path, self.app.ledger.control_generation()
+        )
         candidates = (
             self.app.experience_history._candidates()
             if _candidates is None
@@ -22,7 +31,7 @@ class PublicIntellectualState:
         for key, (record, binding) in candidates.items():
             dependencies = {}
             if key.startswith(("decision:", "publication:")):
-                with sqlite3.connect(self.app.journal.path) as db:
+                with connect_read_only(self.app.journal.path) as db:
                     dependencies = self.state.dependencies(db, key.split(":", 1)[1])
             result[key] = {
                 "kind": record.kind,
@@ -33,7 +42,7 @@ class PublicIntellectualState:
         import json
         from app.threads.store import ThreadsStoreError
 
-        with sqlite3.connect(self.app.journal.path) as db:
+        with connect_read_only(self.app.journal.path) as db:
             rows = db.execute(
                 "SELECT operation,phase,payload FROM intents WHERE phase IN ('linked','rejected')"
             ).fetchall()
@@ -68,7 +77,7 @@ class PublicIntellectualState:
                     + ". Completion is not confirmed.",
                     digest([payload, item.state.value, item.revision]),
                 )
-            with sqlite3.connect(self.app.journal.path) as db:
+            with connect_read_only(self.app.journal.path) as db:
                 deps = self.state.dependencies(db, operation)
             result["outcome:" + operation] = {
                 "kind": kind,
@@ -76,7 +85,7 @@ class PublicIntellectualState:
                 "binding": binding,
                 "dependencies": deps,
             }
-        with sqlite3.connect(self.app.journal.path) as db:
+        with connect_read_only(self.app.journal.path) as db:
             research = db.execute(
                 "SELECT r.operation,r.evidence,i.payload FROM public_research_ops r JOIN intents i ON i.operation=r.operation WHERE r.phase='completed'"
             ).fetchall()
@@ -84,8 +93,8 @@ class PublicIntellectualState:
                 payload = json.loads(raw)
                 if evidence is not None and self._origin_allowed(payload):
                     result["research:" + operation] = {
-                        "kind": "contextual_public_research",
-                        "text": "",
+                        "kind": "hosted_research_model_report",
+                        "text": "The full report in prior_untrusted_public_evidence is unverified model assessment, including its uncertainty and counterevidence; URLs are not factual approval.",
                         "binding": digest([payload, evidence]),
                         "dependencies": self.state.dependencies(db, operation),
                     }
@@ -177,6 +186,15 @@ class PublicIntellectualState:
                 raise ValueError("intellectual research context unavailable")
             keys.add(key)
         required = {}
+        if self.app.free_missions_enabled and self.app.mission_evolution is not None:
+            with connect_read_only(self.app.journal.path) as db:
+                for (
+                    operation
+                ) in self.app.mission_evolution.intellectual_context_operations_in(db):
+                    inherited = self.state.dependencies(db, operation)
+                    if not self.state._valid_dependencies(inherited, sources):
+                        raise ValueError("free mission intellectual source withdrawn")
+                    required.update(inherited)
         for key in keys:
             if key in sources:
                 required.update(sources[key]["dependencies"])
@@ -191,6 +209,11 @@ class PublicIntellectualState:
             research_source=origin.get("intellectual_research_source"),
         )
         visible = {item["key"] for item in selected}
+        if "cadence-policy" in sources:
+            visible.add("cadence-policy")
+        report = origin.get("intellectual_research_source")
+        priority = () if report is None else ("research:" + report,)
+        visible.update(priority)
         visible.update(key for key in sources if key.startswith("shared:"))
         if origin["kind"] != "wake":
             visible.add(f"event:{origin['kind']}:{origin['event']}")
@@ -207,6 +230,7 @@ class PublicIntellectualState:
             digest(origin),
             str(self.app.ledger.control_generation()),
             visible_keys=visible,
+            priority_keys=priority,
             required_dependencies=required,
             query=sources.get(f"event:{origin['kind']}:{origin['event']}", {}).get(
                 "text", ""
@@ -217,7 +241,7 @@ class PublicIntellectualState:
         app = self.app
         app.guard()
         sources = self.sources()
-        with sqlite3.connect(app.journal.path) as db:
+        with connect_read_only(app.journal.path) as db:
             if not self.state.validate(
                 db, operation, sources, str(app.ledger.control_generation())
             ):
@@ -231,7 +255,7 @@ class PublicIntellectualState:
 
     def valid(self, operation, *, revisions=True):
         sources = self.sources()
-        with sqlite3.connect(self.app.journal.path) as db:
+        with connect_read_only(self.app.journal.path) as db:
             return self.state.validate(
                 db,
                 operation,
@@ -278,7 +302,9 @@ class PublicIntellectualState:
                         operation,
                         proposal,
                         model,
-                        "threads-public-intellectual-prompt-v1",
+                        public_prompt_version(
+                            tuple(current_payload.get("mission_evolution", ())), True
+                        ),
                         app.clock.now().isoformat(),
                     )
                 row = self.state._operation(db, operation)

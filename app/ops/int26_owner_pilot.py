@@ -15,6 +15,8 @@ from app.core.store import EventStore
 from app.owner_control.store import OwnerStore
 from app.owner_control.worker_telemetry import WorkerTelemetryClient
 from app.owner_control.worker_stop import WorkerStopClient
+from app.owner_control.worker_registry import WorkerRegistry
+from app.owner_control.public_runtime import PublicRuntimeReadView
 from app.owner_control.wsgi import OwnerApplication
 from app.private_web.cli import IPv6WSGIServer
 from app.private_web.wsgi import PrivateWebConfig, _valid_origin
@@ -131,6 +133,15 @@ def build_application(args):
             pilot_provider_events=ipc,
             worker_telemetry=telemetry,
             worker_stop=worker_stop,
+            workers=WorkerRegistry.from_config(args.worker_registry)
+            if getattr(args, "worker_registry", None) is not None
+            else None,
+            public_runtime=PublicRuntimeReadView.from_config(
+                args.public_runtime_config,
+                expected_owner_directory=args.owner_directory,
+            )
+            if getattr(args, "public_runtime_config", None) is not None
+            else None,
         )
     except (OSError, RuntimeError, PermissionError, sqlite3.Error) as error:
         raise ValueError("application stores are unavailable or unsafe") from error
@@ -151,6 +162,8 @@ def main(argv=None, *, server_factory=make_server):
     parser.add_argument("--worker-telemetry-uid", type=int)
     parser.add_argument("--worker-stop-socket")
     parser.add_argument("--worker-stop-uid", type=int)
+    parser.add_argument("--worker-registry")
+    parser.add_argument("--public-runtime-config")
     parser.add_argument("--listen-host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=18026)
     args = parser.parse_args(argv)

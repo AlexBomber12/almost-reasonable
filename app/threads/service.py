@@ -59,6 +59,17 @@ class PollingError(RuntimeError):
     """A bounded verified-source polling invariant failed."""
 
 
+def _publication_purpose(approval):
+    if type(approval) is not Approval or approval.purpose not in (
+        ApprovalPurpose.PUBLICATION,
+        ApprovalPurpose.AUTONOMOUS_PUBLICATION,
+    ):
+        raise ValueError(
+            "authenticated publication authority with valid purpose required"
+        )
+    return approval.purpose
+
+
 class ThreadsService:
     def __init__(
         self,
@@ -196,12 +207,16 @@ class ThreadsService:
                 operation_id=item.operation_id,
                 now=self.utc_now(),
                 require_duplicate_ack=item.replacement_of is not None,
-                purpose=ApprovalPurpose.PUBLICATION,
+                purpose=_publication_purpose(approval),
             )
             return self.store.transition(
                 operation_id,
                 OutboxState.READY,
-                reason="operator_and_policy_approved",
+                reason=(
+                    "finite_grant_and_policy_authorized"
+                    if approval.purpose is ApprovalPurpose.AUTONOMOUS_PUBLICATION
+                    else "operator_and_policy_approved"
+                ),
                 now=now,
                 approval_reference=current_approval.reference,
                 approval_status="approved",
@@ -886,13 +901,21 @@ class ThreadsService:
         )
         if blockers:
             raise PolicyDeniedError("; ".join(blockers))
+        purpose = _publication_purpose(approval)
+        if (
+            purpose is ApprovalPurpose.AUTONOMOUS_PUBLICATION
+            and item.replacement_of is not None
+        ):
+            raise PolicyDeniedError(
+                "autonomous grants cannot authorize replacement publication"
+            )
         validate_approval(
             approval,
             account_ref=item.account_ref,
             operation_id=item.operation_id,
             now=now,
             require_duplicate_ack=item.replacement_of is not None,
-            purpose=ApprovalPurpose.PUBLICATION,
+            purpose=purpose,
         )
         unresolved = self.store.unresolved_for_account(item.account_ref)
         unresolved_ids = {candidate.operation_id for candidate in unresolved}
@@ -929,7 +952,7 @@ class ThreadsService:
             operation_id=item.operation_id,
             now=self.utc_now(),
             require_duplicate_ack=item.replacement_of is not None,
-            purpose=ApprovalPurpose.PUBLICATION,
+            purpose=purpose,
         )
         if snapshot.approval.reference != approval.reference:
             raise ValueError("current approval reference mismatch")
@@ -1020,7 +1043,7 @@ class ThreadsService:
             operation_id=item.operation_id,
             now=self.utc_now(),
             require_duplicate_ack=item.replacement_of is not None,
-            purpose=ApprovalPurpose.PUBLICATION,
+            purpose=_publication_purpose(approval),
         )
 
     def _record_failure(

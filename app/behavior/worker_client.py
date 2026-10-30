@@ -14,6 +14,7 @@ from app.core.public_behavior import (
     parse_public_proposal,
 )
 from app.core.core_self import CORE_SELF_VERSION
+from app.core.free_mission import is_free_context, public_prompt_version
 from app.core.provider_contract import CostEstimateStatus, PROVIDER_NAME
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES, ProviderAttemptRecord
 from app.trusted.openai_worker_protocol import receive_frame, send_frame
@@ -152,9 +153,9 @@ class PublicBehaviorClient:
                 PROVIDER_NAME,
                 telemetry["model_identifier"],
                 "threads-public-worker-v1",
-                "threads-public-intellectual-prompt-v1"
-                if public.intellectual_state is not None
-                else "threads-public-prompt-v1",
+                public_prompt_version(
+                    public.mission_evolution, public.intellectual_state is not None
+                ),
                 CORE_SELF_VERSION,
                 telemetry["provider_response_id"],
                 started,
@@ -198,7 +199,9 @@ class PublicBehaviorClient:
         if outcome != "completed":
             raise ValueError("public worker inference unavailable")
         if not parse_public_proposal(
-            value["proposal"], evolution=bool(public.mission_evolution)
+            value["proposal"],
+            evolution=bool(public.mission_evolution),
+            free_missions=is_free_context(public.mission_evolution),
         ).valid:
             raise ValueError("invalid public worker proposal")
         if (

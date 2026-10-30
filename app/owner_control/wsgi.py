@@ -32,6 +32,8 @@ class OwnerApplication:
         pilot_provider_events=None,
         worker_telemetry=None,
         worker_stop=None,
+        workers=None,
+        public_runtime=None,
     ):
         if (
             type(allowed_clients) is not frozenset
@@ -54,6 +56,8 @@ class OwnerApplication:
         self.pilot_provider_events = pilot_provider_events
         self.worker_telemetry = worker_telemetry
         self.worker_stop = worker_stop
+        self.workers = workers
+        self.public_runtime = public_runtime
         self._http = PrivateWebApplication(None, None, config)
 
     def __call__(self, environ, start_response):
@@ -204,6 +208,10 @@ class OwnerApplication:
                         if self.worker_telemetry is not None
                         else unavailable()
                     ),
+                    "workers": [] if self.workers is None else self.workers.read(),
+                    "public_runtime": {"available": False}
+                    if self.public_runtime is None
+                    else self.public_runtime.owner_status(),
                     "recent": {
                         "application": application_replies(self.events),
                         "worker": (
@@ -287,11 +295,18 @@ class OwnerApplication:
         if path == "/operation":
             return 200, {"operation_id": self.store.issue(token)}, []
         if path == "/worker-stop-operation":
-            if self.worker_stop is None or self.pilot_provider_events is None:
+            if self.workers is None and (
+                self.worker_stop is None or self.pilot_provider_events is None
+            ):
                 raise _RequestError(
                     HTTPStatus.SERVICE_UNAVAILABLE, "Worker control unavailable."
                 )
-            return 200, {"operation_id": self.store.issue_worker_stop(token)}, []
+            operation = self.store.issue_worker_stop(token)
+            if self.workers is not None:
+                self.store.bind_worker_registry(
+                    token, operation, self.workers.fingerprint, self.workers.names
+                )
+            return 200, {"operation_id": operation}, []
         if path == "/logout":
             self.store.revoke(token)
             return (
@@ -303,6 +318,18 @@ class OwnerApplication:
             payload = self._body(env, {"operation_id"})
             operation = payload["operation_id"]
             outcome = self.store.worker_operation(token, operation)
+            registry = (
+                None
+                if self.workers is None
+                else self.store.worker_registry_operation(token, operation)
+            )
+            if self.workers is not None and (
+                registry is None or registry["fingerprint"] != self.workers.fingerprint
+            ):
+                raise _RequestError(
+                    HTTPStatus.CONFLICT,
+                    "Worker configuration changed; issue a new Stop operation.",
+                )
             if outcome["application"] != "confirmed":
                 try:
                     self.store.assert_application_stop(token, operation)
@@ -320,11 +347,23 @@ class OwnerApplication:
             else:
                 application = "confirmed"
             if outcome["worker"] != "confirmed":
-                worker = (
-                    self.worker_stop.assert_stop()
-                    if self.worker_stop is not None
-                    else "unavailable"
-                )
+                if self.workers is not None:
+                    results = self.store.record_worker_targets(
+                        token, operation, self.workers.assert_all(registry["results"])
+                    )
+                    worker = (
+                        "confirmed"
+                        if all(value == "confirmed" for value in results.values())
+                        else "uncertain"
+                        if any(value != "unavailable" for value in results.values())
+                        else "unavailable"
+                    )
+                else:
+                    worker = (
+                        self.worker_stop.assert_stop()
+                        if self.worker_stop is not None
+                        else "unavailable"
+                    )
                 try:
                     worker = self.store.record_worker_outcome(
                         token, operation, "worker_result", worker
@@ -333,6 +372,15 @@ class OwnerApplication:
                     worker = "uncertain"
             else:
                 worker = "confirmed"
+            if self.workers is not None:
+                results = self.store.worker_registry_operation(token, operation)[
+                    "results"
+                ]
+                return (
+                    200,
+                    {"application": application, "worker": worker, "workers": results},
+                    [],
+                )
             return 200, {"application": application, "worker": worker}, []
         payload = self._body(env, {"operation_id", "active"})
         result = self.store.change(token, payload["operation_id"], payload["active"])

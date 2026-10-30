@@ -19,6 +19,7 @@ from app.core.public_research_client import PublicResearchClient
 from app.core.store import EventStore
 from app.integration.threads_runtime import LocalOperator, ThreadsRuntime
 from app.integration.public_window import PublicOperatingWindow, WindowSpec
+from app.integration.public_grant import PublicGrantSpec
 from app.core.public_research_profile import PUBLIC_PURPOSES, load_research_profile
 from app.owner_control.store import OwnerStore
 from app.privacy.ledger import PrivacyLedger
@@ -41,6 +42,8 @@ def _config(path):
 
 
 def _runtime(config):
+    if config.get("enable_autonomous_publication") is True:
+        _grant_spec(config)
     clock = Clock()
     token = (
         read_protected_worker_file(
@@ -105,6 +108,11 @@ def _runtime(config):
         research_scope=config.get("public_research_scope"),
         research_enabled=config.get("enable_public_research", False),
         mission_evolution_enabled=config.get("enable_public_mission_evolution", False),
+        free_missions_enabled=config.get("enable_free_missions", False),
+        autonomous_publication_enabled=config.get(
+            "enable_autonomous_publication", False
+        ),
+        agent_cadence_enabled=config.get("enable_agent_cadence", False),
         enabled=True,
         live_enabled=True,
     )
@@ -126,6 +134,24 @@ def _window_spec(config):
     return spec
 
 
+def _grant_spec(config):
+    if (
+        config.get("enable_autonomous_publication") is not True
+        or config.get("autonomous_publication_reviewed") is not True
+    ):
+        raise ValueError("reviewed autonomous publication authority is absent")
+    value = config["public_grant"]
+    return PublicGrantSpec(
+        **(
+            value
+            | {
+                "expires_at": datetime.fromisoformat(value["expires_at"]),
+                "publication_types": tuple(value["publication_types"]),
+            }
+        )
+    )
+
+
 def _window_plan(config, spec):
     research_limit = 0
     if config.get("enable_public_research"):
@@ -139,11 +165,26 @@ def _window_plan(config, spec):
         ):
             raise ValueError("public research authority mismatch")
         research_limit = profile.aggregate_limit
-    return {
+    result = {
         "active": False,
         "window": json.loads(spec.encoded()),
         "maximum_work": spec.maximum_work(research_limit=research_limit),
     }
+    if spec.publication_grant is not None:
+        grant = _grant_spec(config)
+        if (
+            grant.grant_id != spec.publication_grant
+            or grant.window_id != spec.window_id
+            or grant.account_ref != config["account_ref"]
+            or grant.expires_at > spec.expires_at
+        ):
+            raise ValueError("public grant planning binding mismatch")
+        result["public_grant"] = json.loads(grant.encoded())
+        result["maximum_work"]["publication_posts"] = min(
+            spec.max_model_calls, grant.max_publications
+        )
+        result["maximum_work"]["publication_http_requests"] = grant.max_http_requests
+    return result
 
 
 def _interrupt(_signal, _frame):
@@ -158,6 +199,9 @@ def main(argv=None):
             "readiness",
             "window-plan",
             "run-window",
+            "issue-grant",
+            "revoke-grant",
+            "grant-status",
             "wakeup",
             "poll",
             "process",
@@ -198,7 +242,9 @@ def main(argv=None):
     if args.config is None:
         parser.error("reviewed configuration is required")
     config = _config(args.config)
-    window = _window_spec(config) if args.command == "run-window" else None
+    window = (
+        _window_spec(config) if args.command in ("run-window", "issue-grant") else None
+    )
     app = _runtime(config)
     if args.command == "readiness":
         result = {
@@ -211,7 +257,17 @@ def main(argv=None):
                 "authorized_live_smoke",
             ],
         }
+    elif args.command == "issue-grant":
+        result = app.public_grants.issue(_grant_spec(config), window)
+    elif args.command == "revoke-grant":
+        app.public_grants.revoke(args.value)
+        result = {"grant_revoked": args.value}
+    elif args.command == "grant-status":
+        app.operator.authenticate()
+        result = app.public_grants.summary(args.value)
     elif args.command == "run-window":
+        if window.publication_grant is not None:
+            app.public_grants.require_spec(_grant_spec(config))
         previous = signal.signal(signal.SIGTERM, _interrupt)
         try:
             result = PublicOperatingWindow(app, window).run()

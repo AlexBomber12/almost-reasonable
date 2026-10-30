@@ -207,6 +207,8 @@ class MemoryModelRequest:
     projected_narrative_operation_ids: tuple[str, ...] = ()
     narrative_mode: bool = False
     intellectual_state: dict | None = None
+    # Trusted assembler bookkeeping; never serialized into worker input.
+    released_reply_ids: tuple[str, ...] = ()
 
     def serialize(self) -> str:
         serialized = self._serialized()
@@ -281,6 +283,7 @@ class MemoryConversationAssembler:
         db,
         *,
         reply_permitted=lambda _reply: True,
+        episode_permitted=lambda _episode: True,
         include_memories=True,
         include_narrative=False,
         reserve_narrative_slot=False,
@@ -405,7 +408,11 @@ class MemoryConversationAssembler:
         outputs = AgentOutputStore(self._store)
         if include_narrative:
             narrative_limit = 15 if reserve_narrative_slot else 16
-            episodes = self._narrative.current(principal, _connection=db)
+            episodes = tuple(
+                episode
+                for episode in self._narrative.current(principal, _connection=db)
+                if episode_permitted(episode)
+            )
             words = set(MemoryContextSelector._words(topic))
             ranked = sorted(
                 episodes,
@@ -471,6 +478,7 @@ class MemoryConversationAssembler:
                     sources.update(episode.sources)
         history_omitted = False
         selected_history = ()
+        released_reply_ids = []
         inherited_shared = set(request.inherited_shared_operation_ids)
         inherited_generic = set(request.generic_operation_ids)
         inherited_narrative = set(request.narrative_operation_ids)
@@ -591,6 +599,8 @@ class MemoryConversationAssembler:
                 ):
                     continue
             selected_history = (*history, *agent, *selected_history)
+            if agent:
+                released_reply_ids.append(operation_id)
             sources.update({event.event_id} | extra_sources)
             inherited_shared.update(extra_shared)
             inherited_generic.update(extra_generic)
@@ -609,4 +619,5 @@ class MemoryConversationAssembler:
             generic_operation_ids=tuple(sorted(inherited_generic)),
             inherited_shared_operation_ids=tuple(sorted(inherited_shared)),
             narrative_operation_ids=tuple(sorted(inherited_narrative)),
+            released_reply_ids=tuple(released_reply_ids),
         ), tuple(sorted(sources))

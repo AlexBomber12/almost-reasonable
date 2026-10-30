@@ -26,9 +26,12 @@ class WindowSpec:
     poll_interval_seconds: int
     page_size: int = 10
     mission_evolution: bool = False
+    publication_grant: str | None = None
 
     def __post_init__(self):
         require_reference("operating window", self.window_id)
+        if self.publication_grant is not None:
+            require_reference("publication grant", self.publication_grant)
         if type(self.mission_evolution) is not bool:
             raise ValueError("invalid window mission mode")
         if (
@@ -54,6 +57,8 @@ class WindowSpec:
         # Preserve the encoding of existing fixed-mission windows.
         if not self.mission_evolution:
             del value["mission_evolution"]
+        if self.publication_grant is None:
+            del value["publication_grant"]
         return json.dumps(value, sort_keys=True)
 
     def maximum_work(self, *, research_limit=0):
@@ -66,7 +71,9 @@ class WindowSpec:
             "research_operations_separate_authority": min(
                 self.max_model_calls, research_limit
             ),
-            "publication_posts": 0,
+            "publication_posts": self.max_model_calls
+            if self.publication_grant is not None
+            else 0,
         }
 
 
@@ -264,6 +271,20 @@ class PublicOperatingWindow:
                 )
             )
 
+    def cadence_changed(self):
+        """Reconcile the window after the independent scheduler commit, also on retry."""
+        cadence = self.app.scheduler.repository.current_cadence(
+            self.app.scheduler.policy.cadence
+        )
+        last = self.app.scheduler.repository.load().last_deliberation_at
+        with self.app.journal.transaction() as db:
+            now = self._check(self._row(db))
+            next_at = min(self.spec.expires_at, max(now, (last or now) + cadence))
+            db.execute(
+                "UPDATE public_windows SET next_wake=? WHERE id=?",
+                (next_at.isoformat(), self.spec.window_id),
+            )
+
     def _due(self, lane):
         self.app.guard()
         # Respect the scheduler's selected cadence; missed intervals coalesce
@@ -271,6 +292,7 @@ class PublicOperatingWindow:
         cadence = self.app.scheduler.repository.current_cadence(
             self.app.scheduler.policy.cadence
         )
+        last_deliberation = self.app.scheduler.repository.load().last_deliberation_at
         with self.app.journal.transaction() as db:
             row = self._row(db)
             now = self._check(row)
@@ -280,6 +302,12 @@ class PublicOperatingWindow:
             if lane == "poll" and counts["poll_pages"] >= self.spec.max_poll_pages:
                 return None
             if now.isoformat() < row["next_" + lane]:
+                return None
+            if (
+                lane == "wake"
+                and last_deliberation is not None
+                and now < last_deliberation + cadence
+            ):
                 return None
             sequence = row["ticks" if lane == "wake" else "polls"]
             identity = _identity(
@@ -362,9 +390,13 @@ class PublicOperatingWindow:
                 self.app.operating_window = self
                 state = "interrupted"
                 try:
+                    if self.spec.publication_grant is not None:
+                        self.app.public_grants.activate_window(self)
                     while True:
                         self.app.guard()
                         self.app.recover()
+                        if self.spec.publication_grant is not None:
+                            self.app.public_grants.drain(self)
                         with self.app.journal.transaction() as db:
                             self._watermark(db)
                             if (
@@ -374,6 +406,8 @@ class PublicOperatingWindow:
                                 state = "exhausted"
                                 break
                         self._cycle()
+                        if self.spec.publication_grant is not None:
+                            self.app.public_grants.drain(self)
                         with self.app.journal.transaction() as db:
                             if (
                                 self._counts(db)["model_calls"]

@@ -13,6 +13,7 @@ from app.behavior.mission import (
     MissionPurpose,
     _MISSION_PURPOSE_TEXT,
     _document_from_dict,
+    _mission_matches_purpose,
 )
 from app.core.public_behavior import _unique_fields
 from app.threads.domain import require_reference
@@ -120,7 +121,11 @@ class PublicMissionContext:
         if value["parent_version"] is not None:
             require_reference("parent mission version", value["parent_version"])
         purpose = MissionPurpose(value["purpose"])
-        if value["text"] != _MISSION_PURPOSE_TEXT[purpose]:
+        if (
+            value["text"] != _MISSION_PURPOSE_TEXT[purpose]
+            if purpose in _MISSION_PURPOSE_TEXT
+            else not _mission_matches_purpose(value["text"], purpose)
+        ):
             raise ValueError("public mission is not closed content")
         activated = datetime.fromisoformat(value["activated_at"])
         if activated.tzinfo is None or activated > self.clock():
@@ -153,7 +158,7 @@ class PublicMissionContext:
             raise ValueError("public mission changed")
 
     def publication_allowed(self):
-        return (
-            self.snapshot()[1]["purpose"]
-            != MissionPurpose.DISCONTINUE_OPTIONAL_CHANNEL.value
+        return self.snapshot()[1]["purpose"] not in (
+            MissionPurpose.DISCONTINUE_OPTIONAL_CHANNEL.value,
+            MissionPurpose.AGENT_DEFINED_WITHOUT_THREADS.value,
         )
