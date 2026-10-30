@@ -76,6 +76,11 @@ Shared source selection inside a private request uses its already-held privacy
 fence and connection. It does not acquire a second writer fence on the same
 ledger. Independent public callers retain the original gated source read.
 
+Optional public influence is selected only when its complete shared ancestry,
+including every protected event root, fits the reply's dependency and byte limits.
+An overfull optional record is omitted before inference; it cannot turn an
+otherwise valid private message into a failed reply reservation.
+
 ## Validation scope
 
 Offline regressions exercise actual local worker IPC and SDK input, separate A/B
