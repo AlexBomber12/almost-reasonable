@@ -1,6 +1,7 @@
 """Optional public influence must fit its complete protected shared ancestry."""
 
 from dataclasses import replace
+from datetime import timedelta
 import json
 from threading import Event, Thread
 
@@ -8,6 +9,7 @@ import pytest
 
 from app.cognition.shared import SharedIntelligence
 from app.core.intellectual_state import validate_private_graph
+from app.core.public_intellectual_receipt import source_key
 from app.integration.public_intellectual_source import PublicIntellectualSource
 from app.integration.shared_intellectual_source import SharedIntellectualSource
 from app.private_web.runtime import WorkerConversationRuntime
@@ -15,6 +17,7 @@ from test_agent_intellectual_state import private_setup, proposal
 from test_cognition_pipeline import append_event, principal
 from test_int24_runtime import NOW, run_once, setup as public_setup
 from test_reviewed_shared import candidate
+from test_public_experience import wake
 
 
 @pytest.fixture(autouse=True)
@@ -143,6 +146,69 @@ def test_import_accounts_for_all_shared_roots_before_optional_selection(
         if thread is not None:
             thread.join(timeout=5)
             assert not thread.is_alive()
+        server.close()
+        if worker is not None:
+            worker.close()
+
+
+def test_one_overfull_public_receipt_preserves_other_eligible_heads(tmp_path):
+    private_dir, public_dir = tmp_path / "private", tmp_path / "public"
+    private_dir.mkdir(mode=0o700)
+    public_dir.mkdir(mode=0o700)
+    _, _, _, events, _, gate, _, server = private_setup(private_dir)
+    worker = None
+    try:
+        root = append_event(events, principal("a"), "cohort-root")
+        shared = SharedIntelligence(
+            events, gate, clock=lambda: NOW, ordinary_abstractions_enabled=True
+        )
+        public, worker, sdk, _, clock = public_setup(
+            public_dir,
+            {
+                "decision": "no_action",
+                "reason_category": "other",
+                "intellectual": proposal(),
+            },
+            shared_intellectual_source=SharedIntellectualSource(shared, "account-1"),
+        )
+        for cohort in range(4):
+            for index in range(6):
+                name = f"shared-cohort-{3 - cohort}-{index}"
+                item = candidate(root, value="Compare causal models of uncertainty.")
+                shared.transition(
+                    replace(
+                        item,
+                        item_id=name,
+                        proposal=replace(item.proposal, operation_id=name),
+                        audience=("participant-a", "participant-b", "public:account-1"),
+                    )
+                )
+            clock.advance(timedelta(days=1))
+            wake(public, worker, clock, f"cohort-{cohort}")
+        assert len(sdk.calls) == 4
+        with public.journal.transaction() as db:
+            heads = public.intellectual.state._heads(db, public.intellectual.sources())
+        good, overfull = set(), set()
+        for item, _, _, deps, _ in heads:
+            key = source_key(public.account, item)
+            ancestors = [name for name in deps if name.startswith("shared:")]
+            (good if len(ancestors) <= 16 else overfull).add(key)
+        assert good and overfull and len(good | overfull) == 4
+        bridge = PublicIntellectualSource(
+            account=public.account,
+            journal_path=public.journal.path,
+            threads_path=public.service.store.database,
+            ledger_path=public.ledger.path,
+            shared_source=SharedIntellectualSource(shared, public.account),
+            clock=clock.now,
+        )
+        for key in good:
+            assert set(bridge.sources(required_keys=frozenset({key}))) == {key}
+        assert bridge.sources(required_keys=frozenset(overfull)) == {}
+        assert set(bridge.sources()) == good
+        assert set(bridge.sources(required_keys=frozenset(good | overfull))) == good
+        assert gate.reconcile()
+    finally:
         server.close()
         if worker is not None:
             worker.close()

@@ -80,6 +80,9 @@ Optional public influence is selected only when its complete shared ancestry,
 including every protected event root, fits the reply's dependency and byte limits.
 An overfull optional record is omitted before inference; it cannot turn an
 otherwise valid private message into a failed reply reservation.
+Each public record must also fit the private receipt's 16-shared-ancestor bound.
+An unimportable record is skipped individually, preserving other eligible public
+heads in ordinary selection and exact-key historical validation.
 
 ## Validation scope
 
