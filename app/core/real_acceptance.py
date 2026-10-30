@@ -299,6 +299,9 @@ def _ci(raw, binding):
         or metadata["source_digest"] != binding["source_digest"]
     ):
         return "NOT_RUN"
+    if value["deterministic_gate"] == "FAIL":
+        # acceptance.run emits no counts/coverage when lint or collection failed.
+        return "FAIL"
     coverage, counts = value["coverage"], value["test_counts"]
     totals = [
         coverage[key]
@@ -438,13 +441,9 @@ def assess(
         loaded.add(hashlib.sha256(ci).hexdigest())
     missing_approved = sorted(approved - loaded)
     ci_status = _ci(ci, current)
-    if (
-        not active
-        or not calibrated
-        or ci is None
-        or hashlib.sha256(ci).hexdigest() not in approved
-        or missing_approved
-    ):
+    if not active or ci is None or hashlib.sha256(ci).hexdigest() not in approved:
+        ci_status = "NOT_RUN"
+    elif ci_status == "PASS" and missing_approved:
         ci_status = "NOT_RUN"
     scenarios = []
     for name, row in rows.items():

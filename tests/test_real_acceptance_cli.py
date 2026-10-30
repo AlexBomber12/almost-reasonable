@@ -5,11 +5,14 @@ from pathlib import Path
 import subprocess
 import sys
 import runpy
+from datetime import timedelta
 
 import pytest
 
 from app.ops import real_acceptance as cli
 from test_real_acceptance import BINDING, NOW, raw, plan, bundle, approval, ci
+from acceptance.manifest import load_manifest
+from app.core.real_acceptance import build_plan
 
 
 def protected(tmp_path, name, value):
@@ -191,7 +194,7 @@ def test_unknown_runtime_and_oversize_import_list_fail_closed(tmp_path, frozen):
                 config(tmp_path),
                 "--plan",
                 "unused",
-                *[arg for _ in range(513) for arg in ("--evidence", "unused")],
+                *[arg for _ in range(4097) for arg in ("--evidence", "unused")],
             ],
             clock=lambda: NOW,
         )
@@ -227,4 +230,46 @@ def test_operator_imports_only_protected_hash_approved_metadata(
     report = json.loads(capsys.readouterr().out)
     assert report["complete_mvp"] == "BLOCKED" and len(report["nonqualifying"]) == len(
         evidence
+    )
+
+
+def test_maximum_preregistered_trials_fit_the_offline_importer(
+    tmp_path, capsys, frozen
+):
+    """Positive parser fixture shapes are not real model/human acceptance."""
+    packet = build_plan(
+        load_manifest(),
+        BINDING,
+        at=NOW,
+        expires_at=NOW + timedelta(days=1),
+        trial_count=100,
+        calibration_digest="f" * 64,
+    )
+    evidence = bundle(packet, declared_attested=True)
+    assert sum(json.loads(item)["kind"] == "model_trial" for item in evidence) == 1200
+    packet_path = protected(tmp_path, "plan.json", packet)
+    policy_path = protected(tmp_path, "approval.json", approval(packet, evidence))
+    ci_path = protected(tmp_path, "ci.json", json.loads(ci()))
+    paths = [
+        protected(tmp_path, f"observation-{index}.json", json.loads(item))
+        for index, item in enumerate(evidence)
+    ]
+    args = [
+        "report",
+        "--runtime",
+        config(tmp_path),
+        "--plan",
+        packet_path,
+        "--approval",
+        policy_path,
+        "--ci",
+        ci_path,
+        *[arg for path in paths for arg in ("--evidence", path)],
+    ]
+    assert cli.main(args, clock=lambda: NOW + timedelta(hours=1)) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["complete_mvp"] == "PASS" and report["rollout_authorized"] is False
+    assert all(
+        row["trial_distribution"] == {"PASS": 100, "FAIL": 0, "NOT_RUN": 0}
+        for row in report["scenarios"]
     )
