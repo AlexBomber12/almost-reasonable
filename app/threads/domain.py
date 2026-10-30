@@ -39,6 +39,7 @@ class PublicationType(StrEnum):
 
 class ApprovalPurpose(StrEnum):
     PUBLICATION = "publication"
+    AUTONOMOUS_PUBLICATION = "autonomous_publication"
     ABANDON_UNKNOWN = "abandon_unknown"
     RECOVER_RECONCILIATION = "recover_reconciliation"
 

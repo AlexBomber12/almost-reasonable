@@ -1031,6 +1031,17 @@ class ThreadsStore:
             ).fetchall()
         return tuple(_outbox_item(row) for row in rows)
 
+    def has_sending_for_account(self, account_ref: str) -> bool:
+        require_reference("account reference", account_ref)
+        with self._open() as connection:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM threads_outbox WHERE account_ref=? AND state=? LIMIT 1",
+                    (account_ref, OutboxState.SENDING.value),
+                ).fetchone()
+                is not None
+            )
+
     def likely_duplicates(self, operation_id: str) -> tuple[str, ...]:
         item = self.get(operation_id)
         with self._open() as connection:

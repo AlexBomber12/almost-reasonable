@@ -140,8 +140,18 @@ class PublicAuthorization:
                 "SELECT * FROM approvals WHERE reference=? AND operation=?",
                 (approval_reference, operation_id),
             ).fetchone()
-        if row is not None and row["purpose"] == ApprovalPurpose.PUBLICATION.value:
+        if row is not None and row["purpose"] in (
+            ApprovalPurpose.PUBLICATION.value,
+            ApprovalPurpose.AUTONOMOUS_PUBLICATION.value,
+        ):
             self.app.publication_guard()
+        if (
+            row is not None
+            and row["purpose"] == ApprovalPurpose.AUTONOMOUS_PUBLICATION.value
+        ):
+            item = self.app.service.store.get(operation_id)
+            with self.app.journal.transaction() as db:
+                return self.app.public_grants.current_in(db, item, approval_reference)
         return (
             None
             if row is None
@@ -213,6 +223,14 @@ class PublicAuthorization:
                     purpose=ApprovalPurpose(approval["purpose"]),
                 )
             )
+            if (
+                current is not None
+                and current.purpose is ApprovalPurpose.AUTONOMOUS_PUBLICATION
+            ):
+                current = self.app.public_grants.current_in(
+                    db, item, approval_reference
+                )
+                valid = valid and current is not None
         return PublicationAuthorizationSnapshot(current, valid)
 
 
@@ -241,6 +259,7 @@ class ThreadsRuntime(ThreadsStage0):
         research_enabled=False,
         mission_evolution_enabled=False,
         free_missions_enabled=False,
+        autonomous_publication_enabled=False,
         shared_intellectual_source=None,
         enabled=False,
         live_enabled=False,
@@ -265,6 +284,12 @@ class ThreadsRuntime(ThreadsStage0):
         ):
             raise ValueError("free mission mode requires enabled evolution")
         self.free_missions_enabled = free_missions_enabled
+        if type(autonomous_publication_enabled) is not bool:
+            raise ValueError("invalid autonomous publication mode")
+        self.autonomous_publication_enabled = autonomous_publication_enabled
+        from app.integration.public_grant import PublicPublicationGrants
+
+        self.public_grants = PublicPublicationGrants(self)
         if type(mission_evolution_enabled) is not bool or (
             mission_evolution_enabled
             and (
@@ -1551,6 +1576,9 @@ class ThreadsRuntime(ThreadsStage0):
             break
         if approval is None:
             raise PolicyDeniedError("public approval unavailable")
+        return self._dispatch_approved(operation, approval)
+
+    def _dispatch_approved(self, operation, approval):
         if self.mission_evolution is None:
             with self.service.store.conversation_control_effect_fence():
                 return self.service.dispatch(operation, approval, now=self.clock.now())
