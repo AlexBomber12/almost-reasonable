@@ -27,6 +27,8 @@ from app.core.core_self import CORE_SELF_VERSION
 from app.core.public_behavior import public_context_digest
 from app.integration.threads_stage0 import _identity
 from app.threads.domain import InboundKind
+from app.core.free_mission import FREE_PURPOSES, free_context, public_prompt_version
+from app.core.provider_spend import ProviderPersistenceError
 
 
 def _digest(value):
@@ -87,7 +89,14 @@ class PublicMissionEvolution:
                     ),
                 )
             else:
-                _document_from_dict(json.loads(row[0]), self.root)
+                existing_document = _document_from_dict(json.loads(row[0]), self.root)
+                if not app.free_missions_enabled and any(
+                    record.proposal.purpose.value in FREE_PURPOSES
+                    for record in existing_document.proposals
+                ):
+                    raise ValueError(
+                        "persisted free mission requires enabled configuration"
+                    )
         try:
             app.mission.bind_evolution(
                 app.journal.path, self.authorized, expected_root=self.root
@@ -135,6 +144,8 @@ class PublicMissionEvolution:
     def _proposal_handoff_capacity_in(self, db, document):
         if len(document.proposals) >= MAX_MISSION_HISTORY_RECORDS:
             return False
+        if self.app.free_missions_enabled:
+            return True
         profile = self.app.current_research_profile()
         return profile is not None and bool(self.app._available_topics_in(db, profile))
 
@@ -224,6 +235,16 @@ class PublicMissionEvolution:
             ),
             None,
         )
+        if self.app.free_missions_enabled:
+            return (
+                (
+                    free_context(None if record is None else record.proposal)
+                    if record is not None
+                    or len(document.proposals) < MAX_MISSION_HISTORY_RECORDS
+                    else ()
+                ),
+                None if record is None else record.proposal.proposal_id,
+            )
         if record is not None:
             return (
                 "pending",
@@ -249,7 +270,10 @@ class PublicMissionEvolution:
         ):
             return False
         for source in sources:
-            if source.provenance is EvidenceProvenance.AGENT_OBSERVATION:
+            if source.provenance is EvidenceProvenance.AGENT_DELIBERATION:
+                if not self._deliberation_authorized(source):
+                    return False
+            elif source.provenance is EvidenceProvenance.AGENT_OBSERVATION:
                 with sqlite3.connect(self.app.journal.path) as db:
                     row = db.execute(
                         "SELECT r.phase,r.evidence,r.profile_digest,i.payload FROM public_research_ops r "
@@ -276,6 +300,25 @@ class PublicMissionEvolution:
 
     def _require_authorized(self, document):
         for record in document.proposals:
+            if record.proposal.purpose.value in FREE_PURPOSES and record.status in (
+                MissionStatus.PENDING,
+                MissionStatus.CONFIRMED,
+            ):
+                with sqlite3.connect(self.app.journal.path) as db:
+                    row = db.execute(
+                        "SELECT phase,payload FROM intents WHERE operation=?",
+                        (record.proposal.correlation_id,),
+                    ).fetchone()
+                origin = None if row is None else json.loads(row[1])
+                if (
+                    not self.app.free_missions_enabled
+                    or row is None
+                    or row[0] != "linked"
+                    or origin.get("mission_free") is not True
+                    or origin.get("mission_action") != "propose"
+                    or not self.app.source_valid(origin)
+                ):
+                    raise ValueError("free mission proposal source withdrawn")
             if record.confirmation is not None and not self.authorized(
                 record.proposal.initiating_source_id,
                 record.confirmation.evidence_sources,
@@ -311,10 +354,15 @@ class PublicMissionEvolution:
                         app.research_enabled,
                         app.research_scope,
                         None if profile is None else profile.digest,
-                        str(app.research_client._path),
-                        app.research_client._expected_worker_uid,
+                        None
+                        if app.research_client is None
+                        else str(app.research_client._path),
+                        None
+                        if app.research_client is None
+                        else app.research_client._expected_worker_uid,
                         app.ledger.control_generation(),
                     )
+                    + (("free-mission-v1",) if app.free_missions_enabled else ())
                 )
             ),
             True,
@@ -365,6 +413,9 @@ class PublicMissionEvolution:
             if self._stale_in(db, payload, document):
                 self._hold_in(db, operation)
                 return False
+            free = payload.get("mission_free", False)
+            if type(free) is not bool or free != app.free_missions_enabled:
+                raise ValueError("free mission mode changed")
             if action == "propose" and pending is not None:
                 raise ValueError("public mission proposal already pending")
             if action in ("confirm", "reject", "abandon") and (
@@ -380,19 +431,28 @@ class PublicMissionEvolution:
             db.execute("SAVEPOINT mission_effect")
             if action == "propose":
                 purpose = MissionPurpose(payload["mission_purpose"])
+                attempt = app.provider.usage_attempt(operation) if free else None
                 machine.propose(
                     MissionProposal(
                         _identity(operation, "mission-proposal"),
-                        _MISSION_PURPOSE_TEXT[purpose],
+                        payload["free_mission_text"]
+                        if free
+                        else _MISSION_PURPOSE_TEXT[purpose],
                         document.current.version,
                         payload["event"],
-                        ("public deliberation",),
-                        ("none recorded",),
+                        tuple(payload["mission_reasons"])
+                        if free
+                        else ("public deliberation",),
+                        tuple(payload["mission_counterevidence"])
+                        if free
+                        else ("none recorded",),
                         _identity(operation, "mission-version"),
                         at,
                         payload["correlation"],
-                        "public-behavior-worker-v1",
-                        "threads-public-prompt-v1",
+                        attempt.model_identifier
+                        if free
+                        else "public-behavior-worker-v1",
+                        attempt.prompt_version if free else "threads-public-prompt-v1",
                         invariants,
                         purpose,
                         self._initiating_source(operation, payload),
@@ -420,8 +480,12 @@ class PublicMissionEvolution:
                         ConfirmationOutcome.CONFIRMED
                         if action == "confirm"
                         else ConfirmationOutcome.REJECTED,
-                        ("public deliberation",),
-                        ("none recorded",),
+                        tuple(payload["mission_reasons"])
+                        if free
+                        else ("public deliberation",),
+                        tuple(payload["mission_counterevidence"])
+                        if free
+                        else ("none recorded",),
                         tuple(source.evidence_id for source in sources),
                         invariants,
                         sources,
@@ -460,6 +524,25 @@ class PublicMissionEvolution:
         return self.source_id(event.content, payload["generation"])
 
     def _confirmation_sources(self, payload, proposal):
+        if payload.get("mission_free"):
+            operation = payload["correlation"]
+            attempt = self.app.provider.usage_attempt(operation)
+            if (
+                payload["kind"] != "wake"
+                or attempt.started_at <= proposal.decided_at
+                or attempt.started_at > datetime.fromisoformat(payload["decided_at"])
+            ):
+                raise ValueError("independent later autonomous deliberation required")
+            sources = (
+                MissionEvidenceSource(
+                    "deliberation:" + operation,
+                    self._deliberation_binding(payload),
+                    EvidenceProvenance.AGENT_DELIBERATION,
+                ),
+            )
+            if not self.authorized(proposal.initiating_source_id, sources):
+                raise ValueError("free mission deliberation evidence invalid")
+            return sources
         operation = payload.get("mission_evidence_operation")
         if operation is None:
             raise ValueError("independent public research evidence was not offered")
@@ -494,3 +577,81 @@ class PublicMissionEvolution:
         if not self.authorized(proposal.initiating_source_id, sources):
             raise ValueError("independent public mission evidence invalid")
         return sources
+
+    def _deliberation_authorized(self, source):
+        if not self.app.free_missions_enabled or not source.evidence_id.startswith(
+            "deliberation:"
+        ):
+            return False
+        operation = source.evidence_id.removeprefix("deliberation:")
+        with sqlite3.connect(self.app.journal.path) as db:
+            row = db.execute(
+                "SELECT phase,payload FROM intents WHERE operation=?", (operation,)
+            ).fetchone()
+            document = _Repository(db, self.root).load()
+        if row is None or row[0] not in ("intent", "linked"):
+            return False
+        payload = json.loads(row[1])
+        pending_proposal = next(
+            (
+                record.proposal
+                for record in document.proposals
+                if record.proposal.proposal_id == payload.get("mission_pending_id")
+            ),
+            None,
+        )
+        if (
+            pending_proposal is None
+            or payload.get("mission", {}).get("version")
+            != pending_proposal.current_mission_version
+            or payload.get("event") == pending_proposal.initiating_event_id
+            or operation == pending_proposal.correlation_id
+        ):
+            return False
+        if (
+            payload.get("mission_free") is not True
+            or payload.get("kind") != "wake"
+            or payload.get("decision") != "revise_mission"
+            or payload.get("mission_action") not in ("confirm", "reject")
+            or payload.get("generation") != self.app.ledger.control_generation()
+            or payload.get("correlation") != operation
+            or source.source_id != self._deliberation_binding(payload)
+            or not self.app.source_valid(payload)
+            or not self.app.provider.attempt_exists(operation)
+        ):
+            return False
+        try:
+            attempt = self.app.provider.usage_attempt(operation)
+        except ProviderPersistenceError:
+            return False
+        return (
+            attempt.outcome == "completed"
+            and attempt.started_at > pending_proposal.decided_at
+            and attempt.correlation_id == operation
+            and attempt.prompt_version
+            == public_prompt_version(tuple(payload["mission_evolution"]), True)
+            and attempt.started_at <= datetime.fromisoformat(payload["decided_at"])
+        )
+
+    def _deliberation_binding(self, payload):
+        return self.source_id(
+            json.dumps(
+                {key: value for key, value in payload.items() if key != "phase"},
+                sort_keys=True,
+                ensure_ascii=False,
+            ),
+            payload["generation"],
+        )
+
+    def intellectual_context_operations_in(self, db):
+        document = _Repository(db, self.root).load()
+        operations = []
+        for record in document.proposals:
+            if (
+                record.status is MissionStatus.PENDING
+                or record.proposal.version_identity == document.current.version
+            ):
+                operations.append(record.proposal.correlation_id)
+                if record.confirmation is not None:
+                    operations.append(record.confirmation.correlation_id)
+        return tuple(operations)

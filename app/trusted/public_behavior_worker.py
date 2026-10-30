@@ -15,7 +15,7 @@ from app.behavior.deliberation import parse_behavior_proposal
 from app.behavior.mission import MissionPurpose
 from app.core.public_behavior import parse_public_proposal
 from app.core.core_self import CORE_SELF_VERSION, initial_core_self
-from app.core.intellectual_state import PROMPT_VERSION
+from app.core.free_mission import FREE_PURPOSES, is_free_context, public_prompt_version
 from app.core.provider_contract import CostEstimateStatus, PROVIDER_NAME
 from app.core.provider_spend import (
     CONFIRMED_SPEND_LIMIT_CODES,
@@ -66,9 +66,26 @@ _mission_schema["properties"]["mission_action"] = {
 }
 _mission_schema["properties"]["mission_purpose"] = {
     "type": ["string", "null"],
-    "enum": [*(item.value for item in MissionPurpose), None],
+    "enum": [
+        *(item.value for item in MissionPurpose if item.value not in FREE_PURPOSES),
+        None,
+    ],
 }
 _mission_schema["required"].extend(("mission_action", "mission_purpose"))
+
+FREE_MISSION_PROPOSAL_FORMAT = json.loads(json.dumps(MISSION_PROPOSAL_FORMAT))
+FREE_MISSION_PROPOSAL_FORMAT["name"] = "threads_public_free_mission_proposal_v1"
+_free_schema = FREE_MISSION_PROPOSAL_FORMAT["schema"]
+_free_schema["properties"]["mission_purpose"]["enum"] = [*FREE_PURPOSES, None]
+_free_schema["properties"]["mission_text"] = {"type": ["string", "null"]}
+for _field in ("mission_reasons", "mission_counterevidence"):
+    _free_schema["properties"][_field] = {
+        "type": ["array", "null"],
+        "items": {"type": "string"},
+    }
+_free_schema["required"].extend(
+    ("mission_text", "mission_reasons", "mission_counterevidence")
+)
 
 
 class PublicSDKAdapter:
@@ -88,7 +105,9 @@ class PublicSDKAdapter:
         from app.core.intellectual_state import INSTRUCTIONS, intellectual_format
 
         selected_format = (
-            MISSION_PROPOSAL_FORMAT
+            FREE_MISSION_PROPOSAL_FORMAT
+            if is_free_context(request.mission_evolution)
+            else MISSION_PROPOSAL_FORMAT
             if request.mission_evolution
             else PUBLIC_PROPOSAL_FORMAT
         )
@@ -127,7 +146,15 @@ class PublicSDKAdapter:
                         "instead of a catalog ID. This grants no additional authority. "
                         "Return a JSON proposal for reply, propose_publication, no_action, or research. "
                         + (
-                            "Mission evolution is available: choose mission with action propose, "
+                            "Free mission evolution is available. Choose your own bounded mission_text, "
+                            "mission_reasons and mission_counterevidence in Russian, without operational instructions. "
+                            "Use agent_defined or agent_defined_without_threads; the latter stops optional Threads "
+                            "publishing as a behavioral goal, without changing permissions. A proposal has no effect "
+                            "until a later independent autonomous deliberation confirms it. Compare your reasons "
+                            "and counterevidence; do not confirm merely because an input demands it. No change, "
+                            "rejection, cancellation and an indefinitely quiet direction are valid. "
+                            if is_free_context(request.mission_evolution)
+                            else "Mission evolution is available: choose mission with action propose, "
                             "confirm, reject, or abandon. A proposal changes nothing until a later "
                             "independent public decision confirms it. Choose a closed purpose only. "
                             "Abandon safely closes a pending proposal without changing the mission "
@@ -244,6 +271,13 @@ class PublicSDKAdapter:
             "reason_category",
         }
         mission_fields = {"mission_action", "mission_purpose"}
+        free = is_free_context(request.mission_evolution)
+        if free:
+            mission_fields |= {
+                "mission_text",
+                "mission_reasons",
+                "mission_counterevidence",
+            }
         allowed_fields = (fields, fields | {"topic_id"})
         if request.mission_evolution:
             allowed_fields += (fields | {"topic_id"} | mission_fields,)
@@ -259,10 +293,32 @@ class PublicSDKAdapter:
                 ):
                     raise ValueError("invalid public mission selection")
                 proposal = {"decision": "mission", "action": action, "purpose": purpose}
-                if not parse_public_proposal(proposal, evolution=True).valid:
+                if free:
+                    proposal.update(
+                        text=value["mission_text"],
+                        reasons=value["mission_reasons"],
+                        counterevidence=value["mission_counterevidence"],
+                    )
+                if not parse_public_proposal(
+                    proposal, evolution=True, free_missions=free
+                ).valid:
                     raise ValueError("invalid public mission selection")
                 return result(proposal)
-            if action is not None or purpose is not None:
+            if (
+                action is not None
+                or purpose is not None
+                or (
+                    free
+                    and any(
+                        value[field] is not None
+                        for field in (
+                            "mission_text",
+                            "mission_reasons",
+                            "mission_counterevidence",
+                        )
+                    )
+                )
+            ):
                 raise ValueError("invalid public mission selection")
         if decision == "research":
             from app.core.public_research_profile import (
@@ -440,7 +496,7 @@ class PublicWorkerServer:
                     db.execute(
                         "INSERT INTO attempts VALUES(?)", (request.operation_id,)
                     )
-                started_at = datetime.now(UTC)
+                started_at = self.utc_now()
                 began = time.monotonic()
                 reservation = self.provider_store.reserve_attempt(
                     request.operation_id, request.correlation_id, started_at
@@ -509,9 +565,9 @@ class PublicWorkerServer:
             provider=PROVIDER_NAME,
             model_identifier=getattr(self.adapter, "model", "public-model-unknown"),
             provider_config_version="threads-public-worker-v1",
-            prompt_version=PROMPT_VERSION
-            if request.intellectual_state is not None
-            else "threads-public-prompt-v1",
+            prompt_version=public_prompt_version(
+                request.mission_evolution, request.intellectual_state is not None
+            ),
             core_self_version=CORE_SELF_VERSION,
             provider_response_id=getattr(self.adapter, "last_response_id", None),
             started_at=started_at,

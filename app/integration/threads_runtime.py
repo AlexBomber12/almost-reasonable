@@ -240,6 +240,7 @@ class ThreadsRuntime(ThreadsStage0):
         research_scope=None,
         research_enabled=False,
         mission_evolution_enabled=False,
+        free_missions_enabled=False,
         shared_intellectual_source=None,
         enabled=False,
         live_enabled=False,
@@ -259,8 +260,16 @@ class ThreadsRuntime(ThreadsStage0):
             or transport.account_ref != policy.account_ref
         ):
             raise ValueError("exact public runtime components required")
+        if type(free_missions_enabled) is not bool or (
+            free_missions_enabled and not mission_evolution_enabled
+        ):
+            raise ValueError("free mission mode requires enabled evolution")
+        self.free_missions_enabled = free_missions_enabled
         if type(mission_evolution_enabled) is not bool or (
-            mission_evolution_enabled and (mission is None or not research_enabled)
+            mission_evolution_enabled
+            and (
+                mission is None or (not research_enabled and not free_missions_enabled)
+            )
         ):
             raise ValueError("invalid public mission evolution configuration")
         self.enabled, self.live_enabled = enabled, live_enabled
@@ -365,6 +374,7 @@ class ThreadsRuntime(ThreadsStage0):
             )
         if (
             mission_evolution_enabled
+            and not free_missions_enabled
             and not evolution_state
             and self.current_research_profile() is None
         ):
@@ -385,7 +395,9 @@ class ThreadsRuntime(ThreadsStage0):
             model,
             clock.now,
             parser=lambda value: parse_public_proposal(
-                value, evolution=mission_evolution_enabled
+                value,
+                evolution=mission_evolution_enabled,
+                free_missions=self.free_missions_enabled,
             ),
         )
         self.authorization = PublicAuthorization(self)
@@ -886,7 +898,9 @@ class ThreadsRuntime(ThreadsStage0):
         payload = {
             **origin,
             "generation": generation,
-            "decided_at": now.isoformat(),
+            "decided_at": (
+                self.clock.now() if self.free_missions_enabled else now
+            ).isoformat(),
             "result": result.outcome.value,
         }
         rejected = result.outcome not in (
@@ -942,7 +956,21 @@ class ThreadsRuntime(ThreadsStage0):
                 self.journal.finish(operation, payload, held=True)
                 return
             if (
-                (
+                proposal.free != self.free_missions_enabled
+                or (
+                    proposal.free
+                    and any(
+                        RussianOutputPolicy(max_regenerations=0)
+                        .deliver(text)
+                        .used_fallback
+                        for text in (
+                            (proposal.text,) if proposal.text is not None else ()
+                        )
+                        + proposal.reasons
+                        + proposal.counterevidence
+                    )
+                )
+                or (
                     proposal.action == "propose"
                     and (mission_pending_id is not None or pending is not None)
                 )
@@ -957,7 +985,8 @@ class ThreadsRuntime(ThreadsStage0):
                 or (
                     proposal.action in ("confirm", "reject")
                     and (
-                        mission_evidence_operation is None
+                        (not proposal.free and mission_evidence_operation is None)
+                        or (proposal.free and origin["kind"] != "wake")
                         or pending.proposal.invariants.to_dict()
                         != origin["mission_invariants"]
                     )
@@ -972,6 +1001,13 @@ class ThreadsRuntime(ThreadsStage0):
                     if proposal.purpose is None
                     else proposal.purpose.value,
                 )
+                if proposal.free:
+                    payload.update(
+                        mission_free=True,
+                        free_mission_text=proposal.text,
+                        mission_reasons=proposal.reasons,
+                        mission_counterevidence=proposal.counterevidence,
+                    )
         elif type(proposal) in (PublicationProposal, ReplyProposal):
             content = (
                 proposal.draft
@@ -1043,8 +1079,13 @@ class ThreadsRuntime(ThreadsStage0):
                     and (
                         payload.get("mission_action") != "propose"
                         or (
-                            profile is not None
-                            and bool(self._available_topics_in(db, profile))
+                            (
+                                self.free_missions_enabled
+                                or (
+                                    profile is not None
+                                    and bool(self._available_topics_in(db, profile))
+                                )
+                            )
                             and self.mission_evolution.proposal_capacity_in(db)
                         )
                     )

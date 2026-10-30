@@ -1,12 +1,12 @@
 """Public account adapter for typed agent state and immutable inference inputs."""
 
 import sqlite3
+from app.core.free_mission import public_prompt_version
 
 from app.core.intellectual_state import (
     IntellectualStateStore,
     initialize,
     digest,
-    PROMPT_VERSION,
 )
 
 
@@ -182,6 +182,15 @@ class PublicIntellectualState:
                 raise ValueError("intellectual research context unavailable")
             keys.add(key)
         required = {}
+        if self.app.free_missions_enabled and self.app.mission_evolution is not None:
+            with sqlite3.connect(self.app.journal.path) as db:
+                for (
+                    operation
+                ) in self.app.mission_evolution.intellectual_context_operations_in(db):
+                    inherited = self.state.dependencies(db, operation)
+                    if not self.state._valid_dependencies(inherited, sources):
+                        raise ValueError("free mission intellectual source withdrawn")
+                    required.update(inherited)
         for key in keys:
             if key in sources:
                 required.update(sources[key]["dependencies"])
@@ -287,7 +296,9 @@ class PublicIntellectualState:
                         operation,
                         proposal,
                         model,
-                        PROMPT_VERSION,
+                        public_prompt_version(
+                            tuple(current_payload.get("mission_evolution", ())), True
+                        ),
                         app.clock.now().isoformat(),
                     )
                 row = self.state._operation(db, operation)

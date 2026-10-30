@@ -105,6 +105,7 @@ def _runtime(config):
         research_scope=config.get("public_research_scope"),
         research_enabled=config.get("enable_public_research", False),
         mission_evolution_enabled=config.get("enable_public_mission_evolution", False),
+        free_missions_enabled=config.get("enable_free_missions", False),
         enabled=True,
         live_enabled=True,
     )

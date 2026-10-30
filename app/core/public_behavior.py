@@ -82,7 +82,11 @@ class PublicBehaviorRequest:
             )
         ):
             raise ValueError("invalid public research context")
-        if self.mission_evolution not in ((), ("enabled",)) and not (
+        from app.core.free_mission import is_free_context, validate_free_context
+
+        if is_free_context(self.mission_evolution):
+            validate_free_context(self.mission_evolution)
+        elif self.mission_evolution not in ((), ("enabled",)) and not (
             type(self.mission_evolution) is tuple
             and len(self.mission_evolution) == 2
             and self.mission_evolution[0] == "pending"
@@ -233,9 +237,15 @@ class PublicMissionChoice:
     action: str
     purpose: MissionPurpose | None
     decision: AgentDecision = AgentDecision.REVISE_MISSION
+    text: str | None = None
+    reasons: tuple[str, ...] = ()
+    counterevidence: tuple[str, ...] = ()
+    free: bool = False
 
 
-def parse_public_proposal(value: object, *, evolution: bool = False):
+def parse_public_proposal(
+    value: object, *, evolution: bool = False, free_missions=False
+):
     """Public-only closed mission choice, without model-selected authority fields."""
     if (
         type(value) is dict
@@ -244,6 +254,28 @@ def parse_public_proposal(value: object, *, evolution: bool = False):
     ):
         value = value["action"]
     if type(value) is dict and value.get("decision") == "mission":
+        from app.core.free_mission import FREE_PURPOSES, parse_free_choice
+
+        if evolution and free_missions:
+            try:
+                action, purpose, text, reasons, counterevidence = parse_free_choice(
+                    value
+                )
+            except (ValueError, TypeError, UnicodeError):
+                return BehaviorProposalValidation(
+                    None, ProposalInvalidReason.INVALID_FIELD
+                )
+            return BehaviorProposalValidation(
+                PublicMissionChoice(
+                    action,
+                    purpose,
+                    text=text,
+                    reasons=reasons,
+                    counterevidence=counterevidence,
+                    free=True,
+                ),
+                None,
+            )
         if not evolution or set(value) != {"decision", "action", "purpose"}:
             return BehaviorProposalValidation(
                 None, ProposalInvalidReason.UNKNOWN_FIELDS
@@ -256,6 +288,7 @@ def parse_public_proposal(value: object, *, evolution: bool = False):
                 and (
                     type(raw_purpose) is not str
                     or raw_purpose not in MissionPurpose._value2member_map_
+                    or raw_purpose in FREE_PURPOSES
                 )
             )
             or (action != "propose" and raw_purpose is not None)
