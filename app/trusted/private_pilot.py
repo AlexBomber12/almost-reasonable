@@ -10,6 +10,7 @@ import re
 import sqlite3
 import stat
 
+from app.core.provider_contract import APPROVED_OPENAI_MODELS
 from app.trusted.openai_credential_files import (
     TrustedTransportConfigurationError,
     read_protected_worker_file,
@@ -125,6 +126,7 @@ class PilotActivation:
     memory_acceptance: bool = False
     combined_acceptance: bool = False
     ordinary: bool = False
+    model: str = MODEL
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -192,7 +194,8 @@ def load_activation(
             and type(value["application_peer_uid"]) is int
             and 0 <= value["application_peer_uid"] <= 2**32 - 2
             and value["provider_config_version"] == PROVIDER_CONFIG_VERSION
-            and value["model"] == MODEL
+            and type(value["model"]) is str
+            and value["model"] in (APPROVED_OPENAI_MODELS if ordinary else {MODEL})
             and type(value["project_id"]) is str
             and value["project_id"].startswith("proj_")
             and _IDENTIFIER.fullmatch(value["project_id"]) is not None
@@ -243,6 +246,7 @@ def load_activation(
             memory_acceptance,
             combined_acceptance,
             ordinary,
+            value["model"],
         )
     except (
         PilotAuthorityError,
