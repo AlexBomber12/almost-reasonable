@@ -11,7 +11,7 @@ from app.cognition.worker_typed import _fields
 from app.core.core_self import CORE_SELF_VERSION
 
 VERSION = "agent-intellectual-state-v1"
-PROMPT_VERSION = "agent-intellectual-state-prompt-v3"
+PROMPT_VERSION = "agent-intellectual-state-prompt-v4"
 MAX_RECORD_BYTES = 2048
 MAX_PROJECTION_BYTES = 16384
 MAX_DEPENDENCIES = 100
@@ -27,6 +27,7 @@ SOURCE_KINDS = {
     "decision_rejected",
     "shared_abstract_influence",
     "capability_snapshot",
+    "public_agent_state",
 }
 
 
@@ -336,6 +337,11 @@ class IntellectualStateStore:
             "dependencies": dependencies,
             "source_keys": source_keys,
         }
+        from app.core.public_intellectual_receipt import collect
+
+        receipts = collect(dependencies, sources)
+        if receipts:
+            snapshot["external_receipts"] = receipts
         db.execute(
             "INSERT INTO agent_intellectual_operations VALUES(?,?,?,?,?,?,NULL,NULL,'reserved')",
             (*self.scope, operation, context_binding, controls, encoded(snapshot)),
@@ -679,7 +685,7 @@ def validate_private_graph(db):
         ):
             raise ValueError("invalid intellectual operation routing")
         snapshot = json.loads(snapshot_raw)
-        if set(snapshot) != {
+        if set(snapshot) - {"external_receipts"} != {
             "projection",
             "selected",
             "heads",
@@ -693,6 +699,9 @@ def validate_private_graph(db):
             or len(snapshot["dependencies"]) > MAX_DEPENDENCIES
         ):
             raise ValueError("invalid intellectual dependencies")
+        from app.core.public_intellectual_receipt import validate_private
+
+        validate_private(db, operation, snapshot)
         for key, binding in snapshot["dependencies"].items():
             kind, _, reference = key.partition(":")
             if kind == "event":
@@ -724,6 +733,8 @@ def validate_private_graph(db):
                         ).fetchone()
                         is not None
                     )
+            elif kind == "public-state":
+                valid = key in snapshot["external_receipts"]
             else:
                 valid = False
             if not valid:

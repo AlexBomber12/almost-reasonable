@@ -39,9 +39,17 @@ class PrivateIntellectualState:
                     for key in deps
                 )
                 checked[creator] = (
-                    reply is None
-                    or self.app._historical_research_permitted(principal, reply)
-                ) and (not report_ancestry or state._valid_dependencies(deps, sources))
+                    (
+                        reply is None
+                        or self.app._historical_research_permitted(principal, reply)
+                    )
+                    and (
+                        not report_ancestry or state._valid_dependencies(deps, sources)
+                    )
+                    and self.app._public_intellectual_dependencies_live(
+                        creator, principal
+                    )
+                )
             return checked[creator]
 
         return permitted
@@ -53,7 +61,12 @@ class PrivateIntellectualState:
 
     def sources(self, principal, db):
         app = self.app
-        result = {}
+        source = getattr(app, "_public_intellectual_source", None)
+        result = (
+            {}
+            if source is None
+            else source.sources(principal=principal, _private_db=db)
+        )
         for event in app._event_store.retrieve_private_events(principal):
             result["event:" + event.event_id] = {
                 "kind": "participant_assertion",
@@ -161,6 +174,7 @@ class PrivateIntellectualState:
         state = self.state(principal)
         sources = self.sources(principal, db)
         visible = {"event:" + event for event in event_ids}
+        visible.update(key for key in sources if key.startswith("public-state:"))
         visible.update(
             sorted(
                 (
@@ -260,9 +274,16 @@ class PrivateIntellectualState:
 
         def dependencies_fit(dependencies):
             inherited = self.inherited_operations(
-                db, principal, operation, dependencies=dependencies
+                db, principal, operation, dependencies=dependencies, sources=sources
             )
-            return all(
+            from app.core.public_intellectual_receipt import collect
+            from app.core.intellectual_state import encoded
+
+            protected = {
+                "dependencies": dependencies,
+                "external_receipts": collect(dependencies, sources),
+            }
+            return len(encoded(protected).encode()) <= 45056 and all(
                 len(set(base) | extra) <= limit
                 for base, extra, limit in zip(base_groups, inherited, limits)
             )
@@ -305,10 +326,25 @@ class PrivateIntellectualState:
         }
         return result, tuple(sorted(set(event_ids) | own_roots))
 
-    def inherited_operations(self, db, principal, operation, *, dependencies=None):
+    def inherited_operations(
+        self, db, principal, operation, *, dependencies=None, sources=None
+    ):
         groups = [set(), set(), set()]
         if dependencies is None:
             dependencies = self.state(principal).dependencies(db, operation)
+        if sources is None:
+            row = self.state(principal)._operation(db, operation)
+            receipts = (
+                {}
+                if row is None or row[2] is None
+                else json.loads(row[2]).get("external_receipts", {})
+            )
+        else:
+            from app.core.public_intellectual_receipt import collect
+
+            receipts = collect(dependencies, sources)
+        for receipt in receipts.values():
+            groups[0].update(receipt["shared"])
         for key in dependencies:
             if key.startswith("context:") and key != "context:" + operation:
                 reply = self.app._outputs._read(
