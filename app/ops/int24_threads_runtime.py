@@ -20,6 +20,7 @@ from app.core.store import EventStore
 from app.integration.threads_runtime import LocalOperator, ThreadsRuntime
 from app.integration.public_window import PublicOperatingWindow, WindowSpec
 from app.integration.public_grant import PublicGrantSpec
+from app.integration.public_shared_source import from_config as public_shared_source
 from app.core.public_research_profile import PUBLIC_PURPOSES, load_research_profile
 from app.owner_control.store import OwnerStore
 from app.privacy.ledger import PrivacyLedger
@@ -45,6 +46,28 @@ def _runtime(config):
     if config.get("enable_autonomous_publication") is True:
         _grant_spec(config)
     clock = Clock()
+    shared_source = (
+        public_shared_source(
+            Path(config["shared_intellectual_config"]),
+            account=config["account_ref"],
+            owner_directory=config["owner_directory"],
+            public_paths=tuple(
+                config[key]
+                for key in (
+                    "journal_path",
+                    "scheduler_path",
+                    "threads_path",
+                    "event_store_path",
+                    "ledger_path",
+                    "public_mission_path",
+                )
+                if config.get(key)
+            ),
+            clock=clock.now,
+        )
+        if config.get("shared_intellectual_config") is not None
+        else None
+    )
     token = (
         read_protected_worker_file(
             Path(config["threads_token_file"]), maximum_bytes=512
@@ -113,6 +136,7 @@ def _runtime(config):
             "enable_autonomous_publication", False
         ),
         agent_cadence_enabled=config.get("enable_agent_cadence", False),
+        shared_intellectual_source=shared_source,
         enabled=True,
         live_enabled=True,
     )

@@ -59,6 +59,14 @@ is NOT_RUN; executed failure is FAIL. Stage 0 remains BLOCKED while required con
 or human calibration are absent. Live provider/enrollment/Meta requirements remain
 assigned to their later rollout stages, rather than relabeled NOT_APPLICABLE.
 
+[The real-acceptance protocol](real-acceptance.md) preregisters current candidate
+bindings and imports an owner-approved complete inventory of real observations,
+calibration and trials. Its schema tests are synthetic, and hashes establish import
+integrity rather than external truth. Actual missing observations stay NOT_RUN;
+even an accepted attestation report does not authorize rollout. Follow the
+[release readiness and ordinary launch procedure](launch-readiness.md) for staged
+operator verification, complete recovery and a separate launch decision.
+
 ## 4. Cross-cutting deterministic test catalogue
 
 The implementation test plan MUST instantiate at least these cases:

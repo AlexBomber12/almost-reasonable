@@ -71,7 +71,9 @@ typed memory, extraction, narrative and shared proposals. The application checks
 the version, ID, positive integer, protected file and existing release checks;
 the worker enforces the durable count. Legacy narrative v1 stays exactly one,
 v2 stays exactly 20 and is still selected only by the B03E worker activation.
-Shared proposals remain incompatible with narrative in the application.
+The current [ordinary shared/narrative composition](ordinary-shared-intelligence.md)
+supports both when their separate application and finite worker permissions are
+present. This grant alone enables neither shared proposals nor narrative.
 
 ## Credential-free planning and explicit preparation
 
