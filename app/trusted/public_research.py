@@ -518,6 +518,32 @@ class PublicResearchBoundary:
             if self._profile is not None
             else None
         )
+        if self._profile is not None and self._profile.question_policy is not None:
+            topic = self._profile.topic(request.question)
+            if topic is not None:
+                built = build_safe_research_brief(
+                    ResearchRecordSet((ResearchQuestion(request.question),)),
+                    result_budget=3,
+                    trusted_config_version="public-research-brief-v1",
+                    screening=self._screening,
+                )
+                if built.brief is not None and built.brief.question == request.question:
+                    selected = (
+                        topic.topic_id,
+                        _Grant(
+                            self._profile.request(
+                                request.operation_id, request.question
+                            ),
+                            self._profile.peer_uid,
+                            built.brief,
+                            hashlib.sha256(
+                                built.brief.to_json().encode("utf-8")
+                            ).hexdigest(),
+                            self._config,
+                            self._profile.issued_at,
+                            self._profile.expires_at,
+                        ),
+                    )
         grant = (
             selected[1]
             if selected is not None
@@ -545,7 +571,10 @@ class PublicResearchBoundary:
             if blocked is not None:
                 return _response(blocked)
             if self._profile is not None and not self._authority_journal.reserve(
-                self._profile, request.operation_id, selected[0]
+                self._profile,
+                request.operation_id,
+                selected[0],
+                question=request.question,
             ):
                 return _response("duplicate_operation")
             began = self._monotonic()

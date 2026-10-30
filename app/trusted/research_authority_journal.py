@@ -11,7 +11,7 @@ from app.core.sqlite_files import sqlite_metadata_handle
 
 from app.core.public_research_authority import validate_trusted_directories
 from app.core.public_research_profile import ResearchProfile
-from app.core.public_research_profile import PUBLIC_PURPOSE
+from app.core.public_research_profile import PUBLIC_PURPOSES
 
 
 class AuthorityJournal:
@@ -88,7 +88,12 @@ class AuthorityJournal:
             db.close()
 
     def reserve(
-        self, profile: ResearchProfile, operation_id: str, topic_id: str
+        self,
+        profile: ResearchProfile,
+        operation_id: str,
+        topic_id: str,
+        *,
+        question=None,
     ) -> bool:
         """One immediate transaction gates all worker processes sharing this file."""
         with self._open() as db:
@@ -111,7 +116,7 @@ class AuthorityJournal:
                 "SELECT COUNT(*) FROM reservations WHERE profile_id=? AND topic_id=?",
                 (profile.profile_id, topic_id),
             ).fetchone()[0]
-            if profile.purpose == PUBLIC_PURPOSE:
+            if profile.purpose in PUBLIC_PURPOSES:
                 aggregate = db.execute(
                     "SELECT COUNT(*) FROM public_reservations WHERE account_ref=?",
                     (profile.account_ref,),
@@ -123,6 +128,10 @@ class AuthorityJournal:
             topic = next(
                 (item for item in profile.topics if item.topic_id == topic_id), None
             )
+            if profile.question_policy is not None:
+                topic = profile.topic(question)
+                if topic is not None and topic.topic_id != topic_id:
+                    return False
             if (
                 topic is None
                 or aggregate >= profile.aggregate_limit
@@ -133,7 +142,7 @@ class AuthorityJournal:
                 "INSERT INTO reservations VALUES (?,?,?)",
                 (operation_id, profile.profile_id, topic_id),
             )
-            if profile.purpose == PUBLIC_PURPOSE:
+            if profile.purpose in PUBLIC_PURPOSES:
                 db.execute(
                     "INSERT INTO public_reservations VALUES (?,?,?)",
                     (operation_id, profile.account_ref, topic_id),

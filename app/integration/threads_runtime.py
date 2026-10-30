@@ -42,7 +42,11 @@ from app.core.public_behavior import PublicMissionChoice, parse_public_proposal
 from app.core.public_behavior_mission import PublicMissionContext
 from app.core.public_mission_evolution import PublicMissionEvolution
 from app.core.public_research_client import PublicResearchClient
-from app.core.public_research_profile import PUBLIC_PURPOSE, load_research_profile
+from app.core.public_research_profile import (
+    PUBLIC_PURPOSES,
+    FREE_QUESTION_CHOICE,
+    load_research_profile,
+)
 from app.core.provider_spend import ProviderStateStore
 from app.integration.threads_stage0 import (
     MAX_INTENTS,
@@ -454,7 +458,7 @@ class ThreadsRuntime(ThreadsStage0):
         except (OSError, ValueError, TypeError, UnicodeError):
             return None
         if (
-            profile.purpose != PUBLIC_PURPOSE
+            profile.purpose not in PUBLIC_PURPOSES
             or profile.account_ref != self.account
             or profile.application_scope != self.research_scope
             or profile.peer_uid != os.geteuid()
@@ -504,15 +508,7 @@ class ThreadsRuntime(ThreadsStage0):
 
     def _public_context_with_source(self, profile):
         choices = self.available_topics(profile)
-        catalog = (
-            ()
-            if profile is None
-            else tuple(
-                (topic.topic_id, topic.question)
-                for topic in profile.topics
-                if topic.topic_id in choices
-            )
-        )
+        catalog = () if profile is None else profile.catalog(choices)
         evidence, source = (), None
         if profile is not None:
             pending = (
@@ -597,6 +593,8 @@ class ThreadsRuntime(ThreadsStage0):
         counts = dict(rows)
         if sum(counts.values()) >= profile.aggregate_limit:
             return ()
+        if profile.question_policy is not None:
+            return (FREE_QUESTION_CHOICE[0],)
         return tuple(
             topic.topic_id
             for topic in profile.topics
@@ -903,6 +901,8 @@ class ThreadsRuntime(ThreadsStage0):
             topic = (
                 None
                 if profile is None
+                else profile.topic(proposal.brief)
+                if profile.question_policy is not None
                 else next(
                     (
                         item
@@ -915,13 +915,20 @@ class ThreadsRuntime(ThreadsStage0):
             if (
                 topic is None
                 or profile.digest != origin["offered_profile_digest"]
-                or topic.topic_id not in self.available_topics(profile)
+                or (
+                    FREE_QUESTION_CHOICE[0]
+                    if profile.question_policy is not None
+                    else topic.topic_id
+                )
+                not in self.available_topics(profile)
             ):
                 rejected = True
             else:
                 payload.update(
                     decision="research",
-                    topic=topic.topic_id,
+                    topic=topic.question
+                    if profile.question_policy is not None
+                    else topic.topic_id,
                     profile_digest=profile.digest,
                 )
         elif (
@@ -1299,7 +1306,13 @@ class ThreadsRuntime(ThreadsStage0):
             if (
                 topic is None
                 or sum(counts.values()) >= profile.aggregate_limit
-                or counts.get(topic.topic_id, 0) >= topic.limit
+                or counts.get(
+                    payload["topic"]
+                    if profile.question_policy is not None
+                    else topic.topic_id,
+                    0,
+                )
+                >= topic.limit
             ):
                 raise PolicyDeniedError("public research capacity exhausted")
             db.execute(

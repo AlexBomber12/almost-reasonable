@@ -359,3 +359,8 @@ def _erase_invalidated_shared(db: sqlite3.Connection) -> None:
         WHERE EXISTS (SELECT 1 FROM protected_mission_shared m JOIN shared_operations o
             ON o.operation_id=m.shared_operation WHERE o.status='invalidated')"""
     )
+    if db.execute("PRAGMA user_version").fetchone()[0] >= 9:
+        db.execute(
+            "DELETE FROM private_extraction_receipts WHERE operation_id IN ("
+            "SELECT 'researchq:' || substr(operation_id,7) FROM agent_reply_operations WHERE retention_status='invalidated')"
+        )
