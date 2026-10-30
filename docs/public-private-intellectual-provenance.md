@@ -28,6 +28,16 @@ account identifiers, paths, bindings and routing receipts stay in the applicatio
 Importing intellectual development grants no tools, spending, scheduling or public
 publication authority and does not merge private A/B histories.
 
+New-context selection remains capped at six eligible public records. Revalidation
+resolves the exact required current keys independently of selection order, within
+the existing 100-dependency bound. A still-valid older source does not disappear
+from dependent private replies, state or fiction when six newer heads arrive.
+Historical validation records do not become additional new-context source handles.
+Each converted record must fit the source projection's existing byte limit; an
+oversized conversion is skipped individually, preserving unrelated eligible
+records. Revision, withdrawal, audience and control checks still apply at every
+revalidation; historical receipts never grant continued authority.
+
 ## Protected ancestry and recovery
 
 Every imported state has a closed `public-intellectual-receipt-v1` receipt binding

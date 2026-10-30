@@ -6,7 +6,13 @@ from pathlib import Path
 import sqlite3
 from types import SimpleNamespace
 
-from app.core.intellectual_state import VERSION, digest, encoded, projection
+from app.core.intellectual_state import (
+    VERSION,
+    MAX_DEPENDENCIES,
+    digest,
+    encoded,
+    projection,
+)
 from app.core.public_intellectual_receipt import (
     VERSION as RECEIPT_VERSION,
     source_key,
@@ -176,7 +182,12 @@ class PublicIntellectualSource:
                 raise ValueError("public source Threads schema mismatch")
         view.ledger.control_generation()
 
-    def sources(self, *, principal=None, _private_db=None):
+    def sources(self, *, principal=None, _private_db=None, required_keys=None):
+        if required_keys is not None and (
+            type(required_keys) is not frozenset
+            or not 0 < len(required_keys) <= MAX_DEPENDENCIES
+        ):
+            return {}
         view = self.view
         try:
             self._schema()
@@ -211,6 +222,9 @@ class PublicIntellectualSource:
                 key=lambda row: (row[2]["metadata"]["decided_at"], row[0]),
                 reverse=True,
             ):
+                key = source_key(view.account, item)
+                if required_keys is not None and key not in required_keys:
+                    continue
                 ancestors = sorted(
                     key.removeprefix("shared:")
                     for key in deps
@@ -231,13 +245,16 @@ class PublicIntellectualSource:
                         }
                     ),
                 }
-                projection(
-                    {
-                        "version": VERSION,
-                        "states": [],
-                        "sources": [{"handle": "s0", **record}],
-                    }
-                )
+                try:
+                    projection(
+                        {
+                            "version": VERSION,
+                            "states": [],
+                            "sources": [{"handle": "s0", **record}],
+                        }
+                    )
+                except ValueError:
+                    continue
                 receipt = validate(
                     {
                         "version": RECEIPT_VERSION,
@@ -251,13 +268,13 @@ class PublicIntellectualSource:
                         "shared": ancestors,
                     }
                 )
-                result[source_key(view.account, item)] = {
+                result[key] = {
                     **record,
                     "binding": digest(receipt),
                     "dependencies": {},
                     "receipt": receipt,
                 }
-                if len(result) == 6:
+                if required_keys is None and len(result) == 6:
                     break
             if generation != view.ledger.control_generation():
                 return {}

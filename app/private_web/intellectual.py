@@ -59,13 +59,22 @@ class PrivateIntellectualState:
         with closing(self.app._event_store._open()) as db:
             return self.source_validator(db, principal)(operation)
 
-    def sources(self, principal, db):
-        app = self.app
-        source = getattr(app, "_public_intellectual_source", None)
-        result = (
+    def public_sources(self, principal, db, *, required_keys=None):
+        source = getattr(self.app, "_public_intellectual_source", None)
+        return (
             {}
             if source is None
-            else source.sources(principal=principal, _private_db=db)
+            else source.sources(
+                principal=principal, _private_db=db, required_keys=required_keys
+            )
+        )
+
+    def sources(self, principal, db, *, _public_selection=None):
+        app = self.app
+        result = dict(
+            self.public_sources(principal, db)
+            if _public_selection is None
+            else _public_selection
         )
         for event in app._event_store.retrieve_private_events(principal):
             result["event:" + event.event_id] = {
@@ -84,6 +93,15 @@ class PrivateIntellectualState:
                 and app._shared_consent_live(reply.operation, principal)
                 and app._narrative_reply_permitted(reply.operation)
             ):
+                required = frozenset(
+                    key
+                    for key in self.state(principal).dependencies(db, operation)
+                    if key.startswith("public-state:")
+                )
+                if required:
+                    result.update(
+                        self.public_sources(principal, db, required_keys=required)
+                    )
                 result["context:" + operation] = {
                     "kind": "participant_assertion",
                     "text": "",
@@ -172,9 +190,10 @@ class PrivateIntellectualState:
         reserve_narrative_slot=False,
     ):
         state = self.state(principal)
-        sources = self.sources(principal, db)
+        public_selection = self.public_sources(principal, db)
+        sources = self.sources(principal, db, _public_selection=public_selection)
         visible = {"event:" + event for event in event_ids}
-        visible.update(key for key in sources if key.startswith("public-state:"))
+        visible.update(public_selection)
         visible.update(
             sorted(
                 (
