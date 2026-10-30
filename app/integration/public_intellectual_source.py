@@ -253,21 +253,21 @@ class PublicIntellectualSource:
                             "sources": [{"handle": "s0", **record}],
                         }
                     )
+                    receipt = validate(
+                        {
+                            "version": RECEIPT_VERSION,
+                            "account": view.account,
+                            "item": item,
+                            "revision": revision,
+                            "state_digest": digest(payload),
+                            "dependency_digest": digest(deps),
+                            "record_digest": digest(record),
+                            "generation": generation,
+                            "shared": ancestors,
+                        }
+                    )
                 except ValueError:
                     continue
-                receipt = validate(
-                    {
-                        "version": RECEIPT_VERSION,
-                        "account": view.account,
-                        "item": item,
-                        "revision": revision,
-                        "state_digest": digest(payload),
-                        "dependency_digest": digest(deps),
-                        "record_digest": digest(record),
-                        "generation": generation,
-                        "shared": ancestors,
-                    }
-                )
                 result[key] = {
                     **record,
                     "binding": digest(receipt),

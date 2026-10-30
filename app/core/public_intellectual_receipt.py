@@ -2,11 +2,12 @@
 
 import re
 
-from app.core.intellectual_state import digest, encoded
+from app.core.intellectual_state import MAX_DEPENDENCIES, digest, encoded
 from app.threads.domain import require_reference
 
 VERSION = "public-intellectual-receipt-v1"
 PREFIX = "public-state:"
+MAX_PROTECTED_BYTES = 45056
 _HASH = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -67,7 +68,18 @@ def validate_private(db, operation, snapshot):
     deps = snapshot["dependencies"]
     external = {key for key in deps if key.startswith(PREFIX)}
     receipts = snapshot.get("external_receipts", {})
-    if type(receipts) is not dict or set(receipts) != external or len(receipts) > 6:
+    if (
+        type(receipts) is not dict
+        or set(receipts) != external
+        or len(receipts) > MAX_DEPENDENCIES
+        or (
+            receipts
+            and len(
+                encoded({"dependencies": deps, "external_receipts": receipts}).encode()
+            )
+            > MAX_PROTECTED_BYTES
+        )
+    ):
         raise ValueError("public intellectual receipt set mismatch")
     for key, receipt in receipts.items():
         validate(receipt)

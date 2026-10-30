@@ -38,6 +38,15 @@ oversized conversion is skipped individually, preserving unrelated eligible
 records. Revision, withdrawal, audience and control checks still apply at every
 revalidation; historical receipts never grant continued authority.
 
+The six visible source handles are separate from historical receipts. Graph and
+quarantine validation permit the exact inherited receipt set up to the existing
+100-dependency limit and enforce the same 45,056-byte protected
+dependencies/receipts budget as admission. Each receipt still requires its closed
+shape, exact key/binding, routed shared ancestors, event roots and any displayed
+record binding. Multi-turn histories can accumulate more than six receipts while
+remaining reconcilable, erasable and restorable; legacy snapshots without external
+receipts retain their validation behavior.
+
 ## Protected ancestry and recovery
 
 Every imported state has a closed `public-intellectual-receipt-v1` receipt binding
@@ -66,6 +75,14 @@ source hides dependent history, heads and fiction from subsequent retrieval.
 Shared source selection inside a private request uses its already-held privacy
 fence and connection. It does not acquire a second writer fence on the same
 ledger. Independent public callers retain the original gated source read.
+
+Optional public influence is selected only when its complete shared ancestry,
+including every protected event root, fits the reply's dependency and byte limits.
+An overfull optional record is omitted before inference; it cannot turn an
+otherwise valid private message into a failed reply reservation.
+Each public record must also fit the private receipt's 16-shared-ancestor bound.
+An unimportable record is skipped individually, preserving other eligible public
+heads in ordinary selection and exact-key historical validation.
 
 ## Validation scope
 
