@@ -132,6 +132,7 @@ class SharedIntelligence:
         approvals: tuple[SyntheticSharedApproval, ...] = (),
         clock: Callable[[], datetime],
         privacy_screen=screen_abstract_candidate,
+        ordinary_abstractions_enabled=False,
         checkpoint=lambda _point: None,
     ):
         if type(gate) is not PrivacyReadGate or gate._store is not events:
@@ -146,6 +147,9 @@ class SharedIntelligence:
         self._clock = clock
         self._privacy_screen = privacy_screen
         self._checkpoint = checkpoint
+        if type(ordinary_abstractions_enabled) is not bool:
+            raise TypeError("ordinary abstraction policy must be bool")
+        self._ordinary_enabled = ordinary_abstractions_enabled
 
     @staticmethod
     def _shape(a):
@@ -208,15 +212,24 @@ class SharedIntelligence:
         approval: SyntheticSharedApproval,
         *,
         reviewed: bool,
+        ordinary: bool = False,
         persistence_guard: Callable[[], bool] | None = None,
         model_dependencies: dict | None = None,
     ) -> str:
         self._shape(approval)
         # Screening is a short deterministic offline read fence. Persistence uses
         # a separate transaction and rechecks source availability after screening.
+        from .ordinary_abstract import (
+            screen_ordinary_abstract_candidate,
+            ORDINARY_POLICY_VERSION,
+        )
+
+        privacy_screen = (
+            screen_ordinary_abstract_candidate if ordinary else self._privacy_screen
+        )
         result = self._gate.authorized(
             lambda: AbstractToSharedValidator(
-                self._events, privacy_screen=self._privacy_screen
+                self._events, privacy_screen=privacy_screen
             ).validate(approval.principal, approval.proposal)
         )
         if result.audit is None or result.audit.screen_version is None:
@@ -240,7 +253,11 @@ class SharedIntelligence:
                     )
                     for source, _principal, _role, _classification in sources
                 )
-                complete_screen = screen_abstract_candidate(payload, complete_sources)
+                complete_screen = (
+                    screen_ordinary_abstract_candidate(payload, complete_sources)
+                    if ordinary
+                    else screen_abstract_candidate(payload, complete_sources)
+                )
                 complete_allowed = (
                     complete_screen.decision.value == "allow"
                     and not any(
@@ -255,6 +272,7 @@ class SharedIntelligence:
                 retained_value = (
                     payload.value
                     if reviewed
+                    or (ordinary and complete_allowed)
                     or (complete_allowed and payload.value in SYNTHETIC_ABSTRACT_VALUES)
                     else "Screened abstract candidate withheld."
                 )
@@ -283,6 +301,11 @@ class SharedIntelligence:
                         confidence=payload.confidence,
                         kind=payload.memory_kind.value,
                         **({"reviewed": True} if reviewed else {}),
+                        **(
+                            {"ordinary_policy": ORDINARY_POLICY_VERSION}
+                            if ordinary
+                            else {}
+                        ),
                         **(
                             {"model_dependencies": dependencies}
                             if dependencies is not None
@@ -379,6 +402,76 @@ class SharedIntelligence:
                 return screened_reason
 
         return self._gate.authorized(persist)
+
+    def transition(self, candidate, *, persistence_guard=None, model_dependencies=None):
+        """Application-authorized §4.5 influence, never identifiable disclosure."""
+        from .ordinary_abstract import ORDINARY_POLICY_VERSION
+
+        if not self._ordinary_enabled:
+            raise ValueError("ordinary abstraction policy disabled")
+        if type(candidate) is not ReviewedSharedCandidate:
+            raise TypeError("exact shared candidate required")
+        approval = SyntheticSharedApproval(
+            candidate.principal,
+            candidate.proposal,
+            candidate.item_id,
+            candidate.expected_revision,
+            candidate.audience,
+            candidate.counter_event_ids,
+        )
+        reason = self._screen(
+            approval,
+            reviewed=False,
+            ordinary=True,
+            persistence_guard=persistence_guard,
+            model_dependencies=model_dependencies,
+        )
+        if reason not in {"shared_commit_disabled", "approved"}:
+            raise ValueError("ordinary privacy screen did not allow promotion")
+        self._checkpoint("after_shared_screen")
+
+        def promote():
+            with closing(self._events._open()) as db, db:
+                db.execute("BEGIN IMMEDIATE")
+                self._events._verify_current_schema(db)
+                if persistence_guard is not None and not persistence_guard():
+                    raise ValueError("shared proposal authorization unavailable")
+                validate_shared_graph(db)
+                row = db.execute(
+                    "SELECT status FROM shared_operations WHERE operation_id=?",
+                    (candidate.proposal.operation_id,),
+                ).fetchone()
+                if candidate.expected_revision:
+                    parent = db.execute(
+                        "SELECT m.binding FROM shared_operations o JOIN protected_shared_manifests m USING(operation_id) WHERE o.item_id=? AND o.revision=? AND o.status='active'",
+                        (candidate.item_id, candidate.expected_revision),
+                    ).fetchone()
+                    if (
+                        parent is None
+                        or json.loads(parent[0]).get("ordinary_policy")
+                        != ORDINARY_POLICY_VERSION
+                    ):
+                        raise ValueError(
+                            "ordinary transition cannot widen reviewed authority"
+                        )
+                if row[0] != "active":
+                    head = db.execute(
+                        "SELECT COALESCE(MAX(revision),0) FROM shared_operations WHERE item_id=? AND status='active'",
+                        (candidate.item_id,),
+                    ).fetchone()[0]
+                    if head != candidate.expected_revision:
+                        raise ValueError("shared revision conflict")
+                    db.execute(
+                        "UPDATE shared_operations SET status='active',reason='approved' WHERE operation_id=?",
+                        (candidate.proposal.operation_id,),
+                    )
+                validate_shared_graph(db)
+                self._checkpoint("before_shared_commit")
+                return candidate.proposal.operation_id
+
+        result = self._gate.authorized(promote)
+        self._checkpoint("after_shared_commit")
+        return result
 
     def review(
         self,
@@ -630,12 +723,17 @@ class SharedIntelligence:
 
     def context(self, principal):
         EventStore._validate_context(principal)
+        return self.context_for_audience(principal.principal_id.value)
+
+    def context_for_audience(self, audience):
+        """Trusted application routing; a public account is not a participant."""
+        EventStore._require_token("shared audience", audience)
 
         def read():
             with closing(self._events._open()) as db, db:
                 db.execute("BEGIN")
                 self._events._verify_current_schema(db)
-                return self.select(db, principal)
+                return self.select_audience(db, audience)
 
         return self._gate.authorized(read)
 
@@ -656,6 +754,10 @@ class SharedIntelligence:
 
     def select(self, db, principal):
         EventStore._validate_context(principal)
+        return self.select_audience(db, principal.principal_id.value)
+
+    def select_audience(self, db, audience):
+        EventStore._require_token("shared audience", audience)
         validate_shared_graph(db)
         rows = db.execute(
             """SELECT o.operation_id, o.kind, p.value, p.confidence,
@@ -666,9 +768,8 @@ class SharedIntelligence:
             WHERE a.principal_id=? AND a.purpose='conversation' AND o.status='active'
             AND o.revision=(SELECT MAX(h.revision) FROM shared_operations h WHERE h.item_id=o.item_id AND h.status='active')
             ORDER BY o.item_id, o.revision""",
-            (principal.principal_id.value,),
+            (audience,),
         ).fetchall()
-        audience = principal.principal_id.value
         now = self._clock()
         records = []
         for op, kind, value, confidence, counter, count, revision, item_id in rows:

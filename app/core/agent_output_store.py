@@ -157,6 +157,12 @@ class AgentOutputStore:
         validate_generic_graph(db)
         validate_narrative_graph(db)
         all_sources = set(op.source_event_ids)
+        from app.cognition.narrative_store import narrative_shared_operations
+
+        if not narrative_shared_operations(
+            db, principal, op.narrative_operation_ids
+        ) <= set(op.shared_operation_ids):
+            return False
         for generic in op.generic_operation_ids:
             row = db.execute(
                 """SELECT i.audience_principal_id,o.status FROM generic_memory_operations o

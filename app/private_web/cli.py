@@ -70,6 +70,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--narrative-permission")
     serve.add_argument("--narrative-pilot-id")
     serve.add_argument("--enable-shared-proposals", action="store_true")
+    serve.add_argument("--enable-ordinary-abstractions", action="store_true")
     serve.add_argument("--shared-proposal-audience", action="append", default=[])
     serve.add_argument("--enable-public-research", action="store_true")
     serve.add_argument("--public-research-socket")
@@ -227,6 +228,8 @@ def main(
         trusted_proxy_addresses=frozenset(args.trusted_proxy),
     )
     if args.worker_socket is not None:
+        if args.enable_ordinary_abstractions and not args.enable_shared_proposals:
+            raise SystemExit("ordinary abstractions require bounded shared proposals")
         if args.enable_narrative != (
             args.narrative_permission is not None
             and args.narrative_pilot_id is not None
@@ -309,6 +312,7 @@ def main(
         or args.narrative_permission is not None
         or args.narrative_pilot_id is not None
         or args.enable_shared_proposals
+        or args.enable_ordinary_abstractions
         or args.shared_proposal_audience
     ):
         raise SystemExit("privacy and owner stores require worker mode")
@@ -327,7 +331,12 @@ def main(
         if not gate.reconcile():
             raise SystemExit("privacy reconciliation failed")
         owner = OwnerStore(args.owner_directory)
-        shared = SharedIntelligence(event_store, gate, clock=_utc_now)
+        shared = SharedIntelligence(
+            event_store,
+            gate,
+            clock=_utc_now,
+            ordinary_abstractions_enabled=args.enable_ordinary_abstractions,
+        )
         research = None
         if args.enable_public_research:
             authority_path = (
@@ -364,7 +373,7 @@ def main(
             OpenAIWorkerClient(args.worker_socket, expected_worker_uid=args.worker_uid),
             provider_state=ProviderStateStore(EventStore(args.ipc_state_db)),
             emergency_stop=owner.active,
-            shared_intelligence=None if args.enable_narrative else shared,
+            shared_intelligence=shared,
             research_bridge=research,
             memory_extraction_enabled=args.enable_memory_extraction,
             memory_evolution_enabled=args.enable_memory_evolution,

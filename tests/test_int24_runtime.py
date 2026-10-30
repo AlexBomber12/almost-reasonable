@@ -118,6 +118,7 @@ def setup(
     research_enabled=False,
     reply_thread_id="root-1",
     account="account-1",
+    shared_intellectual_source=None,
 ):
     clock = MutableClock(NOW)
     owner = OwnerStore(tmp_path / "owner", clock=clock.now)
@@ -184,6 +185,7 @@ def setup(
         enabled=enabled,
         live_enabled=enabled,
         checkpoint=checkpoint,
+        shared_intellectual_source=shared_intellectual_source,
     )
     sdk = FakeSDK(proposal)
     worker = PublicWorkerServer(

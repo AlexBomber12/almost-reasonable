@@ -65,15 +65,26 @@ class SharedProposalAuditStore(ExtractionAuditStore):
             heads = db.execute(
                 """SELECT o.item_id,o.revision,o.operation_id,o.kind,p.value,p.confidence
                    FROM shared_operations o JOIN shared_payloads p USING(operation_id)
-                   WHERE o.author_principal=? AND o.status='active'
+                   WHERE (o.author_principal=? OR (? AND EXISTS (
+                       SELECT 1 FROM protected_shared_audiences a WHERE a.operation_id=o.operation_id AND a.principal_id=?)))
+                     AND o.status='active'
                      AND o.revision=(SELECT MAX(h.revision) FROM shared_operations h
                                      WHERE h.item_id=o.item_id AND h.status='active')
                    ORDER BY o.item_id""",
-                (principal_id,),
+                (principal_id, int(self._shared._ordinary_enabled), principal_id),
             ).fetchall()
             visible = tuple(
                 (item, revision, operation) for item, revision, operation, *_ in heads
             )
+            if self._shared._ordinary_enabled:
+                visible = (
+                    (
+                        "heads:"
+                        + hashlib.sha256(json.dumps(visible).encode()).hexdigest(),
+                        0,
+                        "ordinary-heads-v1",
+                    ),
+                )
             eligible = []
             for item, revision, operation, kind, value, confidence in heads:
                 if revision >= 32:
@@ -84,17 +95,36 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                 ).fetchall()
                 if (
                     len(sources) >= 50
-                    or any(owner != principal_id for _, owner in sources)
-                    or any(
-                        self._shared._gate._ledger.active_shared_consent(
-                            principal_id, event_id, audience, self._clock()
+                    or (
+                        not self._shared._ordinary_enabled
+                        and any(owner != principal_id for _, owner in sources)
+                    )
+                    or (
+                        not self._shared._ordinary_enabled
+                        and any(
+                            self._shared._gate._ledger.active_shared_consent(
+                                principal_id, event_id, audience, self._clock()
+                            )
+                            is None
+                            for event_id, _ in sources
+                            for audience in self._audience
                         )
-                        is None
-                        for event_id, _ in sources
-                        for audience in self._audience
                     )
                 ):
                     continue
+                if self._shared._ordinary_enabled:
+                    manifest = db.execute(
+                        "SELECT binding FROM protected_shared_manifests WHERE operation_id=?",
+                        (operation,),
+                    ).fetchone()
+                    from app.cognition.ordinary_abstract import ORDINARY_POLICY_VERSION
+
+                    if (
+                        manifest is None
+                        or json.loads(manifest[0]).get("ordinary_policy")
+                        != ORDINARY_POLICY_VERSION
+                    ):
+                        continue
                 if not all(
                     db.execute(
                         "SELECT 1 FROM protected_shared_audiences WHERE operation_id=? AND principal_id=?",
@@ -133,9 +163,9 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                 for event_id, _ in sources:
                     source = db.execute(
                         """SELECT p.content FROM event_envelopes e JOIN private_payloads p
-                           USING(payload_id) WHERE e.event_id=? AND e.audience_principal_id=?
+                           USING(payload_id) WHERE e.event_id=?
                            AND p.retention_status='active'""",
-                        (event_id, principal_id),
+                        (event_id,),
                     ).fetchone()
                     if source is None:
                         raise ValueError("shared source unavailable")
@@ -151,7 +181,9 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                     binding.append([event_id, audience, consent])
                     consents.append([event_id, audience, consent])
             dependencies = dict(
-                version="shared-model-dependencies-v1",
+                version="ordinary-shared-model-dependencies-v1"
+                if self._shared._ordinary_enabled
+                else "shared-model-dependencies-v1",
                 principal=principal_id,
                 sources=sorted(bound_sources),
                 audience=list(self._audience),

@@ -36,10 +36,14 @@ class SharedModelRequest:
             raise ValueError("invalid shared model request")
         data = json.loads(self.private.serialize())
         data["contract_version"] = (
-            "model-contract-conversation-transcript-v4"
-            if self.private.conversation.contract_version
-            == "model-contract-conversation-transcript-v4"
-            else "model-contract-shared-intelligence-v3"
+            data["contract_version"]
+            if self.private.narrative_mode
+            else (
+                "model-contract-conversation-transcript-v4"
+                if self.private.conversation.contract_version
+                == "model-contract-conversation-transcript-v4"
+                else "model-contract-shared-intelligence-v3"
+            )
         )
         data["shared_intellectual_state"] = [r.structured() for r in self.shared]
         data["shared_omitted"] = self.shared_omitted

@@ -772,8 +772,12 @@ def test_controls_changed_during_research_withhold_combined_result(combined, con
     assert len(c.sdk.calls) == 1 and len(c.fake.calls) == 4
 
 
+@pytest.mark.parametrize("ordinary_abstractions", [False, True])
 def test_ordinary_cli_accepts_existing_combined_flags_with_catalog(
-    combined, tmp_path, monkeypatch
+    combined,
+    tmp_path,
+    monkeypatch,
+    ordinary_abstractions,
 ):
     from app.owner_control.store import OwnerStore
     from app.private_web import cli
@@ -825,6 +829,18 @@ def test_ordinary_cli_accepts_existing_combined_flags_with_catalog(
                 "chat.test",
                 "--allowed-origin",
                 "https://chat.test",
+                *(
+                    [
+                        "--enable-ordinary-abstractions",
+                        "--enable-shared-proposals",
+                        "--shared-proposal-audience",
+                        "participant-a",
+                        "--shared-proposal-audience",
+                        "participant-b",
+                    ]
+                    if ordinary_abstractions
+                    else []
+                ),
             ],
             server_factory=server,
         )
@@ -833,5 +849,13 @@ def test_ordinary_cli_accepts_existing_combined_flags_with_catalog(
     runtime = captured[0]._conversations
     assert runtime._narrative_permission() and runtime._research.enabled
     assert runtime._evolution_audit is not None and runtime._typed_audit is not None
-    assert runtime._shared is None
+    from app.cognition.shared import SharedIntelligence
+
+    assert type(runtime._shared) is SharedIntelligence
+    assert (
+        runtime._shared._events is c.events
+        or runtime._shared._events.database_path == c.events.database_path
+    )
+    assert runtime._shared._ordinary_enabled is ordinary_abstractions
+    assert (runtime._shared_proposal_audit is not None) is ordinary_abstractions
     assert not c.fake.calls and not c.sdk.calls
