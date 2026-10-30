@@ -416,7 +416,7 @@ class OpenAIWorkerServer:
                         validation=replace(
                             response.validation,
                             intellectual_model=self._gateway._config.model,
-                            intellectual_prompt="agent-intellectual-state-v1",
+                            intellectual_prompt="agent-intellectual-state-prompt-v2",
                         ),
                     )
             try:

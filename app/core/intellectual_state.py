@@ -11,6 +11,7 @@ from app.cognition.worker_typed import _fields
 from app.core.core_self import CORE_SELF_VERSION
 
 VERSION = "agent-intellectual-state-v1"
+PROMPT_VERSION = "agent-intellectual-state-prompt-v2"
 MAX_RECORD_BYTES = 2048
 MAX_PROJECTION_BYTES = 16384
 MAX_DEPENDENCIES = 100
@@ -20,6 +21,7 @@ SOURCE_KINDS = {
     "no_action",
     "participant_assertion",
     "server_released_agent_response",
+    "hosted_research_model_report",
     "publication_unknown",
     "publication_failed",
     "decision_rejected",
@@ -202,6 +204,7 @@ class IntellectualStateStore:
         required_dependencies=None,
         query="",
         dependencies_fit=None,
+        priority_keys=(),
     ):
         existing = self._operation(db, operation)
         if existing is not None:
@@ -218,19 +221,57 @@ class IntellectualStateStore:
                 if visible_keys is None or key in visible_keys:
                     required_dependencies.update(source["dependencies"])
                     required_dependencies[key] = source["binding"]
-        if len(required_dependencies) > MAX_DEPENDENCIES:
-            raise IntellectualCapacityError("intellectual dependencies exceed bound")
         if dependencies_fit is None:
 
             def dependencies_fit(_dependencies):
                 return True
 
+        if len(required_dependencies) > MAX_DEPENDENCIES or not dependencies_fit(
+            required_dependencies
+        ):
+            raise IntellectualCapacityError("intellectual dependencies exceed bound")
         visible, selected, dependencies, source_keys = (
             [],
             [],
             dict(required_dependencies),
             [],
         )
+        records = []
+
+        def add_source(key, source):
+            if visible_keys is not None and key not in visible_keys:
+                return
+            additions = {**source["dependencies"], key: source["binding"]}
+            if len(
+                dependencies.keys() | additions.keys()
+            ) > MAX_DEPENDENCIES or not dependencies_fit({**dependencies, **additions}):
+                return
+            record = {
+                "handle": f"s{len(records)}",
+                "kind": source["kind"],
+                "text": source["text"],
+            }
+            if len(records) == 6:
+                return
+            try:
+                trial = {
+                    "version": VERSION,
+                    "states": visible,
+                    "sources": [*records, record],
+                }
+                projection(trial)
+                if len(encoded(trial).encode()) > budget:
+                    return
+            except ValueError:
+                return
+            records.append(record)
+            source_keys.append(key)
+            dependencies.update(additions)
+
+        # Trusted adapters may prioritize evidence actually present in this call.
+        # Its complete record consumes budget before optional state/history.
+        for key in priority_keys:
+            add_source(key, sources[key])
         # Authorization and source validity precede deterministic ranking/limits.
         heads = self._heads(db, sources)
         from app.cognition.retrieval import MemoryContextSelector
@@ -255,7 +296,11 @@ class IntellectualStateStore:
                 payload["review_condition"],
                 len(visible),
             )
-            trial = {"version": VERSION, "states": [*visible, record], "sources": []}
+            trial = {
+                "version": VERSION,
+                "states": [*visible, record],
+                "sources": records,
+            }
             try:
                 projection(trial)
                 if len(encoded(trial).encode()) > budget:
@@ -269,37 +314,10 @@ class IntellectualStateStore:
             visible.append(record)
             selected.append([item, revision])
             dependencies.update(deps)
-        records = []
         # Every supplied source is material context even if too large to cite.
         for key, source in sorted(sources.items()):
-            if visible_keys is not None and key not in visible_keys:
-                continue
-            additions = {**source["dependencies"], key: source["binding"]}
-            if len(
-                dependencies.keys() | additions.keys()
-            ) > MAX_DEPENDENCIES or not dependencies_fit({**dependencies, **additions}):
-                continue
-            record = {
-                "handle": f"s{len(records)}",
-                "kind": source["kind"],
-                "text": source["text"],
-            }
-            if len(records) == 6:
-                continue
-            try:
-                trial = {
-                    "version": VERSION,
-                    "states": visible,
-                    "sources": [*records, record],
-                }
-                projection(trial)
-                if len(encoded(trial).encode()) > budget:
-                    continue
-            except ValueError:
-                continue
-            records.append(record)
-            source_keys.append(key)
-            dependencies.update(additions)
+            if key not in priority_keys:
+                add_source(key, source)
         result = projection({"version": VERSION, "states": visible, "sources": records})
         snapshot = {
             "projection": result,
@@ -446,9 +464,10 @@ class IntellectualStateStore:
                 )
             ):
                 raise ValueError("invalid intellectual evidence")
-        if not proposal["supporting"] or set(proposal["supporting"]) & set(
-            proposal["conflicting"]
-        ):
+        if (
+            not proposal["supporting"]
+            and (decision == "create" or not proposal["conflicting"])
+        ) or set(proposal["supporting"]) & set(proposal["conflicting"]):
             raise ValueError("missing intellectual evidence")
         previous = None
         if decision == "create":
@@ -530,6 +549,14 @@ INSTRUCTIONS = (
     "proof. Goals are intentions, questions are open inquiry, neither grants action "
     "or research permission. Supporting/conflicting select only shown source handles. "
     "Keep counterevidence and a bounded natural language review condition."
+    " A revision may cite counterevidence alone; creating a new item requires a "
+    "supporting source. Do not invent support merely to retain or weaken a belief."
+    " hosted_research_model_report identifies the full untrusted hosted research "
+    "report in this call's conversation or prior_untrusted_public_evidence. Evaluate "
+    "its question, uncertainty, contradictions and claim/source relationships when "
+    "revising or retaining a position or goal. It is generated model assessment, "
+    "not independent verification; recorded URLs do not establish truth. No extra "
+    "research or action is authorized by an intellectual revision."
 )
 
 

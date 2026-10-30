@@ -20,6 +20,37 @@ class PrivateIntellectualState:
     def controls(self):
         return str(self.app._gate._ledger.control_generation())
 
+    def source_validator(self, db, principal):
+        """Recheck report ancestry without binding unrelated inference pipelines."""
+        state, sources = (
+            self.state(principal),
+            self.sources(principal, db),
+        )
+        checked = {}
+
+        def permitted(creator):
+            if creator not in checked:
+                reply = self.app._outputs._read(db, principal, creator)
+                deps = state.dependencies(db, creator)
+                report_ancestry = any(
+                    key.startswith("reply:")
+                    and self.app._research_evidence(key.removeprefix("reply:"))
+                    is not None
+                    for key in deps
+                )
+                checked[creator] = (
+                    reply is None
+                    or self.app._historical_research_permitted(principal, reply)
+                ) and (not report_ancestry or state._valid_dependencies(deps, sources))
+            return checked[creator]
+
+        return permitted
+
+    def research_valid(self, principal, operation):
+        """Narrative sees transcript/fiction, not the separate intellectual heads."""
+        with closing(self.app._event_store._open()) as db:
+            return self.source_validator(db, principal)(operation)
+
     def sources(self, principal, db):
         app = self.app
         result = {}
@@ -91,9 +122,20 @@ class PrivateIntellectualState:
                 "event:" + event: event for event in reply.operation.source_event_ids
             }
             deps.update(self.state(principal).dependencies(db, operation))
+            research = app._research_evidence(operation) is not None
+            text = reply.content
+            if research:
+                from .research_questions import read
+
+                text = "The complete untrusted hosted research report is in this call's conversation. Its uncertainty, contradictions and source relationships are model assessments, not independent factual verification."
+                question = read(db, operation)
+                if question is not None:
+                    text += " Minimized research question: " + question["question"]
             result["reply:" + operation] = {
-                "kind": "server_released_agent_response",
-                "text": reply.content,
+                "kind": "hosted_research_model_report"
+                if research
+                else "server_released_agent_response",
+                "text": text,
                 "binding": "release:" + operation,
                 "dependencies": deps,
             }
@@ -120,20 +162,86 @@ class PrivateIntellectualState:
         sources = self.sources(principal, db)
         visible = {"event:" + event for event in event_ids}
         visible.update(
-            sorted((key for key in sources if key.startswith("reply:")), reverse=True)[
-                :3
-            ]
+            sorted(
+                (
+                    key
+                    for key in sources
+                    if key.startswith("reply:")
+                    and sources[key]["kind"] != "hosted_research_model_report"
+                ),
+                reverse=True,
+            )[:3]
         )
         private = request.private if type(request) is SharedModelRequest else request
+        # Only complete reports actually admitted to this transcript get handles.
+        priority = tuple(
+            "reply:" + creator
+            for creator in private.released_reply_ids
+            if "reply:" + creator in sources
+            and sources["reply:" + creator]["kind"] == "hosted_research_model_report"
+        )[:1]
+        visible.update(priority)
         budget = (
             self.app._limits.max_utf8_bytes - len(request.serialize().encode()) - 64
         )
+
+        def omit_optional_context():
+            # Without a complete durable ancestry receipt, optional expressions
+            # cannot be material context for a new reply or memory transition.
+            if (
+                not private.memories
+                and not private.episodes
+                and not any(
+                    s.role.value == "agent" for s in private.conversation.conversation
+                )
+            ):
+                return request, event_ids
+            trial = replace(
+                private,
+                memories=(),
+                episodes=(),
+                projected_narrative_operation_ids=(),
+                memories_omitted=True,
+                released_reply_ids=(),
+                conversation=replace(
+                    private.conversation,
+                    conversation=tuple(
+                        s
+                        for s in private.conversation.conversation
+                        if s.role.value == "participant"
+                    ),
+                    history_omitted=True,
+                ),
+            )
+            return (
+                replace(request, private=trial)
+                if type(request) is SharedModelRequest
+                else trial
+            ), event_ids
+
         if budget < 128:
-            return request, event_ids
+            return omit_optional_context()
         from app.core.intellectual_state import IntellectualCapacityError
 
         required = {"event:" + event: event for event in event_ids}
         required["context:" + operation] = operation
+        # Protect every admitted expression and derived fiction, even when only
+        # one full research report has a selectable handle.
+        creators = set(private.released_reply_ids) | {
+            "reply:" + episode.removeprefix("narrative:")
+            for episode in private.projected_narrative_operation_ids
+        }
+        for creator in creators:
+            required.update(state.dependencies(db, creator))
+            if "context:" + creator in sources:
+                required["context:" + creator] = creator
+            key = "reply:" + creator
+            if (
+                key in sources
+                and sources[key]["kind"] == "hosted_research_model_report"
+            ):
+                required.update(sources[key]["dependencies"])
+                required[key] = sources[key]["binding"]
         shared = list(private.inherited_shared_operation_ids)
         if type(request) is SharedModelRequest:
             shared.extend(record.operation_id for record in request.shared)
@@ -167,13 +275,14 @@ class PrivateIntellectualState:
                 digest(json.loads(request.serialize())),
                 self.controls(),
                 visible_keys=visible,
+                priority_keys=priority,
                 budget=budget,
                 required_dependencies=required,
                 query=private.conversation.conversation[-1].content,
                 dependencies_fit=dependencies_fit,
             )
         except IntellectualCapacityError:
-            return request, event_ids
+            return omit_optional_context()
         trial = replace(private, intellectual_state=value)
         result = (
             replace(request, private=trial)

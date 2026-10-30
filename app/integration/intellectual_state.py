@@ -2,7 +2,12 @@
 
 import sqlite3
 
-from app.core.intellectual_state import IntellectualStateStore, initialize, digest
+from app.core.intellectual_state import (
+    IntellectualStateStore,
+    initialize,
+    digest,
+    PROMPT_VERSION,
+)
 
 
 class PublicIntellectualState:
@@ -84,8 +89,8 @@ class PublicIntellectualState:
                 payload = json.loads(raw)
                 if evidence is not None and self._origin_allowed(payload):
                     result["research:" + operation] = {
-                        "kind": "contextual_public_research",
-                        "text": "",
+                        "kind": "hosted_research_model_report",
+                        "text": "The full report in prior_untrusted_public_evidence is unverified model assessment, including its uncertainty and counterevidence; URLs are not factual approval.",
                         "binding": digest([payload, evidence]),
                         "dependencies": self.state.dependencies(db, operation),
                     }
@@ -189,6 +194,9 @@ class PublicIntellectualState:
             research_source=origin.get("intellectual_research_source"),
         )
         visible = {item["key"] for item in selected}
+        report = origin.get("intellectual_research_source")
+        priority = () if report is None else ("research:" + report,)
+        visible.update(priority)
         if origin["kind"] != "wake":
             visible.add(f"event:{origin['kind']}:{origin['event']}")
         # Outcomes are optional new projection records, not already visible context.
@@ -204,6 +212,7 @@ class PublicIntellectualState:
             digest(origin),
             str(self.app.ledger.control_generation()),
             visible_keys=visible,
+            priority_keys=priority,
             required_dependencies=required,
             query=sources.get(f"event:{origin['kind']}:{origin['event']}", {}).get(
                 "text", ""
@@ -275,7 +284,7 @@ class PublicIntellectualState:
                         operation,
                         proposal,
                         model,
-                        "threads-public-intellectual-prompt-v1",
+                        PROMPT_VERSION,
                         app.clock.now().isoformat(),
                     )
                 row = self.state._operation(db, operation)

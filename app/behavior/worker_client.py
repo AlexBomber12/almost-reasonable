@@ -14,6 +14,7 @@ from app.core.public_behavior import (
     parse_public_proposal,
 )
 from app.core.core_self import CORE_SELF_VERSION
+from app.core.intellectual_state import PROMPT_VERSION
 from app.core.provider_contract import CostEstimateStatus, PROVIDER_NAME
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES, ProviderAttemptRecord
 from app.trusted.openai_worker_protocol import receive_frame, send_frame
@@ -152,7 +153,7 @@ class PublicBehaviorClient:
                 PROVIDER_NAME,
                 telemetry["model_identifier"],
                 "threads-public-worker-v1",
-                "threads-public-intellectual-prompt-v1"
+                PROMPT_VERSION
                 if public.intellectual_state is not None
                 else "threads-public-prompt-v1",
                 CORE_SELF_VERSION,

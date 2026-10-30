@@ -15,6 +15,7 @@ from app.behavior.deliberation import parse_behavior_proposal
 from app.behavior.mission import MissionPurpose
 from app.core.public_behavior import parse_public_proposal
 from app.core.core_self import CORE_SELF_VERSION, initial_core_self
+from app.core.intellectual_state import PROMPT_VERSION
 from app.core.provider_contract import CostEstimateStatus, PROVIDER_NAME
 from app.core.provider_spend import (
     CONFIRMED_SPEND_LIMIT_CODES,
@@ -504,7 +505,7 @@ class PublicWorkerServer:
             provider=PROVIDER_NAME,
             model_identifier=getattr(self.adapter, "model", "public-model-unknown"),
             provider_config_version="threads-public-worker-v1",
-            prompt_version="threads-public-intellectual-prompt-v1"
+            prompt_version=PROMPT_VERSION
             if request.intellectual_state is not None
             else "threads-public-prompt-v1",
             core_self_version=CORE_SELF_VERSION,
