@@ -212,8 +212,9 @@ class PublicSDKAdapter:
             tools=[],
             text={"format": selected_format},
             store=False,
-            max_output_tokens=512,
+            max_output_tokens=2048 if self.model == "gpt-6.1-sol" else 512,
             timeout=request.deadline_seconds,
+            **({"reasoning": {"effort": "low"}} if self.model == "gpt-6.1-sol" else {}),
         )
         identifier = getattr(raw, "id", None)
         if type(identifier) is str and 0 < len(identifier) <= 128:
