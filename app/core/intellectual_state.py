@@ -25,6 +25,7 @@ SOURCE_KINDS = {
     "publication_unknown",
     "publication_failed",
     "decision_rejected",
+    "shared_abstract_influence",
 }
 
 

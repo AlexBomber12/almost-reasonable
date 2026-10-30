@@ -560,11 +560,9 @@ def _parse_context_request(
         base_fields.add("intellectual_state")
     _require_exact_dict(
         value,
-        base_fields | {"shared_intellectual_state", "shared_omitted"}
-        if shared
-        else base_fields | {"fictional_episodes"}
-        if narrative
-        else base_fields,
+        base_fields
+        | ({"shared_intellectual_state", "shared_omitted"} if shared else set())
+        | ({"fictional_episodes"} if narrative else set()),
     )
     expected = (
         NARRATIVE_CONTEXT_CONTRACT_VERSION

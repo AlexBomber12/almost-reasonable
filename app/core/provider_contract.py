@@ -614,7 +614,6 @@ def build_worker_shared_request(request, config: OpenAIProviderConfig) -> OpenAI
 
 
 def _build_openai_request(request, config: OpenAIProviderConfig) -> OpenAIRequest:
-    from app.cognition.conversation_context import MemoryModelRequest
     from app.cognition.worker_extraction import ExtractionModelRequest
     from app.cognition.worker_evolution import EvolutionModelRequest
     from app.cognition.worker_typed import TypedModelRequest
@@ -649,7 +648,7 @@ def _build_openai_request(request, config: OpenAIProviderConfig) -> OpenAIReques
         else "shared_abstraction_proposal"
         if type(request) is SharedProposalRequest
         else "narrative_reply"
-        if type(request) is MemoryModelRequest and request.narrative_mode
+        if getattr(getattr(request, "private", request), "narrative_mode", False)
         else "agent",
     )
     serialized = json.dumps(

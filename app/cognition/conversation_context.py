@@ -29,7 +29,7 @@ from app.privacy.application import PrivacyReadBlocked
 from .contracts import MemoryRecord, RetrievalPurpose, RetrievalRequest
 from .read_store import CognitionReadStore
 from .generic_store import MAX_GENERIC_SOURCES, GenericMemoryStore
-from .narrative_store import NarrativeStore
+from .narrative_store import NarrativeStore, narrative_creator_replies
 from .retrieval import MemoryContextSelector
 
 
@@ -405,6 +405,7 @@ class MemoryConversationAssembler:
                     ),
                 )
             )
+        outputs = AgentOutputStore(self._store)
         if include_narrative:
             narrative_limit = 15 if reserve_narrative_slot else 16
             episodes = tuple(
@@ -423,24 +424,33 @@ class MemoryConversationAssembler:
                 reverse=True,
             )
             for episode in ranked:
-                creator_reply = "reply:" + episode.operation_id.removeprefix(
-                    "narrative:"
-                )
-                creator_edge = db.execute(
-                    """SELECT 1 FROM protected_reply_narrative
-                       WHERE reply_operation_id=? AND principal_id=?
-                         AND narrative_operation_id=?""",
-                    (
-                        creator_reply,
-                        principal.principal_id.value,
-                        episode.operation_id,
-                    ),
-                ).fetchone()
-                if creator_edge is not None and db.execute(
-                    "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
-                    (creator_reply,),
-                ).fetchone() != ("completed", f"release:{creator_reply}"):
+                extra_shared = set()
+                allowed = True
+                for creator_reply in narrative_creator_replies(
+                    db, principal.principal_id.value, episode.operation_id
+                ):
+                    if db.execute(
+                        "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                        (creator_reply,),
+                    ).fetchone() != ("completed", f"release:{creator_reply}"):
+                        allowed = False
+                        break
+                    creator = outputs._read(db, principal, creator_reply)
+                    if creator is None or not reply_permitted(creator):
+                        allowed = False
+                        break
+                    extra_shared.update(creator.operation.shared_operation_ids)
+                if not allowed:
                     continue
+                all_shared = set(request.inherited_shared_operation_ids) | extra_shared
+                shared_sources = {
+                    row[0]
+                    for operation in all_shared
+                    for row in db.execute(
+                        "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                        (operation,),
+                    )
+                }
                 proposed = replace(
                     request,
                     episodes=(
@@ -455,23 +465,31 @@ class MemoryConversationAssembler:
                         *request.projected_narrative_operation_ids,
                         episode.operation_id,
                     ),
+                    inherited_shared_operation_ids=tuple(sorted(all_shared)),
                 )
                 if (
                     len(proposed.narrative_operation_ids) <= narrative_limit
-                    and len(sources | set(episode.sources)) <= 100
+                    and len(all_shared) <= 16
+                    and len(sources | shared_sources | set(episode.sources)) <= 100
                     and len(proposed.serialize().encode("utf-8"))
                     <= self._limits.max_utf8_bytes
                 ):
                     request = proposed
                     sources.update(episode.sources)
         history_omitted = False
-        outputs = AgentOutputStore(self._store)
         selected_history = ()
         released_reply_ids = []
-        inherited_shared = set()
+        inherited_shared = set(request.inherited_shared_operation_ids)
         inherited_generic = set(request.generic_operation_ids)
         inherited_narrative = set(request.narrative_operation_ids)
-        shared_sources = set()
+        shared_sources = {
+            row[0]
+            for operation in inherited_shared
+            for row in db.execute(
+                "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                (operation,),
+            )
+        }
 
         def source_budget_exceeded(extra_private, extra_shared):
             return len(sources | shared_sources | extra_private | extra_shared) > 100

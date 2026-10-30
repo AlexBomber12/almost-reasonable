@@ -65,7 +65,13 @@ _CHECKS = (
         OR NOT EXISTS (SELECT 1 FROM protected_shared_sources s
             WHERE s.operation_id=o.operation_id AND s.role<>'inherited')
         OR (o.status='active' AND (o.reason<>'approved' OR
-            o.screen_version<>'abstract-privacy-screen-v1' OR
+            (o.screen_version<>'abstract-privacy-screen-v1' AND NOT (
+                o.screen_version='ordinary-abstract-generality-v1' AND
+                EXISTS (SELECT 1 FROM protected_shared_manifests m
+                    WHERE m.operation_id=o.operation_id
+                    AND json_extract(m.binding,'$.ordinary_policy')='ordinary-abstract-to-shared-v1'
+                    AND json_type(m.binding,'$.reviewed') IS NULL)
+                AND o.mission_evidence=0)) OR
             o.screen_result<>'shared_commit_disabled'))
         OR (o.status='invalidated') <> NOT EXISTS (SELECT 1 FROM shared_payloads p
             WHERE p.operation_id=o.operation_id)""",
@@ -161,6 +167,7 @@ def validate_shared_graph(db: sqlite3.Connection) -> None:
         )
     ):
         raise ValueError("shared_payload_binding_mismatch")
+    _validate_ordinary_abstracts(db)
     for operation, dependencies, receipt in dependency_records(db):
         validate_dependencies(db, dependencies)
         if receipt:
@@ -203,6 +210,55 @@ def validate_shared_graph(db: sqlite3.Connection) -> None:
                 or (row[1] is not None and row[1] not in dependencies["reviews"])
             ):
                 raise ValueError("shared model candidate binding mismatch")
+
+
+def _validate_ordinary_abstracts(db):
+    from types import SimpleNamespace
+    from app.cognition.ordinary_abstract import (
+        ORDINARY_POLICY_VERSION,
+        ORDINARY_SCREEN_VERSION,
+        screen_ordinary_abstract_candidate,
+    )
+
+    for operation, binding, version, mission, value in db.execute(
+        "SELECT o.operation_id,m.binding,o.screen_version,o.mission_evidence,p.value "
+        "FROM shared_operations o JOIN protected_shared_manifests m USING(operation_id) "
+        "JOIN shared_payloads p USING(operation_id) "
+        "WHERE json_type(m.binding,'$.ordinary_policy') IS NOT NULL"
+    ).fetchall():
+        manifest = json.loads(binding)
+        if (
+            manifest["ordinary_policy"] != ORDINARY_POLICY_VERSION
+            or version != ORDINARY_SCREEN_VERSION
+            or mission != 0
+            or "reviewed" in manifest
+        ):
+            raise ValueError("invalid ordinary abstract authority")
+        # Recheck live values on recovery/retrieval as well as initial screening.
+        # Rejected/quarantined values contain only a withheld placeholder.
+        if (
+            db.execute(
+                "SELECT status FROM shared_operations WHERE operation_id=?",
+                (operation,),
+            ).fetchone()[0]
+            != "active"
+        ):
+            continue
+        sources = tuple(
+            SimpleNamespace(content=row[0])
+            for row in db.execute(
+                "SELECT p.content FROM protected_shared_sources s JOIN event_envelopes e USING(event_id) "
+                "JOIN private_payloads p USING(payload_id) WHERE s.operation_id=?",
+                (operation,),
+            )
+        )
+        if (
+            screen_ordinary_abstract_candidate(
+                SimpleNamespace(value=value), sources
+            ).decision.value
+            != "allow"
+        ):
+            raise ValueError("ordinary abstract screen no longer valid")
 
 
 def erase_shared_source(db: sqlite3.Connection, event_id: str) -> None:
@@ -288,6 +344,10 @@ def _erase_invalidated_shared(db: sqlite3.Connection) -> None:
         "UPDATE agent_reply_sources SET retention_status='invalidated' WHERE operation_id IN "
         "(SELECT operation_id FROM agent_reply_operations WHERE retention_status='invalidated')"
     )
+    from app.cognition.narrative_store import erase_shared_narrative
+
+    if db.execute("PRAGMA user_version").fetchone()[0] >= 12:
+        erase_shared_narrative(db)
     from app.core.intellectual_state import erase_source
 
     for (operation,) in db.execute(

@@ -959,13 +959,19 @@ class _DurableConversationRuntime(ConversationService):
         try:
             result = self._gate.authorized(commit)
             if type(result) is ReviewedSharedCandidate:
-                reason = self._shared.quarantine(
+                reason = (
+                    self._shared.transition
+                    if self._shared._ordinary_enabled
+                    else self._shared.quarantine
+                )(
                     result,
                     persistence_guard=self._shared_proposal_controls,
                     model_dependencies=audit.snapshot.dependencies,
                 )
                 status = (
-                    "accepted" if reason == "shared_commit_disabled" else "rejected"
+                    "accepted"
+                    if reason in {"shared_commit_disabled", operation_id}
+                    else "rejected"
                 )
             else:
                 status = result
@@ -1310,18 +1316,24 @@ class _DurableConversationRuntime(ConversationService):
         proposal = audit.proposal
         if proposal is None or proposal.decision == "no_change":
             return context
-        episodes = list(context.episodes)
+        private = context.private if type(context) is SharedModelRequest else context
+        episodes = list(private.episodes)
         if proposal.decision == "revise":
             target = dict(audit.selected).get(proposal.handle)
-            if target not in context.projected_narrative_operation_ids:
+            if target not in private.projected_narrative_operation_ids:
                 raise ValueError("narrative projection unavailable")
-            index = context.projected_narrative_operation_ids.index(target)
+            index = private.projected_narrative_operation_ids.index(target)
             episodes[index] = FictionEpisode(
                 proposal.episode, episodes[index].revision + 1
             )
         else:
             episodes.append(FictionEpisode(proposal.episode, 1))
-        projected = replace(context, episodes=tuple(episodes))
+        projected_private = replace(private, episodes=tuple(episodes))
+        projected = (
+            replace(context, private=projected_private)
+            if type(context) is SharedModelRequest
+            else projected_private
+        )
         if len(projected.serialize().encode("utf-8")) > max_utf8_bytes:
             raise ValueError("narrative projection exceeds context budget")
         return projected
@@ -1966,13 +1978,16 @@ class _DurableConversationRuntime(ConversationService):
                     tuple(sorted(source_ids)),
                 ).fetchall()
                 context_texts = []
-                if type(context) is MemoryModelRequest:
+                private = (
+                    context.private if type(context) is SharedModelRequest else context
+                )
+                if type(private) is MemoryModelRequest:
                     # These exact server-released public reports were absent
                     # from private comparison material before continuity support.
                     # Keep their raw private sources and all ordinary responses
                     # in the H screen; do not reclassify report prose as secrets.
                     public_reports = set()
-                    for creator in context.released_reply_ids:
+                    for creator in private.released_reply_ids:
                         prior = self._outputs._read(db, route.principal, creator)
                         evidence = self._research_evidence(creator)
                         if (
@@ -1984,14 +1999,14 @@ class _DurableConversationRuntime(ConversationService):
                             public_reports.add(prior.content)
                     context_texts.extend(
                         segment.content
-                        for segment in context.conversation.conversation
+                        for segment in private.conversation.conversation
                         if not (
                             segment.role.value == "agent"
                             and segment.content in public_reports
                         )
                     )
-                    context_texts.extend(episode.text for episode in context.episodes)
-                    for memory in context.memories:
+                    context_texts.extend(episode.text for episode in private.episodes)
+                    for memory in private.memories:
                         context_texts.extend(
                             value
                             for value in (
@@ -2687,10 +2702,6 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("shared_proposals_enabled must be bool")
         if shared_proposals_enabled and kwargs.get("shared_intelligence") is None:
             raise ValueError("shared proposals require shared intelligence")
-        if narrative_enabled and shared_proposals_enabled:
-            raise ValueError("narrative mode cannot combine with shared proposals")
-        if narrative_enabled and kwargs.get("shared_intelligence") is not None:
-            raise ValueError("narrative mode cannot combine with shared intelligence")
         if os.path.samefile(
             provider_state._event_store.database_path, event_store.database_path
         ):

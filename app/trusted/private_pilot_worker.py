@@ -223,8 +223,10 @@ class PilotRequestGate:
         typed = type(request.model_request) is TypedModelRequest
         narrative = type(request.model_request) is NarrativeModelRequest
         narrative_context = (
-            type(request.model_request) is MemoryModelRequest
-            and request.model_request.narrative_mode
+            type(request.model_request) in {MemoryModelRequest, SharedModelRequest}
+            and getattr(
+                request.model_request, "private", request.model_request
+            ).narrative_mode
         )
         shared = type(request.model_request) is SharedProposalRequest
         limit = (
