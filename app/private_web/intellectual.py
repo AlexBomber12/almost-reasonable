@@ -295,16 +295,33 @@ class PrivateIntellectualState:
             inherited = self.inherited_operations(
                 db, principal, operation, dependencies=dependencies, sources=sources
             )
-            from app.core.public_intellectual_receipt import collect
-            from app.core.intellectual_state import encoded
+            from app.core.public_intellectual_receipt import (
+                collect,
+                MAX_PROTECTED_BYTES,
+            )
+            from app.core.intellectual_state import encoded, MAX_DEPENDENCIES
+
+            # bind_context adds every imported shared root to this same graph.
+            # Account for that complete union before admitting optional context.
+            complete = dict(dependencies)
+            for shared_operation in set(base_groups[0]) | inherited[0]:
+                for (event,) in db.execute(
+                    "SELECT event_id FROM protected_shared_sources WHERE operation_id=?",
+                    (shared_operation,),
+                ):
+                    complete["event:" + event] = event
 
             protected = {
-                "dependencies": dependencies,
+                "dependencies": complete,
                 "external_receipts": collect(dependencies, sources),
             }
-            return len(encoded(protected).encode()) <= 45056 and all(
-                len(set(base) | extra) <= limit
-                for base, extra, limit in zip(base_groups, inherited, limits)
+            return (
+                len(complete) <= MAX_DEPENDENCIES
+                and len(encoded(protected).encode()) <= MAX_PROTECTED_BYTES
+                and all(
+                    len(set(base) | extra) <= limit
+                    for base, extra, limit in zip(base_groups, inherited, limits)
+                )
             )
 
         try:
