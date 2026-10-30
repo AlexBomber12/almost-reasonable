@@ -396,6 +396,7 @@ def test_public_revision_during_private_provider_call_blocks_release(integrated)
 
 def test_public_source_selection_is_bounded_before_private_projection(integrated):
     from datetime import timedelta
+    from app.core.public_intellectual_receipt import source_key
 
     public, worker, _, _, clock, bridge, _, _, _, _, _, _, _, _ = integrated
     for index in range(6):
@@ -409,6 +410,110 @@ def test_public_source_selection_is_bounded_before_private_projection(integrated
             == 7
         )
     assert len(bridge.sources()) == 6
+    with public.journal.transaction() as db:
+        heads = public.intellectual.state._heads(db, public.intellectual.sources())
+    keys = frozenset(source_key(public.account, row[0]) for row in heads)
+    assert len(bridge.sources(required_keys=keys)) == 7
+    assert bridge.sources(required_keys=frozenset({"missing"})) == {}
+
+
+@pytest.mark.parametrize(
+    "required", [[], frozenset(), frozenset(str(i) for i in range(101))]
+)
+def test_dependency_revalidation_requests_remain_closed_and_bounded(
+    integrated, required
+):
+    assert integrated[5].sources(required_keys=required) == {}
+
+
+def test_selection_eviction_preserves_live_private_reply_and_intellectual_state(
+    integrated,
+):
+    from datetime import timedelta
+    from test_event_store import principal
+
+    public, worker, _, _, clock, bridge, app, a, _, events, _, gate, sdk, server = (
+        integrated
+    )
+    original = bridge.sources()
+
+    def choose():
+        frame = json.loads(sdk.calls[-1]["input"])["intellectual_state"]
+        handle = next(
+            row["handle"]
+            for row in frame["sources"]
+            if row["kind"] == "public_agent_state"
+        )
+        sdk.change = proposal(handle)
+
+    sdk.before_result = choose
+    assert (
+        private_submit(server, a, "retain-old", "Обсудим этот устойчивый интерес.")[
+            "model_state"
+        ]
+        == "completed"
+    )
+    with events._open() as db:
+        operation = db.execute(
+            "SELECT operation_id FROM agent_reply_operations"
+        ).fetchone()[0]
+    runtime = app._conversations
+    assert gate.authorized(
+        lambda: runtime._public_intellectual_dependencies_live(
+            operation, principal("a")
+        )
+    )
+    for index in range(6):
+        clock.advance(timedelta(days=1))
+        wake(public, worker, clock, f"newer-{index}")
+    assert len(bridge.sources()) == 6 and not set(original) & set(bridge.sources())
+    assert bridge.sources(required_keys=frozenset(original)) == original
+    assert gate.authorized(
+        lambda: runtime._public_intellectual_dependencies_live(
+            operation, principal("a")
+        )
+    )
+    sdk.before_result = lambda: None
+    sdk.change = None
+    assert (
+        private_submit(server, a, "after-eviction", "Продолжим разговор.")[
+            "model_state"
+        ]
+        == "completed"
+    )
+    frame = json.loads(sdk.calls[-1]["input"])["intellectual_state"]
+    assert len(frame["states"]) == 1
+    assert (
+        len([row for row in frame["sources"] if row["kind"] == "public_agent_state"])
+        <= 6
+    )
+    with public.service.store._open() as db:
+        db.execute(
+            "DELETE FROM threads_inbound_events WHERE account_ref=?", (public.account,)
+        )
+    assert not gate.authorized(
+        lambda: runtime._public_intellectual_dependencies_live(
+            operation, principal("a")
+        )
+    )
+
+
+def test_oversized_converted_public_record_does_not_hide_other_live_sources(integrated):
+    public, worker, sdk, _, clock, bridge, *_ = integrated
+    original = bridge.sources()
+    sdk.proposal["intellectual"] = proposal(
+        fields={
+            "topic": "x" * 1740,
+            "strength": 60,
+            "status": "active",
+            "reason_for_interest": "Хочу разобраться.",
+        }
+    )
+    wake(public, worker, clock, "large-valid-interest")
+    with public.journal.transaction() as db:
+        heads = public.intellectual.state._heads(db, public.intellectual.sources())
+    assert len(heads) == 2
+    assert set(original) <= set(bridge.sources())
 
 
 def test_arbitrary_adapter_cannot_enter_the_private_runtime(integrated):
@@ -426,7 +531,7 @@ def test_arbitrary_adapter_cannot_enter_the_private_runtime(integrated):
     assert len(sdk.calls) == calls
 
 
-@pytest.mark.parametrize("phase", [None, "before", "during"])
+@pytest.mark.parametrize("phase", [None, "before", "during", "evicted"])
 def test_public_ancestry_protects_fiction_inference_and_later_context(
     integrated, phase
 ):
@@ -434,7 +539,22 @@ def test_public_ancestry_protects_fiction_inference_and_later_context(
     from app.cognition.narrative_store import NarrativeStore
     from test_event_store import principal
 
-    public, _, _, _, _, bridge, app, a, _, events, _, gate, sdk, server = integrated
+    (
+        public,
+        public_worker,
+        _,
+        _,
+        public_clock,
+        bridge,
+        app,
+        a,
+        _,
+        events,
+        _,
+        gate,
+        sdk,
+        server,
+    ) = integrated
     private_submit(server, a, "public-context", "Обсудим твой новый интерес.")
     sdk.change = None
     old, create = app._conversations, sdk.create
@@ -485,9 +605,19 @@ def test_public_ancestry_protects_fiction_inference_and_later_context(
     before = len(sdk.calls)
     try:
         result = json.loads(a.submit("fiction", "Создай вымышленную историю.")[2])
-        if phase is None:
+        if phase in {None, "evicted"}:
             assert result["model_state"] == "completed" and len(sdk.calls) == before + 2
             assert NarrativeStore(events).current(principal("a"))
+            if phase == "evicted":
+                from datetime import timedelta
+
+                for index in range(6):
+                    public_clock.advance(timedelta(days=1))
+                    wake(public, public_worker, public_clock, f"after-fiction-{index}")
+                sdk.create = create
+                result = json.loads(a.submit("still-live", "Продолжим разговор.")[2])
+                assert result["model_state"] == "completed"
+                assert "PUBLIC_FICTION_CANARY" in sdk.calls[-1]["input"]
             withdraw()
             sdk.create = create
             result = json.loads(a.submit("later", "Продолжим разговор.")[2])
