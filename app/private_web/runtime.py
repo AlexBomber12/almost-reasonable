@@ -2624,7 +2624,11 @@ class _DurableConversationRuntime(ConversationService):
             current = (
                 {}
                 if source is None
-                else source.sources(principal=principal, _private_db=db)
+                else source.sources(
+                    principal=principal,
+                    _private_db=db,
+                    required_keys=frozenset(required),
+                )
             )
         return all(
             key in current and current[key]["binding"] == value
