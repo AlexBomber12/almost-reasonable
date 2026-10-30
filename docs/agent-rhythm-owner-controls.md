@@ -1,11 +1,10 @@
 # Bounded rhythm and integrated owner controls
 
-This change implements the scheduling and control portion of Stage 8. Remaining
-Stage 8 work includes public-to-private intellectual provenance and integration
-acceptance. A prototype of that path exposed unsupported external dependencies
-in private restore validation; it is excluded from this change. Private restore
-validation remains intact. No complete Stage 8, M1–M6 or SCN01–12 acceptance is
-claimed here.
+This document describes the scheduling and control portion of Stage 8. The
+public-to-private integration and its protected restore/deletion ancestry are
+described in [public-private-intellectual-provenance.md](public-private-intellectual-provenance.md).
+Real-model M1–M6 and SCN01–12 acceptance remain separate from deterministic
+implementation checks.
 
 ## Agent-selected rhythm
 
