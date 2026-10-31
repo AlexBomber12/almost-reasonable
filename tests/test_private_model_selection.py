@@ -1,6 +1,7 @@
 """Protected ordinary model selection and conservative grant replacement."""
 
 from datetime import timedelta
+import json
 import os
 import sqlite3
 from threading import Thread
@@ -27,8 +28,9 @@ from test_private_operating_grant import NOW, grant
 
 
 @pytest.mark.parametrize("model", ["gpt-6-luna", "gpt-6.1-sol"])
+@pytest.mark.parametrize("intellectual", [False, True])
 def test_ordinary_worker_uses_protected_model_and_records_real_request_model(
-    tmp_path, monkeypatch, model
+    tmp_path, monkeypatch, model, intellectual
 ):
     path, value, _ = grant(tmp_path)
     value["model"] = model
@@ -64,7 +66,18 @@ def test_ordinary_worker_uses_protected_model_and_records_real_request_model(
         result = OpenAIWorkerClient(
             tmp_path / "worker.sock", expected_worker_uid=os.geteuid()
         ).infer(
-            MemoryModelRequest(model_request(), (), False),
+            MemoryModelRequest(
+                model_request(),
+                (),
+                False,
+                intellectual_state={
+                    "version": "agent-intellectual-state-v1",
+                    "states": [],
+                    "sources": [],
+                }
+                if intellectual
+                else None,
+            ),
             operation_id="reply:" + "a" * 64,
             correlation_id="synthetic-model-selection",
         )
@@ -80,11 +93,23 @@ def test_ordinary_worker_uses_protected_model_and_records_real_request_model(
             assert "reasoning" not in payload
         assert payload["tools"] == [] and payload["store"] is False
         assert payload["text"]["format"]["strict"] is True
+        facts = json.loads(
+            payload["instructions"]
+            .split("Trusted dialogue identity (application-owned):\n", 1)[1]
+            .splitlines()[0]
+        )
+        assert facts["application_name"] == "Almost Reasonable"
+        assert facts["configured_model"] == model
+        expected_prompt = (
+            "agent-proposal-v3-intellectual-v4" if intellectual else "agent-proposal-v3"
+        )
+        if intellectual:
+            assert result.validation.intellectual_prompt == expected_prompt
         assert allowance.remaining() == 39
         with sqlite3.connect(provider) as connection:
             assert connection.execute(
-                "SELECT model_identifier FROM provider_usage_attempts"
-            ).fetchall() == [(model,)]
+                "SELECT model_identifier, prompt_version FROM provider_usage_attempts"
+            ).fetchall() == [(model, expected_prompt)]
     finally:
         thread.join(5)
         worker.close()

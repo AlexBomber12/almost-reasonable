@@ -591,7 +591,7 @@ def test_authenticated_process_worker_persists_and_retrieves_memory_after_restar
     with EventStore(tmp_path / "worker-provider.db")._open() as db:
         assert set(
             db.execute("SELECT prompt_version FROM provider_usage_attempts").fetchall()
-        ) == {("private-extraction-v2",), ("agent-intellectual-state-v1",)}
+        ) == {("private-extraction-v2",), ("agent-proposal-v3-intellectual-v4",)}
     reopened = EventStore(events.database_path)
     new_gate = type(gate)(_ledger, reopened)
     assert new_gate.reconcile()
@@ -828,7 +828,7 @@ def test_malformed_extraction_creates_no_memory_and_app_replay_does_not_call_wor
                 "SELECT prompt_version,outcome,total_tokens FROM provider_usage_attempts ORDER BY attempt_id"
             ).fetchall() == [
                 ("private-extraction-v2", "invalid_proposal", 2),
-                ("agent-intellectual-state-v1", "completed", 2),
+                ("agent-proposal-v3-intellectual-v4", "completed", 2),
             ]
             assert db.execute(
                 "SELECT count(*) FROM provider_attempt_reservations"

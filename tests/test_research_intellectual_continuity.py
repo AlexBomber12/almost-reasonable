@@ -301,7 +301,7 @@ def test_private_full_report_counterevidence_and_revision_survive_restart(
                     "SELECT payload FROM agent_intellectual_revisions WHERE revision=2"
                 ).fetchone()[0]
             )["metadata"]["prompt"]
-            == "agent-intellectual-state-prompt-v4"
+            == "agent-proposal-v3-intellectual-v4"
         )
     private_submit(server, b, "other", "Что ты узнал?")
     assert json.loads(sdk.calls[-1]["input"])["intellectual_state"]["states"] == []
