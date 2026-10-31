@@ -15,6 +15,7 @@ from time import monotonic
 
 from app.core.provider_contract import (
     MAX_OVERALL_TIMEOUT_SECONDS,
+    PRIVATE_INTELLECTUAL_PROMPT_VERSION,
     default_openai_provider_config,
 )
 from app.core.provider_spend import ProviderStateStore
@@ -420,7 +421,7 @@ class OpenAIWorkerServer:
                         validation=replace(
                             response.validation,
                             intellectual_model=self._gateway._config.model,
-                            intellectual_prompt="agent-intellectual-state-prompt-v4",
+                            intellectual_prompt=PRIVATE_INTELLECTUAL_PROMPT_VERSION,
                         ),
                     )
             try:

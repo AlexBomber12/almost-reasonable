@@ -9,11 +9,13 @@ import math
 import re
 
 from .agent_proposals import AgentDecision, NoActionReason
+from .dialogue_identity import private_dialogue_instructions
 from .model_contract import ModelRequest, serialize_model_request
 
 
 PROVIDER_NAME = "openai"
-PROMPT_VERSION = "agent-proposal-v2"
+PROMPT_VERSION = "agent-proposal-v3"
+PRIVATE_INTELLECTUAL_PROMPT_VERSION = "agent-proposal-v3-intellectual-v4"
 PROVIDER_CONFIG_VERSION = "openai-config-v1"
 APPROVED_OPENAI_MODELS = frozenset(("gpt-6-luna", "gpt-6.1-sol"))
 MAX_PROVIDER_INPUT_UTF8_BYTES = 384 * 1024
@@ -524,6 +526,8 @@ class OpenAIRequest:
             "max_output_tokens": self.max_output_tokens,
             "truncation": "disabled",
         }
+        if self.purpose in {"agent", "narrative_reply"}:
+            payload["instructions"] += private_dialogue_instructions(self.model)
         if self.model == "gpt-6.1-sol":
             payload["reasoning"] = {"effort": "low"}
         return payload

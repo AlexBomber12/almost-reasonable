@@ -39,6 +39,7 @@ from app.cognition.worker_shared import (
 from app.cognition.provider_envelope import ProposalDiagnostic
 from app.core.model_contract import ModelRequest
 from app.core.provider_contract import (
+    PRIVATE_INTELLECTUAL_PROMPT_VERSION,
     PROVIDER_NAME,
     DeploymentStage,
     OpenAIProviderConfig,
@@ -482,7 +483,7 @@ class TrustedOpenAIGateway:
             model_identifier=self._config.model,
             provider_config_version=self._config.version,
             prompt_version=(
-                "agent-intellectual-state-v1"
+                PRIVATE_INTELLECTUAL_PROMPT_VERSION
                 if getattr(
                     getattr(request, "private", request), "intellectual_state", None
                 )
