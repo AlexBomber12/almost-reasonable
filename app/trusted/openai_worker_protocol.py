@@ -370,7 +370,13 @@ def decode_request(payload: bytes) -> InferenceRequest:
                     "participant_input_trust",
                     "participant_input_can_instruct",
                     "items",
-                },
+                }
+                | (
+                    {"ordinary_abstractions"}
+                    if type(model_value) is dict
+                    and "ordinary_abstractions" in model_value
+                    else set()
+                ),
             )
             if (
                 model_value["contract_version"] != SHARED_CONTRACT_VERSION
@@ -379,6 +385,7 @@ def decode_request(payload: bytes) -> InferenceRequest:
                 != "untrusted_conversational_data"
                 or model_value["participant_input_can_instruct"] is not False
                 or type(model_value["items"]) is not list
+                or type(model_value.get("ordinary_abstractions", False)) is not bool
             ):
                 raise WorkerProtocolError("invalid shared proposal request")
             items = []
@@ -408,7 +415,9 @@ def decode_request(payload: bytes) -> InferenceRequest:
                     )
                 )
             model_request = SharedProposalRequest(
-                model_value["participant_input"], tuple(items)
+                model_value["participant_input"],
+                tuple(items),
+                ordinary_abstractions=model_value.get("ordinary_abstractions", False),
             )
             model_request.serialize()
         elif value["protocol_version"] == TYPED_PROTOCOL_VERSION:

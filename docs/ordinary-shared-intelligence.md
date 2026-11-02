@@ -92,3 +92,24 @@ CI now runs on pull requests targeting dependent branches as well as `main`.
 This preserves the full gate and exact-head artifact evidence for a stack of
 unmerged stages. Each stage still needs current-head CI and Codex Review before
 human merge authorization.
+
+## Model-facing policy and rejection diagnostics
+
+An ordinary-enabled application marks its shared-proposal request with the
+optional, strictly boolean `ordinary_abstractions` field. The worker preserves
+that field across the existing authenticated IPC protocol and supplies the
+actual lexical generality vocabulary as formatting guidance. This is a set of
+permitted words, not seeded opinions or required interests. The model may choose
+`no_change`; every suggestion still passes the unchanged source, overlap,
+identifier, ordinary-generality and application-policy checks. The hint grants
+no consent, promotion, tool, spending or publication authority. Disabled requests
+keep their old wire shape and prompt version. Ordinary proposals record prompt
+version `shared-proposal-v3`; app and worker must be upgraded together.
+
+Quarantined ordinary operations retain a fixed screening reason in `screen_result`
+while `reason` remains `privacy_rejected`. Unknown vocabulary can therefore be
+distinguished from source overlap or protected markers without retaining the
+rejected statement. Old records are not retrospectively reclassified. These
+offline regressions establish the policy path, not real-model abstraction quality.
+Use the [live dialogue checklist](live-dialogue-checklist.md) to collect separately
+reviewed behavioral observations.

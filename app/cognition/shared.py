@@ -269,6 +269,13 @@ class SharedIntelligence:
                 screened_reason = (
                     result.reason.value if complete_allowed else "privacy_rejected"
                 )
+                screen_diagnostic = screened_reason
+                if ordinary and not complete_allowed:
+                    screen_diagnostic = (
+                        complete_screen.reason
+                        if complete_screen.decision.value != "allow"
+                        else "protected_source_marker"
+                    )
                 retained_value = (
                     payload.value
                     if reviewed
@@ -371,7 +378,7 @@ class SharedIntelligence:
                         payload.memory_kind.value,
                         screened_reason,
                         result.audit.screen_version,
-                        screened_reason,
+                        screen_diagnostic,
                         len(sources),
                         len(approval.audience),
                         EventStore._serialize_time(self._clock()),

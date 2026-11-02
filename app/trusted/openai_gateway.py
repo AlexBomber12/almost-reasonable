@@ -494,6 +494,9 @@ class TrustedOpenAIGateway:
                 if type(request) is TypedModelRequest
                 else "private-narrative-v2"
                 if type(request) is NarrativeModelRequest
+                else "shared-proposal-v3"
+                if type(request) is SharedProposalRequest
+                and request.ordinary_abstractions
                 else "shared-proposal-v2"
                 if type(request) is SharedProposalRequest
                 else "private-extraction-v2"

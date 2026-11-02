@@ -528,6 +528,19 @@ class OpenAIRequest:
         }
         if self.purpose in {"agent", "narrative_reply"}:
             payload["instructions"] += private_dialogue_instructions(self.model)
+        if shared and json.loads(self.input_text).get("ordinary_abstractions") is True:
+            from app.cognition.ordinary_abstract import _WORDS
+
+            payload["instructions"] += (
+                " Ordinary abstraction policy: express only a detachable general idea, "
+                "never an attribute, preference, biography or quotation of a participant. "
+                "Use 3 to 64 words from the generality vocabulary below; other word "
+                "forms and identifying details will be withheld. Do not copy source "
+                "wording. This vocabulary never requires a new interest or belief "
+                "and grants no sharing approval. Choose no_change when a safe useful "
+                "abstraction is unavailable. Generality vocabulary\n"
+                + " ".join(sorted(_WORDS))
+            )
         if self.model == "gpt-6.1-sol":
             payload["reasoning"] = {"effort": "low"}
         return payload
