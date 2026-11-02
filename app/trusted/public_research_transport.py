@@ -81,6 +81,7 @@ class PublicResearchTransport:
             )
             failure.provider_code = sanitized.error_code
             raise failure from None
+        rejection_code = "research_response_invalid"
         try:
             if hasattr(raw, "model_dump"):
                 raw = raw.model_dump(mode="json")
@@ -93,6 +94,7 @@ class PublicResearchTransport:
 
             usage = raw.get("usage")
             if usage is not None:
+                rejection_code = "research_usage_invalid"
                 if (
                     type(usage) is not dict
                     or any(
@@ -108,15 +110,29 @@ class PublicResearchTransport:
                     key: usage[key]
                     for key in ("input_tokens", "output_tokens", "total_tokens")
                 }
+            rejection_code = "research_response_invalid"
             encoded = json.dumps(raw, ensure_ascii=False).encode("utf-8")
             if len(encoded) > MAX_PROVIDER_RESPONSE_UTF8_BYTES:
                 raise ValueError("oversized response")
             output = raw["output"]
             if type(output) is not list:
                 raise ValueError("invalid output")
+            if raw.get("status") != "completed":
+                details = raw.get("incomplete_details")
+                reason = details.get("reason") if type(details) is dict else None
+                rejection_code = (
+                    "research_output_truncated"
+                    if reason == "max_output_tokens"
+                    else "research_output_filtered"
+                    if reason == "content_filter"
+                    else "research_output_incomplete"
+                )
+                raise ValueError("incomplete response")
             return HostedSearchResponse(raw["id"], raw["status"], tuple(output))
         except (KeyError, TypeError, ValueError, UnicodeError):
-            raise HostedSearchTransportError("invalid_response") from None
+            failure = HostedSearchTransportError("invalid_response")
+            failure.provider_code = rejection_code
+            raise failure from None
 
 
 def _error_code(error: OpenAITransportError) -> str:

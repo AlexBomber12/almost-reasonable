@@ -566,6 +566,7 @@ class PublicResearchBoundary:
         began = None
         usage = None
         safe_response_id = None
+        rejection_code = "research_request_invalid"
         try:
             blocked = self._guard(grant)
             if blocked is not None:
@@ -656,6 +657,7 @@ class PublicResearchBoundary:
                     _response(blocked, 1, usage=usage),
                     response_id=safe_response_id,
                 )
+            rejection_code = "research_provenance_invalid"
             evidence = parse_hosted_search_response(
                 provider_result,
                 retrieved_at=self._utcnow(),
@@ -669,6 +671,7 @@ class PublicResearchBoundary:
                 return finish(
                     _response("invalid_response", 1, usage=usage),
                     response_id=safe_response_id,
+                    code="research_source_rejected",
                 )
             values = [evidence.text, evidence.response_id]
             for source in evidence.sources:
@@ -681,19 +684,23 @@ class PublicResearchBoundary:
                 return finish(
                     _response("invalid_response", 1, usage=usage),
                     response_id=safe_response_id,
+                    code="research_privacy_rejected",
                 )
+            rejection_code = "research_assessment_invalid"
             synthesis, assessment = build_assessed_synthesis(evidence, _UNCERTAINTY)
             texts = [synthesis.main_finding, *assessment_russian_texts(assessment)]
             if _screen(texts, self._screening) is not None:
                 return finish(
                     _response("invalid_response", 1, usage=usage),
                     response_id=safe_response_id,
+                    code="research_privacy_rejected",
                 )
             recorded_urls = {source.url for source in evidence.sources}
             if not prose_urls_are_recorded(texts, recorded_urls):
                 return finish(
                     _response("invalid_response", 1, usage=usage),
                     response_id=safe_response_id,
+                    code="research_uncited_url",
                 )
             policy = RussianOutputPolicy(max_regenerations=0)
             delivery = policy.deliver(synthesis.main_finding)
@@ -704,6 +711,7 @@ class PublicResearchBoundary:
                 return finish(
                     _response("output_gate_rejected", 1, usage=usage),
                     response_id=safe_response_id,
+                    code="research_language_rejected",
                 )
             report = {
                 "main_finding": delivery.text,
@@ -722,6 +730,7 @@ class PublicResearchBoundary:
                 ],
             }
             response = _response("completed", 1, report, usage)
+            rejection_code = "research_report_invalid"
             decode_public_response(_encode_json(response))
             return finish(response, response_id=safe_response_id)
         except (ProviderPersistenceError, sqlite3.Error, OSError, RuntimeError):
@@ -736,6 +745,7 @@ class PublicResearchBoundary:
                     started_at,
                     began,
                     response_id=safe_response_id,
+                    code=rejection_code,
                 )
             return result
 

@@ -63,3 +63,14 @@ the unchanged source-binding gate; this was not a successful research report.
 The prompt therefore also asks for evidence URLs from the current search and
 an inline citation for each, preferring one focused claim. Neither the probe
 nor these offline tests establish autonomous acceptance.
+
+Rejected public research now records a fixed diagnostic category in the existing
+protected provider-attempt `provider_error_code` field. Categories distinguish
+response shape/usage, provider-reported truncation or filtering, provenance,
+rejected sources, privacy, assessment structure, uncited prose URLs, language,
+and final report validation. Exception messages, response text and arbitrary
+provider `incomplete_details` are never copied into these categories. Usage and
+screened response IDs remain available when valid. The IPC failure stays generic
+and contains no rejected report. Consumption, duplicate prevention and rejection
+rules are unchanged; a diagnostic category never authorizes replay. Old attempts
+with no retained diagnostic remain unexplained rather than being backfilled.
