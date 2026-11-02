@@ -78,6 +78,7 @@ from app.threads.transport import ThreadsHTTPTransport
 from app.behavior.worker_client import PublicBehaviorClient
 
 PUBLIC_RUNTIME_VERSION = "threads-public-runtime-v1"
+_EXHAUSTED_RESEARCH = json.dumps({"outcome": "allowance_exhausted"})
 
 
 def _initialize_research_storage(db):
@@ -637,6 +638,11 @@ class ThreadsRuntime(ThreadsStage0):
             return self._available_topics_in(db, profile)
 
     def _available_topics_in(self, db, profile):
+        if db.execute(
+            "SELECT 1 FROM public_research_ops WHERE profile_digest=? AND phase='failed' AND evidence=? LIMIT 1",
+            (profile.digest, _EXHAUSTED_RESEARCH),
+        ).fetchone():
+            return ()
         rows = db.execute(
             "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
         ).fetchall()
@@ -1414,6 +1420,8 @@ class ThreadsRuntime(ThreadsStage0):
             else:
                 result = self.research_client.execute(request)
                 phase = "uncertain" if result["attempts"] == 1 else "failed"
+                if result["outcome"] == "allowance_exhausted":
+                    evidence = _EXHAUSTED_RESEARCH
                 if result["outcome"] == "completed":
                     report = result["report"]
                     evidence = json.dumps(

@@ -623,8 +623,22 @@ print('ok')
         )
         == "True"
     )
+    # The reserved, lost operation remains uncertain after restart. A new
+    # operation is a definitive zero-attempt aggregate denial instead.
     assert submit("lost")["model_state"] == "research_uncertain"
-    assert submit("exhausted")["model_state"] == "research_uncertain"
+    authority_snapshot = (
+        "import json, sqlite3; "
+        "print(json.dumps(sqlite3.connect('/seed/worker/research-authority.sqlite3')"
+        ".execute('SELECT * FROM reservations ORDER BY operation_id').fetchall()))"
+    )
+    reserved_before_exhaustion = inspect_seed(authority_snapshot)
+    assert len(json.loads(reserved_before_exhaustion)) == 2
+    exhausted = submit("exhausted")
+    assert exhausted["model_state"] == "research_failed"
+    replayed = submit("exhausted")
+    assert replayed["model_state"] == exhausted["model_state"]
+    assert replayed["response"] == exhausted["response"]
+    assert inspect_seed(authority_snapshot) == reserved_before_exhaustion
     logs = json.loads(
         inspect_seed(
             "import json; from pathlib import Path; print(json.dumps([json.loads(x) for x in Path('/seed/worker/research-calls.jsonl').read_text().splitlines()]))"

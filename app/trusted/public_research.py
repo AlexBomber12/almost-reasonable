@@ -94,6 +94,7 @@ _OUTCOMES = frozenset(
         "emergency_stop",
         "spend_suspended",
         "duplicate_operation",
+        "allowance_exhausted",
         "timeout",
         "rate_limit",
         "billing_quota",
@@ -207,6 +208,10 @@ def decode_public_response(payload: bytes) -> dict[str, object]:
         raise WorkerProtocolError("invalid public research usage")
     report = value["report"]
     if value["outcome"] != "completed":
+        if value["outcome"] == "allowance_exhausted" and (
+            value["attempts"] != 0 or usage is not None
+        ):
+            raise WorkerProtocolError("invalid exhausted research response")
         if report is not None or value["message"] != _FAILURE:
             raise WorkerProtocolError("invalid public research failure")
         return value
@@ -577,7 +582,13 @@ class PublicResearchBoundary:
                 selected[0],
                 question=request.question,
             ):
-                return _response("duplicate_operation")
+                return _response(
+                    "allowance_exhausted"
+                    if self._authority_journal.aggregate_exhausted(
+                        self._profile, request.operation_id
+                    )
+                    else "duplicate_operation"
+                )
             began = self._monotonic()
             started_at = self._utcnow()
             reservation = self._store.reserve_attempt(
