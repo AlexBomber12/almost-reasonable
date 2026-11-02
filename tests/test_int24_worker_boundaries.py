@@ -1,6 +1,7 @@
 """Public worker identity, one-use attempt and malformed result regression tests."""
 
 import json
+import math
 import os
 from pathlib import Path
 import sqlite3
@@ -559,7 +560,10 @@ def test_slow_public_response_uses_finite_model_budget_without_replay(
             with pytest.raises((ValueError, TimeoutError)):
                 client.complete(REQUEST, 30)
         assert sdk.calls == 1
-        assert sdk.kwargs["timeout"] == 30
+        assert 0 < sdk.kwargs["timeout"] <= 30
+        assert sdk.kwargs["timeout"] == pytest.approx(
+            30, rel=0, abs=2 * math.ulp(now[0])
+        )
         assert server.provider_store.usage_attempt_count() == 1
     finally:
         if thread.is_alive():
@@ -594,11 +598,37 @@ def test_public_admission_time_cannot_extend_the_one_call_deadline(
         if admission_seconds < 30:
             assert client.complete(REQUEST, 30) == GOOD
             assert sdk.calls == 1
-            assert sdk.kwargs["timeout"] == 30 - admission_seconds
+            assert 0 < sdk.kwargs["timeout"] <= 30
+            assert sdk.kwargs["timeout"] == pytest.approx(
+                30 - admission_seconds, rel=0, abs=2 * math.ulp(now[0])
+            )
         else:
             with pytest.raises((ValueError, TimeoutError)):
                 client.complete(REQUEST, 30)
             assert sdk.calls == 0
+    finally:
+        thread.join(timeout=5)
+        server.close()
+        assert not thread.is_alive()
+
+
+def test_public_sdk_budget_is_clipped_when_absolute_clock_subtraction_rounds_up(
+    tmp_path, monkeypatch
+):
+    server, sdk = start_server(tmp_path)
+    clock = worker_module.time.monotonic()
+    power = 2 ** (math.ceil(math.log2(clock + 1)) + 1)
+    base = next(
+        value for n in range(1, 300) if ((value := power - n / 10) + 30) - value > 30
+    )
+    monkeypatch.setattr(worker_module, "time", SimpleNamespace(monotonic=lambda: base))
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    try:
+        client = PublicBehaviorClient(server.socket_path, expected_uid=os.getuid())
+        assert client.complete(REQUEST, 30) == GOOD
+        assert sdk.calls == server.provider_store.usage_attempt_count() == 1
+        assert 0 < sdk.kwargs["timeout"] <= 30
     finally:
         thread.join(timeout=5)
         server.close()
