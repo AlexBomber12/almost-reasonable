@@ -176,6 +176,26 @@ class AuthorityJournal:
                 (profile.profile_id,),
             ).fetchone() == (profile.digest, 0)
 
+    def aggregate_exhausted(self, profile: ResearchProfile, operation_id: str) -> bool:
+        """Distinguish spent global authority from replay, without reserving work."""
+        with self._open() as db:
+            if db.execute(
+                "SELECT 1 FROM reservations WHERE operation_id=?", (operation_id,)
+            ).fetchone():
+                return False
+            count = (
+                db.execute(
+                    "SELECT COUNT(*) FROM public_reservations WHERE account_ref=?",
+                    (profile.account_ref,),
+                ).fetchone()[0]
+                if profile.purpose in PUBLIC_PURPOSES
+                else db.execute(
+                    "SELECT COUNT(*) FROM reservations WHERE profile_id=?",
+                    (profile.profile_id,),
+                ).fetchone()[0]
+            )
+            return count >= profile.aggregate_limit
+
     def revoke(self, profile: ResearchProfile) -> None:
         with self._open() as db:
             db.execute("BEGIN IMMEDIATE")

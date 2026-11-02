@@ -845,6 +845,12 @@ def test_provider_unknown_outcome_keeps_reserved_capacity(tmp_path):
         boundary.execute(
             profile.request("later-operation", "aurora"), peer_uid=os.geteuid()
         )["outcome"]
+        == "allowance_exhausted"
+    )
+    assert (
+        boundary.execute(
+            profile.request("uncertain-operation", "ocean"), peer_uid=os.geteuid()
+        )["outcome"]
         == "duplicate_operation"
     )
     assert len(sdk.calls) == 1
