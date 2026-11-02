@@ -523,6 +523,85 @@ def exchange(server, *, expected_uid=None, request=REQUEST):
         return client.complete(request, 5)
     finally:
         thread.join(timeout=5)
+
+
+@pytest.mark.parametrize("elapsed", [12, 31])
+def test_slow_public_response_uses_finite_model_budget_without_replay(
+    tmp_path, monkeypatch, elapsed
+):
+    server, sdk = start_server(tmp_path)
+    now = [worker_module.time.monotonic()]
+    monkeypatch.setattr(
+        worker_module, "time", SimpleNamespace(monotonic=lambda: now[0])
+    )
+    create = sdk.create
+
+    def delayed_create(**kwargs):
+        now[0] += elapsed
+        return create(**kwargs)
+
+    sdk.create = delayed_create
+    send = worker_module.send_frame
+
+    def enforce_response_deadline(connection, payload, *, deadline, io_timeout):
+        if now[0] >= deadline:
+            raise TimeoutError("simulated elapsed response deadline")
+        return send(connection, payload, deadline=deadline, io_timeout=io_timeout)
+
+    monkeypatch.setattr(worker_module, "send_frame", enforce_response_deadline)
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    client = PublicBehaviorClient(server.socket_path, expected_uid=os.getuid())
+    try:
+        if elapsed < 30:
+            assert client.complete(REQUEST, 30) == GOOD
+        else:
+            with pytest.raises((ValueError, TimeoutError)):
+                client.complete(REQUEST, 30)
+        assert sdk.calls == 1
+        assert sdk.kwargs["timeout"] == 30
+        assert server.provider_store.usage_attempt_count() == 1
+    finally:
+        if thread.is_alive():
+            # A rejected request never connects; release the waiting listener.
+            import socket
+
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
+                connection.connect(str(server.socket_path))
+        thread.join(timeout=5)
+        server.close()
+
+
+@pytest.mark.parametrize("admission_seconds", [12, 31])
+def test_public_admission_time_cannot_extend_the_one_call_deadline(
+    tmp_path, monkeypatch, admission_seconds
+):
+    server, sdk = start_server(tmp_path)
+    now = [worker_module.time.monotonic()]
+    monkeypatch.setattr(
+        worker_module, "time", SimpleNamespace(monotonic=lambda: now[0])
+    )
+
+    def delayed_attestation(_request):
+        now[0] += admission_seconds
+        return True
+
+    server.attest = delayed_attestation
+    thread = Thread(target=server.serve_once)
+    thread.start()
+    try:
+        client = PublicBehaviorClient(server.socket_path, expected_uid=os.getuid())
+        if admission_seconds < 30:
+            assert client.complete(REQUEST, 30) == GOOD
+            assert sdk.calls == 1
+            assert sdk.kwargs["timeout"] == 30 - admission_seconds
+        else:
+            with pytest.raises((ValueError, TimeoutError)):
+                client.complete(REQUEST, 30)
+            assert sdk.calls == 0
+    finally:
+        thread.join(timeout=5)
+        server.close()
         assert not thread.is_alive()
 
 

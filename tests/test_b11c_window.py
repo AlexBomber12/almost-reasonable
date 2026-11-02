@@ -972,9 +972,20 @@ def test_window_rejects_missing_reviewed_mission_before_any_work(tmp_path, monke
     "delay_point", ["after_started", "reservation", "worker_reservation"]
 )
 def test_absolute_window_deadline_survives_admission_and_dispatch_delays(
-    tmp_path, delay_point
+    tmp_path, delay_point, monkeypatch
 ):
+    from types import SimpleNamespace
+    import app.trusted.public_behavior_worker as worker_module
+
     app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    monotonic_start = worker_module.time.monotonic()
+    monkeypatch.setattr(
+        worker_module,
+        "time",
+        SimpleNamespace(
+            monotonic=lambda: monotonic_start + (clock.now() - NOW).total_seconds()
+        ),
+    )
     window_spec = spec(expires_at=NOW + timedelta(seconds=4), max_model_calls=1)
     if delay_point == "after_started":
         app.checkpoint = (

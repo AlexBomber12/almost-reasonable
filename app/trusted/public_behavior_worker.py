@@ -503,6 +503,7 @@ class PublicWorkerServer:
                 request = decode_public_request(
                     receive_frame(connection, deadline=deadline, io_timeout=10)
                 )
+                deadline = time.monotonic() + request.deadline_seconds
                 if not self.attest(request) or self._stop():
                     return
                 with sqlite3.connect(self.attempts_path) as db:
@@ -527,14 +528,16 @@ class PublicWorkerServer:
                     return
                 if reservation is not AttemptReservationStatus.CREATED:
                     return
+                remaining = deadline - time.monotonic()
                 if request.deadline_at is not None:
-                    remaining = (request.deadline_at - self.utc_now()).total_seconds()
-                    if remaining <= 0:
-                        return
-                    request = replace(
-                        request,
-                        deadline_seconds=min(request.deadline_seconds, remaining),
+                    remaining = min(
+                        remaining,
+                        (request.deadline_at - self.utc_now()).total_seconds(),
                     )
+                if remaining <= 0:
+                    return
+                request = replace(request, deadline_seconds=remaining)
+                deadline = min(deadline, time.monotonic() + remaining)
                 try:
                     if self._stop():
                         return

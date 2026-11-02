@@ -24,6 +24,7 @@ from app.behavior.mission import MissionPurpose
 VERSION = "public-behavior-v1"
 MAX_FRAME = 65_536
 MAX_CONTEXT = 2_048
+MAX_INFERENCE_SECONDS = 30
 _TOPIC_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 
 
@@ -96,7 +97,7 @@ class PublicBehaviorRequest:
         if (
             type(self.deadline_seconds) not in (float, int)
             or not math.isfinite(self.deadline_seconds)
-            or not 0 < self.deadline_seconds <= 10
+            or not 0 < self.deadline_seconds <= MAX_INFERENCE_SECONDS
         ):
             raise ValueError("invalid inference deadline")
         value = {

@@ -35,3 +35,13 @@ The existing validator continues rejecting that combination without retrying.
 The prompt also distinguishes an agent-generated question from the literal
 `agent-public-question` capability marker. Neither change forces research or
 publication when the agent chooses no action.
+
+Two successive live Sol cycles exceeded the legacy five-second scheduler
+budget. The public entrypoint and closed inference contract now allow one
+attempt for at most 30 seconds. The worker retains a separate ten-second
+request-handshake bound, then bounds its response and SDK call by the admitted
+inference budget. Admission time and an earlier absolute window deadline are
+subtracted rather than extending that budget. Late responses remain uncertain
+and are never replayed. Attempts, output tokens, tools, spending and publication
+limits are unchanged. Simulated-clock regressions cover a twelve-second reply,
+expiry after thirty seconds, and time consumed before contacting the provider.
