@@ -87,6 +87,211 @@ def execute(tmp_path, raw):
     return result
 
 
+@pytest.mark.parametrize(
+    ("canonical", "annotated"),
+    [
+        ("https://example.org/study", "https://example.org/study?utm_source=openai"),
+        (
+            "https://example.org/study?lang=ru&version=2#results",
+            "https://example.org/study?lang=ru&utm_source=openai&version=2#results",
+        ),
+        (
+            "https://example.org/study?lang=ru",
+            "https://example.org/study?utm_source=openai&lang=ru",
+        ),
+    ],
+)
+def test_provider_tracking_url_binds_to_original_recorded_source(
+    tmp_path, canonical, annotated
+):
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    draft = json.loads(output["text"].replace(list(PAGES)[0], canonical))
+    draft["main_finding"] += " Источник: " + canonical + "."
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    raw["output"][0]["action"]["sources"][0]["url"] = annotated
+    output["annotations"][0]["url"] = annotated
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == "completed"
+    report = result["report"]
+    source = next(source for source in report["sources"] if source["url"] == annotated)
+    evidence = report["assessment"]["claims"][0]["evidence"][0]
+    assert evidence["reference"] == source["reference"]
+    assert evidence["relation"] == "supports"
+    assert report["claim_status"] == "unverified"
+    assert report["semantic_support"] == "not_evaluated"
+    assert decode_public_response(json.dumps(result).encode()) == result
+
+
+@pytest.mark.parametrize(
+    "annotated",
+    [
+        "http://example.org/study?utm_source=openai",
+        "https://other.example/study?utm_source=openai",
+        "https://example.org/other?utm_source=openai",
+        "https://example.org/study?version=2&utm_source=openai",
+        "https://example.org/study?utm_source=openai#other",
+        "https://example.org/study?utm_source=other",
+        "https://example.org/study?utm_source=openai&utm_campaign=other",
+    ],
+)
+def test_tracking_alias_cannot_change_source_identity(tmp_path, annotated):
+    raw = assessed_raw()
+    raw["output"][0]["action"]["sources"][0]["url"] = annotated
+    raw["output"][1]["content"][0]["annotations"][0]["url"] = annotated
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == "invalid_response"
+    assert result["report"] is None
+
+
+def test_tracking_alias_rejects_ambiguous_recorded_sources(tmp_path):
+    raw = assessed_raw()
+    urls = [
+        "https://example.org/study?utm_source=openai",
+        "https://example.org/study?utm_source=openai&utm_source=openai",
+    ]
+    output = raw["output"][1]["content"][0]
+    raw["output"][0]["action"]["sources"] = [
+        {"type": "url", "url": url} for url in urls
+    ]
+    for annotation, url in zip(output["annotations"], urls, strict=True):
+        annotation["url"] = url
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == "invalid_response"
+    assert result["report"] is None
+
+
+def test_exact_recorded_source_wins_over_another_sources_tracking_alias(tmp_path):
+    raw = assessed_raw()
+    urls = [list(PAGES)[0], list(PAGES)[0] + "?utm_source=openai"]
+    output = raw["output"][1]["content"][0]
+    draft = json.loads(output["text"])
+    draft["claims"] = draft["claims"][:1]
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    raw["output"][0]["action"]["sources"] = [
+        {"type": "url", "url": url} for url in urls
+    ]
+    for annotation, url in zip(output["annotations"], urls, strict=True):
+        annotation["url"] = url
+    report = execute(tmp_path, raw)["report"]
+    source = next(source for source in report["sources"] if source["url"] == urls[0])
+    assert (
+        report["assessment"]["claims"][0]["evidence"][0]["reference"]
+        == source["reference"]
+    )
+
+
+@pytest.mark.parametrize(
+    "suffix", ["/other", "?version=2", "#other", "?utm_source=other", "(unrecorded)"]
+)
+def test_tracking_alias_does_not_admit_unrecorded_prose_urls(tmp_path, suffix):
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    draft = json.loads(output["text"])
+    draft["main_finding"] += " Источник: " + list(PAGES)[0] + suffix
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    decorated = list(PAGES)[0] + "?utm_source=openai"
+    raw["output"][0]["action"]["sources"][0]["url"] = decorated
+    output["annotations"][0]["url"] = decorated
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == "invalid_response"
+    assert result["report"] is None
+
+
+@pytest.mark.parametrize(
+    ("label", "canonical"),
+    [
+        ("example.org", "https://example.org/study"),
+        ("example.org", "https://www.example.org/study"),
+        ("www.example.org", "https://www.example.org/study"),
+        ("EXAMPLE.ORG", "https://example.org/study"),
+        ("example.org", "https://example.org"),
+        ("example.org", "https://example.org/Study_(physics)"),
+        ("example.org", "https://example.org/study."),
+    ],
+)
+def test_provider_markdown_hostname_label_is_not_an_extra_source(
+    tmp_path, label, canonical
+):
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    draft = json.loads(output["text"].replace(list(PAGES)[0], canonical))
+    decorated = canonical + "?utm_source=openai"
+    draft["main_finding"] += f" ([{label}]({decorated}))"
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    raw["output"][0]["action"]["sources"][0]["url"] = decorated
+    output["annotations"][0]["url"] = decorated
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == "completed"
+    assert result["report"]["main_finding"] == draft["main_finding"]
+    assert result["report"]["sources"][0]["url"] == decorated
+    assert result["report"]["claim_status"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[other.example](https://example.org/study)",
+        "[example.org.evil.com](https://example.org/study)",
+        "[https://evil.example](https://example.org/study)",
+        "[example.org](https://example.org/other)",
+        "[example.org](https://example.org/study?changed=1)",
+        "[example.org](https://example.org/study#other)",
+        "[example.org](https://example.org/study) https://evil.example",
+        "Источник: example.org",
+    ],
+)
+def test_markdown_citation_labels_cannot_hide_unrecorded_urls(text):
+    from app.research.assessment import prose_urls_are_recorded
+
+    assert not prose_urls_are_recorded(
+        [text], {"https://example.org/study?utm_source=openai"}
+    )
+
+
+@pytest.mark.parametrize("url", ["https://[invalid", "https:///"])
+def test_malformed_recorded_markdown_target_fails_closed(url):
+    from app.research.assessment import prose_urls_are_recorded
+
+    assert not prose_urls_are_recorded([f"[example.org]({url})"], {url})
+
+
+@pytest.mark.parametrize(
+    ("canonical", "suffix"),
+    [
+        ("https://example.org/study", "."),
+        ("https://example.org/study", ","),
+        ("https://example.org/study", ";"),
+        ("https://example.org/study", "'"),
+        ("https://example.org/study?version=1", ","),
+        ("https://example.org/study?version=1", ";"),
+    ],
+)
+def test_markdown_destination_punctuation_is_part_of_the_url(
+    tmp_path, canonical, suffix
+):
+    from app.private_web.research_bridge import render_report
+
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    output["text"] = output["text"].replace(list(PAGES)[0], canonical)
+    raw["output"][0]["action"]["sources"][0]["url"] = canonical
+    output["annotations"][0]["url"] = canonical
+    (tmp_path / "valid").mkdir(mode=0o700)
+    (tmp_path / "changed").mkdir(mode=0o700)
+    report = execute(tmp_path / "valid", raw)["report"]
+    assert render_report(report) is not None
+    changed = f"[example.org]({canonical}{suffix})"
+    report["main_finding"] += " " + changed
+    assert render_report(report) is None
+    draft = json.loads(output["text"])
+    draft["main_finding"] += " " + changed
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    result = execute(tmp_path / "changed", raw)
+    assert result["outcome"] == "invalid_response"
+    assert result["report"] is None
+
+
 def test_claim_relationships_are_model_assessments_without_independent_content(
     tmp_path,
 ):

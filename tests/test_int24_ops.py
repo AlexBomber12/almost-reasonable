@@ -402,6 +402,35 @@ def test_operator_protected_config_and_runtime_use_application_owned_state(
     assert seen[-1][1]["research_client"] is not None
     assert seen[-1][1]["research_scope"] == "test-public"
 
+    from datetime import UTC, datetime, timedelta
+    from app.behavior.scheduler import (
+        InMemorySchedulerStore,
+        MutableClock,
+        SchedulerOutcome,
+        TestScheduler,
+        WakeupEvent,
+    )
+    from app.core.agent_proposals import AgentDecision
+
+    for elapsed, expected in (
+        (12, SchedulerOutcome.NO_ACTION),
+        (31, SchedulerOutcome.EXECUTION_LIMIT),
+    ):
+        clock = MutableClock(datetime(2026, 11, 2, 12, tzinfo=UTC))
+        event = WakeupEvent("slow-live-model", clock.now(), "scheduled wakeup")
+        calls = []
+
+        def delayed_model(_event, timeout):
+            calls.append(timeout)
+            clock.advance(timedelta(seconds=elapsed))
+            return AgentDecision.NO_ACTION
+
+        result = TestScheduler(
+            seen[-1][1]["wakeup_policy"], InMemorySchedulerStore(), clock, delayed_model
+        ).run((event,))
+        assert result.outcome is expected
+        assert calls == [30]
+
 
 def test_operator_remaining_routes_and_expiry_guards(monkeypatch, capsys):
     import app.ops.int24_threads_runtime as module

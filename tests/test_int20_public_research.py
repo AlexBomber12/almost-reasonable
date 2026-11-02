@@ -91,6 +91,98 @@ def grant(
     )
 
 
+@pytest.mark.parametrize(
+    "case,expected",
+    [
+        ("truncated", "research_output_truncated"),
+        ("filtered", "research_output_filtered"),
+        ("unknown_incomplete", "research_output_incomplete"),
+        ("malformed_details", "research_output_incomplete"),
+        ("provenance", "research_provenance_invalid"),
+        ("source", "research_source_rejected"),
+        ("privacy", "research_privacy_rejected"),
+        ("assessment", "research_assessment_invalid"),
+        ("uncited", "research_uncited_url"),
+        ("language", "research_language_rejected"),
+    ],
+)
+def test_rejection_stage_is_durable_without_response_text_or_replay(
+    tmp_path, case, expected
+):
+    raw = raw_response()
+    content = raw["output"][1]["content"][0]
+    if case in {"truncated", "filtered", "unknown_incomplete", "malformed_details"}:
+        raw["status"] = "incomplete"
+        raw["incomplete_details"] = (
+            []
+            if case == "malformed_details"
+            else {
+                "reason": {
+                    "truncated": "max_output_tokens",
+                    "filtered": "content_filter",
+                }.get(case, "private-canary")
+            }
+        )
+    elif case == "provenance":
+        raw["output"] = []
+    elif case == "source":
+        content["annotations"][0]["url"] = "http://unsafe.example"
+    elif case == "privacy":
+        content["text"] += " private-canary"
+    elif case == "assessment":
+        content["text"] = '{"main_finding":"private-canary"'
+    elif case == "uncited":
+        content["text"] += " https://uncited.example/paper"
+    else:
+        content["text"] = "English only answer"
+    worker, sdk, store = boundary(
+        tmp_path,
+        [raw],
+        enabled=True,
+        screening=ResearchScreeningContext(private_canaries=("private-canary",))
+        if case == "privacy"
+        else ResearchScreeningContext(),
+    )
+    request = grant(worker)
+    result = worker.execute(request, peer_uid=os.geteuid())
+    assert result["outcome"] == (
+        "output_gate_rejected" if case == "language" else "invalid_response"
+    )
+    assert result["report"] is None
+    assert "private-canary" not in json.dumps(result)
+    recorded = store.usage_attempt(request.operation_id)
+    assert recorded.provider_error_code == expected
+    assert recorded.provider_response_id == "resp_synthetic"
+    assert recorded.total_tokens == 150
+    assert "private-canary" not in repr(recorded)
+    assert (
+        worker.execute(request, peer_uid=os.geteuid())["outcome"]
+        == "duplicate_operation"
+    )
+    assert len(sdk.calls) == 1
+
+
+@pytest.mark.parametrize(
+    "question", [QUESTION, "What are the limits of replication studies?"]
+)
+def test_research_sdk_keeps_room_for_a_complete_single_search_report(
+    tmp_path, question
+):
+    worker, sdk, store = boundary(tmp_path, enabled=True)
+    result = worker.execute(grant(worker, question=question), peer_uid=os.geteuid())
+    assert result["outcome"] == "completed"
+    assert len(sdk.calls) == store.usage_attempt_count() == 1
+    sent = sdk.calls[0]
+    assert sent["reasoning"] == {"effort": "low"}
+    assert sent["parallel_tool_calls"] is False
+    assert sent["max_output_tokens"] == 1000
+    assert sent["max_tool_calls"] == 1
+    assert sent["store"] is sent["background"] is sent["stream"] is False
+    assert "1 or 2 individual claims" in sent["instructions"]
+    assert "at most 3 unique source URLs in total" in sent["instructions"]
+    assert "exactly one web_search call" in sent["instructions"]
+
+
 def test_distinct_topic_usage_and_consumption_survive_restart(tmp_path):
     worker, sdk, store = boundary(tmp_path, enabled=True)
     request = grant(worker)

@@ -1,0 +1,76 @@
+# Hosted search citation tracking
+
+A live hosted-search check exposed a mismatch between a model's exact source
+URL and the provider citation annotation decorated with `utm_source=openai`.
+The research boundary previously rejected that otherwise identical source.
+
+Assessment links may now resolve to one uniquely recorded source after removing
+only that exact query component from the recorded annotation URL. The original
+annotation URL and source reference remain in the report. Scheme, host, path,
+fragment, remaining query bytes and query order must still match. Other tracking
+parameters are not discarded. Ambiguous aliases fail closed; exact recorded
+URLs keep their original binding. The prose URL gate recognizes the same
+provider alias while retaining its punctuation and unrecorded-link checks.
+Provider Markdown citations such as `[example.org](https://example.org/source)`
+are scanned by their destination when the hostname label matches that
+destination (optionally omitting `www.`). The destination must still match a
+recorded URL or its narrow provider alias. Misleading hostname labels,
+unrecorded destinations and extra bare links remain rejected. This affects
+only validation; the report retains its original citation text.
+Markdown explicitly delimits its destination, so punctuation inside that
+destination must match the recorded URL exactly. Punctuation tolerance applies
+only to bare URLs in prose; it cannot change a Markdown path or query value.
+
+This is structural identity matching, not an independent source-content check.
+Claim assessments remain model judgments, `claim_status=unverified` and
+`semantic_support=not_evaluated`. No tool, spending, publication, mission or
+retry authority changes. Regression tests use synthetic sources and do not
+represent live-model acceptance.
+
+The public behavior prompt also states which nullable fields belong to each
+action. In particular, a no-action explanation belongs in its closed reason
+category rather than `content`, and mission fields must remain null for other
+decisions. A live Sol diagnostic had filled `content` on a `no_action` response.
+The existing validator continues rejecting that combination without retrying.
+The prompt also distinguishes an agent-generated question from the literal
+`agent-public-question` capability marker. Neither change forces research or
+publication when the agent chooses no action.
+
+Two successive live Sol cycles exceeded the legacy five-second scheduler
+budget. The public entrypoint and closed inference contract now allow one
+attempt for at most 30 seconds. The worker retains a separate ten-second
+request-handshake bound, then bounds its response and SDK call by the admitted
+inference budget. Admission time and an earlier absolute window deadline are
+subtracted rather than extending that budget. Late responses remain uncertain
+and are never replayed. Attempts, output tokens, tools, spending and publication
+limits are unchanged. Simulated-clock regressions cover a twelve-second reply,
+expiry after thirty seconds, and time consumed before contacting the provider.
+
+A later one-use complex-search diagnostic returned `incomplete` with
+`max_output_tokens`: 533 of 870 output tokens were reasoning tokens and the
+assessment JSON was unfinished. This establishes that diagnostic's failure,
+not the exact cause of earlier autonomous failures whose raw output was not
+retained. The research transport now explicitly requests low reasoning effort
+and disables parallel tool calls. The assessment prompt requests one or two
+claims, at most three source URLs and a concise single-search answer. Existing
+token/search/attempt limits and all incomplete-response, provenance, URL and
+language rejection gates remain in force. The [official Luna model page](https://developers.openai.com/api/docs/models/gpt-6-luna)
+documents low reasoning support; [Responses API documentation](https://developers.openai.com/api/reference/python/resources/responses/methods/create)
+states that the output cap includes reasoning tokens.
+An isolated parameter probe with that policy returned completed JSON within
+718 output tokens. Its extra uncited evidence URL was correctly rejected by
+the unchanged source-binding gate; this was not a successful research report.
+The prompt therefore also asks for evidence URLs from the current search and
+an inline citation for each, preferring one focused claim. Neither the probe
+nor these offline tests establish autonomous acceptance.
+
+Rejected public research now records a fixed diagnostic category in the existing
+protected provider-attempt `provider_error_code` field. Categories distinguish
+response shape/usage, provider-reported truncation or filtering, provenance,
+rejected sources, privacy, assessment structure, uncited prose URLs, language,
+and final report validation. Exception messages, response text and arbitrary
+provider `incomplete_details` are never copied into these categories. Usage and
+screened response IDs remain available when valid. The IPC failure stays generic
+and contains no rejected report. Consumption, duplicate prevention and rejection
+rules are unchanged; a diagnostic category never authorizes replay. Old attempts
+with no retained diagnostic remain unexplained rather than being backfilled.

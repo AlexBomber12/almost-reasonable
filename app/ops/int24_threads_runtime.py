@@ -15,6 +15,7 @@ from app.behavior.scheduler import WakeupEvent, WakeupPolicy
 from app.behavior.worker_client import PublicBehaviorClient
 from app.core.provider_spend import ProviderStateStore
 from app.core.public_behavior_mission import PublicMissionContext
+from app.core.public_behavior import MAX_INFERENCE_SECONDS
 from app.core.public_research_client import PublicResearchClient
 from app.core.store import EventStore
 from app.integration.threads_runtime import LocalOperator, ThreadsRuntime
@@ -112,7 +113,7 @@ def _runtime(config):
             timedelta(minutes=1),
             timedelta(days=1),
             1,
-            5,
+            MAX_INFERENCE_SECONDS,
             (),
         ),
         operator=LocalOperator(config["operator_uid"], config["operator_actor"]),

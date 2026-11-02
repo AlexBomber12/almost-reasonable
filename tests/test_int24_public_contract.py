@@ -32,6 +32,7 @@ def test_closed_public_request_rejects_private_context_and_capability_injection(
         {"mission": ("m1", "m2")},
         {"deadline_seconds": 0},
         {"deadline_seconds": float("nan")},
+        {"deadline_seconds": 30.001},
         {"operation_id": "bad id"},
     ],
 )

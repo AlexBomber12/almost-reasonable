@@ -145,6 +145,13 @@ class PublicSDKAdapter:
                         "may contain your own minimized public question up to 512 UTF-8 bytes, "
                         "instead of a catalog ID. This grants no additional authority. "
                         "Return a JSON proposal for reply, propose_publication, no_action, or research. "
+                        "Set every inactive action field to null. "
+                        "For no_action, set content, draft and topic_id to null; "
+                        "populate only reason_category. Do not put a no-action explanation in content. "
+                        "For reply, populate only content; for propose_publication, populate only draft; "
+                        "For research, populate only topic_id. "
+                        "All mission fields must be null unless decision is mission. "
+                        "For mission, set content, draft, reason_category and topic_id to null. "
                         + (
                             "Free mission evolution is available. Choose your own bounded mission_text, "
                             "mission_reasons and mission_counterevidence in Russian, without operational instructions. "
@@ -162,7 +169,9 @@ class PublicSDKAdapter:
                             if request.mission_evolution
                             else ""
                         )
-                        + "For research use only an exact topic_id from the authorized catalog. "
+                        + "For research use an exact authorized catalog ID, or your own minimized "
+                        "public question when agent-public-question is offered; do not return "
+                        "the literal agent-public-question marker as your question. "
                         "Use supplied public experience for claims about prior public actions; "
                         "do not invent memories or undisclosed identity. Core Self: "
                         + (
@@ -494,6 +503,7 @@ class PublicWorkerServer:
                 request = decode_public_request(
                     receive_frame(connection, deadline=deadline, io_timeout=10)
                 )
+                deadline = time.monotonic() + request.deadline_seconds
                 if not self.attest(request) or self._stop():
                     return
                 with sqlite3.connect(self.attempts_path) as db:
@@ -518,14 +528,16 @@ class PublicWorkerServer:
                     return
                 if reservation is not AttemptReservationStatus.CREATED:
                     return
+                remaining = deadline - time.monotonic()
                 if request.deadline_at is not None:
-                    remaining = (request.deadline_at - self.utc_now()).total_seconds()
-                    if remaining <= 0:
-                        return
-                    request = replace(
-                        request,
-                        deadline_seconds=min(request.deadline_seconds, remaining),
+                    remaining = min(
+                        remaining,
+                        (request.deadline_at - self.utc_now()).total_seconds(),
                     )
+                if remaining <= 0:
+                    return
+                request = replace(request, deadline_seconds=remaining)
+                deadline = min(deadline, time.monotonic() + remaining)
                 try:
                     if self._stop():
                         return
