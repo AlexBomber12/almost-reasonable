@@ -11,6 +11,12 @@ fragment, remaining query bytes and query order must still match. Other tracking
 parameters are not discarded. Ambiguous aliases fail closed; exact recorded
 URLs keep their original binding. The prose URL gate recognizes the same
 provider alias while retaining its punctuation and unrecorded-link checks.
+Provider Markdown citations such as `[example.org](https://example.org/source)`
+are scanned by their destination when the hostname label matches that
+destination (optionally omitting `www.`). The destination must still match a
+recorded URL or its narrow provider alias. Misleading hostname labels,
+unrecorded destinations and extra bare links remain rejected. This affects
+only validation; the report retains its original citation text.
 
 This is structural identity matching, not an independent source-content check.
 Claim assessments remain model judgments, `claim_status=unverified` and

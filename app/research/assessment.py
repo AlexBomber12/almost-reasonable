@@ -2,6 +2,7 @@
 
 import json
 import re
+from urllib.parse import urlsplit
 
 from app.behavior.russian_gate import _URL
 
@@ -19,6 +20,9 @@ MAX_CLAIMS = 6
 # The language gate deliberately excludes parentheses. Evidence binding must
 # retain the complete URI before recognizing surrounding prose delimiters.
 _PROSE_URL = re.compile(r"(?<![\w@])https?://[^\s<>]+|" + _URL.pattern, _URL.flags)
+_MARKDOWN_HOST_CITATION = re.compile(
+    r"\[([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\]\((https?://[^\s<>]+)\)"
+)
 _RELATIONS = {"supports", "contradicts", "insufficient", "unassessed"}
 ASSESSMENT_INSTRUCTIONS = (
     " Return only a JSON object with main_finding (Russian), uncertainty (Russian), "
@@ -256,18 +260,42 @@ def assessment_russian_texts(assessment):
     ]
 
 
+def _recorded_url_form(candidate, recorded_urls):
+    for url in recorded_urls:
+        if url is None:
+            continue
+        for form in (url, _without_openai_tracking(url)):
+            if candidate.startswith(form) and all(
+                char in ".,;»”’\"')]`" for char in candidate[len(form) :]
+            ):
+                return form
+    return None
+
+
+def _citation_text_for_url_check(text, recorded_urls):
+    for citation in _MARKDOWN_HOST_CITATION.finditer(text):
+        label, target = citation.groups()
+        recorded = _recorded_url_form(target, recorded_urls)
+        if recorded is None:
+            return None
+        try:
+            host = urlsplit(recorded).hostname
+        except ValueError:
+            return None
+        if not host or label.casefold() not in {host, host.removeprefix("www.")}:
+            return None
+    # Only validated hostname labels are removed from scanning. The actual
+    # report retains its original text, and every destination is checked again.
+    return _MARKDOWN_HOST_CITATION.sub(lambda match: match.group(2), text)
+
+
 def prose_urls_are_recorded(texts, recorded_urls):
-    """Match recorded URLs or provider-marker aliases, then prose punctuation."""
-    return all(
-        any(
-            url is not None
-            and any(
-                match.group(0).startswith(form)
-                and all(char in ".,;»”’\"')]`" for char in match.group(0)[len(form) :])
-                for form in (url, _without_openai_tracking(url))
-            )
-            for url in recorded_urls
-        )
-        for text in texts
-        for match in _PROSE_URL.finditer(text)
-    )
+    """Check link destinations and bare URLs, including narrow provider aliases."""
+    for text in texts:
+        checked = _citation_text_for_url_check(text, recorded_urls)
+        if checked is None or any(
+            _recorded_url_form(match.group(0), recorded_urls) is None
+            for match in _PROSE_URL.finditer(checked)
+        ):
+            return False
+    return True

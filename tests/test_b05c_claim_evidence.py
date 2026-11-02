@@ -198,6 +198,62 @@ def test_tracking_alias_does_not_admit_unrecorded_prose_urls(tmp_path, suffix):
     assert result["report"] is None
 
 
+@pytest.mark.parametrize(
+    ("label", "canonical"),
+    [
+        ("example.org", "https://example.org/study"),
+        ("example.org", "https://www.example.org/study"),
+        ("www.example.org", "https://www.example.org/study"),
+        ("EXAMPLE.ORG", "https://example.org/study"),
+        ("example.org", "https://example.org"),
+    ],
+)
+def test_provider_markdown_hostname_label_is_not_an_extra_source(
+    tmp_path, label, canonical
+):
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    draft = json.loads(output["text"].replace(list(PAGES)[0], canonical))
+    decorated = canonical + "?utm_source=openai"
+    draft["main_finding"] += f" ([{label}]({decorated}))"
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    raw["output"][0]["action"]["sources"][0]["url"] = decorated
+    output["annotations"][0]["url"] = decorated
+    result = execute(tmp_path, raw)
+    assert result["outcome"] == "completed"
+    assert result["report"]["main_finding"] == draft["main_finding"]
+    assert result["report"]["sources"][0]["url"] == decorated
+    assert result["report"]["claim_status"] == "unverified"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "[other.example](https://example.org/study)",
+        "[example.org.evil.com](https://example.org/study)",
+        "[https://evil.example](https://example.org/study)",
+        "[example.org](https://example.org/other)",
+        "[example.org](https://example.org/study?changed=1)",
+        "[example.org](https://example.org/study#other)",
+        "[example.org](https://example.org/study) https://evil.example",
+        "Источник: example.org",
+    ],
+)
+def test_markdown_citation_labels_cannot_hide_unrecorded_urls(text):
+    from app.research.assessment import prose_urls_are_recorded
+
+    assert not prose_urls_are_recorded(
+        [text], {"https://example.org/study?utm_source=openai"}
+    )
+
+
+@pytest.mark.parametrize("url", ["https://[invalid", "https:///"])
+def test_malformed_recorded_markdown_target_fails_closed(url):
+    from app.research.assessment import prose_urls_are_recorded
+
+    assert not prose_urls_are_recorded([f"[example.org]({url})"], {url})
+
+
 def test_claim_relationships_are_model_assessments_without_independent_content(
     tmp_path,
 ):
