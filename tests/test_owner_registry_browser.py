@@ -117,6 +117,19 @@ def test_registry_owner_ui(workers, pending_public, tmp_path):
             provider_error_code="research_output_truncated",
         )
     )
+    public_store = ProviderStateStore(EventStore(telemetry[1].provider_db))
+    public_labels = {
+        "public_json_invalid": "Публичная модель вернула некорректный JSON",
+        "public_proposal_invalid": "Некорректные поля публичного действия",
+    }
+    for index, code in enumerate((*public_labels, "PRIVATE-CANARY-UNKNOWN-CODE")):
+        public_store.record_attempt(
+            replace(
+                attempt("public-diagnostic-" + str(index)),
+                outcome="provider_error",
+                provider_error_code=code,
+            )
+        )
     registry = WorkerRegistry.from_config(config)
     stop_event = Event()
     threads = [
@@ -153,6 +166,13 @@ def test_registry_owner_ui(workers, pending_public, tmp_path):
                 )
                 expect(page.locator("#status")).to_contain_text(
                     "Публичные исследования"
+                )
+                for label in public_labels.values():
+                    expect(page.locator("#status")).to_contain_text(label)
+                expect(page.locator("#status")).to_contain_text("Ошибка провайдера")
+                assert (
+                    "PRIVATE-CANARY-UNKNOWN-CODE"
+                    not in page.locator("body").inner_text()
                 )
                 serving = registry_cases.serving(stops)
                 page.locator("#emergency-stop").click()
