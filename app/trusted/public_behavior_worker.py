@@ -528,7 +528,7 @@ class PublicWorkerServer:
                     return
                 if reservation is not AttemptReservationStatus.CREATED:
                     return
-                remaining = deadline - time.monotonic()
+                remaining = min(request.deadline_seconds, deadline - time.monotonic())
                 if request.deadline_at is not None:
                     remaining = min(
                         remaining,
