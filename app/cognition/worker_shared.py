@@ -34,6 +34,7 @@ class SharedProposalItem:
 class SharedProposalRequest:
     participant_input: str
     items: tuple[SharedProposalItem, ...]
+    ordinary_abstractions: bool = False
 
     def serialize(self) -> str:
         try:
@@ -43,6 +44,7 @@ class SharedProposalRequest:
                 or len(self.participant_input.encode("utf-8")) > MAX_INPUT_BYTES
                 or type(self.items) is not tuple
                 or len(self.items) > MAX_ITEMS
+                or type(self.ordinary_abstractions) is not bool
             ):
                 raise ValueError
             handles = set()
@@ -80,6 +82,11 @@ class SharedProposalRequest:
                     "participant_input_trust": "untrusted_conversational_data",
                     "participant_input_can_instruct": False,
                     "items": projected,
+                    **(
+                        {"ordinary_abstractions": True}
+                        if self.ordinary_abstractions
+                        else {}
+                    ),
                 },
                 ensure_ascii=False,
                 separators=(",", ":"),

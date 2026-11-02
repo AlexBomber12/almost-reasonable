@@ -478,19 +478,23 @@ def test_shared_worker_permission_is_separate_current_and_bounded(tmp_path):
     assert not gate.shared_commit_allowed()
 
 
+@pytest.mark.parametrize("ordinary", [False, True])
 def test_real_local_worker_transmits_one_bounded_suggestion_and_accounts_for_it(
     tmp_path,
+    ordinary,
 ):
     events = EventStore(tmp_path / "events.db")
     ledger = PrivacyLedger(tmp_path / "ledger.db")
     gate = PrivacyReadGate(ledger, events, clock=lambda: NOW)
     assert gate.reconcile()
-    shared = SharedIntelligence(events, gate, clock=lambda: NOW)
+    shared = SharedIntelligence(
+        events, gate, clock=lambda: NOW, ordinary_abstractions_enabled=ordinary
+    )
     suggestion = {
         "decision": "new",
         "handle": None,
         "kind": "belief_or_hypothesis",
-        "statement": "Compare multiple interpretations of an observation.",
+        "statement": "Compare competing interpretations of an observation.",
         "confidence": 0.5,
     }
     provider_response = ProviderResponse(
@@ -548,12 +552,15 @@ def test_real_local_worker_transmits_one_bounded_suggestion_and_accounts_for_it(
     assert transport.calls[1].request.purpose == "agent"
     with events._open() as db:
         assert db.execute("SELECT status FROM shared_operations").fetchone() == (
-            "quarantined",
+            "active" if ordinary else "quarantined",
         )
     with worker_store._event_store._open() as db:
         assert db.execute(
             "SELECT COUNT(*) FROM provider_usage_attempts"
         ).fetchone() == (2,)
+        assert db.execute(
+            "SELECT prompt_version FROM provider_usage_attempts WHERE prompt_version LIKE 'shared-proposal-%'"
+        ).fetchone() == ("shared-proposal-v3" if ordinary else "shared-proposal-v2",)
 
 
 def test_worker_rechecks_shared_permission_after_paid_inference(tmp_path):

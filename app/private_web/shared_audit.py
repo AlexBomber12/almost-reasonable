@@ -191,7 +191,11 @@ class SharedProposalAuditStore(ExtractionAuditStore):
                 reviews=sorted(row[3] for row in selected),
             )
             validate_dependencies(db, dependencies)
-            request = SharedProposalRequest(content, tuple(items))
+            request = SharedProposalRequest(
+                content,
+                tuple(items),
+                ordinary_abstractions=self._shared._ordinary_enabled,
+            )
             request.serialize()
             digest = hashlib.sha256(
                 json.dumps(
