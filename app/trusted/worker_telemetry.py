@@ -18,6 +18,7 @@ from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT, require_identif
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES
 from app.core.store import EventStore, EventStoreError
 from app.owner_control.diagnostics import reference, safe_time
+from app.worker_telemetry.protocol import RESEARCH_REJECTIONS
 from app.trusted.openai_credential_files import TrustedTransportConfigurationError
 from app.trusted.private_pilot import (
     PilotAuthorityError,
@@ -58,10 +59,10 @@ def _diagnostics(path):
         EventStore._verify_current_schema(connection)
         rows = connection.execute(
             """SELECT started_at, correlation_id, outcome, rejection_reason,
-                      total_tokens, cost_estimate_status, 0 AS reservation
+                      total_tokens, cost_estimate_status, 0 AS reservation, provider_error_code
                FROM provider_usage_attempts
                UNION ALL
-               SELECT r.reserved_at, r.correlation_id, NULL, NULL, NULL, NULL, 1
+               SELECT r.reserved_at, r.correlation_id, NULL, NULL, NULL, NULL, 1, NULL
                FROM provider_attempt_reservations AS r
                WHERE NOT EXISTS (SELECT 1 FROM provider_usage_attempts AS u
                                  WHERE u.attempt_id=r.attempt_id)
@@ -74,7 +75,16 @@ def _diagnostics(path):
         ):
             raise ValueError("provider source changed")
         result = []
-        for time, correlation, outcome, reason, tokens, usage, reservation in rows:
+        for (
+            time,
+            correlation,
+            outcome,
+            reason,
+            tokens,
+            usage,
+            reservation,
+            code,
+        ) in rows:
             if reservation:
                 category, safe_reason = "reservation", None
             elif outcome == "completed":
@@ -90,6 +100,7 @@ def _diagnostics(path):
                 "unsupported_output",
                 "oversized_output",
                 "invalid_request",
+                "output_gate_rejected",
             }:
                 category = "rejected"
                 safe_reason = (
@@ -120,6 +131,11 @@ def _diagnostics(path):
                 category, safe_reason = "unknown", "unknown"
             if reason is not None and outcome == "invalid_proposal":
                 safe_reason = "invalid_proposal"  # Never echo arbitrary stored reasons.
+            if (
+                outcome in {"invalid_response", "output_gate_rejected"}
+                and code in RESEARCH_REJECTIONS
+            ):
+                safe_reason = code
             if tokens is not None and (
                 type(tokens) is not int or not 0 <= tokens <= MAX_PROVIDER_TOKEN_COUNT
             ):

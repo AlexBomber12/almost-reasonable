@@ -109,6 +109,19 @@ class PublicRuntimeReadView:
                 rows = db.execute(
                     "SELECT operation,phase,payload FROM intents ORDER BY rowid DESC LIMIT 8"
                 ).fetchall()
+                research = {"available": False}
+                if "public_research_ops" in tables:
+                    counts = dict(
+                        db.execute(
+                            "SELECT phase,COUNT(*) FROM public_research_ops GROUP BY phase"
+                        )
+                    )
+                    research = {
+                        "available": True,
+                        "completed_reports": counts.get("completed", 0),
+                        "uncertain_operations": counts.get("uncertain", 0),
+                        "recorded_operations": sum(counts.values()),
+                    }
                 recent = [
                     {
                         "reference": digest(operation)[:16],
@@ -163,6 +176,7 @@ class PublicRuntimeReadView:
                 "scope": "observed_public_runtime",
                 "billing_authority": False,
                 "recent": recent,
+                "research": research,
                 "grants": grants,
                 "windows": windows,
                 "cadence_seconds": cadence,

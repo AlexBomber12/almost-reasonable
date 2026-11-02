@@ -8,7 +8,7 @@ from app.core.public_behavior import _unique_fields
 from app.owner_control.worker_stop import WorkerStopClient
 from app.owner_control.worker_telemetry import WorkerTelemetryClient
 from app.trusted.openai_credential_files import read_protected_worker_file
-from app.worker_telemetry.protocol import unavailable
+from app.worker_telemetry.protocol import unavailable, diagnostics_unavailable
 
 
 class WorkerRegistry:
@@ -77,7 +77,21 @@ class WorkerRegistry:
                 status = client.read()
             except Exception:
                 status = unavailable()
-            result.append({"name": name, "status": status})
+            result.append(
+                {
+                    "name": name,
+                    "status": status,
+                    "diagnostics": diagnostics_unavailable(),
+                }
+            )
+        # Observe every native Stop before collecting optional historical rows.
+        # A slow diagnostic target must not delay another target's status read.
+        for (_name, client, _stop), entry in zip(self.endpoints, result, strict=True):
+            if entry["status"]["available"]:
+                try:
+                    entry["diagnostics"] = client.read_diagnostics()
+                except Exception:
+                    entry["diagnostics"] = diagnostics_unavailable()
         return result
 
     def assert_all(self, previous):

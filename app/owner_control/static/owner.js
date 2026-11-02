@@ -106,6 +106,21 @@ function show(name, value) {
 }
 const outcomes = {completed: 'Успешно', no_action: 'Ответ не требовался', failed: 'Сбой или неизвестный итог', invalid: 'Предложение отклонено', unsupported: 'Действие не разрешено', skipped: 'Пропущено', unavailable: 'Недоступно (причина не записана)', stopped: 'Остановлено', rejected: 'Предложение отклонено', spend_suspended: 'Расходы приостановлены', reservation: 'Резервирование без результата', rate_limited: 'Запрос ограничен провайдером', uncertain: 'Итог неизвестен', unknown: 'Итог неизвестен'};
 const reasons = {invalid_proposal: 'Недопустимое предложение модели', invalid_response: 'Недопустимый ответ провайдера', refused: 'Отказ провайдера', timeout: 'Истекло время ожидания', spend_limit: 'Лимит расходов', authorization: 'Нет разрешения', provider_error: 'Ошибка провайдера', rate_limit: 'Ограничение частоты запросов провайдера', incomplete_usage: 'Учет токенов неполный', unknown: 'Причина неизвестна'};
+Object.assign(reasons, {
+  research_response_invalid: 'Некорректная структура ответа поиска',
+  research_usage_invalid: 'Некорректный учёт токенов поиска',
+  research_output_truncated: 'Вывод поиска обрезан по лимиту токенов',
+  research_output_filtered: 'Вывод поиска остановлен фильтром провайдера',
+  research_output_incomplete: 'Поиск вернул незавершённый ответ',
+  research_provenance_invalid: 'Не прошла проверка происхождения источников',
+  research_source_rejected: 'Источник поиска отклонён',
+  research_privacy_rejected: 'Результат поиска удержан защитой приватности',
+  research_assessment_invalid: 'Некорректный формат исследовательского вывода',
+  research_uncited_url: 'В выводе есть ссылка без подтверждённого источника',
+  research_language_rejected: 'Вывод поиска не прошёл проверку русского языка',
+  research_report_invalid: 'Итоговый отчёт поиска не прошёл проверку',
+  research_request_invalid: 'Запрос поиска не прошёл проверку'
+});
 function recentList(id, source, label) {
   const list = byId(id); list.replaceChildren();
   if (!source || !source.available) {
@@ -150,9 +165,15 @@ async function refresh() {
     show(`${entry.name}: попытки`, state.provider.available ? String(state.provider.attempt_count) : 'Нет данных');
     show(`${entry.name}: записанные токены`, state.provider.available && state.provider.recorded_tokens ? String(state.provider.recorded_tokens.total_tokens) : 'Нет данных');
     show(`${entry.name}: неизвестный расход`, state.provider.available ? String(state.provider.unknown_usage_attempts) : 'Нет данных');
+    const diagnostics = entry.diagnostics;
+    if (!diagnostics || !diagnostics.available) show(`${entry.name}: последние попытки`, 'Нет наблюдения');
+    else if (!diagnostics.rows.length) show(`${entry.name}: последние попытки`, 'Записей нет');
+    else for (const row of diagnostics.rows.slice(0, 3)) show(`${entry.name}: попытка ${dateText(row.time)}`, `${outcomes[row.outcome] || outcomes.unknown}; ${row.reason === null ? 'Причина не записана' : reasons[row.reason] || reasons.unknown}`);
   }
   const publicState = data.public_runtime;
   if (publicState && publicState.available) {
+    const research = publicState.research;
+    show('Публичные исследования', research && research.available ? `${research.completed_reports} принято; ${research.uncertain_operations} не подтверждено; ${research.recorded_operations} операций приложения. Это не биллинг провайдера.` : 'Нет наблюдения');
     show('Публичный цикл: ритм', !publicState.cadence_observed ? 'Нет наблюдения' : publicState.cadence_seconds === null ? 'Интервал по умолчанию' : `${publicState.cadence_seconds} с`);
     for (const grant of publicState.grants) show(`Публичное разрешение ${grant.reference}`, `${grant.publications_reserved}/${grant.publication_limit} публикаций, ${grant.http_requests_reserved}/${grant.http_limit} HTTP-запросов; ${grant.revoked ? 'отозвано' : Date.parse(grant.expires_at) <= Date.now() ? 'срок истёк' : 'срок: ' + dateText(grant.expires_at)}`);
     const decisions = {no_action:'Без публикации', reply:'Ответ', propose_publication:'Предложение публикации', research:'Исследование', revise_mission:'Пересмотр направления'};

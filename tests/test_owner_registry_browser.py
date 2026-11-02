@@ -103,7 +103,20 @@ def test_partial_worker_stop_keeps_emergency_control_available(
 
 
 def test_registry_owner_ui(workers, pending_public, tmp_path):
+    from dataclasses import replace
+    from app.core.provider_spend import ProviderStateStore
+    from app.core.store import EventStore
+    from test_worker_telemetry import attempt
+
     config, _, stops, telemetry, _ = workers
+    store = ProviderStateStore(EventStore(telemetry[2].provider_db))
+    store.record_attempt(
+        replace(
+            attempt("diagnostic"),
+            outcome="invalid_response",
+            provider_error_code="research_output_truncated",
+        )
+    )
     registry = WorkerRegistry.from_config(config)
     stop_event = Event()
     threads = [
@@ -135,6 +148,12 @@ def test_registry_owner_ui(workers, pending_public, tmp_path):
                     "public-model: записанные токены"
                 )
                 expect(page.locator("#status")).to_contain_text("Публичное разрешение")
+                expect(page.locator("#status")).to_contain_text(
+                    "Вывод поиска обрезан по лимиту токенов"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "Публичные исследования"
+                )
                 serving = registry_cases.serving(stops)
                 page.locator("#emergency-stop").click()
                 page.locator("#dialog-confirm").click()

@@ -12,6 +12,23 @@ DIAGNOSTICS_REQUEST = b"AR-WORKER-DIAGNOSTICS/1\n"
 DIAGNOSTICS_VERSION = "worker-diagnostics-v1"
 MAX_DIAGNOSTICS_RESPONSE = 8192
 TOKEN_KEYS = ("input_tokens", "cached_input_tokens", "output_tokens", "total_tokens")
+RESEARCH_REJECTIONS = frozenset(
+    {
+        "research_response_invalid",
+        "research_usage_invalid",
+        "research_output_truncated",
+        "research_output_filtered",
+        "research_output_incomplete",
+        "research_provenance_invalid",
+        "research_source_rejected",
+        "research_privacy_rejected",
+        "research_assessment_invalid",
+        "research_uncited_url",
+        "research_language_rejected",
+        "research_report_invalid",
+        "research_request_invalid",
+    }
+)
 
 
 def unavailable():
@@ -157,6 +174,7 @@ def decode_diagnostics(body):
                 "incomplete_usage",
                 "unknown",
             }
+            | RESEARCH_REJECTIONS
             or (
                 row["tokens"] is not None
                 and (
