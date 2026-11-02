@@ -214,7 +214,8 @@ def install_choices(sdk, monkeypatch, first=None):
 
     def respond(**kwargs):
         result = original(**kwargs)
-        body = json.loads(result.output_text)
+        envelope = json.loads(result.output_text)
+        body = envelope["proposal"]
         body.update(
             topic_id=None,
             mission_action=None,
@@ -240,7 +241,7 @@ def install_choices(sdk, monkeypatch, first=None):
         body.update(current.get("raw_change", {}))
         for key in current.get("remove", ()):
             body.pop(key)
-        result.output_text = json.dumps(body)
+        result.output_text = json.dumps(envelope)
         return result
 
     monkeypatch.setattr(sdk, "create", respond)

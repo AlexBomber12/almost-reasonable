@@ -82,7 +82,10 @@ def test_public_sdk_receives_strict_schema_and_fixed_bounded_kwargs():
     assert sdk.kwargs["text"] == {"format": PUBLIC_PROPOSAL_FORMAT}
     schema = sdk.kwargs["text"]["format"]
     assert schema["type"] == "json_schema" and schema["strict"] is True
-    assert set(schema["schema"]["properties"]["decision"]["enum"]) == {
+    assert {
+        item["properties"]["decision"]["enum"][0]
+        for item in schema["schema"]["properties"]["proposal"]["anyOf"]
+    } == {
         "reply",
         "propose_publication",
         "no_action",
