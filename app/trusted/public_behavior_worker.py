@@ -14,6 +14,7 @@ import time
 from app.behavior.deliberation import parse_behavior_proposal
 from app.behavior.mission import MissionPurpose
 from app.core.public_behavior import parse_public_proposal
+from app.core.public_rejection import PublicOutputRejected
 from app.core.core_self import CORE_SELF_VERSION, initial_core_self
 from app.core.free_mission import FREE_PURPOSES, is_free_context, public_prompt_version
 from app.core.provider_contract import CostEstimateStatus, PROVIDER_NAME
@@ -240,19 +241,32 @@ class PublicSDKAdapter:
             ):
                 self.last_usage = values
             else:
-                raise ValueError("invalid public model usage")
+                raise PublicOutputRejected(
+                    "public_usage_invalid", "invalid public model usage"
+                )
         if getattr(raw, "status", None) != "completed":
-            raise ValueError("incomplete public model response")
+            raise PublicOutputRejected(
+                "public_response_incomplete", "incomplete public model response"
+            )
         for item in getattr(raw, "output", ()):
             for part in getattr(item, "content", ()):
                 if getattr(part, "type", None) == "refusal" or getattr(
                     part, "refusal", None
                 ):
-                    raise ValueError("public model refused")
+                    raise PublicOutputRejected(
+                        "public_response_refused", "public model refused"
+                    )
         text = getattr(raw, "output_text", None)
         if type(text) is not str or len(text.encode()) > 4096:
-            raise ValueError("invalid public model output")
-        value = json.loads(text, object_pairs_hook=_unique_fields)
+            raise PublicOutputRejected(
+                "public_output_invalid", "invalid public model output"
+            )
+        try:
+            value = json.loads(text, object_pairs_hook=_unique_fields)
+        except ValueError:
+            raise PublicOutputRejected(
+                "public_json_invalid", "invalid public model JSON"
+            ) from None
         intellectual = None
         if request.intellectual_state is not None and type(value) is dict:
             intellectual = value.pop("intellectual", None)
@@ -292,7 +306,9 @@ class PublicSDKAdapter:
         if request.mission_evolution:
             allowed_fields += (fields | {"topic_id"} | mission_fields,)
         if type(value) is not dict or set(value) not in allowed_fields:
-            raise ValueError("invalid public model proposal")
+            raise PublicOutputRejected(
+                "public_proposal_invalid", "invalid public model proposal"
+            )
         decision = value["decision"]
         if request.mission_evolution:
             action, purpose = value["mission_action"], value["mission_purpose"]
@@ -301,7 +317,9 @@ class PublicSDKAdapter:
                     value[field] is not None
                     for field in ("content", "draft", "reason_category", "topic_id")
                 ):
-                    raise ValueError("invalid public mission selection")
+                    raise PublicOutputRejected(
+                        "public_mission_invalid", "invalid public mission selection"
+                    )
                 proposal = {"decision": "mission", "action": action, "purpose": purpose}
                 if free:
                     proposal.update(
@@ -312,7 +330,9 @@ class PublicSDKAdapter:
                 if not parse_public_proposal(
                     proposal, evolution=True, free_missions=free
                 ).valid:
-                    raise ValueError("invalid public mission selection")
+                    raise PublicOutputRejected(
+                        "public_mission_invalid", "invalid public mission selection"
+                    )
                 return result(proposal)
             if (
                 action is not None
@@ -329,7 +349,9 @@ class PublicSDKAdapter:
                     )
                 )
             ):
-                raise ValueError("invalid public mission selection")
+                raise PublicOutputRejected(
+                    "public_mission_invalid", "invalid public mission selection"
+                )
         if decision == "research":
             from app.core.public_research_profile import (
                 FREE_QUESTION_CHOICE,
@@ -359,7 +381,9 @@ class PublicSDKAdapter:
                     or value["mission_purpose"] is not None
                 )
             ):
-                raise ValueError("invalid public research selection")
+                raise PublicOutputRejected(
+                    "public_research_invalid", "invalid public research selection"
+                )
             return result({"decision": "research", "brief": topic})
         fields = {
             "reply": ("content", "draft", "reason_category"),
@@ -371,13 +395,17 @@ class PublicSDKAdapter:
             or decision not in fields
             or any(value[field] is not None for field in fields[decision][1:])
         ):
-            raise ValueError("invalid public model proposal")
+            raise PublicOutputRejected(
+                "public_proposal_invalid", "invalid public model proposal"
+            )
         proposal = {
             "decision": decision,
             fields[decision][0]: value[fields[decision][0]],
         }
         if not parse_behavior_proposal(proposal).valid:
-            raise ValueError("invalid public model proposal")
+            raise PublicOutputRejected(
+                "public_proposal_invalid", "invalid public model proposal"
+            )
         return result(proposal)
 
 
@@ -543,7 +571,11 @@ class PublicWorkerServer:
                         return
                     proposal = self.adapter.complete(request)
                 except Exception as error:
-                    code = _sanitized_sdk_error(error).error_code
+                    code = (
+                        error.code
+                        if type(error) is PublicOutputRejected
+                        else _sanitized_sdk_error(error).error_code
+                    )
                     confirmed = code if code in CONFIRMED_SPEND_LIMIT_CODES else None
                     record = self._record_attempt(
                         request,

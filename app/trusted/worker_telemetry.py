@@ -14,6 +14,7 @@ import struct
 from app.worker_stop_protocol import STOP_VERSIONS
 from time import monotonic
 
+from app.core.public_rejection import PUBLIC_PROPOSAL_REJECTIONS
 from app.core.provider_contract import MAX_PROVIDER_TOKEN_COUNT, require_identifier
 from app.core.provider_spend import CONFIRMED_SPEND_LIMIT_CODES
 from app.core.store import EventStore, EventStoreError
@@ -117,7 +118,7 @@ def _diagnostics(path):
                 )
             elif outcome in {"authentication_error", "permission_error"}:
                 category, safe_reason = "rejected", "authorization"
-            elif outcome == "server_error":
+            elif outcome in {"server_error", "provider_error"}:
                 category, safe_reason = "uncertain", "provider_error"
             elif outcome == "rate_limit":
                 category, safe_reason = "rate_limited", "rate_limit"
@@ -136,6 +137,8 @@ def _diagnostics(path):
                 and code in RESEARCH_REJECTIONS
             ):
                 safe_reason = code
+            if outcome == "provider_error" and code in PUBLIC_PROPOSAL_REJECTIONS:
+                category, safe_reason = "rejected", code
             if tokens is not None and (
                 type(tokens) is not int or not 0 <= tokens <= MAX_PROVIDER_TOKEN_COUNT
             ):

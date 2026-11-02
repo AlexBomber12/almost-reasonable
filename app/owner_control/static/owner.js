@@ -107,6 +107,14 @@ function show(name, value) {
 const outcomes = {completed: 'Успешно', no_action: 'Ответ не требовался', failed: 'Сбой или неизвестный итог', invalid: 'Предложение отклонено', unsupported: 'Действие не разрешено', skipped: 'Пропущено', unavailable: 'Недоступно (причина не записана)', stopped: 'Остановлено', rejected: 'Предложение отклонено', spend_suspended: 'Расходы приостановлены', reservation: 'Резервирование без результата', rate_limited: 'Запрос ограничен провайдером', uncertain: 'Итог неизвестен', unknown: 'Итог неизвестен'};
 const reasons = {invalid_proposal: 'Недопустимое предложение модели', invalid_response: 'Недопустимый ответ провайдера', refused: 'Отказ провайдера', timeout: 'Истекло время ожидания', spend_limit: 'Лимит расходов', authorization: 'Нет разрешения', provider_error: 'Ошибка провайдера', rate_limit: 'Ограничение частоты запросов провайдера', incomplete_usage: 'Учет токенов неполный', unknown: 'Причина неизвестна'};
 Object.assign(reasons, {
+  public_usage_invalid: 'Некорректный учёт токенов публичной модели',
+  public_response_incomplete: 'Публичная модель вернула незавершённый ответ',
+  public_response_refused: 'Отказ публичной модели',
+  public_output_invalid: 'Недопустимый размер или тип вывода публичной модели',
+  public_json_invalid: 'Публичная модель вернула некорректный JSON',
+  public_proposal_invalid: 'Некорректные поля публичного действия',
+  public_mission_invalid: 'Некорректное предложение публичной миссии',
+  public_research_invalid: 'Некорректный выбор публичного исследования',
   research_response_invalid: 'Некорректная структура ответа поиска',
   research_usage_invalid: 'Некорректный учёт токенов поиска',
   research_output_truncated: 'Вывод поиска обрезан по лимиту токенов',

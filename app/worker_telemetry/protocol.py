@@ -3,6 +3,7 @@
 import json
 import struct
 
+from app.core.public_rejection import PUBLIC_PROPOSAL_REJECTIONS
 from app.owner_control.diagnostics import safe_time
 
 REQUEST = b"AR-WORKER-STATUS/1\n"
@@ -175,6 +176,7 @@ def decode_diagnostics(body):
                 "unknown",
             }
             | RESEARCH_REJECTIONS
+            | PUBLIC_PROPOSAL_REJECTIONS
             or (
                 row["tokens"] is not None
                 and (
