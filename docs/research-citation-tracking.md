@@ -45,3 +45,21 @@ subtracted rather than extending that budget. Late responses remain uncertain
 and are never replayed. Attempts, output tokens, tools, spending and publication
 limits are unchanged. Simulated-clock regressions cover a twelve-second reply,
 expiry after thirty seconds, and time consumed before contacting the provider.
+
+A later one-use complex-search diagnostic returned `incomplete` with
+`max_output_tokens`: 533 of 870 output tokens were reasoning tokens and the
+assessment JSON was unfinished. This establishes that diagnostic's failure,
+not the exact cause of earlier autonomous failures whose raw output was not
+retained. The research transport now explicitly requests low reasoning effort
+and disables parallel tool calls. The assessment prompt requests one or two
+claims, at most three source URLs and a concise single-search answer. Existing
+token/search/attempt limits and all incomplete-response, provenance, URL and
+language rejection gates remain in force. The [official Luna model page](https://developers.openai.com/api/docs/models/gpt-6-luna)
+documents low reasoning support; [Responses API documentation](https://developers.openai.com/api/reference/python/resources/responses/methods/create)
+states that the output cap includes reasoning tokens.
+An isolated parameter probe with that policy returned completed JSON within
+718 output tokens. Its extra uncited evidence URL was correctly rejected by
+the unchanged source-binding gate; this was not a successful research report.
+The prompt therefore also asks for evidence URLs from the current search and
+an inline citation for each, preferring one focused claim. Neither the probe
+nor these offline tests establish autonomous acceptance.

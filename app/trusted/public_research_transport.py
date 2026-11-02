@@ -62,6 +62,8 @@ class PublicResearchTransport:
             raise TypeError("sealed hosted-search request required")
         kwargs = request.to_sdk_kwargs()
         kwargs["instructions"] += ASSESSMENT_INSTRUCTIONS
+        kwargs["reasoning"] = {"effort": "low"}
+        kwargs["parallel_tool_calls"] = False
         if (
             type(timeout_seconds) not in (float, int)
             or not math.isfinite(timeout_seconds)

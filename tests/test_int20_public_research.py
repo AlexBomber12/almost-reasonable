@@ -91,6 +91,27 @@ def grant(
     )
 
 
+@pytest.mark.parametrize(
+    "question", [QUESTION, "What are the limits of replication studies?"]
+)
+def test_research_sdk_keeps_room_for_a_complete_single_search_report(
+    tmp_path, question
+):
+    worker, sdk, store = boundary(tmp_path, enabled=True)
+    result = worker.execute(grant(worker, question=question), peer_uid=os.geteuid())
+    assert result["outcome"] == "completed"
+    assert len(sdk.calls) == store.usage_attempt_count() == 1
+    sent = sdk.calls[0]
+    assert sent["reasoning"] == {"effort": "low"}
+    assert sent["parallel_tool_calls"] is False
+    assert sent["max_output_tokens"] == 1000
+    assert sent["max_tool_calls"] == 1
+    assert sent["store"] is sent["background"] is sent["stream"] is False
+    assert "1 or 2 individual claims" in sent["instructions"]
+    assert "at most 3 unique source URLs in total" in sent["instructions"]
+    assert "exactly one web_search call" in sent["instructions"]
+
+
 def test_distinct_topic_usage_and_consumption_survive_restart(tmp_path):
     worker, sdk, store = boundary(tmp_path, enabled=True)
     request = grant(worker)
