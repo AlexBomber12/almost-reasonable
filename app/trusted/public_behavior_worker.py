@@ -145,6 +145,13 @@ class PublicSDKAdapter:
                         "may contain your own minimized public question up to 512 UTF-8 bytes, "
                         "instead of a catalog ID. This grants no additional authority. "
                         "Return a JSON proposal for reply, propose_publication, no_action, or research. "
+                        "Set every inactive action field to null. "
+                        "For no_action, set content, draft and topic_id to null; "
+                        "populate only reason_category. Do not put a no-action explanation in content. "
+                        "For reply, populate only content; for propose_publication, populate only draft; "
+                        "For research, populate only topic_id. "
+                        "All mission fields must be null unless decision is mission. "
+                        "For mission, set content, draft, reason_category and topic_id to null. "
                         + (
                             "Free mission evolution is available. Choose your own bounded mission_text, "
                             "mission_reasons and mission_counterevidence in Russian, without operational instructions. "
@@ -162,7 +169,9 @@ class PublicSDKAdapter:
                             if request.mission_evolution
                             else ""
                         )
-                        + "For research use only an exact topic_id from the authorized catalog. "
+                        + "For research use an exact authorized catalog ID, or your own minimized "
+                        "public question when agent-public-question is offered; do not return "
+                        "the literal agent-public-question marker as your question. "
                         "Use supplied public experience for claims about prior public actions; "
                         "do not invent memories or undisclosed identity. Core Self: "
                         + (

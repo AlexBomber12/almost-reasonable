@@ -16,6 +16,72 @@ from test_int24_worker_boundaries import SDK, GOOD
 ROOT = Path(__file__).resolve().parents[1]
 
 
+@pytest.mark.parametrize("free_mission", [False, True])
+def test_actual_sdk_input_explains_inactive_fields_and_no_action_content(free_mission):
+    value = {
+        "decision": "no_action",
+        "content": None,
+        "draft": None,
+        "reason_category": "not_warranted",
+        "topic_id": None,
+    }
+    if free_mission:
+        value.update(
+            mission_action=None,
+            mission_purpose=None,
+            mission_text=None,
+            mission_reasons=None,
+            mission_counterevidence=None,
+        )
+    sdk = SDK(json.dumps(value))
+    request = PublicBehaviorRequest(
+        "synthetic-output-contract",
+        "synthetic-output-contract",
+        "autonomous_wakeup",
+        (),
+        (),
+        5,
+        mission_evolution=("free-mission-v1",) if free_mission else (),
+    )
+    assert PublicSDKAdapter(sdk, model="gpt-6.1-sol").complete(request) == {
+        "decision": "no_action",
+        "reason_category": "not_warranted",
+    }
+    instructions = sdk.kwargs["input"][0]["content"]
+    assert "For no_action, set content, draft and topic_id to null" in instructions
+    assert "Do not put a no-action explanation in content" in instructions
+    assert "For reply, populate only content" in instructions
+    assert "for propose_publication, populate only draft" in instructions.lower()
+    assert "For research, populate only topic_id" in instructions
+    assert "mission fields must be null unless decision is mission" in instructions
+    assert sdk.calls == 1
+
+
+def test_no_action_with_content_still_fails_closed_without_retry():
+    sdk = SDK(
+        json.dumps(
+            {
+                "decision": "no_action",
+                "content": "Пока нет оснований для публикации.",
+                "draft": None,
+                "reason_category": "not_warranted",
+                "topic_id": None,
+            }
+        )
+    )
+    request = PublicBehaviorRequest(
+        "synthetic-inactive-content",
+        "synthetic-inactive-content",
+        "autonomous_wakeup",
+        (),
+        (),
+        5,
+    )
+    with pytest.raises(ValueError, match="invalid public model proposal"):
+        PublicSDKAdapter(sdk, model="gpt-6.1-sol").complete(request)
+    assert sdk.calls == 1
+
+
 @pytest.mark.parametrize("model", ["gpt-6.1-sol", "gpt-6-luna"])
 def test_public_sol_request_is_bounded_without_tools_storage_or_extra_calls(model):
     sdk = SDK(

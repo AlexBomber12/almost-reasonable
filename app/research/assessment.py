@@ -63,6 +63,35 @@ def _unique(pairs):
     return result
 
 
+def _without_openai_tracking(url):
+    """Remove only the provider's exact marker, preserving all other URL bytes."""
+    head, fragment_marker, fragment = url.partition("#")
+    base, _, query = head.partition("?")
+    parts = query.split("&")
+    if "utm_source=openai" not in parts:
+        return url
+    remaining = [part for part in parts if part != "utm_source=openai"]
+    return (
+        base
+        + ("?" + "&".join(remaining) if remaining else "")
+        + fragment_marker
+        + fragment
+    )
+
+
+def _assessment_source(url, by_url):
+    if url in by_url:
+        return by_url[url]
+    matches = [
+        source
+        for recorded, source in by_url.items()
+        if _without_openai_tracking(recorded) == url
+    ]
+    if len(matches) != 1:
+        raise ValueError("unknown or ambiguous assessment source")
+    return matches[0]
+
+
 def build_assessed_synthesis(evidence: ResearchEvidence, uncertainty: str):
     """Bind model URLs to this operation's sealed SourceRecords, never to pages."""
     if not evidence.text.lstrip().startswith(("{", "[", "```")):
@@ -116,11 +145,12 @@ def build_assessed_synthesis(evidence: ResearchEvidence, uncertainty: str):
             url = _text(item["url"], 4096)
             relation = _text(item["relation"])
             _text(item["explanation"])
-            if url not in by_url or relation not in _RELATIONS:
+            if relation not in _RELATIONS:
                 raise ValueError("unknown assessment source or relation")
+            source = _assessment_source(url, by_url)
             linked.append(
                 {
-                    "reference": by_url[url].reference,
+                    "reference": source.reference,
                     "relation": relation,
                     "explanation": item["explanation"],
                 }
@@ -227,12 +257,15 @@ def assessment_russian_texts(assessment):
 
 
 def prose_urls_are_recorded(texts, recorded_urls):
-    """Match literal recorded URLs followed only by prose punctuation or quotes."""
+    """Match recorded URLs or provider-marker aliases, then prose punctuation."""
     return all(
         any(
             url is not None
-            and match.group(0).startswith(url)
-            and all(char in ".,;»”’\"')]`" for char in match.group(0)[len(url) :])
+            and any(
+                match.group(0).startswith(form)
+                and all(char in ".,;»”’\"')]`" for char in match.group(0)[len(form) :])
+                for form in (url, _without_openai_tracking(url))
+            )
             for url in recorded_urls
         )
         for text in texts
