@@ -91,3 +91,18 @@ representation, erasure closure and quarantined restore support described in
 explicit reviewed deployment wiring. Real-model acceptance, two actual participants, live Meta
 permissions and launch remain separate work. Preparing this PR activates no
 grant, paid provider call, deployment, enrollment or real public post.
+
+The registry now collects each target's existing read-only historical diagnostics
+after observing native Stop for every target. A slow or unavailable historical
+reader cannot postpone a different worker's initial status observation. History
+remains optional and does not override Stop freshness. The owner UI shows up to
+three recent attempt categories per configured worker. Research rejection detail
+is accepted only from a closed vocabulary; arbitrary stored provider codes and
+rejected content remain withheld. Older attempts without detail stay unknown.
+
+The public read view separately counts accepted reports, uncertain operations
+and all recorded research operations. These are application-journal observations,
+not authoritative provider attempts, remaining worker allowance, billing or
+semantic source verification. A missing source is explicitly unobserved rather
+than reported as zero successful research. The authenticated owner UI displays
+these distinctions without mounting worker provider databases into the console.
