@@ -44,6 +44,15 @@ class FakeSDK:
         if "intellectual" in self.proposal:
             proposal["intellectual_version"] = "agent-intellectual-state-v1"
         proposal.update(self.proposal)
+        schema = kwargs["text"]["format"]["schema"]
+        if "proposal" in schema["properties"]:
+            fields = schema["properties"]["proposal"]["anyOf"][0]["properties"]
+            proposal = {**dict.fromkeys(fields), **proposal}
+            envelope = {"proposal": proposal}
+            for field in ("intellectual", "intellectual_version"):
+                if field in proposal:
+                    envelope[field] = proposal.pop(field)
+            proposal = envelope
         return type(
             "Response", (), {"status": "completed", "output_text": json.dumps(proposal)}
         )()
