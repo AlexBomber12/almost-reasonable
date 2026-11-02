@@ -21,7 +21,8 @@ MAX_CLAIMS = 6
 # retain the complete URI before recognizing surrounding prose delimiters.
 _PROSE_URL = re.compile(r"(?<![\w@])https?://[^\s<>]+|" + _URL.pattern, _URL.flags)
 _MARKDOWN_HOST_CITATION = re.compile(
-    r"\[([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\]\((https?://[^\s<>]+)\)"
+    r"\[([A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+)\]"
+    r"\((https?://(?:[^\s<>()]|\([^\s<>()]*\))+)\)"
 )
 _RELATIONS = {"supports", "contradicts", "insufficient", "unassessed"}
 ASSESSMENT_INSTRUCTIONS = (
@@ -260,13 +261,15 @@ def assessment_russian_texts(assessment):
     ]
 
 
-def _recorded_url_form(candidate, recorded_urls):
+def _recorded_url_form(candidate, recorded_urls, *, prose_punctuation=True):
     for url in recorded_urls:
         if url is None:
             continue
         for form in (url, _without_openai_tracking(url)):
-            if candidate.startswith(form) and all(
-                char in ".,;»”’\"')]`" for char in candidate[len(form) :]
+            if candidate == form or (
+                prose_punctuation
+                and candidate.startswith(form)
+                and all(char in ".,;»”’\"')]`" for char in candidate[len(form) :])
             ):
                 return form
     return None
@@ -275,7 +278,7 @@ def _recorded_url_form(candidate, recorded_urls):
 def _citation_text_for_url_check(text, recorded_urls):
     for citation in _MARKDOWN_HOST_CITATION.finditer(text):
         label, target = citation.groups()
-        recorded = _recorded_url_form(target, recorded_urls)
+        recorded = _recorded_url_form(target, recorded_urls, prose_punctuation=False)
         if recorded is None:
             return None
         try:

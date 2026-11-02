@@ -17,6 +17,9 @@ destination (optionally omitting `www.`). The destination must still match a
 recorded URL or its narrow provider alias. Misleading hostname labels,
 unrecorded destinations and extra bare links remain rejected. This affects
 only validation; the report retains its original citation text.
+Markdown explicitly delimits its destination, so punctuation inside that
+destination must match the recorded URL exactly. Punctuation tolerance applies
+only to bare URLs in prose; it cannot change a Markdown path or query value.
 
 This is structural identity matching, not an independent source-content check.
 Claim assessments remain model judgments, `claim_status=unverified` and

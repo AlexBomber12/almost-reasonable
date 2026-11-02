@@ -206,6 +206,8 @@ def test_tracking_alias_does_not_admit_unrecorded_prose_urls(tmp_path, suffix):
         ("www.example.org", "https://www.example.org/study"),
         ("EXAMPLE.ORG", "https://example.org/study"),
         ("example.org", "https://example.org"),
+        ("example.org", "https://example.org/Study_(physics)"),
+        ("example.org", "https://example.org/study."),
     ],
 )
 def test_provider_markdown_hostname_label_is_not_an_extra_source(
@@ -252,6 +254,42 @@ def test_malformed_recorded_markdown_target_fails_closed(url):
     from app.research.assessment import prose_urls_are_recorded
 
     assert not prose_urls_are_recorded([f"[example.org]({url})"], {url})
+
+
+@pytest.mark.parametrize(
+    ("canonical", "suffix"),
+    [
+        ("https://example.org/study", "."),
+        ("https://example.org/study", ","),
+        ("https://example.org/study", ";"),
+        ("https://example.org/study", "'"),
+        ("https://example.org/study?version=1", ","),
+        ("https://example.org/study?version=1", ";"),
+    ],
+)
+def test_markdown_destination_punctuation_is_part_of_the_url(
+    tmp_path, canonical, suffix
+):
+    from app.private_web.research_bridge import render_report
+
+    raw = assessed_raw()
+    output = raw["output"][1]["content"][0]
+    output["text"] = output["text"].replace(list(PAGES)[0], canonical)
+    raw["output"][0]["action"]["sources"][0]["url"] = canonical
+    output["annotations"][0]["url"] = canonical
+    (tmp_path / "valid").mkdir(mode=0o700)
+    (tmp_path / "changed").mkdir(mode=0o700)
+    report = execute(tmp_path / "valid", raw)["report"]
+    assert render_report(report) is not None
+    changed = f"[example.org]({canonical}{suffix})"
+    report["main_finding"] += " " + changed
+    assert render_report(report) is None
+    draft = json.loads(output["text"])
+    draft["main_finding"] += " " + changed
+    output["text"] = json.dumps(draft, ensure_ascii=False)
+    result = execute(tmp_path / "changed", raw)
+    assert result["outcome"] == "invalid_response"
+    assert result["report"] is None
 
 
 def test_claim_relationships_are_model_assessments_without_independent_content(
