@@ -49,11 +49,29 @@ class PublicResearchTransport:
         self._attempt.response_id = value
 
     @classmethod
-    def from_protected_file(cls, *, project_id: str, organization_id: str):
+    def from_protected_file(
+        cls, *, project_id: str, organization_id: str, monthly_budget_path=None
+    ):
         transport = build_worker_openai_transport(
             project_id=project_id, organization_id=organization_id
         )
-        return cls(transport._client)
+        client = transport._client
+        if monthly_budget_path is not None:
+            from types import SimpleNamespace
+            from app.trusted.public_monthly_budget import (
+                BudgetedResponses,
+                MonthlyBudget,
+            )
+
+            client = SimpleNamespace(
+                responses=BudgetedResponses(
+                    client.responses,
+                    MonthlyBudget(
+                        monthly_budget_path, lane="research", project_id=project_id
+                    ),
+                )
+            )
+        return cls(client)
 
     def call(self, request: HostedSearchRequest, *, timeout_seconds: float):
         self.last_usage = None
@@ -74,6 +92,16 @@ class PublicResearchTransport:
         try:
             raw = self._client.responses.create(**kwargs, timeout=timeout_seconds)
         except Exception as error:
+            from app.core.public_rejection import PublicOutputRejected
+
+            if type(error) is PublicOutputRejected:
+                failure = HostedSearchTransportError(
+                    "allowance_exhausted"
+                    if error.code == "public_monthly_budget_exhausted"
+                    else "provider_error"
+                )
+                failure.provider_code = error.code
+                raise failure from None
             sanitized = _sanitized_sdk_error(error)
             failure = HostedSearchTransportError(
                 _error_code(sanitized),

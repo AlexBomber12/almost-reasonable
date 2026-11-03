@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 from app.core.provider_contract import require_identifier
 from app.core.provider_spend import ProviderStateStore
@@ -109,6 +110,8 @@ def main(argv=None):
     project, organization = _billing_scope(config)
     if not config.get("stop_file"):
         raise ValueError("public worker requires an explicit native Stop file")
+    if not config.get("monthly_budget_path"):
+        raise ValueError("public worker requires an explicit monthly budget")
     from openai import OpenAI
 
     key = (
@@ -123,6 +126,16 @@ def main(argv=None):
         base_url=OPENAI_API_BASE_URL,
         project=project,
         organization=organization,
+    )
+    from app.trusted.public_monthly_budget import BudgetedResponses, MonthlyBudget
+
+    sdk = SimpleNamespace(
+        responses=BudgetedResponses(
+            sdk.responses,
+            MonthlyBudget(
+                config["monthly_budget_path"], lane="sol", project_id=project
+            ),
+        )
     )
     os.umask(0o077)
     server = PublicWorkerServer(

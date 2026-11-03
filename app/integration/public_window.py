@@ -124,10 +124,9 @@ class PublicOperatingWindow:
                 return
             if self.spec.expires_at - now > timedelta(days=1):
                 raise ValueError("operating window cannot exceed 24 hours")
-            if (
-                db.execute("SELECT COUNT(*) FROM public_windows").fetchone()[0]
-                >= MAX_INTENTS
-            ):
+            if db.execute("SELECT COUNT(*) FROM public_windows").fetchone()[
+                0
+            ] >= MAX_INTENTS and not getattr(self.app, "standing_public", False):
                 raise ValueError("operating window journal capacity reached")
             controls = {
                 "generation": self.app.ledger.control_generation(),

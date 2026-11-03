@@ -267,7 +267,11 @@ class Stage0Journal:
                 "SELECT 1 FROM intents WHERE operation=?", (operation,)
             ).fetchone():
                 return False
-            if db.execute("SELECT count(*) FROM intents").fetchone()[0] >= MAX_INTENTS:
+            if db.execute("SELECT count(*) FROM intents").fetchone()[
+                0
+            ] >= MAX_INTENTS and not (
+                getattr(self, "standing_admission", False) and admit is not None
+            ):
                 raise ValueError("Stage 0 journal capacity reached")
             if admit is not None and not admit(db, operation, origin):
                 return False
@@ -326,14 +330,14 @@ class Stage0Journal:
 
     def claimed_events(self, kind, resumed):
         with self.transaction() as db:
-            values = [
+            values = (
                 json.loads(row[0]) for row in db.execute("SELECT payload FROM intents")
-            ]
-        return tuple(
-            value["event"]
-            for value in values
-            if value["kind"] == kind and value.get("resumed", False) == resumed
-        )
+            )
+            return tuple(
+                value["event"]
+                for value in values
+                if value["kind"] == kind and value.get("resumed", False) == resumed
+            )
 
     def revoke_source(self, draft):
         with self.transaction() as db:

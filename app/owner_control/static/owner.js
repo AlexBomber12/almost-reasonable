@@ -108,6 +108,8 @@ const outcomes = {completed: 'Успешно', no_action: 'Ответ не тр�
 const reasons = {invalid_proposal: 'Недопустимое предложение модели', invalid_response: 'Недопустимый ответ провайдера', refused: 'Отказ провайдера', timeout: 'Истекло время ожидания', spend_limit: 'Лимит расходов', authorization: 'Нет разрешения', provider_error: 'Ошибка провайдера', rate_limit: 'Ограничение частоты запросов провайдера', incomplete_usage: 'Учет токенов неполный', unknown: 'Причина неизвестна'};
 Object.assign(reasons, {
   public_usage_invalid: 'Некорректный учёт токенов публичной модели',
+  public_budget_contract_invalid: 'Запрос остановлен: условия месячного бюджета не соблюдены',
+  public_monthly_budget_exhausted: 'Публичный месячный бюджет или лимит поиска исчерпан',
   public_response_incomplete: 'Публичная модель вернула незавершённый ответ',
   public_response_refused: 'Отказ публичной модели',
   public_output_invalid: 'Недопустимый размер или тип вывода публичной модели',

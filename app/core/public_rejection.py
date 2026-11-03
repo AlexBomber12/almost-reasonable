@@ -10,6 +10,8 @@ PUBLIC_PROPOSAL_REJECTIONS = frozenset(
         "public_proposal_invalid",
         "public_mission_invalid",
         "public_research_invalid",
+        "public_budget_contract_invalid",
+        "public_monthly_budget_exhausted",
     }
 )
 

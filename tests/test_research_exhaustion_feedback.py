@@ -1,6 +1,6 @@
 """Authoritative exhaustion is durable feedback, never a grant renewal."""
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import json
 import os
 from threading import Event, Thread
@@ -14,6 +14,7 @@ from app.core.store import EventStore
 from app.trusted.public_research import PublicResearchBoundary, PublicResearchServer
 from app.trusted.public_research import _response, decode_public_response
 from app.trusted.public_research_transport import PublicResearchTransport
+from app.trusted.public_monthly_budget import BudgetedResponses, MonthlyBudget
 from app.trusted.research_authority_journal import AuthorityJournal
 from app.trusted.openai_worker_server import WorkerServerConfig
 from test_agent_research_questions import authority
@@ -75,8 +76,10 @@ def test_exhaustion_cannot_claim_a_provider_attempt_or_rejected_usage(attempts, 
         )
 
 
+@pytest.mark.parametrize("limit", ["authority", "monthly_dollars", "monthly_searches"])
 def test_external_consumption_removes_research_offer_but_preserves_existing_report(
     tmp_path,
+    limit,
 ):
     question = "How do tectonic plates move?"
     app, inference, sdk, http, clock = _setup(
@@ -92,6 +95,13 @@ def test_external_consumption_removes_research_offer_but_preserves_existing_repo
             reviewed_at=clock.now().isoformat(),
             expires_at=(clock.now() + timedelta(days=1)).isoformat(),
         )
+        if limit != "authority":
+            value.update(
+                version="public-research-profile-v3",
+                renewal="standing-monthly-utc",
+                aggregate_limit=100,
+                expires_at=datetime.max.replace(tzinfo=UTC).isoformat(),
+            )
         path.write_text(json.dumps(value))
         paths.append(path)
     app.research_enabled, app.research_scope, app.research_profile_path = (
@@ -105,15 +115,31 @@ def test_external_consumption_removes_research_offer_but_preserves_existing_repo
     journal_path = folder / "authority.sqlite"
     journal_path.touch(mode=0o600)
     search_sdk = SDK([raw_response(), raw_response(), raw_response()])
+    transport_client = search_sdk
+    budget = None
+    if limit != "authority":
+        from types import SimpleNamespace
+
+        wallet = folder / "monthly.sqlite"
+        MonthlyBudget.initialize(wallet, lane="research", project_id="proj_public")
+        budget = MonthlyBudget(
+            wallet, lane="research", project_id="proj_public", clock=clock.now
+        )
+        transport_client = SimpleNamespace(
+            responses=BudgetedResponses(search_sdk, budget)
+        )
+    store = ProviderStateStore(EventStore(folder / "provider.db"))
     boundary = PublicResearchBoundary(
-        store=ProviderStateStore(EventStore(folder / "provider.db")),
-        transport=PublicResearchTransport(search_sdk),
+        store=store,
+        transport=PublicResearchTransport(transport_client),
         enabled=True,
         utcnow=clock.now,
     )
     profile = load_research_profile(paths[1], role="worker")
     boundary.install_profile(
-        profile, profile_path=paths[1], journal=AuthorityJournal(journal_path)
+        profile,
+        profile_path=paths[1],
+        journal=AuthorityJournal(journal_path, clock=clock.now),
     )
     search = PublicResearchServer(
         WorkerServerConfig(folder / "search.sock", frozenset({os.geteuid()})), boundary
@@ -124,20 +150,27 @@ def test_external_consumption_removes_research_offer_but_preserves_existing_repo
     thread.start()
     try:
         run_once(app, inference)
-        assert (
-            boundary.execute(
-                profile.request("operator", "Why do stars form in clusters?"),
-                peer_uid=os.geteuid(),
-            )["outcome"]
-            == "completed"
-        )
-        assert (
-            boundary.execute(
-                profile.request("operator-two", "How does photosynthesis work?"),
-                peer_uid=os.geteuid(),
-            )["outcome"]
-            == "completed"
-        )
+        if limit == "authority":
+            for operation, public_question in (
+                ("operator", "Why do stars form in clusters?"),
+                ("operator-two", "How does photosynthesis work?"),
+            ):
+                assert (
+                    boundary.execute(
+                        profile.request(operation, public_question),
+                        peer_uid=os.geteuid(),
+                    )["outcome"]
+                    == "completed"
+                )
+        else:
+            for index in range(7 if limit == "monthly_dollars" else 99):
+                operation = "held-" + str(index)
+                assert budget.reserve(operation)
+                if limit == "monthly_searches":
+                    budget.settle(
+                        operation, dict(input_tokens=0, output_tokens=0, total_tokens=0)
+                    )
+            before = budget.snapshot()
         sdk.proposal = {"decision": "research", "topic_id": "How does rainfall form?"}
         wake(app, inference, clock, "exhausted-search")
         sdk.proposal = {"decision": "no_action", "reason_category": "other"}
@@ -148,7 +181,18 @@ def test_external_consumption_removes_research_offer_but_preserves_existing_repo
             json.loads(context["prior_untrusted_public_evidence"][0])["question"]
             == question
         )
-        assert len(search_sdk.calls) == 3
+        assert len(search_sdk.calls) == (3 if limit == "authority" else 1)
+        if budget is not None:
+            assert budget.snapshot() == before
+            with app.journal.transaction() as db:
+                operation = db.execute(
+                    "SELECT research_id FROM public_research_ops WHERE phase='failed'"
+                ).fetchone()[0]
+            recorded = store.usage_attempt(operation)
+            assert recorded.outcome == "allowance_exhausted"
+            assert recorded.provider_error_code == "public_monthly_budget_exhausted"
+            assert recorded.total_tokens is None
+            assert not store.is_spend_suspended()
         assert not http.calls
         with app.journal.transaction() as db:
             assert (

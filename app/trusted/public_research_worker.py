@@ -103,6 +103,7 @@ def build_worker(
     organization_id: str,
     trusted_ipc_gid: int | None = None,
     transport: PublicResearchTransport | None = None,
+    monthly_budget_path: Path | None = None,
 ):
     if (stop_path is None) == (pilot_stop_path is None):
         raise ValueError("choose exactly one Stop contract")
@@ -125,6 +126,8 @@ def build_worker(
         if approval_path is not None
         else load_research_profile(profile_path, role="worker")
     )
+    if getattr(authority, "standing_monthly", False) and monthly_budget_path is None:
+        raise ValueError("standing public research requires a monthly budget")
     stop = (
         PilotStop(pilot_stop_path)
         if pilot_stop_path is not None
@@ -135,7 +138,9 @@ def build_worker(
         transport=transport
         if transport is not None
         else PublicResearchTransport.from_protected_file(
-            project_id=project_id, organization_id=organization_id
+            project_id=project_id,
+            organization_id=organization_id,
+            monthly_budget_path=monthly_budget_path,
         ),
         enabled=True,
         emergency_stop=stop.active,
@@ -171,6 +176,7 @@ def main(argv=None):
     parser.add_argument("--project-id", required=True)
     parser.add_argument("--organization-id", required=True)
     parser.add_argument("--socket-group-gid", type=int)
+    parser.add_argument("--monthly-budget", type=Path)
     args = parser.parse_args(argv)
     worker = build_worker(
         socket_path=args.socket,
@@ -183,6 +189,7 @@ def main(argv=None):
         project_id=args.project_id,
         organization_id=args.organization_id,
         trusted_ipc_gid=args.socket_group_gid,
+        monthly_budget_path=args.monthly_budget,
     )
     stopping = False
 

@@ -44,8 +44,16 @@ def _config(path):
 
 
 def _runtime(config):
-    if config.get("enable_autonomous_publication") is True:
+    if (
+        config.get("enable_autonomous_publication") is True
+        and config.get("standing_public_reviewed") is not True
+    ):
         _grant_spec(config)
+    if (
+        config.get("standing_public_reviewed") is True
+        and config.get("autonomous_publication_reviewed") is not True
+    ):
+        raise ValueError("reviewed standing publication authority is absent")
     clock = Clock()
     shared_source = (
         public_shared_source(
@@ -224,6 +232,8 @@ def main(argv=None):
             "readiness",
             "window-plan",
             "run-window",
+            "run-continuous",
+            "revoke-standing",
             "issue-grant",
             "revoke-grant",
             "grant-status",
@@ -271,7 +281,28 @@ def main(argv=None):
         _window_spec(config) if args.command in ("run-window", "issue-grant") else None
     )
     app = _runtime(config)
-    if args.command == "readiness":
+    if args.command in ("run-continuous", "revoke-standing"):
+        from app.integration.public_standing import (
+            StandingPublicPolicy,
+            StandingPublicRunner,
+        )
+
+        if config.get("standing_public_reviewed") is not True:
+            raise ValueError("reviewed standing public authority is absent")
+        policy = StandingPublicPolicy(**config["standing_public"])
+        if policy.account_ref != config["account_ref"]:
+            raise ValueError("standing public account mismatch")
+        runner = StandingPublicRunner(app, policy)
+        previous = signal.signal(signal.SIGTERM, _interrupt)
+        try:
+            if args.command == "revoke-standing":
+                runner.revoke()
+                result = {"standing_public_revoked": policy.policy_id}
+            else:
+                result = runner.run()
+        finally:
+            signal.signal(signal.SIGTERM, previous)
+    elif args.command == "readiness":
         result = {
             "ready": False,
             "policy_blockers": app.readiness(),

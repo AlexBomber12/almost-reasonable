@@ -1,7 +1,7 @@
 """Default-disabled public behavior to Stage 3 Threads coordinator."""
 
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
@@ -42,6 +42,11 @@ from app.core.public_behavior import PublicMissionChoice, parse_public_proposal
 from app.core.public_behavior_mission import PublicMissionContext
 from app.core.public_mission_evolution import PublicMissionEvolution
 from app.core.public_research_client import PublicResearchClient
+from app.core.public_research_period import (
+    initialize_periods,
+    period_counts,
+    record_period,
+)
 from app.core.public_research_profile import (
     PUBLIC_PURPOSES,
     FREE_QUESTION_CHOICE,
@@ -381,6 +386,7 @@ class ThreadsRuntime(ThreadsStage0):
                 "at TEXT NOT NULL, reference TEXT NOT NULL)"
             )
             _initialize_research_storage(db)
+            initialize_periods(db)
             initialize_experience_storage(db)
             db.execute(
                 "CREATE TABLE IF NOT EXISTS public_research_completions("
@@ -490,6 +496,9 @@ class ThreadsRuntime(ThreadsStage0):
             or not self.policy.russian_output_gate_available
         ):
             raise PolicyDeniedError("public runtime controls deny operation")
+        standing_guard = getattr(self, "standing_guard", None)
+        if standing_guard is not None:
+            standing_guard()
         if self.operating_window is not None:
             self.operating_window.guard()
         self.agent_cadence.guard()
@@ -638,15 +647,22 @@ class ThreadsRuntime(ThreadsStage0):
             return self._available_topics_in(db, profile)
 
     def _available_topics_in(self, db, profile):
-        if db.execute(
+        exhausted = db.execute(
             "SELECT 1 FROM public_research_ops WHERE profile_digest=? AND phase='failed' AND evidence=? LIMIT 1",
             (profile.digest, _EXHAUSTED_RESEARCH),
-        ).fetchone():
+        ).fetchone()
+        if profile.standing_monthly:
+            exhausted = db.execute(
+                "SELECT 1 FROM public_research_ops r JOIN public_research_period_work p ON p.operation=r.operation WHERE r.profile_digest=? AND r.phase='failed' AND r.evidence=? AND p.month=? LIMIT 1",
+                (
+                    profile.digest,
+                    _EXHAUSTED_RESEARCH,
+                    self.clock.now().astimezone(UTC).strftime("%Y-%m"),
+                ),
+            ).fetchone()
+        if exhausted:
             return ()
-        rows = db.execute(
-            "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
-        ).fetchall()
-        counts = dict(rows)
+        counts = self._research_counts_in(db, profile)
         if sum(counts.values()) >= profile.aggregate_limit:
             return ()
         if profile.question_policy is not None:
@@ -655,6 +671,16 @@ class ThreadsRuntime(ThreadsStage0):
             topic.topic_id
             for topic in profile.topics
             if counts.get(topic.topic_id, 0) < topic.limit
+        )
+
+    def _research_counts_in(self, db, profile):
+        counts = dict(
+            db.execute("SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic")
+        )
+        return (
+            period_counts(db, self.account, self.clock.now(), counts)
+            if profile.standing_monthly
+            else counts
         )
 
     def inference_public_experience(self, operation):
@@ -1329,16 +1355,23 @@ class ThreadsRuntime(ThreadsStage0):
         )
         blocked = super().recover(operations=operations)
         if self.mission_evolution is not None:
+            if operations is not None and not operations:
+                return blocked
+            query = (
+                "SELECT operation,payload FROM intents WHERE phase='linked' "
+                "AND json_extract(payload,'$.decision')=?"
+            )
+            parameters = [AgentDecision.REVISE_MISSION.value]
+            if operations is not None:
+                query += " AND operation IN (" + ",".join("?" for _ in operations) + ")"
+                parameters.extend(operations)
+            query += " ORDER BY rowid"
             with self.journal.transaction() as db:
-                rows = db.execute(
-                    "SELECT operation,payload FROM intents WHERE phase='linked'"
-                ).fetchall()
+                rows = db.execute(query, parameters).fetchall()
             for row in rows:
-                payload = json.loads(row["payload"])
-                if payload.get("decision") == AgentDecision.REVISE_MISSION.value and (
-                    operations is None or row["operation"] in operations
-                ):
-                    self._record_mission_outcome(row["operation"], payload)
+                self._record_mission_outcome(
+                    row["operation"], json.loads(row["payload"])
+                )
         return blocked
 
     def _research(self, operation, payload):
@@ -1383,11 +1416,7 @@ class ThreadsRuntime(ThreadsStage0):
             ).fetchone()
             if existing is not None:
                 return
-            counts = dict(
-                db.execute(
-                    "SELECT topic,COUNT(*) FROM public_research_ops GROUP BY topic"
-                )
-            )
+            counts = self._research_counts_in(db, profile)
             topic = profile.topic(payload["topic"])
             if (
                 topic is None
@@ -1405,6 +1434,10 @@ class ThreadsRuntime(ThreadsStage0):
                 "INSERT INTO public_research_ops VALUES(?,?,?,?,?,NULL)",
                 (operation, research_id, payload["topic"], profile.digest, "started"),
             )
+            if profile.standing_monthly:
+                record_period(
+                    db, operation, self.account, payload["topic"], self.clock.now()
+                )
         self.checkpoint("after_research_intent")
         phase, evidence = "uncertain", None
         try:
