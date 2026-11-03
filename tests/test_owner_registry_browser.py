@@ -102,7 +102,15 @@ def test_partial_worker_stop_keeps_emergency_control_available(
             assert not thread.is_alive()
 
 
-def test_registry_owner_ui(workers, pending_public, tmp_path):
+@pytest.mark.parametrize(
+    "research_codes",
+    [
+        ("research_citation_budget", "research_annotation_budget"),
+        ("research_citation_conflict", "research_assessment_json"),
+        ("research_assessment_fields", "research_assessment_source"),
+    ],
+)
+def test_registry_owner_ui(workers, pending_public, tmp_path, research_codes):
     from dataclasses import replace
     from app.core.provider_spend import ProviderStateStore
     from app.core.store import EventStore
@@ -117,6 +125,22 @@ def test_registry_owner_ui(workers, pending_public, tmp_path):
             provider_error_code="research_output_truncated",
         )
     )
+    research_labels = {
+        "research_citation_budget": "Превышен лимит разных источников поиска",
+        "research_annotation_budget": "Превышен лимит цитат в ответе поиска",
+        "research_citation_conflict": "Повторные цитаты содержат разные сведения об источнике",
+        "research_assessment_json": "Исследовательский вывод содержит некорректный JSON",
+        "research_assessment_fields": "Исследовательский вывод содержит некорректные поля",
+        "research_assessment_source": "Вывод ссылается на неизвестный или неоднозначный источник",
+    }
+    for index, code in enumerate(research_codes):
+        store.record_attempt(
+            replace(
+                attempt("research-diagnostic-" + str(index)),
+                outcome="invalid_response",
+                provider_error_code=code,
+            )
+        )
     public_store = ProviderStateStore(EventStore(telemetry[1].provider_db))
     public_labels = {
         "public_json_invalid": "Публичная модель вернула некорректный JSON",
@@ -169,6 +193,10 @@ def test_registry_owner_ui(workers, pending_public, tmp_path):
                 )
                 for label in public_labels.values():
                     expect(page.locator("#status")).to_contain_text(label)
+                for code in research_codes:
+                    expect(page.locator("#status")).to_contain_text(
+                        research_labels[code]
+                    )
                 expect(page.locator("#status")).to_contain_text("Ошибка провайдера")
                 assert (
                     "PRIVATE-CANARY-UNKNOWN-CODE"

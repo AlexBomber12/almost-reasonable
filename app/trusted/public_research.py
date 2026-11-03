@@ -4,6 +4,7 @@ from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 import hashlib
 import hmac
+import json
 import math
 import re
 import secrets
@@ -69,6 +70,40 @@ from app.trusted.public_research_transport import (
 
 
 PUBLIC_RESEARCH_VERSION = "public-research-v1"
+_REJECTION_DETAILS = {
+    (
+        "research_provenance_invalid",
+        "provider response exceeded source result budget",
+    ): "research_citation_budget",
+    (
+        "research_provenance_invalid",
+        "provider response exceeded annotation bound",
+    ): "research_annotation_budget",
+    (
+        "research_provenance_invalid",
+        "conflicting duplicate citation metadata",
+    ): "research_citation_conflict",
+    (
+        "research_assessment_invalid",
+        "invalid assessment fields",
+    ): "research_assessment_fields",
+    (
+        "research_assessment_invalid",
+        "unknown or ambiguous assessment source",
+    ): "research_assessment_source",
+}
+
+
+def _rejection_detail(stage, error):
+    # Only fixed trusted diagnostic tokens leave this boundary, never exception
+    # text, URLs, provider prose, or malformed JSON excerpts.
+    if stage == "research_assessment_invalid" and isinstance(
+        error, json.JSONDecodeError
+    ):
+        return "research_assessment_json"
+    return _REJECTION_DETAILS.get((stage, str(error)), stage)
+
+
 _IDENTIFIER = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,120}\Z")
 _TOKEN = re.compile(r"[0-9a-f]{64}\Z")
 _URL_LIKE = re.compile(
@@ -751,7 +786,7 @@ class PublicResearchBoundary:
         except (ProviderPersistenceError, sqlite3.Error, OSError, RuntimeError):
             self._persistence_failed = True
             return _response("persistence_failure", attempts, usage=usage)
-        except (TypeError, ValueError, UnicodeError):
+        except (TypeError, ValueError, UnicodeError) as error:
             result = _response("invalid_response", attempts, usage=usage)
             if admitted:
                 return self._record_terminal(
@@ -760,7 +795,7 @@ class PublicResearchBoundary:
                     started_at,
                     began,
                     response_id=safe_response_id,
-                    code=rejection_code,
+                    code=_rejection_detail(rejection_code, error),
                 )
             return result
 

@@ -104,3 +104,23 @@ history, refunds an unknown call or creates permission to retry a lost publicati
 The automated tests are offline regression evidence. They do not constitute real
 model acceptance, participant testing, a confirmed publication or production
 validation. Deployment and an observed normal cycle are separate evidence.
+
+## Investigating rejected research
+
+The source budget counts distinct recorded source URLs, not citation occurrences.
+Responses may cite a page several times. Each occurrence is validated before
+identical source metadata is folded into its first sealed source record. A later
+malformed citation is retained as rejected evidence; conflicting metadata fails
+closed. There is an independent hard limit of 32 citation annotations per response.
+The public report still contains at most three sources and makes no independent
+semantic-verification claim.
+
+Worker diagnostics distinguish source-budget overflow, annotation overflow,
+conflicting duplicate metadata, malformed assessment JSON, invalid assessment
+fields and unknown/ambiguous assessment sources. These fixed codes reach the
+owner console. Unrecognized parser errors retain the generic stage code. Rejected
+provider prose, exception text and source URLs are not included in diagnostics.
+Privacy, source, language and URL-binding checks continue to reject unsafe reports.
+Historical generic rejection codes cannot identify these narrower causes after
+the fact: judge improvement using ordinary cycles after deployment, including
+both acceptance rate and whether accepted reports use their sources correctly.
