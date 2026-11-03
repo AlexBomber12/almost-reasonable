@@ -242,6 +242,10 @@ def test_worker_rejects_missing_or_unreviewed_billing_scope(
 
 def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
     import app.ops.int24_public_worker as module
+    from app.trusted.public_monthly_budget import MonthlyBudget
+
+    budget = tmp_path / "monthly-budget.sqlite"
+    MonthlyBudget.initialize(budget, lane="sol", project_id="proj_reviewed")
 
     config = {
         "worker_enabled": True,
@@ -256,6 +260,7 @@ def test_worker_passes_reviewed_billing_scope_to_sdk(monkeypatch, tmp_path):
         "application_gid": 1002,
         "account_ref": "account-1",
         "model": "reviewed-model",
+        "monthly_budget_path": str(budget),
     }
     seen = {}
 
@@ -401,6 +406,17 @@ def test_operator_protected_config_and_runtime_use_application_owned_state(
     assert seen[-1][1]["research_enabled"] is True
     assert seen[-1][1]["research_client"] is not None
     assert seen[-1][1]["research_scope"] == "test-public"
+    module._runtime(
+        config
+        | {
+            "enable_autonomous_publication": True,
+            "standing_public_reviewed": True,
+            "autonomous_publication_reviewed": True,
+        }
+    )
+    assert seen[-1][1]["autonomous_publication_enabled"] is True
+    with pytest.raises(ValueError, match="standing publication"):
+        module._runtime(config | {"standing_public_reviewed": True})
 
     from datetime import UTC, datetime, timedelta
     from app.behavior.scheduler import (

@@ -138,10 +138,9 @@ class PublicPublicationGrants:
                 "SELECT 1 FROM public_grants WHERE id=?", (spec.grant_id,)
             ).fetchone():
                 raise ValueError("public grant already issued")
-            if (
-                db.execute("SELECT COUNT(*) FROM public_grants").fetchone()[0]
-                >= MAX_INTENTS
-            ):
+            if db.execute("SELECT COUNT(*) FROM public_grants").fetchone()[
+                0
+            ] >= MAX_INTENTS and not getattr(self.app, "standing_public", False):
                 raise ValueError("public grant capacity reached")
             db.execute(
                 "INSERT INTO public_grants VALUES(?,?,?,?,?,0,?,0)",
@@ -293,9 +292,10 @@ class PublicPublicationGrants:
                         ).fetchone()[0]
                         if used >= spec["max_publications"]:
                             denial = "public grant publications exhausted"
-                        elif (
-                            db.execute("SELECT COUNT(*) FROM approvals").fetchone()[0]
-                            >= MAX_INTENTS
+                        elif db.execute("SELECT COUNT(*) FROM approvals").fetchone()[
+                            0
+                        ] >= MAX_INTENTS and not getattr(
+                            self.app, "standing_public", False
                         ):
                             denial = "public grant approval capacity reached"
                         else:

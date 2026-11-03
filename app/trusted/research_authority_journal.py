@@ -1,6 +1,7 @@
 """Worker-owned, durable admission ledger for finite catalog profiles."""
 
 from contextlib import contextmanager
+from datetime import UTC, datetime
 import os
 from pathlib import Path
 import sqlite3
@@ -12,12 +13,19 @@ from app.core.sqlite_files import sqlite_metadata_handle
 from app.core.public_research_authority import validate_trusted_directories
 from app.core.public_research_profile import ResearchProfile
 from app.core.public_research_profile import PUBLIC_PURPOSES
+from app.core.public_research_period import (
+    PERIOD_SCHEMA,
+    initialize_periods,
+    period_counts,
+    record_period,
+)
 
 
 class AuthorityJournal:
     """Reserve capacity before provider contact; a lost result consumes its slot."""
 
-    def __init__(self, path: Path):
+    def __init__(self, path: Path, *, clock=lambda: datetime.now(UTC)):
+        self.clock = clock
         path = Path(path)
         if not path.is_absolute():
             raise ValueError("absolute authority journal required")
@@ -68,6 +76,8 @@ class AuthorityJournal:
                 "reservations": "CREATE TABLE reservations (operation_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL REFERENCES profiles(profile_id), topic_id TEXT NOT NULL)",
                 "public_reservations": "CREATE TABLE public_reservations (operation_id TEXT PRIMARY KEY, account_ref TEXT NOT NULL, topic_id TEXT NOT NULL)",
             }
+            initialize_periods(db)
+            expected.update(PERIOD_SCHEMA)
             actual = dict(
                 db.execute("SELECT name, sql FROM sqlite_master WHERE type='table'")
             )
@@ -125,6 +135,9 @@ class AuthorityJournal:
                     "SELECT COUNT(*) FROM public_reservations WHERE account_ref=? AND topic_id=?",
                     (profile.account_ref, topic_id),
                 ).fetchone()[0]
+            if profile.standing_monthly:
+                counts = self._period_counts(db, profile)
+                aggregate, per_topic = sum(counts.values()), counts.get(topic_id, 0)
             topic = next(
                 (item for item in profile.topics if item.topic_id == topic_id), None
             )
@@ -147,6 +160,10 @@ class AuthorityJournal:
                     "INSERT INTO public_reservations VALUES (?,?,?)",
                     (operation_id, profile.account_ref, topic_id),
                 )
+            if profile.standing_monthly:
+                record_period(
+                    db, operation_id, profile.account_ref, topic_id, self.clock()
+                )
         return True
 
     def activate(self, profile: ResearchProfile) -> None:
@@ -168,6 +185,8 @@ class AuthorityJournal:
                     "INSERT INTO profiles(profile_id,digest) VALUES (?,?)",
                     (profile.profile_id, profile.digest),
                 )
+            if profile.standing_monthly:
+                self._period_counts(db, profile)
 
     def active(self, profile: ResearchProfile) -> bool:
         with self._open() as db:
@@ -194,7 +213,18 @@ class AuthorityJournal:
                     (profile.profile_id,),
                 ).fetchone()[0]
             )
+            if profile.standing_monthly:
+                count = sum(self._period_counts(db, profile).values())
             return count >= profile.aggregate_limit
+
+    def _period_counts(self, db, profile):
+        legacy = dict(
+            db.execute(
+                "SELECT topic_id,COUNT(*) FROM public_reservations WHERE account_ref=? GROUP BY topic_id",
+                (profile.account_ref,),
+            )
+        )
+        return period_counts(db, profile.account_ref, self.clock(), legacy)
 
     def revoke(self, profile: ResearchProfile) -> None:
         with self._open() as db:

@@ -1,7 +1,7 @@
 """Closed operator-owned catalog authority with separate private/public projections."""
 
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 import hashlib
 import json
 import os
@@ -19,6 +19,7 @@ from app.research.provider import default_hosted_search_config
 
 VERSION = "public-research-profile-v1"
 AUTONOMOUS_VERSION = "public-research-profile-v2"
+STANDING_VERSION = "public-research-profile-v3"
 PUBLIC_PURPOSE = "public-deliberation-catalog-research-v1"
 AUTONOMOUS_PUBLIC_PURPOSE = "public-deliberation-autonomous-research-v1"
 PUBLIC_PURPOSES = frozenset({PUBLIC_PURPOSE, AUTONOMOUS_PUBLIC_PURPOSE})
@@ -84,6 +85,7 @@ class ResearchProfile:
     purpose: str = PURPOSE
     account_ref: str | None = None
     question_policy: QuestionPolicy | None = None
+    standing_monthly: bool = False
 
     def topic(self, choice: str) -> CatalogTopic | None:
         if type(choice) is not str:
@@ -183,7 +185,10 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
     private = {"principal_id", "authenticated_source_ref"}
     if type(data) is not dict:
         raise ValueError("invalid profile fields")
-    autonomous = data.get("version") == AUTONOMOUS_VERSION
+    standing = data.get("version") == STANDING_VERSION
+    autonomous = standing or data.get("version") == AUTONOMOUS_VERSION
+    if standing:
+        common.add("renewal")
     if autonomous:
         common.remove("topics")
         common.add("question_policy")
@@ -193,7 +198,14 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
     ) | ({"account_ref"} if purpose in PUBLIC_PURPOSES else set()):
         raise ValueError("invalid profile fields")
     if (
-        data["version"] not in {VERSION, AUTONOMOUS_VERSION}
+        data["version"] not in {VERSION, AUTONOMOUS_VERSION, STANDING_VERSION}
+        or (
+            standing
+            and (
+                purpose != AUTONOMOUS_PUBLIC_PURPOSE
+                or data["renewal"] != "standing-monthly-utc"
+            )
+        )
         or (purpose == AUTONOMOUS_PUBLIC_PURPOSE and not autonomous)
         or (purpose == PUBLIC_PURPOSE and autonomous)
         or data["role"] != role
@@ -223,7 +235,12 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         issued.tzinfo is None
         or expires.tzinfo is None
         or reviewed.tzinfo is None
-        or not reviewed <= issued < expires <= issued + timedelta(days=30)
+        or not reviewed <= issued < expires
+        or (
+            expires != datetime.max.replace(tzinfo=UTC)
+            if standing
+            else expires > issued + timedelta(days=30)
+        )
     ):
         raise ValueError("invalid profile interval")
     policy = None
@@ -309,4 +326,5 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         purpose,
         account_ref,
         policy,
+        standing,
     )
