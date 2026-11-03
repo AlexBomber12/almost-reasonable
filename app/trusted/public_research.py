@@ -637,6 +637,10 @@ class PublicResearchBoundary:
                     safe_error_code = self._screened_response_id(
                         getattr(error, "provider_code", None)
                     )
+                    if error.code == "allowance_exhausted":
+                        return finish(
+                            _response("allowance_exhausted"), code=safe_error_code
+                        )
                     if error.code in CONFIRMED_SPEND_LIMIT_CODES:
                         return finish(
                             _response("spend_limit_confirmed", 1, usage=usage),
