@@ -36,7 +36,7 @@ from app.trusted.openai_credential_files import TrustedTransportConfigurationErr
 from .auth import AuthStore, SCHEMA_VERSION as AUTH_SCHEMA_VERSION
 from .conversation import ConversationService, _utc_now
 from .privacy import ParticipantPrivacyControls
-from .runtime import WorkerConversationRuntime
+from .runtime import DEFAULT_PRIVATE_HISTORY_EVENTS, WorkerConversationRuntime
 from .public_research import PublicResearchBridge
 from .server import PrivateWSGIRequestHandler
 from .wsgi import PrivateWebApplication, PrivateWebConfig
@@ -62,7 +62,12 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--event-db", required=True)
     serve.add_argument("--worker-socket")
     serve.add_argument("--worker-uid", type=int)
-    serve.add_argument("--worker-history-events", type=int, default=99)
+    serve.add_argument(
+        "--worker-history-events",
+        type=int,
+        default=DEFAULT_PRIVATE_HISTORY_EVENTS,
+        help="maximum recent transcript segments in model context; archive is retained",
+    )
     serve.add_argument("--ipc-state-db")
     serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-memory-evolution", action="store_true")

@@ -12,6 +12,30 @@ python -m app.private_web.cli serve \
   --allowed-host chat.example --allowed-origin https://chat.example
 ```
 
+### Working context and retained history
+
+The default private runtime uses a recent transcript tail of at most 13 segments
+(including the current input), together with ranked structured memories and
+source-bound intellectual state. The complete serialized request remains bounded
+by 32,000 UTF-8 bytes. `--worker-history-events` overrides the transcript count;
+it does not delete or shorten the stored conversation. Whole recent exchanges
+are preferred, with explicit omission flags when context cannot fit. Once the
+tail is full, older unselected replies are not repeatedly validated for that
+request. Selected memories still retain their complete protected dependencies.
+
+This reuses the existing memory projections; it does not add a paid summarizer
+or turn an unverified summary into established fact. Old raw text can leave the
+working transcript while a still-authorized, relevant memory remains available.
+The history page continues to show the retained archive. Ordinary historical
+replies do not rebuild the full intellectual source archive for each reply;
+research-derived ancestry still requires live source validation. No cache
+survives a request or bypasses source withdrawal or erasure.
+
+Private-to-public influence remains restricted to separately authorized,
+screened `abstract_to_shared` records with protected provenance and the intended
+audience. Shortening private context does not authorize exporting a transcript,
+personal details, or a private summary into public posts.
+
 All five application stores must already exist. The application IPC state database
 must be distinct from the conversation EventStore and owned by the application UID.
 It holds durable IPC reservations and the application spend suspension control.
