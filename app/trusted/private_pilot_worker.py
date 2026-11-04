@@ -8,6 +8,7 @@ from collections.abc import Callable
 import json
 from pathlib import Path
 import signal
+from types import SimpleNamespace
 
 from app.cognition.conversation_context import MemoryModelRequest
 from app.cognition.worker_extraction import ExtractionModelRequest
@@ -41,6 +42,8 @@ from app.trusted.private_pilot import (
     protected_state_identity,
     read_pilot_control,
 )
+from app.trusted.private_budget import PrivateBudgetedResponses, available
+from app.trusted.public_monthly_budget import MonthlyBudget
 
 
 ACTIVATION_PATH = Path("/run/almost-reasonable-private-pilot/control/activation.json")
@@ -118,6 +121,7 @@ class PilotRequestGate:
         typed_permission_path: Path | None = None,
         narrative_permission_path: Path | None = None,
         shared_permission_path: Path | None = None,
+        monthly_budget: MonthlyBudget | None = None,
         clock: Callable[[], datetime] = lambda: datetime.now(UTC),
     ):
         self.clock = clock
@@ -132,6 +136,7 @@ class PilotRequestGate:
         self.typed_permission_path = typed_permission_path
         self.narrative_permission_path = narrative_permission_path
         self.shared_permission_path = shared_permission_path
+        self.monthly_budget = monthly_budget
 
     def extraction_limit(self) -> int | None:
         return self._memory_limit(
@@ -197,6 +202,8 @@ class PilotRequestGate:
         return None
 
     def current(self) -> bool:
+        if self.activation.standing and self.monthly_budget is None:
+            return False
         try:
             return load_activation(
                 self.activation_path,
@@ -258,6 +265,13 @@ class PilotRequestGate:
             or (narrative_context and self.narrative_limit() is None)
         ):
             return WorkerResponse("authorization_rejected", 0, _REJECT_RU, None)
+        if self.monthly_budget is not None and not available(self.monthly_budget):
+            return WorkerResponse(
+                "spend_suspended",
+                0,
+                "Лимит частного чата на этот месяц исчерпан или учёт расходов недоступен. При наличии бюджета запросы возобновятся в новом месяце UTC.",
+                None,
+            )
         try:
             reserved = self.allowance.reserve(
                 request.operation_id,
@@ -310,6 +324,7 @@ def build_worker(
     typed_permission_path: Path | None = None,
     narrative_permission_path: Path | None = None,
     shared_permission_path: Path | None = None,
+    monthly_budget_path: Path | None = None,
     memory_acceptance: bool = False,
     clock: Callable[[], datetime] = lambda: datetime.now(UTC),
 ) -> OpenAIWorkerServer:
@@ -342,6 +357,18 @@ def build_worker(
         )
     if not allowance.current(clock()):
         raise PilotAuthorityError("operating grant is inactive")
+    if activation.standing != (monthly_budget_path is not None):
+        raise PilotAuthorityError("standing private grant requires its monthly budget")
+    monthly_budget = (
+        MonthlyBudget(
+            monthly_budget_path,
+            lane="private_sol",
+            project_id=activation.project_id,
+            clock=clock,
+        )
+        if monthly_budget_path is not None
+        else None
+    )
     provider_identity = _require_provider_database(provider_database)
 
     def provider_state_current() -> bool:
@@ -373,11 +400,18 @@ def build_worker(
         typed_permission_path=typed_permission_path,
         narrative_permission_path=narrative_permission_path,
         shared_permission_path=shared_permission_path,
+        monthly_budget=monthly_budget,
     )
     transport = build_worker_openai_transport(
         project_id=activation.project_id,
         organization_id=activation.organization_id,
     )
+    if monthly_budget is not None:
+        transport._client = SimpleNamespace(
+            responses=PrivateBudgetedResponses(
+                transport._client.responses, monthly_budget
+            )
+        )
     gateway = TrustedOpenAIGateway(
         store=provider_store,
         transport=transport,
@@ -429,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--narrative-permission", type=Path)
     parser.add_argument("--shared-proposal-permission", type=Path)
     parser.add_argument("--memory-acceptance", action="store_true")
+    parser.add_argument("--monthly-budget", type=Path)
     args = parser.parse_args(argv)
     worker = build_worker(
         activation_path=args.activation,
@@ -442,6 +477,7 @@ def main(argv: list[str] | None = None) -> int:
         narrative_permission_path=args.narrative_permission,
         shared_permission_path=args.shared_proposal_permission,
         memory_acceptance=args.memory_acceptance,
+        monthly_budget_path=args.monthly_budget,
     )
     stopping = False
 

@@ -1,5 +1,9 @@
 # Ordinary private operating grants
 
+For separately authorized private operation without calendar expiry, see
+[standing private conversations and their $10 monthly budget](private-standing-budget.md).
+Existing finite grants keep the rules below.
+
 ## Design recorded before implementation
 
 Base: `85d3ec906e26b354b428415710ac826a673801cf`. Traced private_pilot,

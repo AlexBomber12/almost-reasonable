@@ -665,6 +665,8 @@ _BILLING_QUOTA_CODES = frozenset(
 
 
 def _classify_error(error: OpenAITransportError) -> GatewayOutcome:
+    if error.error_code == "private_monthly_budget_exhausted":
+        return GatewayOutcome.SPEND_SUSPENDED
     if error.timeout:
         return GatewayOutcome.TIMEOUT
     if error.connection:

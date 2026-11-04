@@ -1,7 +1,8 @@
-"""Conservative public-only admission, independent of delayed provider billing.
+"""Conservative lane-specific admission, independent of delayed provider billing.
 
-Two worker-owned wallets partition $20: Sol $15 and research $5. No shared
-write credential, private-dialogue balance, or model supplied price is involved.
+Two public worker wallets partition $20: Sol $15 and research $5. The private
+Sol lane has a separate $10 wallet in its own worker-owned database. Lane and
+project bindings prevent interchanging these wallets. No model supplies prices.
 Unknown outcomes retain the whole reservation. Calendar months are UTC.
 """
 
@@ -24,6 +25,7 @@ from app.core.public_research_authority import validate_trusted_directories
 POLICIES = {
     "sol": ("gpt-6.1-sol", 15_000_000, 1_000_000, 133_120, 600, 1500, 0),
     "research": ("gpt-6-luna", 5_000_000, 700_000, 1_050_000, 60, 90, 11_000),
+    "private_sol": ("gpt-6.1-sol", 10_000_000, 1_000_000, 133_120, 600, 1500, 0),
 }
 VERSION = "public-usd-conservative-20261102-v1"
 
@@ -212,6 +214,8 @@ class BudgetedResponses:
                 "truncation",
                 "parallel_tool_calls",
             }
+        elif self.budget.lane == "private_sol":
+            allowed |= {"instructions", "background", "stream", "truncation"}
         text_input = kwargs.get("input")
         if type(text_input) is list:
             text_input = all(
@@ -233,6 +237,14 @@ class BudgetedResponses:
             or not text_input
             or not set(kwargs) <= allowed
             or kwargs.get("parallel_tool_calls", False) is not False
+            or (
+                self.budget.lane == "private_sol"
+                and (
+                    kwargs.get("background", False) is not False
+                    or kwargs.get("stream", False) is not False
+                    or kwargs.get("truncation", "disabled") != "disabled"
+                )
+            )
             or len(json.dumps(kwargs, ensure_ascii=False).encode()) > 131_072
         ):
             raise PublicOutputRejected(
