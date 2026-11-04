@@ -25,6 +25,7 @@ MAX_PROVIDER_RESPONSE_UTF8_BYTES = 512 * 1024
 MAX_SOURCE_RESULTS = 10
 MAX_PROVIDER_OUTPUT_ITEMS = 16
 MAX_CONSULTED_SOURCES = 100
+MAX_CITATION_ANNOTATIONS = 32
 _KNOWN_NON_URL_SOURCE_TYPES = frozenset(("oai-sports", "oai-weather", "oai-finance"))
 _PROVIDER_SOURCE_AUTHORITY = object()
 _VERIFIED_SOURCE_AUTHORITY = object()
@@ -403,10 +404,12 @@ def _parse_message(
     annotations = output.get("annotations")
     if type(annotations) is not list:
         raise ValueError("malformed provider annotations")
-    if len(annotations) > max_sources:
-        raise ValueError("provider response exceeded source result budget")
-    records = tuple(
-        _parse_annotation(
+    if len(annotations) > MAX_CITATION_ANNOTATIONS:
+        raise ValueError("provider response exceeded annotation bound")
+    records = []
+    recorded_metadata = {}
+    for index, annotation in enumerate(annotations):
+        record = _parse_annotation(
             annotation,
             index=index,
             text=text,
@@ -415,9 +418,24 @@ def _parse_message(
             consulted_urls=consulted_urls,
             retrieved_at=retrieved_at,
         )
-        for index, annotation in enumerate(annotations)
-    )
-    return text, records
+        # Validate every occurrence before folding repeated citations. Never
+        # hide a malformed citation or different metadata behind a valid one.
+        if record.status is SourceStatus.RECORDED:
+            metadata = (
+                record.title,
+                record.publisher,
+                record.source_language,
+                record.publication_date,
+            )
+            if record.url in recorded_metadata:
+                if recorded_metadata[record.url] != metadata:
+                    raise ValueError("conflicting duplicate citation metadata")
+                continue
+            recorded_metadata[record.url] = metadata
+        records.append(record)
+        if len(records) > max_sources:
+            raise ValueError("provider response exceeded source result budget")
+    return text, tuple(records)
 
 
 def _parse_annotation(

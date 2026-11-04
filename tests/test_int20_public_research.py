@@ -101,7 +101,7 @@ def grant(
         ("provenance", "research_provenance_invalid"),
         ("source", "research_source_rejected"),
         ("privacy", "research_privacy_rejected"),
-        ("assessment", "research_assessment_invalid"),
+        ("assessment", "research_assessment_json"),
         ("uncited", "research_uncited_url"),
         ("language", "research_language_rejected"),
     ],

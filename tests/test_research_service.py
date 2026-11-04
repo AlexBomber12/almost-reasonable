@@ -166,16 +166,28 @@ def test_success_returns_untrusted_evidence_with_validated_provenance():
     assert transport.calls[0].request.to_sdk_kwargs()["store"] is False
 
 
-def test_brief_result_budget_is_enforced_on_provider_annotations():
+def test_brief_result_budget_is_enforced_on_distinct_provider_sources():
     over_budget = success_response()
     message = dict(over_budget.output[1])
     content = dict(message["content"][0])
-    content["annotations"] = content["annotations"] * 2
+    second_url = "https://example.org/second-paper"
+    content["annotations"] = [
+        content["annotations"][0],
+        dict(content["annotations"][0], url=second_url),
+    ]
+    call = dict(over_budget.output[0])
+    call["action"] = {
+        "type": "search",
+        "sources": [
+            {"type": "url", "url": content["annotations"][0]["url"]},
+            {"type": "url", "url": second_url},
+        ],
+    }
     message["content"] = [content]
     over_budget = HostedSearchResponse(
         over_budget.response_id,
         over_budget.status,
-        (over_budget.output[0], message),
+        (call, message),
     )
     limited = brief(result_budget=1)
     instance, _transport, _sleeps, _marks = service([over_budget])

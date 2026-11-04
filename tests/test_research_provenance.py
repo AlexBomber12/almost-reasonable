@@ -343,13 +343,23 @@ def test_duplicate_search_call_ids_and_result_budget_overflow_fail_closed():
 
     message = dict(valid.output[1])
     content = dict(message["content"][0])
-    content["annotations"] = content["annotations"] * 2
+    second_url = "https://example.org/second-paper"
+    content["annotations"] = [
+        content["annotations"][0],
+        dict(content["annotations"][0], url=second_url),
+    ]
+    call = dict(valid.output[0])
+    call["action"] = {
+        "type": "search",
+        "sources": [
+            {"type": "url", "url": "https://example.org/paper"},
+            {"type": "url", "url": second_url},
+        ],
+    }
     message["content"] = [content]
     with pytest.raises(ValueError, match="source result budget"):
         parse_hosted_search_response(
-            HostedSearchResponse(
-                valid.response_id, valid.status, (valid.output[0], message)
-            ),
+            HostedSearchResponse(valid.response_id, valid.status, (call, message)),
             retrieved_at=NOW,
             max_sources=1,
         )
