@@ -42,7 +42,11 @@ def readback(parent):
 
 
 def dispatch_sequence(parent):
-    create = {"media_type": ["TEXT"], "text": ["Проверяем публикацию"]}
+    create = {
+        "media_type": ["TEXT"],
+        "text": ["Проверяем публикацию"],
+        "auto_publish_text": ["false"],
+    }
     if parent:
         create["reply_to_id"] = [parent]
     return [

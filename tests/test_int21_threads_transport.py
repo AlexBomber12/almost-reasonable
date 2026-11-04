@@ -180,12 +180,16 @@ def test_reply_parent_is_sent_and_verified(tmp_path):
         (
             "container",
             [response(429, {"error": {"code": 4}})],
-            OutboxState.UNKNOWN,
+            OutboxState.FAILED_TERMINAL,
         ),
-        ("container", [TimeoutError("secret body")], OutboxState.UNKNOWN),
-        ("container", [response(500, {"error": {"code": 1}})], OutboxState.UNKNOWN),
-        ("container", [HTTPResponse(200, b'{"id":')], OutboxState.UNKNOWN),
-        ("container", [response(200, {})], OutboxState.UNKNOWN),
+        ("container", [TimeoutError("secret body")], OutboxState.FAILED_TERMINAL),
+        (
+            "container",
+            [response(500, {"error": {"code": 1}})],
+            OutboxState.FAILED_TERMINAL,
+        ),
+        ("container", [HTTPResponse(200, b'{"id":')], OutboxState.FAILED_TERMINAL),
+        ("container", [response(200, {})], OutboxState.FAILED_TERMINAL),
         (
             "publish",
             [
@@ -406,7 +410,10 @@ def test_container_response_is_never_accepted_without_valid_id(tmp_path, bad_res
     fake = FakeHTTP(bad_response)
     svc, auth = service(tmp_path, fake)
     approval = ready(svc, auth)
-    assert svc.dispatch("operation-1", approval, now=NOW).state is OutboxState.UNKNOWN
+    assert (
+        svc.dispatch("operation-1", approval, now=NOW).state
+        is OutboxState.FAILED_TERMINAL
+    )
     assert TOKEN not in repr(svc.store.get("operation-1"))
 
 
