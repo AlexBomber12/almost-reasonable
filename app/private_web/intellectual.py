@@ -22,13 +22,12 @@ class PrivateIntellectualState:
 
     def source_validator(self, db, principal):
         """Recheck report ancestry without binding unrelated inference pipelines."""
-        state, sources = (
-            self.state(principal),
-            self.sources(principal, db),
-        )
+        state = self.state(principal)
+        sources = None
         checked = {}
 
         def permitted(creator):
+            nonlocal sources
             if creator not in checked:
                 reply = self.app._outputs._read(db, principal, creator)
                 deps = state.dependencies(db, creator)
@@ -38,6 +37,8 @@ class PrivateIntellectualState:
                     is not None
                     for key in deps
                 )
+                if report_ancestry and sources is None:
+                    sources = self.sources(principal, db)
                 checked[creator] = (
                     (
                         reply is None

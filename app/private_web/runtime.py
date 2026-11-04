@@ -91,6 +91,8 @@ from app.cognition.narrative_store import NarrativeStore, NarrativeConflict
 from .shared_audit import SharedProposalAuditStore
 
 
+DEFAULT_PRIVATE_HISTORY_EVENTS = 13
+
 _WORKER_FAILURE_RU = "Сервис модели временно недоступен. Попробуйте позже."
 _WORKER_STOPPED_RU = "Новые запросы к модели временно остановлены."
 _WORKER_SPEND_RU = "Запросы к модели приостановлены из-за лимита расходов."
@@ -225,7 +227,9 @@ class _DurableConversationRuntime(ConversationService):
         memory_extractor: SyntheticMemoryExtractor | None = None,
         cognition_capabilities: CognitionCapabilities = CognitionCapabilities(),
         shared_intelligence: SharedIntelligence | None = None,
-        context_limits: ContextLimits = ContextLimits(32_000, 99),
+        context_limits: ContextLimits = ContextLimits(
+            32_000, DEFAULT_PRIVATE_HISTORY_EVENTS
+        ),
         research_bridge: SyntheticResearchBridge | PublicResearchBridge | None = None,
         provider_state: ProviderStateStore | None = None,
     ):

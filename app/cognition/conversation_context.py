@@ -495,6 +495,12 @@ class MemoryConversationAssembler:
             return len(sources | shared_sources | extra_private | extra_shared) > 100
 
         for event in reversed(events[:-1]):
+            if (
+                len(selected_history) + len(base.conversation)
+                >= self._limits.max_history_events
+            ):
+                history_omitted = True
+                break
             history = build_model_request(
                 PrivateContextAssembler(
                     _Events((event,)),
