@@ -213,6 +213,13 @@ class PrivateIntellectualState:
             if "reply:" + creator in sources
             and sources["reply:" + creator]["kind"] == "hosted_research_model_report"
         )[:1]
+        # Actual own posts must not be crowded out by optional prior dialogue.
+        # Private input remains in the primary transcript and protected roots.
+        priority += tuple(
+            key
+            for key, source in public_selection.items()
+            if source["kind"] == "confirmed_publication"
+        )
         visible.update(priority)
         budget = (
             self.app._limits.max_utf8_bytes - len(request.serialize().encode()) - 64
