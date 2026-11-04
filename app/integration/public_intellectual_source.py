@@ -79,7 +79,7 @@ class PublicIntellectualSource:
         )
         if (
             type(value) is not dict
-            or set(value) - {"owner_directory"}
+            or set(value) - {"owner_directory", "include_public_activity"}
             != {
                 "version",
                 "account",
@@ -121,7 +121,11 @@ class PublicIntellectualSource:
         shared_source=None,
         clock=lambda: datetime.now(UTC),
         owner_directory=None,
+        include_public_activity=False,
     ):
+        if type(include_public_activity) is not bool:
+            raise ValueError("invalid public activity mode")
+        self.include_public_activity = include_public_activity
         require_reference("public intellectual account", account)
         if any(
             not Path(path).is_absolute()
@@ -201,7 +205,6 @@ class PublicIntellectualSource:
             sources = view.intellectual.sources(_shared_sources=shared_sources)
             with connect_read_only(view.journal.path) as db:
                 heads = view.intellectual.state._heads(db, sources)
-            result = {}
             allowed = None
             if shared is not None and principal is not None:
                 if _private_db is not None:
@@ -217,6 +220,11 @@ class PublicIntellectualSource:
                             record.operation_id
                             for record in shared.shared.select(private_db, principal)
                         }
+            result = (
+                self._activity_sources(sources, generation, allowed, required_keys)
+                if self.include_public_activity
+                else {}
+            )
             for item, revision, payload, deps, _operation in sorted(
                 heads,
                 key=lambda row: (row[2]["metadata"]["decided_at"], row[0]),
@@ -281,3 +289,101 @@ class PublicIntellectualSource:
             return result
         except (OSError, ValueError, sqlite3.Error, KeyError, TypeError):
             return {}
+
+    def _activity_sources(self, sources, generation, allowed, required_keys):
+        """Import only eligible own posts and bounded recorded local decisions.
+
+        Use the same protected receipt and live ancestry path as public state.
+        Incoming messages, proposed drafts and uncertain publications are absent.
+        """
+        view = self.view
+        candidates = view.experience_history._candidates()
+        result = {}
+        for kind, limit in (("confirmed_publication", 3), ("no_action", 1)):
+            count = 0
+            ranked = sorted(
+                (
+                    (key, record, binding)
+                    for key, (record, binding) in candidates.items()
+                    if record.kind == kind
+                ),
+                key=lambda row: (row[1].occurred_at, row[0]),
+                reverse=True,
+            )
+            for source_id, experience, binding in ranked:
+                item = "activity-" + digest(source_id)
+                key = source_key(view.account, item)
+                if required_keys is not None and key not in required_keys:
+                    continue
+                source = sources.get(source_id)
+                if source is None or source["binding"] != binding:
+                    continue
+                deps = {**source["dependencies"], source_id: binding}
+                ancestors = sorted(
+                    k.removeprefix("shared:") for k in deps if k.startswith("shared:")
+                )
+                if ancestors and (
+                    view.shared_intellectual_source is None
+                    or (allowed is not None and not set(ancestors) <= allowed)
+                ):
+                    continue
+                operation = source_id.split(":", 1)[1]
+                with connect_read_only(view.journal.path) as db:
+                    payload = json.loads(
+                        db.execute(
+                            "SELECT payload FROM intents WHERE operation=?",
+                            (operation,),
+                        ).fetchone()[0]
+                    )
+                try:
+                    snapshot = {
+                        "record": experience.value(),
+                        "recorded_reason_category": payload.get("reason"),
+                    }
+                except ValueError:
+                    continue
+                record = {
+                    "kind": kind,
+                    "text": encoded(
+                        {
+                            "text": experience.text,
+                            "occurred_at": experience.occurred_at,
+                            "publication_id": experience.message_id,
+                            "recorded_reason_category": payload.get("reason"),
+                            "meaning": "Own application-confirmed public activity; factual claims not independently verified. A missing reason was not recorded; a category is not a detailed historical motive.",
+                        }
+                    ),
+                }
+                try:
+                    projection(
+                        {
+                            "version": VERSION,
+                            "states": [],
+                            "sources": [{"handle": "s0", **record}],
+                        }
+                    )
+                    receipt = validate(
+                        {
+                            "version": RECEIPT_VERSION,
+                            "account": view.account,
+                            "item": item,
+                            "revision": 1,
+                            "state_digest": digest(snapshot),
+                            "dependency_digest": digest(deps),
+                            "record_digest": digest(record),
+                            "generation": generation,
+                            "shared": ancestors,
+                        }
+                    )
+                except ValueError:
+                    continue
+                result[key] = {
+                    **record,
+                    "binding": digest(receipt),
+                    "dependencies": {},
+                    "receipt": receipt,
+                }
+                count += 1
+                if required_keys is None and count == limit:
+                    break
+        return result

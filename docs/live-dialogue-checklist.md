@@ -1,5 +1,8 @@
 # Live dialogue and public continuity checklist
 
+For the opt-in path that supplies confirmed own publications to private replies
+and the corresponding human dialogue checks, see [private/public continuity](private-public-dialogue.md).
+
 This is a proposed collection guide for the existing SCN-01–12 inventory, not
 an approved calibration, completed preregistration or passing acceptance report.
 Use [the real acceptance protocol](real-acceptance.md) for candidate binding,
