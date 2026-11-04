@@ -19,6 +19,7 @@ from app.trusted.openai_credential_files import (
 
 ACTIVATION_VERSION = "private-pilot-activation-v1"
 OPERATING_GRANT_VERSION = "private-operating-grant-v1"
+STANDING_GRANT_VERSION = "private-standing-grant-v1"
 MAX_OPERATING_OPERATIONS = 2**63 - 1
 MEMORY_ACTIVATION_VERSION = "private-pilot-activation-b03d-v1"
 MEMORY_TASK = "synthetic-private-robot-memory-b03d"
@@ -120,13 +121,14 @@ class PilotActivation:
     project_id: str
     organization_id: str
     not_before: datetime
-    expires_at: datetime
+    expires_at: datetime | None
     max_operations: int
     digest: str
     memory_acceptance: bool = False
     combined_acceptance: bool = False
     ordinary: bool = False
     model: str = MODEL
+    standing: bool = False
 
 
 def _unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
@@ -158,7 +160,8 @@ def load_activation(
         value = json.loads(payload, object_pairs_hook=_unique)
         if type(value) is not dict or type(allow_memory_acceptance) is not bool:
             raise ValueError("invalid activation fields")
-        ordinary = value.get("version") == OPERATING_GRANT_VERSION
+        standing = value.get("version") == STANDING_GRANT_VERSION
+        ordinary = standing or value.get("version") == OPERATING_GRANT_VERSION
         combined_acceptance = (
             allow_memory_acceptance
             and set(value) == _FIELDS | {"task"}
@@ -174,14 +177,16 @@ def load_activation(
         if not memory_acceptance and value.keys() != _FIELDS:
             raise ValueError("invalid activation fields")
         start = _utc_second(value["not_before"])
-        end = _utc_second(value["expires_at"])
+        end = None if standing else _utc_second(value["expires_at"])
         current = datetime.now(UTC) if now is None else now
         if type(current) is not datetime or current.tzinfo is None:
             raise ValueError("invalid current time")
         valid = (
             value["version"]
             == (
-                OPERATING_GRANT_VERSION
+                STANDING_GRANT_VERSION
+                if standing
+                else OPERATING_GRANT_VERSION
                 if ordinary
                 else COMBINED_ACTIVATION_VERSION
                 if combined_acceptance
@@ -220,7 +225,13 @@ def load_activation(
             )
             and value["max_attempts_per_operation"] == 1
             and type(value["max_attempts_per_operation"]) is int
-            and start < end
+            and (
+                value["expires_at"] is None
+                and value["max_operations"] == MAX_OPERATING_OPERATIONS
+                and value["model"] == "gpt-6.1-sol"
+                if standing
+                else start < end
+            )
             and (
                 ordinary
                 or (end - start).total_seconds()
@@ -230,7 +241,11 @@ def load_activation(
                     else MAX_WINDOW_SECONDS
                 )
             )
-            and (not require_current or start <= current.astimezone(UTC) < end)
+            and (
+                not require_current
+                or start <= current.astimezone(UTC)
+                and (end is None or current.astimezone(UTC) < end)
+            )
         )
         if not valid:
             raise ValueError("invalid or stale activation")
@@ -247,6 +262,7 @@ def load_activation(
             combined_acceptance,
             ordinary,
             value["model"],
+            standing,
         )
     except (
         PilotAuthorityError,
@@ -475,7 +491,10 @@ class PilotAllowance:
                 if now is not None:
                     instant = now.astimezone(UTC)
                     watermark = datetime.fromisoformat(last_seen)
-                    expired = expired or instant >= self.activation.expires_at
+                    expired = expired or (
+                        self.activation.expires_at is not None
+                        and instant >= self.activation.expires_at
+                    )
                     if observe:
                         db.execute(
                             "UPDATE operating_grants SET last_seen=?, expired=? WHERE digest=?",
@@ -488,7 +507,11 @@ class PilotAllowance:
                     result = (
                         not retired
                         and not expired
-                        and watermark <= instant < self.activation.expires_at
+                        and watermark <= instant
+                        and (
+                            self.activation.expires_at is None
+                            or instant < self.activation.expires_at
+                        )
                     )
                 else:
                     used = db.execute(
