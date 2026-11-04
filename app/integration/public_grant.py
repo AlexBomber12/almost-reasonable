@@ -13,7 +13,7 @@ from app.threads.domain import (
     require_aware_time,
     require_reference,
 )
-from app.threads.service import PolicyDeniedError
+from app.threads.service import PolicyDeniedError, PublicationPausedError
 from app.threads.store import ThreadsStoreError
 
 
@@ -396,20 +396,24 @@ class PublicPublicationGrants:
             )
         return result
 
-    def drain(self, window):
-        self._enabled()
+    def _require_resolved_publications(self):
         if self.app.service.store.unresolved_for_account(
             self.app.account
         ) or self.app.service.store.has_sending_for_account(self.app.account):
-            raise PolicyDeniedError(
+            raise PublicationPausedError(
                 "autonomous account paused by unresolved publication"
             )
+
+    def drain(self, window):
+        self._enabled()
+        self._require_resolved_publications()
         for operation in window.operations():
             try:
                 self.app.service.store.get(operation)
             except ThreadsStoreError:
                 continue
             self.dispatch(window.spec.publication_grant, operation)
+            self._require_resolved_publications()
 
     def summary(self, grant_id):
         with self.app.journal.transaction() as db:

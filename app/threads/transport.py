@@ -295,7 +295,11 @@ class ThreadsHTTPTransport:
     def create_container(self, item: OutboxItem) -> str:
         if item.account_ref != self.account_ref:
             raise ValueError("outbound account mismatch")
-        params = {"media_type": "TEXT", "text": validate_content(item.content)}
+        params = {
+            "media_type": "TEXT",
+            "text": validate_content(item.content),
+            "auto_publish_text": "false",
+        }
         if item.publication_type is PublicationType.REPLY:
             params["reply_to_id"] = require_reference(
                 "reply parent", item.parent_message_id

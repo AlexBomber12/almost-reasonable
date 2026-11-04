@@ -101,6 +101,24 @@ the active runner checks revocation before further effects. Revoking a generated
 daily grant also prevents future standing renewal. None of these actions deletes
 history, refunds an unknown call or creates permission to retry a lost publication.
 
+## Interrupted Threads requests
+
+A failed live container-creation request with auto-publication explicitly disabled
+ends that operation without a publish request or retry. The next ordinary cycle
+can continue under the same finite grant and budget. Its reserved publication and
+HTTP counts are retained. This does not retry the failed draft or recover legacy
+uncertainty automatically; see the [publication contract](b11b-threads-publication.md).
+
+An actually uncertain publication or interrupted `SENDING` operation returns
+`publication_paused` from its finite window. The standing runner stays alive and
+checks local controls once per second while waiting for original-operation
+reconciliation. It makes no model, search, polling or publication requests and
+issues no new leases during that pause, including across midnight. Once the
+outcome is resolved, it re-enters the current bounded lease, preserving consumed
+allowances and history. Owner Stop, standing revocation, changed controls and
+termination still stop the runner. A failed ordinary window retains its existing
+fail-closed behavior; it is not silently retried.
+
 The automated tests are offline regression evidence. They do not constitute real
 model acceptance, participant testing, a confirmed publication or production
 validation. Deployment and an observed normal cycle are separate evidence.

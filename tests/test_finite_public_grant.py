@@ -267,7 +267,7 @@ def test_unknown_publication_pauses_the_account_before_another_model_call(tmp_pa
     try:
         app.public_grants.issue(grant(window), window)
         result = run_window(app, worker, clock, window, 1)
-        assert result["state"] == "controls_denied"
+        assert result["state"] == "publication_paused"
         assert len(sdk.calls) == 1 and len(http.calls) == 5
         assert len(app.service.store.unresolved_for_account(app.account)) == 1
         PublicOperatingWindow(app, window).run(wait=lambda _: None)

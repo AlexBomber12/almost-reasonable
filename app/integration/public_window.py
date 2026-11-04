@@ -11,7 +11,7 @@ import time
 from app.behavior.scheduler import WakeupEvent
 from app.integration.threads_stage0 import MAX_INTENTS, _identity
 from app.threads.domain import InboundKind, OutboxState, require_reference
-from app.threads.service import PolicyDeniedError, PollingError
+from app.threads.service import PolicyDeniedError, PollingError, PublicationPausedError
 from app.threads.simulator import ProviderFailure
 from app.threads.store import ThreadsStoreError
 
@@ -417,6 +417,8 @@ class PublicOperatingWindow:
                         wait(0.25)
                 except WindowDenied as error:
                     state = str(error)
+                except PublicationPausedError:
+                    state = "publication_paused"
                 except PolicyDeniedError:
                     state = "controls_denied"
                 except KeyboardInterrupt:

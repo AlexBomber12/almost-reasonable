@@ -143,6 +143,14 @@ class StandingPublicRunner:
                 try:
                     while not should_stop():
                         self._check()
+                        # Wait locally before issuing or reopening any lease.
+                        # No inference, polling or publishing until the original
+                        # publication is resolved, including across midnight.
+                        if app.service.store.unresolved_for_account(
+                            app.account
+                        ) or app.service.store.has_sending_for_account(app.account):
+                            wait(1)
+                            continue
                         window, grant = self.policy.lease(app.clock.now())
                         with app.journal.transaction() as db:
                             app.public_grants._schema(db)
@@ -162,6 +170,8 @@ class StandingPublicRunner:
                         if row is None:
                             app.public_grants.issue(grant, window)
                         result = PublicOperatingWindow(app, window).run(wait=wait)
+                        if result["state"] == "publication_paused":
+                            continue
                         if result["state"] not in {"expired", "exhausted"}:
                             return result
                         while app.clock.now() < window.expires_at and not should_stop():

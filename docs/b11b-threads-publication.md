@@ -31,6 +31,17 @@ The service reserves the durable operation, records `SENDING`, checks `/me` befo
 
 The returned publication ID ties readback to the original publish request; its `creation_id` ties it to the approved text/parent container. There is no content search or need to infer identity from matching text. All calls retain the fixed TLS host/version, Bearer header, redirect rejection, deadline and response bounds. Reply verification adds one bounded account GET; it does not page or retry.
 
+The live text-container request explicitly sends `auto_publish_text=false`. Meta's
+[official collection](https://www.postman.com/meta/threads/documentation/dht3nzz/threads-api)
+documents auto-publication as an optional flag (checked 2026-11-04). An uncertain
+response **inside this create call** cannot publish a post: the separate publish
+request has not started. The service closes that operation as `FAILED_TERMINAL`
+with `container_failed_before_publish`, retaining the original sanitized error,
+identity and spent allowances. It never retries that container request. A draft
+container might exist at Meta; no claim of provider rejection or refund is made.
+Simulation faults retain their original classifications. Process crashes and old
+`UNKNOWN` rows are not reclassified from missing IDs alone.
+
 A failed account read **after** publishing, timeout, missing/wrong/malformed ownership or parent, wrong publication ID, or interrupted readback cannot prove no effect. It retains the original IDs and `UNKNOWN`, which pauses further publication. On restart, `recover-sending` moves a possible write to `UNKNOWN`. Reconciliation uses only the stored original publication ID and the same type-specific evidence; it creates no container and makes no POST. Failed reconciliation stays unresolved. An interrupted reconciliation claim needs its existing purpose-bound recovery approval before another reconciliation attempt. No schema, operation identity, evidence migration or cursor reset is needed: older `UNKNOWN`/`SENDING` operations with a recorded publication ID use this same read path; older confirmed operations are untouched.
 
 Without a returned publication ID (lost publish response, for example), the contract supplies no operation key proving which publication resulted or that none exists. The container ID/status or a text/time match is insufficient account/publication/parent evidence. Keep the account paused. A later separately authorized investigation would need authoritative linkage between that **original container/publish operation** and its actual publication ID before this runtime could verify it. This PR adds no discovery fallback, manual ID injection or resend procedure.

@@ -55,6 +55,10 @@ class PolicyDeniedError(RuntimeError):
     """A deterministic capability or authorization check denied an action."""
 
 
+class PublicationPausedError(PolicyDeniedError):
+    """An existing uncertain publication must be resolved before new work."""
+
+
 class PollingError(RuntimeError):
     """A bounded verified-source polling invariant failed."""
 
@@ -290,6 +294,7 @@ class ThreadsService:
                 expected_state=OutboxState.READY,
             )
             raise
+        container_only = False
         try:
             container_id = item.provider_container_id
             try:
@@ -359,7 +364,12 @@ class ThreadsService:
                         precommit_check=self._require_account_binding,
                     )
                     raise
+                # The live transport explicitly disables auto-publication. Even
+                # if its create response is lost, this call cannot publish a
+                # post. Abandon this attempt; never retry its container POST.
+                container_only = type(self.simulator) is ThreadsHTTPTransport
                 container_id = self.simulator.create_container(item)
+                container_only = False
                 self.store.update_sending_evidence(
                     operation_id,
                     "container_created_publish_not_started",
@@ -427,6 +437,7 @@ class ThreadsService:
                 item,
                 error,
                 now=now,
+                container_only=container_only,
             )
         return self.store.transition(
             operation_id,
@@ -1052,6 +1063,7 @@ class ThreadsService:
         error: ProviderFailure,
         *,
         now: datetime,
+        container_only: bool = False,
     ) -> OutboxItem:
         common = {
             "now": now,
@@ -1072,9 +1084,13 @@ class ThreadsService:
         if error.effect_class is EffectClass.UNCERTAIN_DISPATCH:
             return self.store.transition(
                 item.operation_id,
-                OutboxState.UNKNOWN,
-                reason="provider_effect_uncertain",
-                reconciliation_status="required",
+                OutboxState.FAILED_TERMINAL if container_only else OutboxState.UNKNOWN,
+                reason=(
+                    "container_failed_before_publish"
+                    if container_only
+                    else "provider_effect_uncertain"
+                ),
+                reconciliation_status="not_required" if container_only else "required",
                 **common,
             )
         if error.effect_class is EffectClass.CONFIRMED_REJECTION:
