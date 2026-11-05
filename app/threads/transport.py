@@ -433,22 +433,28 @@ class ThreadsHTTPTransport:
                 EffectClass.PROVEN_PRE_DISPATCH, "provider_account_mismatch"
             )
 
-    def _cursor_scope(self, stream: InboundKind) -> str:
+    def _cursor_scope(self, stream: InboundKind, reply_thread_id=None) -> str:
         route = (
-            self.reply_thread_id
+            (self.reply_thread_id if reply_thread_id is None else reply_thread_id)
             if stream is InboundKind.REPLY
             else self.provider_user_id
         )
         binding = f"{self.source_ref}\0{self.provider_user_id}\0{route}\0{stream.value}"
+        if reply_thread_id is not None:
+            binding += "\0conversation"
         return hashlib.sha256(binding.encode()).hexdigest()
 
-    def owns_cursor(self, stream: InboundKind, cursor: str) -> bool:
+    def owns_cursor(
+        self, stream: InboundKind, cursor: str, *, reply_thread_id=None
+    ) -> bool:
         if type(stream) is not InboundKind or not isinstance(cursor, str):
             return False
         if len(cursor) > _MAX_CURSOR_LENGTH:
             return False
         match = _CURSOR.fullmatch(cursor)
-        return match is not None and match[1] == self._cursor_scope(stream)
+        return match is not None and match[1] == self._cursor_scope(
+            stream, reply_thread_id
+        )
 
     def poll(
         self,
@@ -457,23 +463,31 @@ class ThreadsHTTPTransport:
         *,
         limit: int = _PAGE_LIMIT,
         timeout: float | None = None,
+        reply_thread_id: str | None = None,
     ) -> VerifiedPollPage:
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
+        if reply_thread_id is not None:
+            require_reference("discussion root", reply_thread_id)
+            if stream is not InboundKind.REPLY:
+                raise ValueError("discussion root requires reply stream")
+        reply_root = (
+            self.reply_thread_id if reply_thread_id is None else reply_thread_id
+        )
         if type(limit) is not int or not 1 <= limit <= _PAGE_LIMIT:
             raise ValueError("invalid provider page limit")
         if timeout is not None and (
             type(timeout) not in {int, float} or not 0 < timeout <= 30
         ):
             raise ValueError("invalid provider page timeout")
-        if stream is InboundKind.REPLY and self.reply_thread_id is None:
+        if stream is InboundKind.REPLY and reply_root is None:
             raise ValueError("reply polling requires a configured reply thread ID")
         raw_cursor = None
         if cursor is not None:
             if not isinstance(cursor, str) or len(cursor) > _MAX_CURSOR_LENGTH:
                 raise ValueError("invalid stored cursor")
             match = _CURSOR.fullmatch(cursor)
-            if match is None or match[1] != self._cursor_scope(stream):
+            if match is None or match[1] != self._cursor_scope(stream, reply_thread_id):
                 raise ValueError("invalid stored cursor")
             try:
                 raw_cursor = base64.urlsafe_b64decode(
@@ -482,7 +496,11 @@ class ThreadsHTTPTransport:
             except (ValueError, UnicodeDecodeError):
                 raise ValueError("invalid stored cursor") from None
         path = (
-            f"{self.reply_thread_id}/replies"
+            (
+                f"{reply_root}/conversation"
+                if reply_thread_id is not None
+                else f"{reply_root}/replies"
+            )
             if stream is InboundKind.REPLY
             else f"{self.provider_user_id}/mentions"
         )
@@ -525,7 +543,7 @@ class ThreadsHTTPTransport:
                 ) from None
         next_cursor = (
             "c-"
-            + self._cursor_scope(stream)
+            + self._cursor_scope(stream, reply_thread_id)
             + "_"
             + base64.urlsafe_b64encode(raw_next_bytes).decode().rstrip("=")
             if raw_next_bytes is not None
@@ -558,12 +576,13 @@ class ThreadsHTTPTransport:
                 )
                 if stream is InboundKind.REPLY:
                     if (
-                        root_id != self.reply_thread_id
-                        or parent_id != self.reply_thread_id
+                        root_id != reply_root
+                        or parent_id is None
+                        or (reply_thread_id is None and parent_id != reply_root)
                         or type(row.get("is_reply_owned_by_me")) is not bool
                     ):
                         raise ValueError("reply binding mismatch")
-                    conversation_id = self.reply_thread_id
+                    conversation_id = reply_root
                     if row["is_reply_owned_by_me"]:
                         continue
                 else:

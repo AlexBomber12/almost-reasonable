@@ -97,6 +97,63 @@ def test_one_window_wakeup_no_action_verified_inbound_and_pending_drafts(tmp_pat
         worker.close()
 
 
+def test_window_discovers_comments_on_a_later_confirmed_own_post(tmp_path):
+    from test_public_experience import wake
+    from app.threads.transport import HTTPResponse
+
+    app, worker, sdk, http, clock = setup(
+        tmp_path,
+        {"decision": "propose_publication", "draft": "Исследую основания мнений."},
+        reply_thread_id=None,
+    )
+    try:
+        wake(app, worker, clock, "initial-own-post")
+        operation = app.wakeup_operation("initial-own-post")
+        app.approve(operation, expires_at=clock.now() + timedelta(minutes=5))
+        assert app.dispatch(operation).state is OutboxState.CONFIRMED
+        sdk.proposal = NO_ACTION
+        request = http.request
+
+        def discussion(method, url, headers, body, timeout):
+            if "/post-1/conversation?" in url:
+                http.calls.append((method, url, body))
+                return HTTPResponse(
+                    200,
+                    json.dumps(
+                        {
+                            "data": [
+                                {
+                                    "id": "new-comment",
+                                    "text": "Почему ты так считаешь?",
+                                    "timestamp": clock.now().isoformat(),
+                                    "root_post": {"id": "post-1"},
+                                    "replied_to": {"id": "post-1"},
+                                    "is_reply_owned_by_me": False,
+                                }
+                            ]
+                        }
+                    ).encode(),
+                )
+            return request(method, url, headers, body, timeout)
+
+        http.request = discussion
+        thread = serve(worker, 3)
+        result = PublicOperatingWindow(
+            app, spec(max_model_calls=3, max_poll_pages=2, poll_interval_seconds=1)
+        ).run(wait=lambda seconds: clock.advance(timedelta(seconds=seconds)))
+        finish(thread)
+        assert result["consumed"]["inbound_events"] == 1
+        assert any("/post-1/conversation?" in row[1] for row in http.calls)
+        assert any(
+            "Почему ты так считаешь?" in str(call["input"]) for call in sdk.calls
+        )
+        # Deliberation may decline the comment; delivery must not force a reply.
+        assert result["outcomes"]["no_action"] == 3
+        assert any("/mentions?" in row[1] for row in http.calls)
+    finally:
+        worker.close()
+
+
 def test_restart_same_window_preserves_consumption_and_skips_downtime(tmp_path):
     app, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
     window_spec = spec(max_poll_pages=0, max_inbound_events=0)
