@@ -5,7 +5,7 @@ from app.core.intellectual_state import MAX_DEPENDENCIES
 
 def discussion_dependencies(experience, by_message, sources, owned_ids, dependencies):
     root = experience.conversation_id
-    if root not in owned_ids:
+    if root not in owned_ids or experience.message_id in owned_ids:
         return None
     result = dict(dependencies)
     seen = {experience.message_id}

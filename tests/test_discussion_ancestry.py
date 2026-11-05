@@ -34,6 +34,7 @@ def indexed(records):
         "missing",
         "source_missing",
         "withheld_own_alias",
+        "incoming_own_alias",
         "cycle",
         "conflict",
         "wrong_root",
@@ -59,6 +60,8 @@ def test_unavailable_or_inconsistent_parent_chain_cannot_be_imported(case):
         by_message["own"] = [
             ("source:1", replace(own, kind="external_assertion"), "binding:1")
         ]
+    elif case == "incoming_own_alias":
+        child = replace(child, message_id="own", parent_message_id="root")
     elif case == "cycle":
         by_message["own"] = [
             ("source:1", replace(own, parent_message_id="own"), "binding:1")

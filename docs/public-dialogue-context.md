@@ -13,6 +13,10 @@ positions within the existing six-source projection. This is bounded retrieval,
 not a promise of a complete archive or verbatim recall. An absent comment is not
 evidence that nobody commented. No additional provider or Threads request is
 made to assemble a private response.
+Selected public comments, own publications and public positions consume source
+slots before optional older private assertion/response handles. The current
+private input remains in the primary transcript. Ordinary personal history must
+not consume every source slot and hide an already selected public comment.
 
 Each incoming comment binds its verified source, every parent in the discussion
 chain and the eligible root publication's complete ancestry. Missing, conflicting,

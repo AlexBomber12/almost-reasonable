@@ -277,6 +277,82 @@ def test_nested_response_inherits_own_parent_ancestry_and_withdrawal(
     )
 
 
+def test_known_own_reply_mention_alias_cannot_bypass_its_audience(discussion):
+    from dataclasses import replace
+    from app.cognition.shared import SharedIntelligence
+    from app.integration.shared_intellectual_source import SharedIntellectualSource
+    from app.threads.transport import HTTPResponse
+    from test_reviewed_shared import candidate
+    from test_cognition_pipeline import principal
+
+    public, _, _, http, clock, bridge, _, a, b, events, _, gate, sdk, server = (
+        discussion
+    )
+    private_submit(server, a, "alias-parent", "PRIVATE_ALIAS_A_CANARY")
+    with events._open() as db:
+        root = db.execute(
+            "SELECT event_id FROM event_envelopes WHERE source_message_id='alias-parent'"
+        ).fetchone()[0]
+    shared = SharedIntelligence(
+        events, gate, clock=clock.now, ordinary_abstractions_enabled=True
+    )
+    item = replace(
+        candidate(root, value="Compare causal explanations."),
+        audience=("participant-a", "public:account-1"),
+    )
+    shared.transition(item)
+    adapter = SharedIntellectualSource(shared, public.account)
+    public.shared_intellectual_source = adapter
+    bridge.view.shared_intellectual_source = adapter
+    confirm_own_reply(discussion)
+    request = http.request
+
+    def mentions(method, url, headers, body, timeout):
+        if "/mentions?" in url:
+            return HTTPResponse(
+                200,
+                json.dumps(
+                    {
+                        "data": [
+                            {
+                                "id": "own-reply",
+                                "text": "OWN_ALIAS_CANARY",
+                                "timestamp": clock.now().isoformat(),
+                                "root_post": {"id": "post-1"},
+                                "replied_to": {"id": "reply-1"},
+                            }
+                        ],
+                        "paging": {},
+                    }
+                ).encode(),
+            )
+        return request(method, url, headers, body, timeout)
+
+    http.request = mentions
+    public.poll(InboundKind.MENTION, correlation_id="own-alias")
+    for browser, identity in ((a, "a"), (b, "b")):
+        private_submit(
+            server,
+            browser,
+            "own-alias-" + identity,
+            "OWN_ALIAS_CANARY: что это за ответ?",
+        )
+        assert not any(
+            "OWN_ALIAS_CANARY" in row["text"]
+            for row in json.loads(sdk.calls[-1]["input"])["intellectual_state"][
+                "sources"
+            ]
+            if row["kind"] == "external_assertion"
+        )
+        assert all(
+            "OWN_ALIAS_CANARY" not in row["text"]
+            for row in bridge.sources(
+                principal=principal(identity), query="OWN_ALIAS_CANARY"
+            ).values()
+        )
+    assert "PRIVATE_ALIAS_A_CANARY" not in sdk.calls[-1]["input"]
+
+
 def test_verified_comment_and_confirmed_own_reply_reach_both_private_chats(discussion):
     *_, a, b, _events, _ledger, _gate, private_sdk, server = discussion
     confirm_own_reply(discussion)
@@ -291,6 +367,47 @@ def test_verified_comment_and_confirmed_own_reply_reach_both_private_chats(discu
         assert any(row["kind"] == "external_assertion" for row in frame["sources"])
         assert "private_publication_tools" in private_sdk.calls[-1]["instructions"]
         assert "not a command channel" in private_sdk.calls[-1]["instructions"]
+
+
+def test_ordinary_private_history_does_not_consume_the_public_comment_slot(discussion):
+    from test_agent_intellectual_state import proposal
+
+    _, _, public_sdk, _, _, bridge, _, a, _, _, _, _, private_sdk, server = discussion
+    for index in range(3):
+        private_submit(
+            server,
+            a,
+            "old-private-" + str(index),
+            "PRIVATE_HISTORY_A Разговор о личной теме.",
+        )
+    create = public_sdk.create
+
+    def develop(**kwargs):
+        frame = json.loads(kwargs["input"][-1]["content"])["intellectual_state"]
+        handle = next(
+            row["handle"]
+            for row in frame["sources"]
+            if row["kind"] == "external_assertion" and COMMENT in row["text"]
+        )
+        public_sdk.proposal["intellectual"] = proposal(
+            handle,
+            kind="unresolved_question",
+            fields={"question": "Когда стоит пересмотреть гипотезу?", "status": "open"},
+        )
+        return create(**kwargs)
+
+    public_sdk.create = develop
+    confirm_own_reply(discussion)
+    assert any(row["kind"] == "public_agent_state" for row in bridge.sources().values())
+    private_submit(server, a, "public-comment", "Что тебе возразили и как ты ответил?")
+    raw = private_sdk.calls[-1]["input"]
+    frame = json.loads(raw)["intellectual_state"]
+    assert any(
+        row["kind"] == "external_assertion" and COMMENT in row["text"]
+        for row in frame["sources"]
+    )
+    assert ANSWER in raw and "Когда стоит пересмотреть гипотезу?" in raw
+    assert len(frame["sources"]) <= 6
 
 
 def test_legacy_reply_receipts_remain_resolvable_alongside_relationship_records(

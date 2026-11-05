@@ -225,7 +225,8 @@ class PrivateIntellectualState:
         priority += tuple(
             key
             for key, source in public_selection.items()
-            if source["kind"] in {"confirmed_publication", "public_agent_state"}
+            if source["kind"]
+            in {"confirmed_publication", "public_agent_state", "external_assertion"}
         )
         visible.update(priority)
         budget = (
