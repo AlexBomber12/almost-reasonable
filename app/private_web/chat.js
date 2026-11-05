@@ -416,6 +416,7 @@
         return;
       }
       const result = await response.json();
+      if (generation !== transcriptGeneration || access !== 'active') return;
       pendingMessage = null;
       if (textarea.value === submitted.content) textarea.value = '';
       retain();

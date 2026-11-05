@@ -9,7 +9,7 @@ from playwright.sync_api import expect, sync_playwright
 from test_agent_intellectual_state import private_setup
 
 
-@pytest.mark.parametrize("account_switch", [False, True])
+@pytest.mark.parametrize("account_switch", [False, True, "during_decode"])
 def test_old_history_cannot_overwrite_a_later_completed_post(tmp_path, account_switch):
     _app, a, _b, _events, _ledger, _gate, sdk, server = private_setup(tmp_path)
     try:
@@ -61,7 +61,7 @@ def test_old_history_cannot_overwrite_a_later_completed_post(tmp_path, account_s
                             },
                         ]
                         turns.append(turn)
-                        if account_switch and index == 2:
+                        if account_switch is True and index == 2:
                             delayed.append(route)
                             return
                         route.fulfill(
@@ -92,24 +92,49 @@ def test_old_history_cannot_overwrite_a_later_completed_post(tmp_path, account_s
                     expect(editor).to_be_editable()
                 assert len(held) == 2
                 if account_switch:
+                    if account_switch == "during_decode":
+                        page.evaluate("""() => {
+                          const original = window.fetch;
+                          window.fetch = async (...args) => {
+                            const response = await original(...args);
+                            if (args[0] === '/api/messages') {
+                              const decode = response.json.bind(response);
+                              response.json = async () => {
+                                const value = await decode();
+                                window.decodeWaiting = true;
+                                await new Promise(resolve => window.releaseDecoded = resolve);
+                                return value;
+                              };
+                            }
+                            return response;
+                          };
+                        }""")
                     editor.fill("Черновик старой страницы")
                     with page.expect_request("**/api/messages"):
                         page.get_by_role("button", name="Отправить", exact=True).click()
+                    if account_switch == "during_decode":
+                        page.wait_for_function("window.decodeWaiting === true")
                     current["username"] = "bob"
                     page.evaluate("window.dispatchEvent(new Event('focus'))")
                     expect(
                         page.get_by_text("Аккаунт изменился", exact=False)
                     ).to_be_visible()
-                    assert len(delayed) == 1
-                    with page.expect_response("**/api/messages"):
-                        delayed[0].fulfill(
-                            json={
-                                "message_status": "created",
-                                "model_state": "completed",
-                                "response": turns[2][1]["content"],
-                                "turn": turns[2],
-                            }
+                    if account_switch == "during_decode":
+                        page.evaluate("window.releaseDecoded()")
+                        page.wait_for_function(
+                            "!document.querySelector('textarea').readOnly"
                         )
+                    else:
+                        assert len(delayed) == 1
+                        with page.expect_response("**/api/messages"):
+                            delayed[0].fulfill(
+                                json={
+                                    "message_status": "created",
+                                    "model_state": "completed",
+                                    "response": turns[2][1]["content"],
+                                    "turn": turns[2],
+                                }
+                            )
                     for old in held:
                         old.fulfill(json={"messages": turns[0]})
                     expect(page.locator("#history .message")).to_have_count(0)
