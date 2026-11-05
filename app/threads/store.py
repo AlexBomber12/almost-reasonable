@@ -28,7 +28,7 @@ from .domain import (
 )
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 MAX_PENDING_INBOUND_EVENTS = 100
 _MAX_STORED_CURSOR_LENGTH = 67 + 4 * ((MAX_PROVIDER_RESPONSE_BYTES + 2) // 3)
 _OPAQUE_CURSOR = re.compile(r"c-(?:[0-9a-f]{64}_)?[A-Za-z0-9_-]+\Z")
@@ -118,6 +118,7 @@ class ThreadsStore:
                 for statement in _SCHEMA.split(";"):
                     if statement.strip():
                         connection.execute(statement)
+                connection.execute(_DISCUSSION_SCHEMA)
                 connection.execute(
                     "INSERT INTO threads_schema_metadata(singleton, version) "
                     "VALUES (1, ?)",
@@ -225,6 +226,13 @@ class ThreadsStore:
                         for statement in _MIGRATION_9_TO_10.split(";"):
                             if statement.strip():
                                 connection.execute(statement)
+                    connection.execute(
+                        "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
+                        (10,),
+                    )
+                    version = 10
+                if version == 10:
+                    connection.execute(_DISCUSSION_SCHEMA)
                     connection.execute(
                         "UPDATE threads_schema_metadata SET version=? WHERE singleton=1",
                         (SCHEMA_VERSION,),
@@ -1058,15 +1066,77 @@ class ThreadsStore:
             ).fetchall()
         return tuple(row[0] for row in rows)
 
-    def cursor(self, account_ref: str, stream: InboundKind) -> str | None:
+    def next_reply_thread(self, account_ref: str) -> str | None:
+        """Fair durable rotation across locally verified confirmed own posts."""
+        require_reference("account reference", account_ref)
+        with self._open() as db:
+            row = db.execute(
+                "SELECT o.provider_publication_id FROM threads_outbox o "
+                "LEFT JOIN threads_discussion_polls p ON p.account_ref=o.account_ref "
+                "AND p.root_id=o.provider_publication_id "
+                "WHERE o.account_ref=? AND o.publication_type='post' "
+                "AND o.state='confirmed' AND o.provider_publication_id IS NOT NULL "
+                "AND o.dispatch_evidence='provider_publication_details_verified' "
+                "ORDER BY COALESCE(p.last_attempt,0),o.updated_at,o.operation_id LIMIT 1",
+                (account_ref,),
+            ).fetchone()
+        return None if row is None else row[0]
+
+    def owns_discussion(self, account_ref, root):
+        require_reference("account reference", account_ref)
+        require_reference("discussion root", root)
+        with self._open() as db:
+            return (
+                db.execute(
+                    "SELECT 1 FROM threads_outbox WHERE account_ref=? "
+                    "AND publication_type='post' AND state='confirmed' "
+                    "AND provider_publication_id=? "
+                    "AND dispatch_evidence='provider_publication_details_verified'",
+                    (account_ref, root),
+                ).fetchone()
+                is not None
+            )
+
+    def start_discussion_poll(self, account_ref, root, now):
+        require_reference("account reference", account_ref)
+        require_reference("discussion root", root)
+        require_aware_time("discussion poll time", now)
+        with self._open() as db:
+            db.execute("BEGIN IMMEDIATE")
+            db.execute(
+                "INSERT INTO threads_discussion_polls "
+                "(account_ref,root_id,cursor,last_attempt,updated_at) "
+                "VALUES(?,?,NULL,(SELECT COALESCE(MAX(last_attempt),0)+1 "
+                "FROM threads_discussion_polls WHERE account_ref=?),?) "
+                "ON CONFLICT(account_ref,root_id) DO UPDATE SET "
+                "last_attempt=excluded.last_attempt,updated_at=excluded.updated_at",
+                (account_ref, root, account_ref, now.isoformat()),
+            )
+            db.commit()
+
+    @staticmethod
+    def _poll_cursor(db, account_ref, stream, reply_thread_id):
+        if reply_thread_id is not None:
+            require_reference("discussion root", reply_thread_id)
+            if stream is not InboundKind.REPLY:
+                raise ValueError("discussion root requires reply stream")
+            return db.execute(
+                "SELECT cursor FROM threads_discussion_polls WHERE account_ref=? AND root_id=?",
+                (account_ref, reply_thread_id),
+            ).fetchone()
+        return db.execute(
+            "SELECT cursor FROM threads_poll_cursors WHERE account_ref=? AND stream=?",
+            (account_ref, stream.value),
+        ).fetchone()
+
+    def cursor(
+        self, account_ref: str, stream: InboundKind, *, reply_thread_id=None
+    ) -> str | None:
         require_reference("account reference", account_ref)
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
         with self._open() as connection:
-            row = connection.execute(
-                "SELECT cursor FROM threads_poll_cursors WHERE account_ref=? AND stream=?",
-                (account_ref, stream.value),
-            ).fetchone()
+            row = self._poll_cursor(connection, account_ref, stream, reply_thread_id)
         return None if row is None else row[0]
 
     def record_poll_policy_denial(
@@ -1176,6 +1246,7 @@ class ThreadsStore:
         expected_cursor: str | None,
         next_cursor: str | None,
         reset_cursor: bool = False,
+        reply_thread_id: str | None = None,
         events: Iterable[InboundEvent],
         now: datetime,
         lock_wait_seconds: float = 5.0,
@@ -1231,10 +1302,9 @@ class ThreadsStore:
             if deadline_check is not None and not deadline_check():
                 raise PollCommitDeadlineError("poll page commit deadline reached")
             precommit_check()
-            row = connection.execute(
-                "SELECT cursor FROM threads_poll_cursors WHERE account_ref=? AND stream=?",
-                (account_ref, stream.value),
-            ).fetchone()
+            row = self._poll_cursor(connection, account_ref, stream, reply_thread_id)
+            if reply_thread_id is not None and row is None:
+                raise ThreadsStoreError("discussion poll was not admitted")
             current = None if row is None else row[0]
             if current != expected_cursor:
                 raise CursorConflictError("poll cursor changed before page commit")
@@ -1242,6 +1312,11 @@ class ThreadsStore:
             duplicates = 0
             for event in page:
                 _validate_inbound_event(event, account_ref, stream, verified_source_ref)
+                if reply_thread_id is not None and (
+                    event.conversation_id != reply_thread_id
+                    or event.parent_message_id is None
+                ):
+                    raise ThreadsStoreError("discussion event root mismatch")
                 changed = connection.execute(
                     """INSERT OR IGNORE INTO threads_inbound_events(
                        event_id, correlation_id, account_ref, source_ref, kind, conversation_id,
@@ -1309,18 +1384,25 @@ class ThreadsStore:
             if deadline_check is not None and not deadline_check():
                 raise PollCommitDeadlineError("poll page commit deadline reached")
             precommit_check()
-            connection.execute(
-                """INSERT INTO threads_poll_cursors(account_ref, stream, cursor, updated_at)
+            if reply_thread_id is not None:
+                connection.execute(
+                    "UPDATE threads_discussion_polls SET cursor=?,updated_at=? "
+                    "WHERE account_ref=? AND root_id=?",
+                    (committed_cursor, now.isoformat(), account_ref, reply_thread_id),
+                )
+            else:
+                connection.execute(
+                    """INSERT INTO threads_poll_cursors(account_ref, stream, cursor, updated_at)
                    VALUES (?, ?, ?, ?)
                    ON CONFLICT(account_ref, stream) DO UPDATE SET
                        cursor=excluded.cursor, updated_at=excluded.updated_at""",
-                (
-                    account_ref,
-                    stream.value,
-                    committed_cursor,
-                    now.isoformat(),
-                ),
-            )
+                    (
+                        account_ref,
+                        stream.value,
+                        committed_cursor,
+                        now.isoformat(),
+                    ),
+                )
             actor_reference = f"account-{content_fingerprint(account_ref)[:16]}"
             changed = connection.execute(
                 "INSERT OR IGNORE INTO threads_poll_actions "
@@ -1980,6 +2062,15 @@ def _conversation_control(row: sqlite3.Row) -> ConversationControl:
         ),
     )
 
+
+_DISCUSSION_SCHEMA = """CREATE TABLE IF NOT EXISTS threads_discussion_polls (
+    account_ref TEXT NOT NULL,
+    root_id TEXT NOT NULL,
+    cursor TEXT,
+    last_attempt INTEGER NOT NULL CHECK(last_attempt>=0),
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(account_ref,root_id)
+)"""
 
 _SCHEMA = """
 CREATE TABLE threads_schema_metadata (

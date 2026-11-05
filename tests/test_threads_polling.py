@@ -20,6 +20,7 @@ from app.threads.simulator import (
     ThreadsSimulator,
 )
 from app.threads.store import (
+    SCHEMA_VERSION,
     CursorConflictError,
     PollCommitDeadlineError,
     ThreadsStore,
@@ -1457,7 +1458,7 @@ def test_version_nine_migration_backfills_conversation_control(tmp_path):
     with sqlite3.connect(store.database) as connection:
         assert connection.execute(
             "SELECT version FROM threads_schema_metadata"
-        ).fetchone() == (10,)
+        ).fetchone() == (SCHEMA_VERSION,)
 
 
 def test_deferred_event_does_not_block_new_pending_event(tmp_path):

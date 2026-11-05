@@ -683,6 +683,7 @@ class ThreadsService:
         timeout_seconds: float = MAX_POLL_SECONDS,
         deadline_at: datetime | None = None,
         interrupt_after_fetch: bool = False,
+        reply_thread_id: str | None = None,
     ) -> PollResult:
         require_reference("poll correlation ID", correlation_id)
         require_aware_time("poll time", now)
@@ -690,6 +691,10 @@ class ThreadsService:
             require_aware_time("poll deadline", deadline_at)
         if type(stream) is not InboundKind:
             raise ValueError("invalid inbound stream")
+        if reply_thread_id is not None:
+            require_reference("discussion root", reply_thread_id)
+            if stream is not InboundKind.REPLY or not self.live_enabled:
+                raise ValueError("owned discussion requires live reply stream")
         if type(max_pages) is not int or not 1 <= max_pages <= MAX_POLL_PAGES:
             raise ValueError("invalid poll page limit")
         if type(max_events) is not int or not 1 <= max_events <= MAX_POLL_EVENTS:
@@ -708,6 +713,11 @@ class ThreadsService:
         )
         try:
             self._check_poll_policy_with_audit(stream, correlation_id, now)
+            self._check_discussion(reply_thread_id)
+            if reply_thread_id is not None:
+                self.store.start_discussion_poll(
+                    self._account_ref, reply_thread_id, now
+                )
             return self._poll_started(
                 stream,
                 now=now,
@@ -717,6 +727,7 @@ class ThreadsService:
                 timeout_seconds=timeout_seconds,
                 deadline_at=deadline_at,
                 interrupt_after_fetch=interrupt_after_fetch,
+                reply_thread_id=reply_thread_id,
             )
         except Exception as error:
             status = (
@@ -740,6 +751,7 @@ class ThreadsService:
         timeout_seconds: float,
         interrupt_after_fetch: bool,
         deadline_at: datetime | None = None,
+        reply_thread_id: str | None = None,
     ) -> PollResult:
         started = self.clock()
 
@@ -754,11 +766,15 @@ class ThreadsService:
         expected_source_ref = (
             self._bound_source_ref if self.live_enabled else self.simulator.source_ref
         )
-        stored_cursor = self.store.cursor(self._account_ref, stream)
+        stored_cursor = self.store.cursor(
+            self._account_ref, stream, reply_thread_id=reply_thread_id
+        )
         route_changed = (
             self.live_enabled
             and stored_cursor is not None
-            and not self.simulator.owns_cursor(stream, stored_cursor)
+            and not self.simulator.owns_cursor(
+                stream, stored_cursor, reply_thread_id=reply_thread_id
+            )
         )
         cursor = None if route_changed else stored_cursor
         initial_cursor = stored_cursor
@@ -771,6 +787,7 @@ class ThreadsService:
             if remaining_time() <= 0:
                 raise PollingError("poll time limit reached")
             self._check_poll_policy_with_audit(stream, correlation_id, now)
+            self._check_discussion(reply_thread_id)
             if type(self.simulator) is ThreadsHTTPTransport:
                 remaining = remaining_time()
                 if remaining <= 0:
@@ -780,6 +797,7 @@ class ThreadsService:
                     cursor,
                     limit=min(10, max_events - fetched_count),
                     timeout=remaining,
+                    reply_thread_id=reply_thread_id,
                 )
             else:
                 page = self.simulator.poll(stream, cursor)
@@ -831,11 +849,14 @@ class ThreadsService:
                     )
                     and final_cursor is None
                 ),
+                reply_thread_id=reply_thread_id,
                 events=pending_events,
                 now=now,
                 lock_wait_seconds=min(5.0, remaining),
                 deadline_check=lambda: remaining_time() > 0,
-                precommit_check=lambda: self._check_poll_policy(stream),
+                precommit_check=lambda: self._check_discussion_policy(
+                    stream, reply_thread_id
+                ),
             )
         except PollCommitDeadlineError as error:
             raise PollingError("poll time limit reached") from error
@@ -843,6 +864,14 @@ class ThreadsService:
             self._record_poll_policy_denial(stream, correlation_id, now)
             raise
         return PollResult(tuple(inserted), duplicates, pages, final_cursor)
+
+    def _check_discussion(self, root):
+        if root is not None and not self.store.owns_discussion(self._account_ref, root):
+            raise PolicyDeniedError("discussion requires a verified confirmed own post")
+
+    def _check_discussion_policy(self, stream, root):
+        self._check_poll_policy(stream)
+        self._check_discussion(root)
 
     def stage_3_readiness(self) -> tuple[str, ...]:
         stage_3_policy = replace(self.policy, stage=Stage.STAGE_3)

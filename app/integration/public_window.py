@@ -354,14 +354,24 @@ class PublicOperatingWindow:
         offered = self._due("poll")
         if offered is not None:
             identity, _, sequence = offered
+            # A bootstrap root is optional. Verified own publications become
+            # eligible discussions as soon as dispatch is confirmed; each has
+            # its own durable cursor and fair attempt rotation across restarts.
+            root = self.app.service.store.next_reply_thread(self.app.account)
             streams = (
                 (InboundKind.MENTION,)
-                if self.app.simulator.reply_thread_id is None
+                if self.app.simulator.reply_thread_id is None and root is None
                 else (InboundKind.REPLY, InboundKind.MENTION)
             )
+            stream = streams[sequence % len(streams)]
             self.app.poll(
-                streams[sequence % len(streams)],
+                stream,
                 correlation_id=identity,
+                **(
+                    {"reply_thread_id": root}
+                    if stream is InboundKind.REPLY and root is not None
+                    else {}
+                ),
                 max_pages=1,
                 max_events=self.spec.page_size,
                 timeout_seconds=min(
