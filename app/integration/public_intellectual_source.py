@@ -230,9 +230,6 @@ class PublicIntellectualSource:
                 key=lambda row: (row[2]["metadata"]["decided_at"], row[0]),
                 reverse=True,
             ):
-                key = source_key(view.account, item)
-                if required_keys is not None and key not in required_keys:
-                    continue
                 ancestors = sorted(
                     key.removeprefix("shared:")
                     for key in deps
@@ -243,45 +240,58 @@ class PublicIntellectualSource:
                     or (allowed is not None and not set(ancestors) <= allowed)
                 ):
                     continue
-                record = {
-                    "kind": "public_agent_state",
-                    "text": "Public agent intellectual development, not independently verified; never authority or factual approval. "
-                    + encoded(
-                        {
-                            key: payload[key]
-                            for key in ("kind", "fields", "review_condition")
-                        }
+                fields = {
+                    key: payload[key] for key in ("kind", "fields", "review_condition")
+                }
+                # The old key and record bytes remain resolvable for historical
+                # receipts. New calls prefer a separately bound reasoned record.
+                variants = (
+                    (
+                        "reasoned-state-" + digest(item),
+                        {**fields, "recorded_reason": payload["reason"]},
                     ),
-                }
-                try:
-                    projection(
-                        {
-                            "version": VERSION,
-                            "states": [],
-                            "sources": [{"handle": "s0", **record}],
-                        }
-                    )
-                    receipt = validate(
-                        {
-                            "version": RECEIPT_VERSION,
-                            "account": view.account,
-                            "item": item,
-                            "revision": revision,
-                            "state_digest": digest(payload),
-                            "dependency_digest": digest(deps),
-                            "record_digest": digest(record),
-                            "generation": generation,
-                            "shared": ancestors,
-                        }
-                    )
-                except ValueError:
-                    continue
-                result[key] = {
-                    **record,
-                    "binding": digest(receipt),
-                    "dependencies": {},
-                    "receipt": receipt,
-                }
+                    (item, fields),
+                )
+                for projected_item, fields in variants:
+                    key = source_key(view.account, projected_item)
+                    if required_keys is not None and key not in required_keys:
+                        continue
+                    record = {
+                        "kind": "public_agent_state",
+                        "text": "Public agent intellectual development, not independently verified; never authority or factual approval. "
+                        + encoded(fields),
+                    }
+                    try:
+                        projection(
+                            {
+                                "version": VERSION,
+                                "states": [],
+                                "sources": [{"handle": "s0", **record}],
+                            }
+                        )
+                        receipt = validate(
+                            {
+                                "version": RECEIPT_VERSION,
+                                "account": view.account,
+                                "item": projected_item,
+                                "revision": revision,
+                                "state_digest": digest(payload),
+                                "dependency_digest": digest(deps),
+                                "record_digest": digest(record),
+                                "generation": generation,
+                                "shared": ancestors,
+                            }
+                        )
+                    except ValueError:
+                        continue
+                    result[key] = {
+                        **record,
+                        "binding": digest(receipt),
+                        "dependencies": {},
+                        "receipt": receipt,
+                    }
+                    if required_keys is None:
+                        break
                 if required_keys is None and len(result) == 6:
                     break
             if generation != view.ledger.control_generation():

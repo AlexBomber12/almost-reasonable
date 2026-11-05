@@ -104,7 +104,7 @@ def test_public_report_can_revise_or_retain_state_in_next_sdk_call(
             assert len(rows) == 2
             saved = json.loads(rows[-1][0])
             assert saved["fields"] == fields(kind, revised=not retain)
-            assert saved["metadata"]["prompt"] == "agent-intellectual-state-prompt-v4"
+            assert saved["metadata"]["prompt"] == "agent-intellectual-state-prompt-v5"
             assert (
                 next(
                     s

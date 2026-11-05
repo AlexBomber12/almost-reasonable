@@ -217,13 +217,20 @@ def private_setup(tmp_path):
 
 
 def private_submit(server, browser, identity, text, expected_status="201 Created"):
-    from threading import Thread
+    from threading import Event, Thread
 
-    thread = Thread(target=server.serve_once)
+    stop = Event()
+
+    def serve():
+        while not stop.is_set():
+            server.serve_once()
+
+    thread = Thread(target=serve)
     thread.start()
     try:
         response = browser.submit(identity, text)
     finally:
+        stop.set()
         thread.join(timeout=5)
     assert not thread.is_alive()
     assert response[0] == expected_status, response
