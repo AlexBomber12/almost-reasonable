@@ -53,7 +53,16 @@ class SharedModelRequest:
         return result
 
 
-def assemble_shared(private, sources, shared, principal, db, budget):
+def assemble_shared(
+    private,
+    sources,
+    shared,
+    principal,
+    db,
+    budget,
+    *,
+    admit_context=lambda _request, _sources: True,
+):
     request = SharedModelRequest(private, (), False)
     if len(request.serialize().encode("utf-8")) > budget:
         raise ValueError("current input exceeds shared budget")
@@ -91,6 +100,7 @@ def assemble_shared(private, sources, shared, principal, db, budget):
             or len(set(selected) | exposed_operations) > 16
             or len(trial._serialized().encode("utf-8"))
             > min(budget, MAX_MODEL_REQUEST_UTF8_BYTES)
+            or not admit_context(trial, dependencies | evidence)
         ):
             omitted = True
             continue
