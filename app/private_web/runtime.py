@@ -715,6 +715,23 @@ class _DurableConversationRuntime(ConversationService):
                     if self._intellectual is not None
                     else lambda _operation: True
                 )
+                from .context_budget import context_fits
+
+                creator_cache, shared_cache = {}, {}
+
+                def admit_context(candidate, roots):
+                    return self._intellectual is None or context_fits(
+                        self,
+                        db,
+                        principal,
+                        operation_id,
+                        candidate,
+                        roots,
+                        creator_cache=creator_cache,
+                        shared_cache=shared_cache,
+                        narrative_slot=reserve_narrative_slot,
+                    )
+
                 request, sources = MemoryConversationAssembler(
                     self._event_store, private_limits
                 ).build(
@@ -737,6 +754,7 @@ class _DurableConversationRuntime(ConversationService):
                     include_narrative=getattr(self, "_narrative_audit", None)
                     is not None,
                     reserve_narrative_slot=reserve_narrative_slot,
+                    admit_context=admit_context,
                 )
                 generic_operations = request.generic_operation_ids
                 shared_operations = request.inherited_shared_operation_ids
@@ -749,6 +767,7 @@ class _DurableConversationRuntime(ConversationService):
                         principal,
                         db,
                         shared_budget,
+                        admit_context=admit_context,
                     )
                 if self._intellectual is not None:
                     request, sources = self._intellectual.attach(

@@ -287,6 +287,7 @@ class MemoryConversationAssembler:
         include_memories=True,
         include_narrative=False,
         reserve_narrative_slot=False,
+        admit_context=lambda _request, _sources: True,
     ):
         events = self._store.retrieve_private_events_in_commit_order(
             principal,
@@ -381,30 +382,29 @@ class MemoryConversationAssembler:
             proposed = replace(
                 request, memories=(*request.memories, ModelMemory.from_record(record))
             )
-            if not evidence:
-                raise PrivacyReadBlocked("memory_dependencies_unavailable")
-            if (
-                len(sources | set(evidence)) > 100
-                or len(proposed._serialized().encode("utf-8"))
-                > self._limits.max_utf8_bytes
-            ):
-                request = replace(request, memories_omitted=True)
-                continue
-            sources.update(evidence)
             generic_operation = generic_operations.get(
                 (record.memory_kind, record.item_id, record.revision)
             )
-            request = (
-                proposed
-                if generic_operation is None
-                else replace(
+            if generic_operation is not None:
+                proposed = replace(
                     proposed,
                     generic_operation_ids=(
                         *proposed.generic_operation_ids,
                         generic_operation,
                     ),
                 )
-            )
+            if not evidence:
+                raise PrivacyReadBlocked("memory_dependencies_unavailable")
+            if (
+                len(sources | set(evidence)) > 100
+                or len(proposed._serialized().encode("utf-8"))
+                > self._limits.max_utf8_bytes
+                or not admit_context(proposed, sources | set(evidence))
+            ):
+                request = replace(request, memories_omitted=True)
+                continue
+            sources.update(evidence)
+            request = proposed
         outputs = AgentOutputStore(self._store)
         if include_narrative:
             narrative_limit = 15 if reserve_narrative_slot else 16
@@ -473,6 +473,9 @@ class MemoryConversationAssembler:
                     and len(sources | shared_sources | set(episode.sources)) <= 100
                     and len(proposed.serialize().encode("utf-8"))
                     <= self._limits.max_utf8_bytes
+                    and admit_context(
+                        proposed, sources | shared_sources | set(episode.sources)
+                    )
                 ):
                     request = proposed
                     sources.update(episode.sources)
@@ -564,6 +567,15 @@ class MemoryConversationAssembler:
             # fit, keep the participant input only when that also fits.
             proposed = replace(
                 request,
+                released_reply_ids=tuple(released_reply_ids)
+                + ((operation_id,) if agent else ()),
+                inherited_shared_operation_ids=tuple(
+                    sorted(inherited_shared | extra_shared)
+                ),
+                generic_operation_ids=tuple(sorted(inherited_generic | extra_generic)),
+                narrative_operation_ids=tuple(
+                    sorted(inherited_narrative | extra_narrative)
+                ),
                 conversation=replace(
                     request.conversation,
                     conversation=(*addition, *selected_history, *base.conversation),
@@ -581,6 +593,14 @@ class MemoryConversationAssembler:
                 > (15 if reserve_narrative_slot else 16)
                 or len(proposed._serialized().encode("utf-8"))
                 > self._limits.max_utf8_bytes
+                or not admit_context(
+                    proposed,
+                    sources
+                    | shared_sources
+                    | {event.event_id}
+                    | extra_sources
+                    | extra_shared_sources,
+                )
             ):
                 history_omitted = True
                 agent = ()
@@ -602,6 +622,9 @@ class MemoryConversationAssembler:
                     or source_budget_exceeded({event.event_id}, set())
                     or len(proposed._serialized().encode("utf-8"))
                     > self._limits.max_utf8_bytes
+                    or not admit_context(
+                        proposed, sources | shared_sources | {event.event_id}
+                    )
                 ):
                     continue
             selected_history = (*history, *agent, *selected_history)
