@@ -478,10 +478,17 @@ class WorkerTelemetryServer:
         *,
         socket_group_gid: int | None = None,
         stop_version=STOP_VERSION,
+        monthly_budget_path=None,
     ):
         if stop_version not in STOP_VERSIONS:
             raise ValueError("invalid worker Stop version")
         self.stop_version = stop_version
+        if monthly_budget_path is not None and (
+            not isinstance(monthly_budget_path, Path)
+            or not monthly_budget_path.is_absolute()
+        ):
+            raise ValueError("invalid monthly budget observation path")
+        self.monthly_budget_path = monthly_budget_path
         if (
             not hasattr(socket, "SO_PEERCRED")
             or any(
@@ -585,6 +592,10 @@ class WorkerTelemetryServer:
                         "version": DIAGNOSTICS_VERSION,
                         **_diagnostics(self.provider_db),
                     }
+                    if self.monthly_budget_path is not None:
+                        from app.trusted.budget_telemetry import observe_budget
+
+                        response["budget"] = observe_budget(self.monthly_budget_path)
                     connection.sendall(encode(response, MAX_DIAGNOSTICS_RESPONSE))
                     return True
                 response = {
@@ -630,6 +641,7 @@ def main(argv=None):
     parser.add_argument("--stop-file", required=True, type=Path)
     parser.add_argument("--allow-uid", action="append", required=True, type=int)
     parser.add_argument("--socket-group-gid", type=int)
+    parser.add_argument("--monthly-budget", type=Path)
     parser.add_argument(
         "--stop-version", choices=sorted(STOP_VERSIONS), default=STOP_VERSION
     )
@@ -641,6 +653,7 @@ def main(argv=None):
         frozenset(args.allow_uid),
         socket_group_gid=args.socket_group_gid,
         stop_version=args.stop_version,
+        monthly_budget_path=args.monthly_budget,
     )
     stopping = False
 
