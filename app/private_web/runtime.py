@@ -701,12 +701,13 @@ class _DurableConversationRuntime(ConversationService):
                             - min(8192, self._limits.max_utf8_bytes // 3),
                         ),
                     )
+                shared_budget = private_limits.max_utf8_bytes
                 if self._shared is not None:
                     private_limits = replace(
-                        self._limits,
+                        private_limits,
                         max_utf8_bytes=max(
                             minimum_context_utf8_bytes(),
-                            self._limits.max_utf8_bytes - 200,
+                            private_limits.max_utf8_bytes - 200,
                         ),
                     )
                 source_permitted = (
@@ -747,7 +748,7 @@ class _DurableConversationRuntime(ConversationService):
                         self._shared,
                         principal,
                         db,
-                        self._limits.max_utf8_bytes,
+                        shared_budget,
                     )
                 if self._intellectual is not None:
                     request, sources = self._intellectual.attach(

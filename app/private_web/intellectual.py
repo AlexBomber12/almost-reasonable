@@ -214,12 +214,13 @@ class PrivateIntellectualState:
             if "reply:" + creator in sources
             and sources["reply:" + creator]["kind"] == "hosted_research_model_report"
         )[:1]
-        # Actual own posts must not be crowded out by optional prior dialogue.
+        # Actual posts and public positions must not be crowded out by optional
+        # prior dialogue (already represented in the private memory/transcript).
         # Private input remains in the primary transcript and protected roots.
         priority += tuple(
             key
             for key, source in public_selection.items()
-            if source["kind"] == "confirmed_publication"
+            if source["kind"] in {"confirmed_publication", "public_agent_state"}
         )
         visible.update(priority)
         budget = (
