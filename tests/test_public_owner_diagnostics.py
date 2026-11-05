@@ -127,6 +127,10 @@ def test_owner_distinguishes_accepted_research_from_uncertain_operations(
         "completed_reports": 1,
         "uncertain_operations": 2,
         "recorded_operations": 3,
+        "failed_operations": 0,
+        "held_operations": 0,
+        "inflight_operations": 0,
+        "allowance_exhausted_operations": 0,
     }
     assert "PRIVATE-CANARY" not in json.dumps(result)
     assert result["billing_authority"] is False

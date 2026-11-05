@@ -9,6 +9,7 @@ from app.core.read_only_sqlite import connect_read_only
 from app.threads.domain import require_reference
 from app.threads.store import SCHEMA_VERSION
 from app.trusted.openai_credential_files import read_protected_worker_file
+from .public_development import intellectual_lifecycle, discussion_observation
 
 
 class PublicRuntimeReadView:
@@ -109,6 +110,7 @@ class PublicRuntimeReadView:
                 rows = db.execute(
                     "SELECT operation,phase,payload FROM intents ORDER BY rowid DESC LIMIT 8"
                 ).fetchall()
+                development = intellectual_lifecycle(db, self.account)
                 research = {"available": False}
                 if "public_research_ops" in tables:
                     counts = dict(
@@ -121,6 +123,13 @@ class PublicRuntimeReadView:
                         "completed_reports": counts.get("completed", 0),
                         "uncertain_operations": counts.get("uncertain", 0),
                         "recorded_operations": sum(counts.values()),
+                        "failed_operations": counts.get("failed", 0),
+                        "held_operations": counts.get("held", 0),
+                        "inflight_operations": counts.get("started", 0),
+                        "allowance_exhausted_operations": db.execute(
+                            "SELECT COUNT(*) FROM public_research_ops WHERE evidence=?",
+                            (json.dumps({"outcome": "allowance_exhausted"}),),
+                        ).fetchone()[0],
                     }
                 recent = [
                     {
@@ -164,6 +173,8 @@ class PublicRuntimeReadView:
                             "SELECT id,ticks,polls FROM public_windows ORDER BY rowid DESC LIMIT 4"
                         )
                     ]
+            with connect_read_only(self.threads) as db:
+                discussions = discussion_observation(db, self.account)
             cadence = None
             if self.scheduler is not None:
                 with connect_read_only(self.scheduler) as db:
@@ -177,6 +188,8 @@ class PublicRuntimeReadView:
                 "billing_authority": False,
                 "recent": recent,
                 "research": research,
+                "development": development,
+                "discussions": discussions,
                 "grants": grants,
                 "windows": windows,
                 "cadence_seconds": cadence,

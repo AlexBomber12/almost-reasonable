@@ -68,8 +68,13 @@ class WorkerTelemetryClient:
                 if size > maximum:
                     return fallback()
                 result = decoder(_read_exact(connection, size, deadline))
-                if request == REQUEST:
-                    collected = datetime.fromisoformat(result["collected_at"])
+                budget = result.get("budget", {})
+                if request == REQUEST or budget.get("available") is True:
+                    collected = datetime.fromisoformat(
+                        result["collected_at"]
+                        if request == REQUEST
+                        else budget["collected_at"]
+                    )
                     now = datetime.now(UTC)
                     if collected.tzinfo is None or not now - timedelta(
                         seconds=5

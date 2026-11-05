@@ -159,6 +159,13 @@ function recentList(id, source, label) {
     list.append(item);
   }
 }
+function showBudget(label, budget) {
+  if (!budget || !budget.available) {show(`Месячный лимит: ${label}`, 'Нет наблюдения кошелька'); return;}
+  const usd = amount => `$${(amount / 1000000).toFixed(2)}`;
+  show(`Месячный лимит: ${label}`, `${budget.month} UTC; лимит ${usd(budget.limit_microusd)}; учтено ${usd(budget.settled_microusd)}; удержано ${usd(budget.unresolved_microusd)} (${budget.unresolved_attempts} незавершённых попыток); свободно ${usd(budget.remaining_microusd)}. Это консервативный местный учёт, не счёт провайдера.`);
+  show(`Допуск следующего вызова: ${label}`, `${budget.admission_available ? 'В рамках месячной квоты' : 'Месячная квота не допускает новый вызов'}; резерв ${usd(budget.next_reservation_microusd)}. Разрешения, Stop и состояние процесса проверяются отдельно.`);
+  if (budget.search_limit !== null) show(`Поиски за месяц: ${label}`, `${budget.month_attempts}/${budget.search_limit} попыток. Неопределённые результаты сохраняют резерв и могут относиться к прошлому месяцу.`);
+}
 async function refresh() {
   const data = await api('/status', 'POST');
   snapshot = data; receivedAt = Date.now();
@@ -182,6 +189,7 @@ async function refresh() {
     show(`${entry.name}: записанные токены`, state.provider.available && state.provider.recorded_tokens ? String(state.provider.recorded_tokens.total_tokens) : 'Нет данных');
     show(`${entry.name}: неизвестный расход`, state.provider.available ? String(state.provider.unknown_usage_attempts) : 'Нет данных');
     const diagnostics = entry.diagnostics;
+    showBudget(entry.name, diagnostics && diagnostics.budget);
     if (!diagnostics || !diagnostics.available) show(`${entry.name}: последние попытки`, 'Нет наблюдения');
     else if (!diagnostics.rows.length) show(`${entry.name}: последние попытки`, 'Записей нет');
     else for (const row of diagnostics.rows.slice(0, 3)) show(`${entry.name}: попытка ${dateText(row.time)}`, `${outcomes[row.outcome] || outcomes.unknown}; ${row.reason === null ? 'Причина не записана' : reasons[row.reason] || reasons.unknown}`);
@@ -190,6 +198,21 @@ async function refresh() {
   if (publicState && publicState.available) {
     const research = publicState.research;
     show('Публичные исследования', research && research.available ? `${research.completed_reports} принято; ${research.uncertain_operations} не подтверждено; ${research.recorded_operations} операций приложения. Это не биллинг провайдера.` : 'Нет наблюдения');
+    if (research && research.available) show('Ограничения и сбои поиска', `${research.allowance_exhausted_operations} отказов по лимиту; ${research.failed_operations} завершено с отказом или сбоем; ${research.held_operations} удержано; ${research.inflight_operations} начато без итогового статуса. Отказы по лимиту входят в общее число отказов.`);
+    const development = publicState.development;
+    if (development) {
+      const counts = development.operations;
+      show('Публичное развитие: обработка', `${counts.reserved} ожидает; ${counts.received} получено; ${counts.no_change} без изменения; ${counts.accepted} принято; ${counts.rejected} отклонено; ${counts.unavailable} недоступно`);
+      show('Публичное развитие: записи', `${development.recorded_revisions} ревизий, из них ${development.redacted_revisions} с удалённым содержимым. Это журнал, а не число действующих убеждений.`);
+      const states = {reserved:'Ожидает', received:'Получено', no_change:'Без изменения', accepted:'Принято', rejected:'Отклонено', unavailable:'Недоступно'};
+      for (const row of development.recent) show(`Обработка развития ${row.reference}`, `${states[row.status] || 'Статус неизвестен'}; ${row.proposal_recorded ? 'предложение записано' : 'предложение не записано'}`);
+    }
+    if (publicState.discussions) for (const [stream, label] of [['reply','Комментарии к постам'],['mention','Упоминания']]) {
+      const observed = publicState.discussions.streams[stream];
+      const latest = observed.last_attempt;
+      const phases = {started:'начато, итог не записан', committed:'страница сохранена', failed:'сбой', interrupted:'прервано', policy_denied:'не разрешено'};
+      show(`Публичный опрос: ${label}`, latest ? `${phases[latest.status] || 'статус неизвестен'}; ${dateText(latest.started_at)}; получено ${observed.received}, ожидает ${observed.pending}. Сохранённая страница не подтверждает наличие новых сообщений.` : 'Попытки опроса не наблюдались');
+    }
     show('Публичный цикл: ритм', !publicState.cadence_observed ? 'Нет наблюдения' : publicState.cadence_seconds === null ? 'Интервал по умолчанию' : `${publicState.cadence_seconds} с`);
     for (const grant of publicState.grants) show(`Публичное разрешение ${grant.reference}`, `${grant.publications_reserved}/${grant.publication_limit} публикаций, ${grant.http_requests_reserved}/${grant.http_limit} HTTP-запросов; ${grant.revoked ? 'отозвано' : Date.parse(grant.expires_at) <= Date.now() ? 'срок истёк' : 'срок: ' + dateText(grant.expires_at)}`);
     const decisions = {no_action:'Без публикации', reply:'Ответ', propose_publication:'Предложение публикации', research:'Исследование', revise_mission:'Пересмотр направления'};
@@ -197,6 +220,7 @@ async function refresh() {
     for (const decision of publicState.recent) show(`Публичное решение ${decision.reference}`, `${decisions[decision.decision] || 'Неизвестное решение'}, ${phases[decision.phase] || 'Статус неизвестен'}; ${dateText(decision.time)}`);
   }
   const recent = data.recent || {};
+  showBudget('приватный воркер', recent.worker && recent.worker.budget);
   recentList('recent-application', recent.application, 'Ответ приложения');
   recentList('recent-worker', recent.worker, 'Попытка воркера');
   const latest = recent.application && recent.application.available && recent.application.rows[0];

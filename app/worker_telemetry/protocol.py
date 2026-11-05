@@ -2,6 +2,7 @@
 
 import json
 import struct
+import re
 
 from app.core.public_rejection import PUBLIC_PROPOSAL_REJECTIONS
 from app.owner_control.diagnostics import safe_time
@@ -140,7 +141,7 @@ def decode_diagnostics(body):
     value = json.loads(body, object_pairs_hook=_unique)
     if (
         type(value) is not dict
-        or set(value) != {"version", "available", "rows"}
+        or set(value) - {"budget"} != {"version", "available", "rows"}
         or value["version"] != DIAGNOSTICS_VERSION
         or type(value["available"]) is not bool
         or type(value["rows"]) is not list
@@ -202,7 +203,71 @@ def decode_diagnostics(body):
             )
         ):
             raise ValueError("invalid diagnostics row")
-    return {"available": value["available"], "rows": value["rows"]}
+    result = {"available": value["available"], "rows": value["rows"]}
+    if "budget" in value:
+        result["budget"] = _budget(value["budget"])
+    return result
+
+
+def _budget(value):
+    if (
+        type(value) is dict
+        and set(value) == {"available"}
+        and value["available"] is False
+    ):
+        return value
+    numbers = {
+        "limit_microusd",
+        "settled_microusd",
+        "unresolved_microusd",
+        "unresolved_attempts",
+        "remaining_microusd",
+        "month_attempts",
+        "next_reservation_microusd",
+    }
+    if (
+        type(value) is not dict
+        or set(value)
+        != numbers
+        | {
+            "available",
+            "scope",
+            "billing_authority",
+            "collected_at",
+            "month",
+            "lane",
+            "search_limit",
+            "admission_available",
+        }
+        or value["available"] is not True
+        or value["scope"] != "conservative_monthly_wallet"
+        or value["billing_authority"] is not False
+        or value["lane"] not in ("sol", "research", "private_sol")
+        or type(value["month"]) is not str
+        or re.fullmatch(r"[0-9]{4}-(0[1-9]|1[0-2])", value["month"]) is None
+        or not _valid_time(value["collected_at"])
+        or any(
+            type(value[key]) is not int or not 0 <= value[key] <= 2**63 - 1
+            for key in numbers
+        )
+        or type(value["admission_available"]) is not bool
+        or (
+            value["search_limit"] != 100 or type(value["search_limit"]) is not int
+            if value["lane"] == "research"
+            else value["search_limit"] is not None
+        )
+    ):
+        raise ValueError("invalid monthly budget observation")
+    used = value["settled_microusd"] + value["unresolved_microusd"]
+    allowed = used + value["next_reservation_microusd"] <= value["limit_microusd"] and (
+        value["search_limit"] is None or value["month_attempts"] < value["search_limit"]
+    )
+    if (
+        value["remaining_microusd"] != max(0, value["limit_microusd"] - used)
+        or value["admission_available"] != allowed
+    ):
+        raise ValueError("inconsistent monthly budget observation")
+    return value
 
 
 def _unique(pairs):

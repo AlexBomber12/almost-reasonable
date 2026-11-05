@@ -117,6 +117,17 @@ def test_registry_owner_ui(workers, pending_public, tmp_path, research_codes):
     from test_worker_telemetry import attempt
 
     config, _, stops, telemetry, _ = workers
+    from app.trusted.public_monthly_budget import MonthlyBudget
+
+    budget_path = telemetry[2].provider_db.with_name("observed-budget.sqlite")
+    MonthlyBudget.initialize(
+        budget_path, lane="research", project_id="proj_SYNTHETIC_CANARY"
+    )
+    budget = MonthlyBudget(
+        budget_path, lane="research", project_id="proj_SYNTHETIC_CANARY"
+    )
+    assert budget.reserve("synthetic-unknown-search")
+    telemetry[2].monthly_budget_path = budget_path
     store = ProviderStateStore(EventStore(telemetry[2].provider_db))
     store.record_attempt(
         replace(
@@ -190,6 +201,28 @@ def test_registry_owner_ui(workers, pending_public, tmp_path, research_codes):
                 )
                 expect(page.locator("#status")).to_contain_text(
                     "Публичные исследования"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "Публичное развитие: обработка"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "Это журнал, а не число действующих убеждений"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "Публичный опрос: Комментарии к постам"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "Попытки опроса не наблюдались"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "Ограничения и сбои поиска"
+                )
+                expect(page.locator("#status")).to_contain_text(
+                    "удержано $0.70 (1 незавершённых попыток)"
+                )
+                expect(page.locator("#status")).to_contain_text("1/100 попыток")
+                expect(page.locator("#status")).to_contain_text(
+                    "Нет наблюдения кошелька"
                 )
                 for label in public_labels.values():
                     expect(page.locator("#status")).to_contain_text(label)
