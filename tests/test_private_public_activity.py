@@ -86,6 +86,92 @@ def test_confirmed_own_post_and_recorded_limits_reach_both_private_chats(dialogu
     assert "Русская архитектура" in payload  # Existing actual public position remains.
 
 
+@pytest.mark.parametrize("shared_count", [0, 8])
+def test_dense_private_memory_preserves_public_identity_with_shared_context(
+    dialogue, monkeypatch, shared_count
+):
+    from app.cognition.contracts import InterestMemoryProposal
+    from app.cognition.pipeline import CognitionEngine
+    from app.core.self_state import InterestStatus
+    from app.core.self_state_store import SelfStateStore
+    from app.private_web.runtime import WorkerConversationRuntime
+    from test_cognition_pipeline import (
+        FakeExtractor,
+        append_event,
+        principal,
+        proposal_context,
+    )
+    from test_shared_intelligence import approval
+    import test_cognition_pipeline as cognition
+
+    _, _, _, _, _, _, app, a, b, events, _, gate, sdk, server = dialogue
+    publication(dialogue)
+    runtime = app._conversations
+    monkeypatch.setattr(cognition, "NOW", runtime._clock() - timedelta(minutes=2))
+    # Real persisted synthetic memories, not a mocked serialized request. Dense
+    # optional material must not evict the agent's common public experience.
+    for index in range(16):
+        root = append_event(events, principal("a"), f"dense-{index}", "PRIVATE_DENSE_A")
+        value = InterestMemoryProposal(
+            proposal_context(root, f"dense-{index}"),
+            f"interest-{index}",
+            f"Astronomy {index}: " + "synthetic observations " * 50,
+            70,
+            InterestStatus.ACTIVE,
+            "synthetic motivation " * 30,
+        )
+        assert (
+            CognitionEngine(
+                events, SelfStateStore(events), extractor=FakeExtractor(value)
+            )
+            .process(principal("a"), root)
+            .status.value
+            == "persisted"
+        )
+    approvals = tuple(
+        approval(root, op=f"shared-{i}", item=f"shared-{i}")
+        for i in range(shared_count)
+    )
+    runtime._shared = SharedIntelligence(
+        events,
+        gate,
+        approvals=approvals,
+        clock=runtime._clock,
+    )
+    for item in approvals:
+        runtime._shared.commit(item)
+    private_submit(
+        server, a, "dense-question", "Astronomy: почему ты написал свой пост?"
+    )
+    raw = sdk.calls[-1]["input"]
+    frame = json.loads(raw)
+    assert len(raw.encode("utf-8")) <= runtime._limits.max_utf8_bytes
+    assert frame["memories"] and frame["memories_omitted"]
+    assert POST in raw and "Русская архитектура" in raw
+    assert frame["intellectual_state"] is not None
+    assert frame["shared_omitted"] is (shared_count > 0)
+    # Reconstruct the runtime from the same durable stores. Optional context
+    # omission must not erase memories or require a process-local state cache.
+    app._conversations = WorkerConversationRuntime(
+        events,
+        gate,
+        runtime._transport,
+        provider_state=runtime._provider,
+        clock=runtime._clock,
+        shared_intelligence=runtime._shared,
+        public_intellectual_source=dialogue[5],
+    )
+    private_submit(server, a, "dense-return", "Astronomy: вернёмся к твоему посту.")
+    restored = json.loads(sdk.calls[-1]["input"])
+    assert restored["memories"] and POST in sdk.calls[-1]["input"]
+    assert len(SelfStateStore(events).retrieve_private_candidates(principal("a"))) == 16
+    # A sparse second participant sees the same post without A's private data.
+    private_submit(server, b, "sparse-question", "Почему ты написал свой пост?")
+    other = sdk.calls[-1]["input"]
+    assert POST in other and "Русская архитектура" in other
+    assert "PRIVATE_DENSE_A" not in other and "Astronomy 0:" not in other
+
+
 def test_drafts_unknown_and_failed_publications_are_not_confirmed_dialogue(dialogue):
     public, _, _, _, _, bridge, *_ = dialogue
     operation = publication(dialogue, dispatch=False)
