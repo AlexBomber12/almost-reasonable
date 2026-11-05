@@ -820,9 +820,12 @@ def test_explicit_cli_composes_existing_controls_without_enabling_stop(tmp_path)
             observed["served"] = True
 
     def factory(_host, _port, application, **options):
-        from app.private_web.server import PrivateWSGIRequestHandler
+        from app.private_web.server import PrivateWSGIRequestHandler, PrivateWSGIServer
 
-        assert options == {"handler_class": PrivateWSGIRequestHandler}
+        assert options == {
+            "handler_class": PrivateWSGIRequestHandler,
+            "server_class": PrivateWSGIServer,
+        }
         observed["application"] = application
         return Server()
 

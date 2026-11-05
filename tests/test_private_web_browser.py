@@ -358,8 +358,21 @@ def test_chromium_conversation_layout_history_retry_and_stop(tmp_path):
                 editor.press("Shift+Enter")
                 assert editor.input_value() == "Второй вопрос\n"
                 editor.fill("Второй вопрос")
-                editor.press("Enter")
+                held_history = []
+                page.route("**/api/history", lambda route: held_history.append(route))
+                with page.expect_request("**/api/history"):
+                    editor.press("Enter")
                 page.get_by_text("Второй синтетический ответ").wait_for()
+                assert len(held_history) == 1
+                expect(editor).to_be_editable()
+                editor.fill("Следующий черновик пока история загружается")
+                expect(
+                    page.get_by_role("button", name="Отправить", exact=True)
+                ).to_be_enabled()
+                held_history[0].continue_()
+                page.unroute("**/api/history")
+                expect(page.locator("#history .message")).to_have_count(4)
+                editor.fill("")
                 assert len(fake.calls) == 2
                 assert [
                     part.inner_text() for part in page.locator(".message__text").all()

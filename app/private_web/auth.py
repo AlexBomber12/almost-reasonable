@@ -536,6 +536,23 @@ class AuthStore:
         finally:
             connection.close()
 
+    def principal_enabled(self, principal_id: str) -> bool:
+        """Recheck account availability for already admitted private maintenance."""
+        self._require_token("participant_id", principal_id)
+        connection = self._connect()
+        try:
+            return (
+                connection.execute(
+                    "SELECT 1 FROM accounts WHERE participant_id=? AND enabled=1",
+                    (principal_id,),
+                ).fetchone()
+                is not None
+            )
+        except sqlite3.Error:
+            raise RuntimeError("authentication store operation failed") from None
+        finally:
+            connection.close()
+
     @staticmethod
     def _require_token(field_name: str, value: object) -> None:
         if type(value) is not str or _TOKEN.fullmatch(value) is None:

@@ -352,6 +352,31 @@ class _DurableConversationRuntime(ConversationService):
             return "spend_suspended"
         return "unavailable"
 
+    def _maintain_worker_memory(
+        self, principal, event_id, content, correlation, operation_id, preflight, caps
+    ):
+        if getattr(self, "_evolution_audit", None) is not None:
+            self._evolve_worker_memory(
+                principal, event_id, content, correlation, operation_id
+            )
+            caps = preflight()
+        elif getattr(self, "_extraction_audit", None) is not None:
+            self._extract_worker_memory(
+                principal, event_id, content, correlation, operation_id
+            )
+            caps = preflight()
+        if getattr(self, "_typed_audit", None) is not None:
+            self._evolve_worker_typed(
+                principal, event_id, content, correlation, operation_id
+            )
+            caps = preflight()
+        if getattr(self, "_shared_proposal_audit", None) is not None:
+            self._propose_shared(
+                principal, event_id, content, correlation, operation_id
+            )
+            caps = preflight()
+        return caps
+
     def _input(self, principal, message_id, content):
         # Exact participant/message identity survives a renewed session. The original
         # authenticated source remains in the envelope; never use the latest event.
@@ -427,16 +452,27 @@ class _DurableConversationRuntime(ConversationService):
         operation_id = self._operation_id(event_id)
         route = TrustedActionContext(correlation, principal)
         existing = self._gate.read_reply(principal, operation_id)
-        if getattr(self, "_shared_proposal_audit", None) is not None:
+        deferred_existing = (
+            existing is not None
+            and existing.operation.prompt_version.endswith(":deferred-memory-v1")
+        )
+        if (
+            not deferred_existing
+            and getattr(self, "_shared_proposal_audit", None) is not None
+        ):
             self._reconcile_shared_proposal(principal, event_id, content, operation_id)
         if getattr(self, "_narrative_audit", None) is not None:
             self._reconcile_narrative(principal, event_id, content, operation_id)
         if self._intellectual is not None and existing is not None:
             self._intellectual.commit(principal, operation_id, None)
-        if existing is not None and (
-            getattr(self, "_extraction_audit", None) is not None
-            or getattr(self, "_evolution_audit", None) is not None
-            or getattr(self, "_typed_audit", None) is not None
+        if (
+            existing is not None
+            and not deferred_existing
+            and (
+                getattr(self, "_extraction_audit", None) is not None
+                or getattr(self, "_evolution_audit", None) is not None
+                or getattr(self, "_typed_audit", None) is not None
+            )
         ):
             if getattr(self, "_evolution_audit", None) is not None:
                 self._reconcile_worker_evolution(
@@ -539,26 +575,16 @@ class _DurableConversationRuntime(ConversationService):
                         self._checkpoint("after_extraction")
                         # Deletion or changed controls during extraction block inference.
                         caps = self._gate.authorized(preflight)
-                    if getattr(self, "_evolution_audit", None) is not None:
-                        self._evolve_worker_memory(
-                            principal, event_id, content, correlation, operation_id
+                    if not getattr(self, "_defer_memory_maintenance", False):
+                        caps = self._maintain_worker_memory(
+                            principal,
+                            event_id,
+                            content,
+                            correlation,
+                            operation_id,
+                            lambda: self._gate.authorized(preflight),
+                            caps,
                         )
-                        caps = self._gate.authorized(preflight)
-                    elif getattr(self, "_extraction_audit", None) is not None:
-                        self._extract_worker_memory(
-                            principal, event_id, content, correlation, operation_id
-                        )
-                        caps = self._gate.authorized(preflight)
-                    if getattr(self, "_typed_audit", None) is not None:
-                        self._evolve_worker_typed(
-                            principal, event_id, content, correlation, operation_id
-                        )
-                        caps = self._gate.authorized(preflight)
-                    if getattr(self, "_shared_proposal_audit", None) is not None:
-                        self._propose_shared(
-                            principal, event_id, content, correlation, operation_id
-                        )
-                        caps = self._gate.authorized(preflight)
                     narrative_blocked = False
                     if getattr(
                         self, "_narrative_audit", None
@@ -673,9 +699,27 @@ class _DurableConversationRuntime(ConversationService):
                                         narrative_id, "unavailable"
                                     )
         self._checkpoint("before_release")
-        return self._gate.authorized(
-            lambda: self._response(admission.message_status, route, operation_id)
-        )
+
+        def release():
+            from app.cognition.read_store import retrieve_exact_private_event
+
+            result = self._response(admission.message_status, route, operation_id)
+            event = retrieve_exact_private_event(self._event_store, principal, event_id)
+            if event is None:
+                raise PrivacyReadBlocked("original_input_unavailable")
+            turn = (HistoryItem(event.event_id, event.occurred_at, event.content),)
+            if result.model_state is ModelState.COMPLETED:
+                turn += (
+                    HistoryItem(
+                        operation_id,
+                        event.occurred_at,
+                        result.response_content,
+                        "agent",
+                    ),
+                )
+            return replace(result, turn=turn)
+
+        return self._gate.authorized(release)
 
     def _reserve_memory(
         self,
@@ -785,7 +829,14 @@ class _DurableConversationRuntime(ConversationService):
                     + hashlib.sha256(principal.principal_id.value.encode()).hexdigest(),
                     correlation,
                     "worker-owned" if self._worker is not None else self._config.model,
-                    "worker-context-v2-transcript-v4"
+                    (
+                        "worker-context-v2-transcript-v4"
+                        + (
+                            ":deferred-memory-v1"
+                            if getattr(self, "_defer_memory_maintenance", False)
+                            else ""
+                        )
+                    )
                     if self._worker is not None
                     else "private-memory-stage0-v2-transcript-v4"
                     if self._shared is None
@@ -2719,6 +2770,8 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
         shared_proposals_enabled=False,
         shared_proposal_audience=(),
         public_intellectual_source=None,
+        defer_memory_maintenance=False,
+        maintenance_principal_enabled=None,
         **kwargs,
     ):
         if type(client) is not OpenAIWorkerClient:
@@ -2739,6 +2792,21 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             raise TypeError("narrative permission check required")
         if type(shared_proposals_enabled) is not bool:
             raise TypeError("shared_proposals_enabled must be bool")
+        if type(defer_memory_maintenance) is not bool:
+            raise TypeError("defer_memory_maintenance must be bool")
+        if defer_memory_maintenance and not callable(maintenance_principal_enabled):
+            raise TypeError("maintenance principal authorization check required")
+        if defer_memory_maintenance and not any(
+            (
+                memory_extraction_enabled,
+                memory_evolution_enabled,
+                typed_memory_enabled,
+                shared_proposals_enabled,
+            )
+        ):
+            raise ValueError(
+                "deferred maintenance requires an enabled auxiliary feature"
+            )
         if shared_proposals_enabled and kwargs.get("shared_intelligence") is None:
             raise ValueError("shared proposals require shared intelligence")
         if os.path.samefile(
@@ -2834,3 +2902,37 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             or typed_memory_enabled
             else None
         )
+        self._defer_memory_maintenance = defer_memory_maintenance
+        from threading import Lock
+
+        self._foreground_lock = Lock()
+        self._foreground_active = 0
+        from .memory_maintenance import MemoryMaintenance
+
+        self._memory_maintenance = (
+            MemoryMaintenance(self, maintenance_principal_enabled)
+            if defer_memory_maintenance
+            else None
+        )
+
+    def drain_memory_maintenance(self, *, limit=1):
+        if type(limit) is not int or not 1 <= limit <= 16:
+            raise ValueError("invalid memory maintenance limit")
+        return (
+            0
+            if self._memory_maintenance is None
+            else self._memory_maintenance.drain(limit)
+        )
+
+    def submit(self, principal, message_id, content):
+        with self._foreground_lock:
+            self._foreground_active += 1
+        try:
+            return super().submit(principal, message_id, content)
+        finally:
+            with self._foreground_lock:
+                self._foreground_active -= 1
+
+    def _maintenance_should_yield(self):
+        with self._foreground_lock:
+            return self._foreground_active > 0

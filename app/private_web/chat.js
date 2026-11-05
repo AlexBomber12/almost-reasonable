@@ -147,6 +147,7 @@
   let account = null;
   let pendingMessage = null;
   let requestInFlight = false;
+  let transcriptGeneration = 0;
   let access = 'checking';
   sendButton.disabled = true;
   textarea.disabled = true;
@@ -157,7 +158,7 @@
     actionLink.hidden = !action;
     if (action) {
       actionLink.href = action;
-      actionLink.textContent = action === '/login' ? 'Войти' : 'Открыть приватность';
+      actionLink.textContent = action === '/login' ? 'Войти' : action === '/chat' ? 'Открыть разговор' : 'Открыть приватность';
     }
   }
 
@@ -222,6 +223,27 @@
     updateControls();
   }
 
+  function accountChanged() {
+    ++transcriptGeneration;
+    access = 'changed'; account = null; pendingMessage = null;
+    textarea.value = ''; textarea.disabled = true;
+    try { sessionStorage.removeItem(storageKey); } catch (_) { /* storage unavailable */ }
+    clearOptimistic(); historyList.replaceChildren();
+    if (emptyState) emptyState.hidden = false;
+    announce('Аккаунт изменился. Откройте разговор заново.', 'error', '/chat');
+    updateControls();
+  }
+
+  async function verifyAccount() {
+    if (!account || access !== 'active') return;
+    try {
+      const response = await fetch('/session', {credentials: 'same-origin', cache: 'no-store'});
+      if (!response.ok) { sessionEnded(); return; }
+      const session = await response.json();
+      if (!session.authenticated || session.username !== account) accountChanged();
+    } catch (_) { /* Each data request also enforces its page account binding. */ }
+  }
+
   function nearBottom() {
     return conversation.scrollHeight - conversation.scrollTop - conversation.clientHeight < 180;
   }
@@ -256,12 +278,39 @@
   }
 
   async function refreshHistory() {
-    const response = await fetch('/api/history', {credentials: 'same-origin'});
+    const generation = transcriptGeneration;
+    const response = await fetch('/api/history', {credentials: 'same-origin', headers: {'X-Chat-Account': account}});
+    if (generation !== transcriptGeneration) return false;
+    if (response.status === 409) { accountChanged(); return false; }
     if (response.status === 401) { sessionEnded(); return false; }
     if (response.status === 403) { denied(); return false; }
     if (!response.ok) throw new Error('history unavailable');
     const data = await response.json();
+    if (generation !== transcriptGeneration) return false;
     showHistory(data.messages);
+    return true;
+  }
+
+  function showTurn(items) {
+    if (!Array.isArray(items) || items.length < 1 || items.length > 2 || items.some(item =>
+      !item || !['participant', 'agent'].includes(item.role) || typeof item.content !== 'string' ||
+      typeof item.event_id !== 'string' || !Number.isFinite(new Date(item.occurred_at).getTime()))) return false;
+    const follow = followsConversation();
+    clearOptimistic();
+    for (const item of items) {
+      if ([...historyList.querySelectorAll('.message')].some(row => row.dataset.eventId === item.event_id)) continue;
+      const row = messageRow(item.role, item.content);
+      row.dataset.eventId = item.event_id; row.dataset.occurredAt = item.occurred_at;
+      historyList.append(row);
+    }
+    historyList.querySelectorAll('.date-separator').forEach(row => row.remove());
+    let previous = '';
+    for (const row of historyList.querySelectorAll('.message')) {
+      const day = new Date(row.dataset.occurredAt).toDateString();
+      if (day !== previous) { row.before(dateSeparator(row.dataset.occurredAt)); previous = day; }
+    }
+    if (emptyState) emptyState.hidden = historyList.childElementCount > 0;
+    restoreConversation(follow);
     return true;
   }
 
@@ -329,6 +378,7 @@
       retain();
     }
     const submitted = pendingMessage;
+    const generation = ++transcriptGeneration;
     const follow = followsConversation();
     // A retry may already be in persisted history. Only fresh submissions are optimistic.
     if (isRetry) {
@@ -348,11 +398,13 @@
     try {
       const response = await fetch('/api/messages', {
         method: 'POST', credentials: 'same-origin',
-        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': form.dataset.csrf},
+        headers: {'Content-Type': 'application/json', 'X-CSRF-Token': form.dataset.csrf, 'X-Chat-Account': account},
         body: JSON.stringify({message_id: submitted.id, content: submitted.content})
       });
+      if (generation !== transcriptGeneration || access !== 'active') return;
       if (!response.ok) {
-        if (response.status === 401) sessionEnded();
+        if (response.status === 409) accountChanged();
+        else if (response.status === 401) sessionEnded();
         else if (response.status === 403) denied();
         else if (response.status === 400 || response.status === 413 || response.status === 422) {
           pendingMessage = null;
@@ -368,11 +420,12 @@
       if (textarea.value === submitted.content) textarea.value = '';
       retain();
       announce(resultMessage(result.model_state));
-      try {
-        await refreshHistory();
-      } catch (_) {
-        announce('Сообщение сохранено. Обновите страницу, чтобы увидеть его в разговоре.');
-      }
+      const instant = showTurn(result.turn);
+      const synchronization = refreshHistory().catch(() => {
+        if (generation === transcriptGeneration && access === 'active')
+          announce('Сообщение сохранено. Не удалось обновить историю; обновите страницу.');
+      });
+      if (!instant) await synchronization;
     } catch (_) {
       announce('Не удалось отправить', 'error');
     } finally {
@@ -408,6 +461,8 @@
     }
   });
 
+  window.addEventListener('focus', verifyAccount);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) verifyAccount(); });
   establishAccount();
 
 })();

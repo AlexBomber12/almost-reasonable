@@ -295,6 +295,16 @@ class PrivateWebApplication:
                 HTTPStatus.UNAUTHORIZED,
                 "Your session is invalid or expired. Please sign in again.",
             )
+        expected_account = environ.get("HTTP_X_CHAT_ACCOUNT")
+        if (
+            path in {"/api/history", "/api/messages"}
+            and expected_account is not None
+            and expected_account != session.username
+        ):
+            raise _RequestError(
+                HTTPStatus.CONFLICT,
+                "The active account changed. Reload the conversation.",
+            )
         if self._privacy is not None and path.startswith(("/privacy", "/api/privacy")):
             return self._privacy_request(environ, session, method, path)
         if self._privacy is not None and path in {
@@ -746,7 +756,22 @@ class PrivateWebApplication:
                 "message_status": result.message_status.value,
                 "model_state": result.model_state.value,
                 "response": result.response_content,
-            },
+            }
+            | (
+                {
+                    "turn": [
+                        {
+                            "event_id": item.event_id,
+                            "occurred_at": item.occurred_at.isoformat(),
+                            "content": item.content,
+                            "role": item.role,
+                        }
+                        for item in result.turn
+                    ]
+                }
+                if result.turn
+                else {}
+            ),
         )
 
     def _require_state_change(

@@ -91,6 +91,7 @@ class SubmittedMessage:
     message_status: MessageStatus
     model_state: ModelState
     response_content: str | None = None
+    turn: tuple["HistoryItem", ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
