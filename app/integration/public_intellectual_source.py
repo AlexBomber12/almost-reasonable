@@ -307,6 +307,23 @@ class PublicIntellectualSource:
         """
         view = self.view
         candidates = view.experience_history._candidates()
+        from app.integration.discussion_ancestry import discussion_dependencies
+
+        by_message = {}
+        for key, (record, binding) in candidates.items():
+            if record.message_id is not None:
+                by_message.setdefault(record.message_id, []).append(
+                    (key, record, binding)
+                )
+        with view.service.store._open() as db:
+            owned_ids = {
+                row[0]
+                for row in db.execute(
+                    "SELECT provider_publication_id FROM threads_outbox WHERE account_ref=? "
+                    "AND provider_publication_id IS NOT NULL",
+                    (view.account,),
+                )
+            }
         from app.cognition.retrieval import MemoryContextSelector
 
         words = set(MemoryContextSelector._words(query or ""))
@@ -337,20 +354,12 @@ class PublicIntellectualSource:
                     continue
                 deps = {**source["dependencies"], source_id: binding}
                 if kind == "external_assertion":
-                    roots = [
-                        (root_key, root_binding)
-                        for root_key, (root, root_binding) in candidates.items()
-                        if root.kind == "confirmed_publication"
-                        and root.parent_message_id is None
-                        and root.message_id == experience.conversation_id
-                        and root_key in sources
-                        and sources[root_key]["binding"] == root_binding
-                    ]
-                    if not roots:
+                    ancestry = discussion_dependencies(
+                        experience, by_message, sources, owned_ids, deps
+                    )
+                    if ancestry is None:
                         continue
-                    root_key, root_binding = roots[0]
-                    deps.update(sources[root_key]["dependencies"])
-                    deps[root_key] = root_binding
+                    deps = ancestry
                 ancestors = sorted(
                     k.removeprefix("shared:") for k in deps if k.startswith("shared:")
                 )

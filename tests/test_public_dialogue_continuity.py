@@ -166,6 +166,117 @@ def confirm_own_reply(discussion):
     return operations[0]
 
 
+@pytest.mark.parametrize("through_external_parent", [False, True])
+def test_nested_response_inherits_own_parent_ancestry_and_withdrawal(
+    discussion, through_external_parent
+):
+    from dataclasses import replace
+    from app.cognition.shared import SharedIntelligence
+    from app.integration.shared_intellectual_source import SharedIntellectualSource
+    from app.threads.transport import HTTPResponse
+    from test_reviewed_shared import candidate
+    from test_cognition_pipeline import principal
+
+    public, _, _, http, clock, bridge, app, a, b, events, _, gate, sdk, server = (
+        discussion
+    )
+    # Root post is unrestricted; only the later own reply uses A's reviewed influence.
+    private_submit(server, a, "private-parent", "PRIVATE_PARENT_A_CANARY")
+    with events._open() as db:
+        root = db.execute(
+            "SELECT event_id FROM event_envelopes WHERE source_message_id='private-parent'"
+        ).fetchone()[0]
+    shared = SharedIntelligence(
+        events, gate, clock=clock.now, ordinary_abstractions_enabled=True
+    )
+    item = replace(
+        candidate(root, value="Compare causal models of uncertainty."),
+        audience=("participant-a", "public:account-1"),
+    )
+    shared.transition(item)
+    adapter = SharedIntellectualSource(shared, public.account)
+    public.shared_intellectual_source = adapter
+    bridge.view.shared_intellectual_source = adapter
+    parent_operation = confirm_own_reply(discussion)
+    with public.journal.transaction() as db:
+        assert (
+            "shared:" + item.proposal.operation_id
+            in public.intellectual.state.dependencies(db, parent_operation)
+        )
+    rows = []
+    if through_external_parent:
+        rows.append(
+            {
+                "id": "external-parent",
+                "text": "Внешний промежуточный ответ.",
+                "timestamp": clock.now().isoformat(),
+                "root_post": {"id": "post-1"},
+                "replied_to": {"id": "own-reply"},
+            }
+        )
+    rows.append(
+        {
+            "id": "nested-comment",
+            "text": "NESTED_RESPONSE_CANARY Согласен с твоим ответом.",
+            "timestamp": clock.now().isoformat(),
+            "root_post": {"id": "post-1"},
+            "replied_to": {
+                "id": "external-parent" if through_external_parent else "own-reply"
+            },
+        }
+    )
+    request = http.request
+
+    def mentions(method, url, headers, body, timeout):
+        if "/mentions?" in url:
+            return HTTPResponse(200, json.dumps({"data": rows, "paging": {}}).encode())
+        return request(method, url, headers, body, timeout)
+
+    http.request = mentions
+    public.poll(InboundKind.MENTION, correlation_id="nested")
+    private_submit(server, a, "nested-a", "NESTED_RESPONSE_CANARY: что тебе ответили?")
+    assert any(
+        "NESTED_RESPONSE_CANARY" in row["text"]
+        for row in json.loads(sdk.calls[-1]["input"])["intellectual_state"]["sources"]
+        if row["kind"] == "external_assertion"
+    )
+    with events._open() as db:
+        event = db.execute(
+            "SELECT event_id FROM event_envelopes WHERE source_message_id='nested-a'"
+        ).fetchone()[0]
+    nested_operation = app._conversations._operation_id(event)
+    assert any(
+        row.event_id == nested_operation
+        for row in app._conversations.history(principal("a"))
+    )
+    private_submit(server, b, "nested-b", "NESTED_RESPONSE_CANARY: о чём этот ответ?")
+    assert not any(
+        "NESTED_RESPONSE_CANARY" in row["text"]
+        for row in json.loads(sdk.calls[-1]["input"])["intellectual_state"]["sources"]
+        if row["kind"] == "external_assertion"
+    )
+    assert "PRIVATE_PARENT_A_CANARY" not in sdk.calls[-1]["input"]
+    with public.journal.transaction() as db:
+        db.execute(
+            "UPDATE sources SET active=0 WHERE draft=(SELECT json_extract(payload,'$.draft') FROM intents WHERE operation=?)",
+            (parent_operation,),
+        )
+    assert all(
+        "NESTED_RESPONSE_CANARY" not in row["text"]
+        for row in bridge.sources(principal=principal("a")).values()
+    )
+    assert all(
+        "NESTED_RESPONSE_CANARY" not in row["text"]
+        for row in bridge.sources(principal=principal("b")).values()
+    )
+    # Earlier inherited private output is withdrawn through the same receipt graph.
+    assert not any(
+        row.event_id == nested_operation
+        for row in app._conversations.history(principal("a"))
+        if row.role == "agent"
+    )
+
+
 def test_verified_comment_and_confirmed_own_reply_reach_both_private_chats(discussion):
     *_, a, b, _events, _ledger, _gate, private_sdk, server = discussion
     confirm_own_reply(discussion)

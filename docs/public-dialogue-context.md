@@ -14,8 +14,11 @@ not a promise of a complete archive or verbatim recall. An absent comment is not
 evidence that nobody commented. No additional provider or Threads request is
 made to assemble a private response.
 
-Each incoming comment binds both its verified source and the eligible root
-publication's complete ancestry. The original audience restrictions, source
+Each incoming comment binds its verified source, every parent in the discussion
+chain and the eligible root publication's complete ancestry. Missing, conflicting,
+cyclic, withdrawn or overbound parent chains are omitted. A known own reply cannot
+be replaced by an external-stream alias to bypass its restrictions. Identical
+verified parent records from two streams retain both bindings. The original audience restrictions, source
 withdrawal, conversation controls, privacy generation and release checks remain
 effective. A comment cannot launder a private-derived post into another
 participant's context. Required historical receipts can still resolve records
