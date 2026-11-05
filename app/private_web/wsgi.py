@@ -18,6 +18,7 @@ from .privacy import ParticipantPrivacyControls, PrivacyControlError
 from app.privacy.application import PrivacyReadBlocked
 from app.privacy.notice import NARRATIVE_DISCLOSURE_VERSION
 from .presentation import date_label, document
+from .timing import timed_request
 
 
 SESSION_COOKIE = "ar_session"
@@ -160,6 +161,7 @@ class PrivateWebApplication:
         self._config = config
         self._privacy = privacy
 
+    @timed_request
     def __call__(self, environ: dict[str, Any], start_response: Any) -> list[bytes]:
         try:
             response = self._dispatch(environ)
