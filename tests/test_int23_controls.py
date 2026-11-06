@@ -836,9 +836,12 @@ def test_application_cli_requires_explicit_public_composition(tmp_path):
             observed["served"] = True
 
     def factory(_host, _port, application, **options):
-        from app.private_web.server import PrivateWSGIRequestHandler
+        from app.private_web.server import PrivateWSGIRequestHandler, PrivateWSGIServer
 
-        assert options == {"handler_class": PrivateWSGIRequestHandler}
+        assert options == {
+            "handler_class": PrivateWSGIRequestHandler,
+            "server_class": PrivateWSGIServer,
+        }
         observed["application"] = application
         return Server()
 

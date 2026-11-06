@@ -11,7 +11,7 @@ from pathlib import Path
 from socket import AF_INET6
 from typing import Any
 from urllib.parse import urlsplit
-from wsgiref.simple_server import make_server, WSGIServer
+from wsgiref.simple_server import make_server
 
 from app.core.context import ContextLimits, PrivateContextAssembler
 from app.core.store import EventStore
@@ -38,11 +38,12 @@ from .conversation import ConversationService, _utc_now
 from .privacy import ParticipantPrivacyControls
 from .runtime import DEFAULT_PRIVATE_HISTORY_EVENTS, WorkerConversationRuntime
 from .public_research import PublicResearchBridge
-from .server import PrivateWSGIRequestHandler
+from .server import PrivateWSGIRequestHandler, PrivateWSGIServer
+from .memory_maintenance import MemoryMaintenanceRunner
 from .wsgi import PrivateWebApplication, PrivateWebConfig
 
 
-class IPv6WSGIServer(WSGIServer):
+class IPv6WSGIServer(PrivateWSGIServer):
     """WSGI reference server variant for an explicit IPv6 listener."""
 
     address_family = AF_INET6
@@ -72,6 +73,7 @@ def _parser() -> argparse.ArgumentParser:
     serve.add_argument("--enable-memory-extraction", action="store_true")
     serve.add_argument("--enable-memory-evolution", action="store_true")
     serve.add_argument("--enable-typed-memory", action="store_true")
+    serve.add_argument("--defer-memory-maintenance", action="store_true")
     serve.add_argument("--enable-narrative", action="store_true")
     serve.add_argument("--narrative-permission")
     serve.add_argument("--narrative-pilot-id")
@@ -315,6 +317,7 @@ def main(
         or args.enable_memory_extraction
         or args.enable_memory_evolution
         or args.enable_typed_memory
+        or args.defer_memory_maintenance
         or args.enable_narrative
         or args.narrative_permission is not None
         or args.narrative_pilot_id is not None
@@ -386,6 +389,10 @@ def main(
             memory_extraction_enabled=args.enable_memory_extraction,
             memory_evolution_enabled=args.enable_memory_evolution,
             typed_memory_enabled=args.enable_typed_memory,
+            defer_memory_maintenance=args.defer_memory_maintenance,
+            maintenance_principal_enabled=auth.principal_enabled
+            if args.defer_memory_maintenance
+            else None,
             narrative_enabled=args.enable_narrative,
             narrative_permission_current=(
                 lambda: _narrative_permission_current(
@@ -415,13 +422,26 @@ def main(
         web_config,
         privacy=privacy,
     )
-    server_options = (
-        {"server_class": IPv6WSGIServer} if listener_address.version == 6 else {}
-    )
+    server_options = {
+        "server_class": IPv6WSGIServer
+        if listener_address.version == 6
+        else PrivateWSGIServer
+    }
     server_options["handler_class"] = PrivateWSGIRequestHandler
     server = server_factory(args.listen_host, args.port, application, **server_options)
+    maintenance = (
+        MemoryMaintenanceRunner(conversations)
+        if args.defer_memory_maintenance
+        else None
+    )
+    if maintenance is not None:
+        maintenance.start()
     print(f"Serving private chat on {args.listen_host}:{args.port}")
-    server.serve_forever()
+    try:
+        server.serve_forever()
+    finally:
+        if maintenance is not None:
+            maintenance.close()
     return 0
 
 

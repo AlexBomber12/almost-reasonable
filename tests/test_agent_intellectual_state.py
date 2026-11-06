@@ -1528,8 +1528,27 @@ def test_another_public_account_never_receives_foreign_agent_state(tmp_path):
 @pytest.mark.parametrize("cut", ["before_worker_admission", "after_model"])
 def test_real_concurrent_private_turn_cannot_replace_admitted_state(tmp_path, cut):
     from threading import Event, Thread
+    from app.private_web.runtime import WorkerConversationRuntime
+    from app.private_web.wsgi import PrivateWebApplication
+    from test_private_web_http import Browser
 
     app, a, _b, events, _ledger, _gate, sdk, server = private_setup(tmp_path)
+    original = app._conversations
+    # Single-app turns share a lane. A separate authenticated app instance still
+    # exercises the durable stale-snapshot guard across overlapping instances.
+    other_runtime = WorkerConversationRuntime(
+        events,
+        _gate,
+        original._transport,
+        provider_state=original._provider,
+        clock=original._clock,
+    )
+    other = Browser(
+        PrivateWebApplication(
+            app._auth_store, other_runtime, app._config, privacy=app._privacy
+        )
+    )
+    other.cookies = dict(a.cookies)
     entered, release = Event(), Event()
     replies = []
     first_worker = None
@@ -1556,7 +1575,7 @@ def test_real_concurrent_private_turn_cannot_replace_admitted_state(tmp_path, cu
             first_operation, snapshot = db.execute(
                 "SELECT operation,snapshot FROM agent_intellectual_operations ORDER BY rowid LIMIT 1"
             ).fetchone()
-        private_submit(server, a, "second", "Другое наблюдение об архитектуре.")
+        private_submit(server, other, "second", "Другое наблюдение об архитектуре.")
         release.set()
         first_submit.join(10)
         assert not first_submit.is_alive()

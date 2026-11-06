@@ -572,16 +572,18 @@ def test_server_closes_connection_when_peer_credentials_cannot_be_read(
     server.start()
     thread = run_once(server)
     peer = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    peer.connect(str(directory / "worker.sock"))
-    peer.sendall(struct.pack("!I", 2) + b"{}")
-    peer.shutdown(socket.SHUT_WR)
     try:
-        peer.recv(1)
+        peer.settimeout(2)
+        peer.connect(str(directory / "worker.sock"))
+        # Authentication must reject the peer before it sends any request frame.
+        # Writing after rejection races the correct server-side close.
+        assert peer.recv(1) == b""
     except ConnectionResetError:
         pass
-    peer.close()
-    thread.join(timeout=2)
-    server.close()
+    finally:
+        peer.close()
+        thread.join(timeout=2)
+        server.close()
 
     assert thread.is_alive() is False
     assert transport.calls == []
