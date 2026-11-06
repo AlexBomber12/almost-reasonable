@@ -47,6 +47,32 @@ def test_manifest_journal_version_matches_newly_initialized_database(tmp_path):
     assert load_manifest()["configuration"]["stage0_journal"] == versions[0][0]
 
 
+def test_manifest_schema_inventory_matches_fresh_current_stores(tmp_path):
+    from app.core.store import EventStore
+    from app.threads.store import ThreadsStore
+
+    config = load_manifest()["configuration"]
+    events = EventStore(tmp_path / "events.sqlite")
+    threads = ThreadsStore(tmp_path / "threads.sqlite")
+    assert config["event_store"] == events.diagnostics().schema_version
+    with threads._open() as db:
+        assert (
+            config["threads_store"]
+            == db.execute("SELECT version FROM threads_schema_metadata").fetchone()[0]
+        )
+
+
+def test_manifest_prompt_inventory_is_current_and_explicitly_offline():
+    from app.core.intellectual_state import VERSION, PROMPT_VERSION
+    from app.core.model_contract import TRANSCRIPT_MODEL_CONTRACT_VERSION
+
+    config = load_manifest()["configuration"]
+    assert config["evidence_scope"] == "offline_harness_only"
+    assert config["intellectual_state"] == VERSION
+    assert config["intellectual_prompt"] == PROMPT_VERSION
+    assert config["conversation_transcript"] == TRANSCRIPT_MODEL_CONTRACT_VERSION
+
+
 @pytest.mark.parametrize(
     "mutation",
     [
