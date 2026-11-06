@@ -223,6 +223,7 @@ class IntellectualStateStore:
         query="",
         dependencies_fit=None,
         priority_keys=(),
+        source_fallbacks=None,
     ):
         existing = self._operation(db, operation)
         if existing is not None:
@@ -255,22 +256,25 @@ class IntellectualStateStore:
             [],
         )
         records = []
+        if source_fallbacks is None:
+            source_fallbacks = {}
 
-        def add_source(key, source):
-            if visible_keys is not None and key not in visible_keys:
-                return
+        def add_source(key, source, *, visible_as=None):
+            visible_key = key if visible_as is None else visible_as
+            if visible_keys is not None and visible_key not in visible_keys:
+                return False
             additions = {**source["dependencies"], key: source["binding"]}
             if len(
                 dependencies.keys() | additions.keys()
             ) > MAX_DEPENDENCIES or not dependencies_fit({**dependencies, **additions}):
-                return
+                return False
             record = {
                 "handle": f"s{len(records)}",
                 "kind": source["kind"],
                 "text": source["text"],
             }
             if len(records) == 6:
-                return
+                return False
             try:
                 trial = {
                     "version": VERSION,
@@ -279,17 +283,24 @@ class IntellectualStateStore:
                 }
                 projection(trial)
                 if len(encoded(trial).encode()) > budget:
-                    return
+                    return False
             except ValueError:
-                return
+                return False
             records.append(record)
             source_keys.append(key)
             dependencies.update(additions)
+            return True
+
+        def add_preferred_source(key, source):
+            if not add_source(key, source):
+                alternative = source_fallbacks.get(key)
+                if alternative is not None:
+                    add_source(alternative, sources[alternative], visible_as=key)
 
         # Trusted adapters may prioritize evidence actually present in this call.
         # Its complete record consumes budget before optional state/history.
         for key in priority_keys:
-            add_source(key, sources[key])
+            add_preferred_source(key, sources[key])
         # Authorization and source validity precede deterministic ranking/limits.
         heads = self._heads(db, sources)
         from app.cognition.retrieval import MemoryContextSelector
@@ -340,7 +351,7 @@ class IntellectualStateStore:
         # Every supplied source is material context even if too large to cite.
         for key, source in sorted(sources.items()):
             if key not in priority_keys:
-                add_source(key, source)
+                add_preferred_source(key, source)
         result = projection({"version": VERSION, "states": visible, "sources": records})
         snapshot = {
             "projection": result,

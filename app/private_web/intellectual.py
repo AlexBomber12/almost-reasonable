@@ -193,6 +193,18 @@ class PrivateIntellectualState:
         state = self.state(principal)
         public_selection = self.public_sources(principal, db)
         sources = self.sources(principal, db, _public_selection=public_selection)
+        adapter = getattr(self.app, "_public_intellectual_source", None)
+        alternatives = (
+            {}
+            if adapter is None
+            else adapter.reasonless_variants(
+                public_selection, principal=principal, _private_db=db
+            )
+        )
+        source_fallbacks = {}
+        for preferred, (key, source) in alternatives.items():
+            sources[key] = source
+            source_fallbacks[preferred] = key
         visible = {"event:" + event for event in event_ids}
         visible.update(public_selection)
         visible.update(
@@ -346,6 +358,7 @@ class PrivateIntellectualState:
                 required_dependencies=required,
                 query=private.conversation.conversation[-1].content,
                 dependencies_fit=dependencies_fit,
+                source_fallbacks=source_fallbacks,
             )
         except IntellectualCapacityError:
             return omit_optional_context()

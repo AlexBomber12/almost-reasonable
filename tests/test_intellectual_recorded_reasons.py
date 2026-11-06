@@ -196,6 +196,153 @@ def test_public_reason_omission_is_whole_and_preserves_the_original_record(integ
     assert json.loads(fallback["text"].split(". ", 1)[1])["fields"] == change["fields"]
 
 
+@pytest.mark.parametrize("case", ["exact_legacy", "fits_reason", "too_small"])
+def test_private_request_keeps_a_genuine_public_source_when_its_reason_cannot_fit(
+    integrated, monkeypatch, case
+):
+    from app.core.intellectual_state import IntellectualStateStore, VERSION, encoded
+    from app.privacy.application import _validate_graph
+
+    public, _, _, _, _, bridge, app, a, _, events, _, _, sdk, server = integrated
+    with public.journal.transaction() as db:
+        item = db.execute(
+            "SELECT item FROM agent_intellectual_revisions LIMIT 1"
+        ).fetchone()[0]
+    legacy_key = source_key(public.account, item)
+    legacy = bridge.sources(required_keys=frozenset({legacy_key}))[legacy_key]
+    modern = bridge.sources()
+    modern_key, reasoned = next(iter(modern.items()))
+
+    def size(record):
+        return len(
+            encoded(
+                {
+                    "version": VERSION,
+                    "states": [],
+                    "sources": [
+                        {"handle": "s0", "kind": record["kind"], "text": record["text"]}
+                    ],
+                }
+            ).encode()
+        )
+
+    budget = (
+        size(reasoned)
+        if case == "fits_reason"
+        else size(legacy) - (case == "too_small")
+    )
+    original_reserve = IntellectualStateStore.reserve
+
+    def reserve(state, db, operation, sources, *args, **kwargs):
+        if state.scope[0] == "private":
+            assert kwargs["budget"] >= budget
+            kwargs["budget"] = budget
+        return original_reserve(state, db, operation, sources, *args, **kwargs)
+
+    monkeypatch.setattr(IntellectualStateStore, "reserve", reserve)
+    result = private_submit(
+        server, a, "public-budget-" + case, "Обсудим твои интересы."
+    )
+    assert result["model_state"] == "completed" and len(sdk.calls) == 1
+    frame = json.loads(sdk.calls[-1]["input"])["intellectual_state"]
+    assert len(encoded(frame).encode()) <= budget
+    selected = (
+        {}
+        if case == "too_small"
+        else {
+            modern_key if case == "fits_reason" else legacy_key: reasoned
+            if case == "fits_reason"
+            else legacy
+        }
+    )
+    assert [row for row in frame["sources"] if row["kind"] == "public_agent_state"] == [
+        {"handle": "s0", "kind": record["kind"], "text": record["text"]}
+        for record in selected.values()
+    ]
+    with events._open() as db:
+        operation, raw = db.execute(
+            "SELECT operation,snapshot FROM agent_intellectual_operations "
+            "WHERE audience='private' ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        snapshot = json.loads(raw)
+        assert [
+            key for key in snapshot["source_keys"] if key.startswith("public-state:")
+        ] == list(selected)
+        assert {
+            key: value
+            for key, value in snapshot["dependencies"].items()
+            if key.startswith("public-state:")
+        } == {key: record["binding"] for key, record in selected.items()}
+        assert snapshot.get("external_receipts", {}) == {
+            key: record["receipt"] for key, record in selected.items()
+        }
+        _validate_graph(db)
+    if selected:
+        assert app._conversations._intellectual.valid(principal("a"), operation)
+        with public.service.store._open() as db:
+            db.execute(
+                "DELETE FROM threads_inbound_events WHERE account_ref=?",
+                (public.account,),
+            )
+        assert bridge.sources(required_keys=frozenset({legacy_key, modern_key})) == {}
+        assert not app._conversations._intellectual.valid(principal("a"), operation)
+
+
+def test_reasonless_public_variants_require_the_same_live_generation(integrated):
+    import sqlite3
+
+    public, _, _, _, _, bridge, *_ = integrated
+    current = bridge.sources()
+    assert len(current) == 1
+    variants = bridge.reasonless_variants(current)
+    assert set(variants) == set(current)
+    legacy_key, legacy = next(iter(variants.values()))
+    assert "recorded_reason" not in legacy["text"]
+    assert bridge.sources(required_keys=frozenset({legacy_key})) == {legacy_key: legacy}
+    assert bridge.sources(required_keys=frozenset(current)) == current
+    assert bridge.reasonless_variants({}) == {}
+    assert (
+        bridge.reasonless_variants({"wrong-source-key": next(iter(current.values()))})
+        == {}
+    )
+    with sqlite3.connect(bridge.view.ledger.path) as db:
+        assert (
+            db.execute(
+                "UPDATE privacy_control_generation SET generation=generation+1 WHERE singleton=1"
+            ).rowcount
+            == 1
+        )
+    assert bridge.reasonless_variants(current) == {}
+
+
+def test_a_public_source_fallback_cannot_expand_this_calls_visibility(
+    integrated, tmp_path
+):
+    from app.core.intellectual_state import VERSION
+
+    bridge = integrated[5]
+    primary = bridge.sources()
+    variants = bridge.reasonless_variants(primary)
+    preferred, (key, source_record) = next(iter(variants.items()))
+    directory = tmp_path / "invisible-selection"
+    directory.mkdir()
+    db, state = store(directory)
+    sources = {**primary, key: source_record}
+    frame = state.reserve(
+        db,
+        "invisible",
+        sources,
+        "context",
+        "controls",
+        visible_keys=frozenset(),
+        required_dependencies={},
+        source_fallbacks={preferred: key},
+    )
+    assert frame == {"version": VERSION, "states": [], "sources": []}
+    assert state.dependencies(db, "invisible") == {}
+    assert state.validate(db, "invisible", sources, "controls")
+
+
 def test_quarantine_rejects_a_substituted_historical_reason(tmp_path):
     from app.privacy.application import _validate_graph, ApplicationPrivacyError
     from test_agent_intellectual_state import private_setup

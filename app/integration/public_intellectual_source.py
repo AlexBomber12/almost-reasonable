@@ -64,6 +64,43 @@ class _ReadContext:
 
 
 class PublicIntellectualSource:
+    def reasonless_variants(self, primary, *, principal=None, _private_db=None):
+        """Pair current eligible records without rewriting historical receipts."""
+        result = {}
+        preferences = {
+            source["reasonless_key"]: (key, source)
+            for key, source in primary.items()
+            if "reasonless_key" in source
+        }
+        if not preferences:
+            return result
+        legacy = self.sources(
+            principal=principal,
+            _private_db=_private_db,
+            required_keys=frozenset(preferences),
+        )
+        for key, source in legacy.items():
+            receipt = source["receipt"]
+            preferred_key, preferred = preferences[key]
+            if preferred_key != source_key(
+                receipt["account"], "reasoned-state-" + digest(receipt["item"])
+            ):
+                continue
+            if all(
+                preferred["receipt"][field] == receipt[field]
+                for field in (
+                    "version",
+                    "account",
+                    "revision",
+                    "state_digest",
+                    "dependency_digest",
+                    "generation",
+                    "shared",
+                )
+            ):
+                result[preferred_key] = (key, source)
+        return result
+
     @classmethod
     def from_config(
         cls,
@@ -290,6 +327,8 @@ class PublicIntellectualSource:
                         "dependencies": {},
                         "receipt": receipt,
                     }
+                    if projected_item != item:
+                        result[key]["reasonless_key"] = source_key(view.account, item)
                     if required_keys is None:
                         break
                 if required_keys is None and len(result) == 6:

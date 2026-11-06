@@ -44,6 +44,13 @@ is omitted before considering removal of the state itself. The state keeps all
 of its original protected dependencies; a state that cannot fit without its
 explanation is still omitted whole.
 
+For imported public state, budget selection retries the genuine legacy record
+with its own matching protected receipt. It never strips text from a reasoned
+record while keeping the wrong receipt. Variant pairing requires the same live
+generation, revision and complete ancestry. The fallback uses the preferred
+record's visibility, consumes one source slot, and must fit all existing byte
+and dependency bounds. Historical required-key retrieval remains unchanged.
+
 Legacy snapshots remain readable and unchanged. App and model-worker readers
 must be upgraded together: an older strict worker does not accept the optional
 field. Offline tests establish restart, source-bound retention, two-participant
