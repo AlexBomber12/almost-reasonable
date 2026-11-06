@@ -39,6 +39,11 @@ calls for workload-specific evaluation; the configured Sol model, reasoning effo
 tools and spending roles are preserved. No model migration or paid trial is part
 of this code change.
 
+If an explanation exceeds the remaining request budget, its whole optional field
+is omitted before considering removal of the state itself. The state keeps all
+of its original protected dependencies; a state that cannot fit without its
+explanation is still omitted whole.
+
 Legacy snapshots remain readable and unchanged. App and model-worker readers
 must be upgraded together: an older strict worker does not accept the optional
 field. Offline tests establish restart, source-bound retention, two-participant

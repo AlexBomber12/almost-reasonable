@@ -321,6 +321,10 @@ class IntellectualStateStore:
                 "sources": records,
             }
             try:
+                if "recorded_reason" in record and len(encoded(trial).encode()) > min(
+                    budget, MAX_PROJECTION_BYTES
+                ):
+                    record.pop("recorded_reason")
                 projection(trial)
                 if len(encoded(trial).encode()) > budget:
                     continue

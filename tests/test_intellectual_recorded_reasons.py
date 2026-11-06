@@ -72,6 +72,43 @@ def test_reason_is_optional_whole_bounded_data_and_cannot_supply_instructions(tm
         projection(frame)
 
 
+@pytest.mark.parametrize("case", ["exact_base", "fits_reason", "too_small"])
+def test_optional_reason_yields_to_the_state_at_the_remaining_request_budget(
+    tmp_path, case
+):
+    from app.core.intellectual_state import VERSION, encoded
+
+    db, state = store(tmp_path)
+    sources = {"event:one": source()}
+    state.reserve(db, "one", sources, "context-one", "controls")
+    assert accept(db, state, "one", proposal(), sources) == "accepted"
+    full = state.reserve(db, "full", sources, "context-full", "controls")
+    reasoned = full["states"][0]
+    bare = {key: value for key, value in reasoned.items() if key != "recorded_reason"}
+
+    def size(record):
+        return len(
+            encoded({"version": VERSION, "states": [record], "sources": []}).encode()
+        )
+
+    base_budget = size(bare)
+    budget = (
+        size(reasoned) if case == "fits_reason" else base_budget - (case == "too_small")
+    )
+    result = state.reserve(
+        db, case, sources, "context-" + case, "controls", budget=budget
+    )
+    assert result["states"] == (
+        [] if case == "too_small" else [reasoned if case == "fits_reason" else bare]
+    )
+    assert len(encoded(result).encode()) <= budget
+    assert state.dependencies(db, case) == {
+        "event:one": sources["event:one"]["binding"]
+    }
+    assert state.validate(db, case, sources, "controls")
+    assert not state.validate(db, case, {}, "controls")
+
+
 def test_both_private_participants_receive_the_same_source_bound_public_reason(
     integrated,
 ):
