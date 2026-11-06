@@ -10,6 +10,7 @@ import hashlib
 import os
 import re
 from threading import Lock
+from .timing import timed_stage
 
 from app.cognition.conversation_context import (
     FictionEpisode,
@@ -721,6 +722,7 @@ class _DurableConversationRuntime(ConversationService):
 
         return self._gate.authorized(release)
 
+    @timed_stage("context")
     def _reserve_memory(
         self,
         principal,
@@ -877,6 +879,7 @@ class _DurableConversationRuntime(ConversationService):
         finally:
             db.close()
 
+    @timed_stage("model_stage")
     def _infer(self, context, correlation, operation_id, principal):
         if self._worker is not None:
             request = (
