@@ -2903,10 +2903,11 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
             else None
         )
         self._defer_memory_maintenance = defer_memory_maintenance
-        from threading import Lock
+        from threading import Lock, RLock
 
         self._foreground_lock = Lock()
         self._foreground_active = 0
+        self._inference_lane = RLock()
         from .memory_maintenance import MemoryMaintenance
 
         self._memory_maintenance = (
@@ -2918,17 +2919,58 @@ class WorkerConversationRuntime(_DurableConversationRuntime):
     def drain_memory_maintenance(self, *, limit=1):
         if type(limit) is not int or not 1 <= limit <= 16:
             raise ValueError("invalid memory maintenance limit")
-        return (
-            0
-            if self._memory_maintenance is None
-            else self._memory_maintenance.drain(limit)
-        )
+        if self._memory_maintenance is None or self._maintenance_should_yield():
+            return 0
+        with self._inference_lane:
+            return self._memory_maintenance.drain(limit)
 
     def submit(self, principal, message_id, content):
+        EventStore._validate_context(principal)
+        self._validate_message(message_id, content)
+
+        def current_authority():
+            if not self._current_request.get()():
+                raise PrivacyReadBlocked("queued_request_authority_unavailable")
+
+        def existing_turn():
+            current_authority()
+            original = self._input(principal, message_id, content)
+            if original is None:
+                return False, None
+            reply, resolution = self._outputs.read_reply_and_resolution(
+                principal, self._operation_id(original[0])
+            )
+            key = None
+            if (
+                reply is not None
+                and getattr(self, "_narrative_audit", None) is not None
+            ):
+                key = _narrative_active_key(
+                    self._event_store,
+                    "narrative:"
+                    + self._operation_id(original[0]).removeprefix("reply:"),
+                )
+            return (
+                resolution is not None
+                and resolution[0] in {"completed", "no_action"}
+                and reply.operation.prompt_version.endswith(":deferred-memory-v1"),
+                key,
+            )
+
+        replay, narrative_key = self._gate.authorized(existing_turn)
+        if narrative_key is not None:
+            # Narrative reservation takes this lock before the privacy gate.
+            with _NARRATIVE_ACTIVE_LOCK:
+                if narrative_key in _NARRATIVE_ACTIVE:
+                    replay = True
+        if replay:
+            return super().submit(principal, message_id, content)
         with self._foreground_lock:
             self._foreground_active += 1
         try:
-            return super().submit(principal, message_id, content)
+            with self._inference_lane:
+                current_authority()
+                return super().submit(principal, message_id, content)
         finally:
             with self._foreground_lock:
                 self._foreground_active -= 1

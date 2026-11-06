@@ -49,6 +49,18 @@ existing quiet request handler. A slow conversation no longer serializes every
 HTTP request. The provider worker can still serialize inference: concurrency does
 not promise two simultaneous model completions or preempt an in-flight call.
 
+Foreground turns and deferred maintenance share one application inference lane.
+A new question waits for an in-flight auxiliary call, then takes priority before
+the next auxiliary stage. A completed deferred turn is revalidated and replayed
+without waiting for maintenance; a still-pending duplicate waits for its original
+turn without another inference. Active inline narrative duplicates retain their
+nonblocking pending response and reconciliation guard. Two participants' turns
+use that same lane, so ordinary
+overlap does not reach the worker's single-active rejection path. Queued request
+authority is checked again before input persistence; existing Stop, source and
+spending checks run before the eventual inference. Read-only HTTP requests and
+privacy controls remain independent of the inference lane.
+
 Offline regressions exercise real local IPC/store authorization, receipt recovery,
 source erasure and browser request races with synthetic model responses. Loopback
 HTTP tests check bounded concurrency. These establish ordering and isolation,

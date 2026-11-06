@@ -264,11 +264,18 @@ def test_maintenance_yields_between_stages_when_a_foreground_turn_arrives(mainte
     )
     foreground_thread.start()
     try:
-        assert foreground.wait(5)
+        from time import monotonic, sleep
+
+        deadline = monotonic() + 3
+        while not runtime._maintenance_should_yield() and monotonic() < deadline:
+            sleep(0.001)
+        assert runtime._maintenance_should_yield()
+        assert not foreground.wait(0.1)
         assert runtime.drain_memory_maintenance() == 0
         release_auxiliary.set()
         maintenance_thread.join(5)
         assert not maintenance_thread.is_alive() and drained == [0]
+        assert foreground.wait(5)
         assert not any(isinstance(row, TypedModelRequest) for row in calls)
     finally:
         release_auxiliary.set()
@@ -277,6 +284,44 @@ def test_maintenance_yields_between_stages_when_a_foreground_turn_arrives(mainte
     controls["before"] = lambda _request: None
     assert runtime.drain_memory_maintenance() == 1
     assert sum(isinstance(row, EvolutionModelRequest) for row in calls) == 1
+
+
+def test_foreground_arriving_after_maintenance_admission_still_takes_priority(
+    maintenance, monkeypatch
+):
+    _, _, _, _, calls, _, build = maintenance
+    runtime = build()
+    runtime.submit(principal("a"), "first", "Синтетический разговор.")
+    admitted = Event()
+    original_drain = runtime._memory_maintenance.drain
+
+    def drain_after_foreground_arrives(limit):
+        from time import monotonic, sleep
+
+        admitted.set()
+        deadline = monotonic() + 5
+        while not runtime._maintenance_should_yield() and monotonic() < deadline:
+            sleep(0.001)
+        assert runtime._maintenance_should_yield()
+        return original_drain(limit)
+
+    monkeypatch.setattr(
+        runtime._memory_maintenance, "drain", drain_after_foreground_arrives
+    )
+
+    def submit_foreground():
+        assert admitted.wait(5)
+        runtime.submit(principal("b"), "second", "Другой разговор.")
+
+    foreground = Thread(target=submit_foreground)
+    foreground.start()
+    try:
+        assert runtime.drain_memory_maintenance() == 0
+    finally:
+        foreground.join(5)
+    assert not foreground.is_alive()
+    assert len(calls) == 2
+    assert not any(isinstance(row, EvolutionModelRequest) for row in calls)
 
 
 def test_a_deliberate_no_action_still_allows_admitted_input_maintenance(maintenance):
