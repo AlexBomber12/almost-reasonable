@@ -107,9 +107,12 @@ def cycle(tmp_path, request):
             )
 
         sdk.before_result = learn
-        private_submit(
+        previous_calls = len(sdk.calls)
+        result = private_submit(
             server, b, "b-import", "B_OWN_QUESTION_CANARY Как изменились твои интересы?"
         )
+        assert result["model_state"] == "completed", result
+        assert len(sdk.calls) == previous_calls + 1
         assert "PRIVATE_A_ROOT_CANARY" not in sdk.calls[-1]["input"]
         with events._open() as db:
             operation = db.execute(
