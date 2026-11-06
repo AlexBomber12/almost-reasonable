@@ -174,6 +174,8 @@ def test_legacy_receipts_remain_exact_while_new_calls_admit_recorded_reasons(
 
 
 def test_public_reason_omission_is_whole_and_preserves_the_original_record(integrated):
+    from app.integration.public_state_history import revision_item
+
     public, worker, sdk, _, clock, bridge, *_ = integrated
     change = proposal(
         kind="unresolved_question", fields={"question": "x" * 900, "status": "open"}
@@ -186,12 +188,12 @@ def test_public_reason_omission_is_whole_and_preserves_the_original_record(integ
     }
     wake(public, worker, clock, "bounded-question")
     with public.journal.transaction() as db:
-        item, raw = db.execute(
-            "SELECT item,payload FROM agent_intellectual_revisions ORDER BY rowid DESC LIMIT 1"
+        item, revision, raw = db.execute(
+            "SELECT item,revision,payload FROM agent_intellectual_revisions ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
     assert json.loads(raw)["reason"] == change["reason"]
     records = bridge.sources()
-    fallback = records[source_key(public.account, item)]
+    fallback = records[source_key(public.account, revision_item(item, revision))]
     assert "recorded_reason" not in fallback["text"]
     assert json.loads(fallback["text"].split(". ", 1)[1])["fields"] == change["fields"]
 
@@ -202,13 +204,14 @@ def test_private_request_keeps_a_genuine_public_source_when_its_reason_cannot_fi
 ):
     from app.core.intellectual_state import IntellectualStateStore, VERSION, encoded
     from app.privacy.application import _validate_graph
+    from app.integration.public_state_history import revision_item
 
     public, _, _, _, _, bridge, app, a, _, events, _, _, sdk, server = integrated
     with public.journal.transaction() as db:
-        item = db.execute(
-            "SELECT item FROM agent_intellectual_revisions LIMIT 1"
-        ).fetchone()[0]
-    legacy_key = source_key(public.account, item)
+        item, revision = db.execute(
+            "SELECT item,revision FROM agent_intellectual_revisions LIMIT 1"
+        ).fetchone()
+    legacy_key = source_key(public.account, revision_item(item, revision))
     legacy = bridge.sources(required_keys=frozenset({legacy_key}))[legacy_key]
     modern = bridge.sources()
     modern_key, reasoned = next(iter(modern.items()))

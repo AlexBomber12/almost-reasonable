@@ -23,11 +23,9 @@ class PrivateIntellectualState:
     def source_validator(self, db, principal):
         """Recheck report ancestry without binding unrelated inference pipelines."""
         state = self.state(principal)
-        sources = None
         checked = {}
 
         def permitted(creator):
-            nonlocal sources
             if creator not in checked:
                 reply = self.app._outputs._read(db, principal, creator)
                 deps = state.dependencies(db, creator)
@@ -37,8 +35,11 @@ class PrivateIntellectualState:
                     is not None
                     for key in deps
                 )
-                if report_ancestry and sources is None:
-                    sources = self.sources(principal, db)
+                sources = (
+                    self.sources(principal, db, _required_operations=(creator,))
+                    if report_ancestry
+                    else None
+                )
                 checked[creator] = (
                     (
                         reply is None
@@ -73,13 +74,23 @@ class PrivateIntellectualState:
             )
         )
 
-    def sources(self, principal, db, *, _public_selection=None):
+    def sources(
+        self, principal, db, *, _public_selection=None, _required_operations=()
+    ):
         app = self.app
         result = dict(
             self.public_sources(principal, db)
             if _public_selection is None
             else _public_selection
         )
+        for operation in _required_operations:
+            exact = app._public_intellectual_operation_sources(db, principal, operation)
+            if any(
+                key in result and result[key]["binding"] != value["binding"]
+                for key, value in exact.items()
+            ):
+                raise ValueError("conflicting public context receipts")
+            result.update(exact)
         for event in app._event_store.retrieve_private_events(principal):
             result["event:" + event.event_id] = {
                 "kind": "participant_assertion",
@@ -103,9 +114,17 @@ class PrivateIntellectualState:
                     if key.startswith("public-state:")
                 )
                 if required:
-                    result.update(
-                        self.public_sources(principal, db, required_keys=required)
+                    historical = app._public_intellectual_operation_sources(
+                        db, principal, operation
                     )
+                    # Old unversioned identities can collide across revisions.
+                    # Keep history readable, but never combine conflicting proof.
+                    if any(
+                        key in result and result[key]["binding"] != value["binding"]
+                        for key, value in historical.items()
+                    ):
+                        continue
+                    result.update(historical)
                 result["context:" + operation] = {
                     "kind": "participant_assertion",
                     "text": "",
@@ -198,7 +217,16 @@ class PrivateIntellectualState:
         public_selection = self.public_sources(
             principal, db, query=private.conversation.conversation[-1].content
         )
-        sources = self.sources(principal, db, _public_selection=public_selection)
+        creators = set(private.released_reply_ids) | {
+            "reply:" + episode.removeprefix("narrative:")
+            for episode in private.projected_narrative_operation_ids
+        }
+        sources = self.sources(
+            principal,
+            db,
+            _public_selection=public_selection,
+            _required_operations=tuple(sorted(creators)),
+        )
         adapter = getattr(self.app, "_public_intellectual_source", None)
         alternatives = (
             {}
@@ -466,7 +494,7 @@ class PrivateIntellectualState:
             return self.state(principal).validate(
                 db,
                 operation,
-                self.sources(principal, db),
+                self.sources(principal, db, _required_operations=(operation,)),
                 self.controls(),
                 revisions=revisions,
             )
@@ -494,4 +522,8 @@ class PrivateIntellectualState:
                 )
             row = state._operation(db, operation)
             if row is not None and row[5] == "received":
-                state.apply(db, operation, self.sources(principal, db))
+                state.apply(
+                    db,
+                    operation,
+                    self.sources(principal, db, _required_operations=(operation,)),
+                )

@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime
 import hashlib
+import json
 import os
 import re
 from threading import Lock
@@ -2697,20 +2698,41 @@ class _DurableConversationRuntime(ConversationService):
         }
         if not required:
             return True
-        source = getattr(self, "_public_intellectual_source", None)
         with closing(self._event_store._open()) as db:
-            current = (
-                {}
-                if source is None
-                else source.sources(
-                    principal=principal,
-                    _private_db=db,
-                    required_keys=frozenset(required),
-                )
+            current = self._public_intellectual_operation_sources(
+                db, principal, operation
             )
         return all(
             key in current and current[key]["binding"] == value
             for key, value in required.items()
+        )
+
+    def _public_intellectual_operation_sources(self, db, principal, operation):
+        from app.core.intellectual_state import IntellectualStateStore
+
+        source = getattr(self, "_public_intellectual_source", None)
+        if source is None:
+            return {}
+        row = IntellectualStateStore(
+            "private", principal.principal_id.value
+        )._operation(db, operation)
+        if row is None or row[2] is None:
+            return {}
+        snapshot = json.loads(row[2])
+        receipts = snapshot.get("external_receipts", {})
+        if not receipts:
+            return {}
+        released = db.execute(
+            "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
+            (operation,),
+        ).fetchone() == ("completed", "release:" + operation)
+        current_keys = (
+            frozenset()
+            if released
+            else frozenset(set(snapshot["source_keys"]) & receipts.keys())
+        )
+        return source.historical_sources(
+            receipts, principal=principal, _private_db=db, current_keys=current_keys
         )
 
     def _narrative_reply_permitted(self, operation):

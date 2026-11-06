@@ -33,6 +33,12 @@ def context_fits(
         "reply:" + episode.removeprefix("narrative:")
         for episode in private.projected_narrative_operation_ids
     }
+    if creators and None not in creator_cache:
+        creator_cache[None] = {
+            key: value["binding"]
+            for key, value in app._intellectual.public_sources(principal, db).items()
+        }
+    current_public = creator_cache.get(None, {})
     for creator in creators:
         if creator not in creator_cache:
             lineage = state.dependencies(db, creator)
@@ -54,6 +60,16 @@ def context_fits(
                 )
             creator_cache[creator] = lineage, inherited_receipts, inherited_groups
         lineage, inherited_receipts, inherited_groups = creator_cache[creator]
+        if any(
+            key in current_public and current_public[key] != value
+            for key, value in lineage.items()
+        ):
+            return False
+        if any(
+            key in dependencies and dependencies[key] != value
+            for key, value in lineage.items()
+        ):
+            return False
         dependencies.update(lineage)
         receipts.update(inherited_receipts)
         for group, values in zip(

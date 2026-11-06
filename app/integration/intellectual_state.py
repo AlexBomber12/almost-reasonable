@@ -17,6 +17,11 @@ class PublicIntellectualState:
         if not read_only:
             with app.journal.transaction() as db:
                 initialize(db)
+                from app.integration.public_state_history import (
+                    initialize as initialize_exports,
+                )
+
+                initialize_exports(db, app.account)
 
     def sources(self, *, _candidates=None, _shared_sources=None):
         from app.integration.agent_cadence import cadence_sources
@@ -316,4 +321,7 @@ class PublicIntellectualState:
                 if row is not None and row[5] == "received":
                     app.guard()
                     self.state.apply(db, operation, sources)
+                    from app.integration.public_state_history import record
+
+                    record(db, app.account, operation=operation)
                 app.require_mission(current_payload)

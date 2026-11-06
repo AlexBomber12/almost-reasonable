@@ -188,13 +188,18 @@ def test_one_overfull_public_receipt_preserves_other_eligible_heads(tmp_path):
         assert len(sdk.calls) == 4
         with public.journal.transaction() as db:
             heads = public.intellectual.state._heads(db, public.intellectual.sources())
+        from app.integration.public_state_history import revision_item
+
         good, overfull = set(), set()
         good_current, overfull_current = set(), set()
-        for item, _, _, deps, _ in heads:
+        for item, revision, _, deps, _ in heads:
             key = source_key(public.account, item)
             ancestors = [name for name in deps if name.startswith("shared:")]
             (good if len(ancestors) <= 16 else overfull).add(key)
-            current = source_key(public.account, "reasoned-state-" + digest(item))
+            current = source_key(
+                public.account,
+                "reasoned-state-" + digest(revision_item(item, revision)),
+            )
             (good_current if len(ancestors) <= 16 else overfull_current).add(current)
         assert good and overfull and len(good | overfull) == 4
         bridge = PublicIntellectualSource(
