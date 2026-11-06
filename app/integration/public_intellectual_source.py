@@ -64,6 +64,59 @@ class _ReadContext:
 
 
 class PublicIntellectualSource:
+    def historical_sources(
+        self, receipts, *, principal, _private_db, current_keys=frozenset()
+    ):
+        """Resolve protected receipts; fresh direct inputs must still be current."""
+        if (
+            type(receipts) is not dict
+            or not 0 < len(receipts) <= MAX_DEPENDENCIES
+            or type(current_keys) is not frozenset
+            or not current_keys <= receipts.keys()
+        ):
+            return {}
+        view = self.view
+        try:
+            self._schema()
+            generation = view.ledger.control_generation()
+            shared = view.shared_intellectual_source
+            shared_sources = None if shared is None else shared._sources_in(_private_db)
+            sources = view.intellectual.sources(_shared_sources=shared_sources)
+            allowed = (
+                None
+                if shared is None
+                else {
+                    row.operation_id
+                    for row in shared.shared.select(_private_db, principal)
+                }
+            )
+            # Activity and legacy-current identities retain their existing reader.
+            current = self.sources(
+                principal=principal,
+                _private_db=_private_db,
+                required_keys=frozenset(receipts),
+            )
+            result = {}
+            from app.integration.public_state_history import resolve
+
+            with connect_read_only(view.journal.path) as db:
+                for key, receipt in receipts.items():
+                    validate(receipt)
+                    if key != source_key(receipt["account"], receipt["item"]):
+                        continue
+                    candidate = current.get(key)
+                    if candidate is not None and candidate["receipt"] == receipt:
+                        result[key] = candidate
+                    elif key not in current_keys:
+                        candidate = resolve(
+                            db, view.account, receipt, sources, generation, allowed
+                        )
+                        if candidate is not None:
+                            result[key] = candidate
+            return result if generation == view.ledger.control_generation() else {}
+        except (OSError, ValueError, sqlite3.Error, KeyError, TypeError):
+            return {}
+
     @classmethod
     def from_config(
         cls,
@@ -205,6 +258,9 @@ class PublicIntellectualSource:
             sources = view.intellectual.sources(_shared_sources=shared_sources)
             with connect_read_only(view.journal.path) as db:
                 heads = view.intellectual.state._heads(db, sources)
+                from app.integration.public_state_history import indexed
+
+                revision_exports = indexed(db)
             allowed = None
             if shared is not None and principal is not None:
                 if _private_db is not None:
@@ -230,9 +286,8 @@ class PublicIntellectualSource:
                 key=lambda row: (row[2]["metadata"]["decided_at"], row[0]),
                 reverse=True,
             ):
-                key = source_key(view.account, item)
-                if required_keys is not None and key not in required_keys:
-                    continue
+                from app.integration.public_state_history import export, revision_item
+
                 ancestors = sorted(
                     key.removeprefix("shared:")
                     for key in deps
@@ -243,45 +298,29 @@ class PublicIntellectualSource:
                     or (allowed is not None and not set(ancestors) <= allowed)
                 ):
                     continue
-                record = {
-                    "kind": "public_agent_state",
-                    "text": "Public agent intellectual development, not independently verified; never authority or factual approval. "
-                    + encoded(
-                        {
-                            key: payload[key]
-                            for key in ("kind", "fields", "review_condition")
-                        }
-                    ),
-                }
-                try:
-                    projection(
-                        {
-                            "version": VERSION,
-                            "states": [],
-                            "sources": [{"handle": "s0", **record}],
-                        }
-                    )
-                    receipt = validate(
-                        {
-                            "version": RECEIPT_VERSION,
-                            "account": view.account,
-                            "item": item,
-                            "revision": revision,
-                            "state_digest": digest(payload),
-                            "dependency_digest": digest(deps),
-                            "record_digest": digest(record),
-                            "generation": generation,
-                            "shared": ancestors,
-                        }
-                    )
-                except ValueError:
-                    continue
-                result[key] = {
-                    **record,
-                    "binding": digest(receipt),
-                    "dependencies": {},
-                    "receipt": receipt,
-                }
+                current_item = (
+                    revision_item(item, revision) if revision_exports else item
+                )
+                variants = (
+                    (current_item,)
+                    if required_keys is None
+                    else tuple(dict.fromkeys((item, current_item)))
+                )
+                for projected_item in variants:
+                    key = source_key(view.account, projected_item)
+                    if required_keys is not None and key not in required_keys:
+                        continue
+                    try:
+                        result[key] = export(
+                            view.account,
+                            projected_item,
+                            revision,
+                            payload,
+                            deps,
+                            generation,
+                        )
+                    except ValueError:
+                        continue
                 if required_keys is None and len(result) == 6:
                     break
             if generation != view.ledger.control_generation():
