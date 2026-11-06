@@ -61,13 +61,16 @@ class PrivateIntellectualState:
         with closing(self.app._event_store._open()) as db:
             return self.source_validator(db, principal)(operation)
 
-    def public_sources(self, principal, db, *, required_keys=None):
+    def public_sources(self, principal, db, *, required_keys=None, query=None):
         source = getattr(self.app, "_public_intellectual_source", None)
         return (
             {}
             if source is None
             else source.sources(
-                principal=principal, _private_db=db, required_keys=required_keys
+                principal=principal,
+                _private_db=db,
+                required_keys=required_keys,
+                query=query,
             )
         )
 
@@ -210,8 +213,10 @@ class PrivateIntellectualState:
         reserve_narrative_slot=False,
     ):
         state = self.state(principal)
-        public_selection = self.public_sources(principal, db)
         private = request.private if type(request) is SharedModelRequest else request
+        public_selection = self.public_sources(
+            principal, db, query=private.conversation.conversation[-1].content
+        )
         creators = set(private.released_reply_ids) | {
             "reply:" + episode.removeprefix("narrative:")
             for episode in private.projected_narrative_operation_ids
@@ -222,6 +227,18 @@ class PrivateIntellectualState:
             _public_selection=public_selection,
             _required_operations=tuple(sorted(creators)),
         )
+        adapter = getattr(self.app, "_public_intellectual_source", None)
+        alternatives = (
+            {}
+            if adapter is None
+            else adapter.reasonless_variants(
+                public_selection, principal=principal, _private_db=db
+            )
+        )
+        source_fallbacks = {}
+        for preferred, (key, source) in alternatives.items():
+            sources[key] = source
+            source_fallbacks[preferred] = key
         visible = {"event:" + event for event in event_ids}
         visible.update(public_selection)
         visible.update(
@@ -235,7 +252,6 @@ class PrivateIntellectualState:
                 reverse=True,
             )[:3]
         )
-        private = request.private if type(request) is SharedModelRequest else request
         # Only complete reports actually admitted to this transcript get handles.
         priority = tuple(
             "reply:" + creator
@@ -249,7 +265,8 @@ class PrivateIntellectualState:
         priority += tuple(
             key
             for key, source in public_selection.items()
-            if source["kind"] in {"confirmed_publication", "public_agent_state"}
+            if source["kind"]
+            in {"confirmed_publication", "public_agent_state", "external_assertion"}
         )
         visible.update(priority)
         budget = (
@@ -375,6 +392,7 @@ class PrivateIntellectualState:
                 required_dependencies=required,
                 query=private.conversation.conversation[-1].content,
                 dependencies_fit=dependencies_fit,
+                source_fallbacks=source_fallbacks,
             )
         except IntellectualCapacityError:
             return omit_optional_context()

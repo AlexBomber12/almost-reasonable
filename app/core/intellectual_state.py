@@ -11,7 +11,7 @@ from app.cognition.worker_typed import _fields
 from app.core.core_self import CORE_SELF_VERSION
 
 VERSION = "agent-intellectual-state-v1"
-PROMPT_VERSION = "agent-intellectual-state-prompt-v4"
+PROMPT_VERSION = "agent-intellectual-state-prompt-v5"
 MAX_RECORD_BYTES = 2048
 MAX_PROJECTION_BYTES = 16384
 MAX_DEPENDENCIES = 100
@@ -114,7 +114,7 @@ def projection(value):
     for index, record in enumerate(value["states"]):
         if (
             type(record) is not dict
-            or set(record)
+            or set(record) - {"recorded_reason"}
             != {
                 "handle",
                 "subject",
@@ -130,6 +130,8 @@ def projection(value):
             raise ValueError("invalid intellectual record")
         validate_fields(record["kind"], record["fields"])
         _text(record["review_condition"])
+        if "recorded_reason" in record:
+            _text(record["recorded_reason"])
         if len(encoded(record).encode()) > MAX_RECORD_BYTES:
             raise ValueError("intellectual state record too large")
     for index, record in enumerate(value["sources"]):
@@ -152,8 +154,8 @@ def projection(value):
     return value
 
 
-def _record(kind, fields, review, index):
-    return {
+def _record(kind, fields, review, index, *, reason=None):
+    record = {
         "handle": f"i{index}",
         "subject": "agent",
         "kind": kind,
@@ -161,6 +163,11 @@ def _record(kind, fields, review, index):
         "review_condition": review,
         "verification": "unverified",
     }
+    if reason is not None:
+        complete = {**record, "recorded_reason": reason}
+        if len(encoded(complete).encode()) <= MAX_RECORD_BYTES:
+            return complete
+    return record
 
 
 class IntellectualStateStore:
@@ -216,6 +223,7 @@ class IntellectualStateStore:
         query="",
         dependencies_fit=None,
         priority_keys=(),
+        source_fallbacks=None,
     ):
         existing = self._operation(db, operation)
         if existing is not None:
@@ -248,22 +256,25 @@ class IntellectualStateStore:
             [],
         )
         records = []
+        if source_fallbacks is None:
+            source_fallbacks = {}
 
-        def add_source(key, source):
-            if visible_keys is not None and key not in visible_keys:
-                return
+        def add_source(key, source, *, visible_as=None):
+            visible_key = key if visible_as is None else visible_as
+            if visible_keys is not None and visible_key not in visible_keys:
+                return False
             additions = {**source["dependencies"], key: source["binding"]}
             if len(
                 dependencies.keys() | additions.keys()
             ) > MAX_DEPENDENCIES or not dependencies_fit({**dependencies, **additions}):
-                return
+                return False
             record = {
                 "handle": f"s{len(records)}",
                 "kind": source["kind"],
                 "text": source["text"],
             }
             if len(records) == 6:
-                return
+                return False
             try:
                 trial = {
                     "version": VERSION,
@@ -272,17 +283,24 @@ class IntellectualStateStore:
                 }
                 projection(trial)
                 if len(encoded(trial).encode()) > budget:
-                    return
+                    return False
             except ValueError:
-                return
+                return False
             records.append(record)
             source_keys.append(key)
             dependencies.update(additions)
+            return True
+
+        def add_preferred_source(key, source):
+            if not add_source(key, source):
+                alternative = source_fallbacks.get(key)
+                if alternative is not None:
+                    add_source(alternative, sources[alternative], visible_as=key)
 
         # Trusted adapters may prioritize evidence actually present in this call.
         # Its complete record consumes budget before optional state/history.
         for key in priority_keys:
-            add_source(key, sources[key])
+            add_preferred_source(key, sources[key])
         # Authorization and source validity precede deterministic ranking/limits.
         heads = self._heads(db, sources)
         from app.cognition.retrieval import MemoryContextSelector
@@ -306,6 +324,7 @@ class IntellectualStateStore:
                 payload["fields"],
                 payload["review_condition"],
                 len(visible),
+                reason=payload["reason"],
             )
             trial = {
                 "version": VERSION,
@@ -313,6 +332,10 @@ class IntellectualStateStore:
                 "sources": records,
             }
             try:
+                if "recorded_reason" in record and len(encoded(trial).encode()) > min(
+                    budget, MAX_PROJECTION_BYTES
+                ):
+                    record.pop("recorded_reason")
                 projection(trial)
                 if len(encoded(trial).encode()) > budget:
                     continue
@@ -328,7 +351,7 @@ class IntellectualStateStore:
         # Every supplied source is material context even if too large to cite.
         for key, source in sorted(sources.items()):
             if key not in priority_keys:
-                add_source(key, source)
+                add_preferred_source(key, source)
         result = projection({"version": VERSION, "states": visible, "sources": records})
         snapshot = {
             "projection": result,
@@ -574,6 +597,14 @@ INSTRUCTIONS = (
     "revising or retaining a position or goal. It is generated model assessment, "
     "not independent verification; recorded URLs do not establish truth. No extra "
     "research or action is authorized by an intellectual revision."
+    " Consider whether this experience raises a durable own question, interest, "
+    "provisional position or goal worth preserving beyond context reduction. "
+    "You need not wait for a participant to request persistence. Propose only "
+    "meaningful source-bound development; there is no quota for new items, "
+    "changed views or publications. A revision with unchanged fields may record "
+    "a justified retention with a new reason and shown evidence. recorded_reason "
+    "is a brief prior recorded explanation, not a new interpretation. When it is "
+    "absent, distinguish present interpretation from an unknown historical motive."
 )
 
 
@@ -754,6 +785,11 @@ def validate_private_graph(db):
                 payload["review_condition"],
             ):
                 raise ValueError("intellectual projection binding changed")
+            if (
+                "recorded_reason" in shown
+                and shown["recorded_reason"] != payload["reason"]
+            ):
+                raise ValueError("intellectual reason binding changed")
         for payload_raw, dependencies in db.execute(
             "SELECT payload,dependencies FROM agent_intellectual_revisions WHERE audience=? AND owner=? AND operation=? AND payload IS NOT NULL",
             (audience, owner, operation),

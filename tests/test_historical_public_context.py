@@ -301,7 +301,7 @@ def test_historical_lookup_rechecks_immutable_content_and_live_authority(
             )
         elif corruption == "wrong-mode":
             db.execute(
-                "UPDATE " + TABLE + " SET reasoned=1 WHERE alias=?",
+                "UPDATE " + TABLE + " SET reasoned=1-reasoned WHERE alias=?",
                 (record["receipt"]["item"],),
             )
         elif corruption == "payload":
@@ -556,6 +556,14 @@ def test_historical_shared_revision_keeps_participant_permissions_and_withdrawal
         selected = bridge.sources(principal=principal("b"), _private_db=db)
         assert selected
         receipts = {key: value["receipt"] for key, value in selected.items()}
+        selected = {
+            key: {
+                field: value
+                for field, value in record.items()
+                if field != "reasonless_key"
+            }
+            for key, record in selected.items()
+        }
         from app.core.read_only_sqlite import connect_read_only
         from app.integration.public_state_history import resolve
 
