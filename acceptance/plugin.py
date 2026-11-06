@@ -57,6 +57,17 @@ def acceptance_offline(request, monkeypatch):
             monkeypatch,
             local_ipc=request.node.nodeid.startswith(
                 (
+                    "tests/test_b11c_window.py::test_window_discovers_comments_on_a_later_confirmed_own_post",
+                    "tests/test_goal_completion_journeys.py::",
+                    "tests/test_historical_public_context.py::",
+                    "tests/test_public_dialogue_continuity.py::",
+                    "tests/test_intellectual_recorded_reasons.py::",
+                    "tests/test_deferred_memory_maintenance.py::",
+                    "tests/test_owner_public_development.py::",
+                    "tests/test_private_request_timing.py::test_request_timings_",
+                    "tests/test_private_turn_delivery.py::",
+                    "tests/test_private_turn_browser.py::",
+                    "tests/test_private_worker_serialization.py::",
                     "tests/test_research_worker.py::",
                     "tests/test_private_research_bridge.py::",
                     "tests/test_int19_worker_runtime.py::",

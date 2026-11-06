@@ -11,8 +11,8 @@
     "environment": "Linux local workspace; synthetic fixtures only"
   },
   "configuration": {
-    "event_store": 8,
-    "threads_store": 10,
+    "event_store": 14,
+    "threads_store": 11,
     "stage0_journal": 2,
     "core_self": "core-self-v1",
     "private_memory": "private-memory-stage0-v2",
@@ -20,12 +20,16 @@
     "research": "research-worker-stage0-v1",
     "behavior": "behavior-deliberation-v1",
     "behavior_corpus": "stage0-recorded-anchors-v2",
-    "ordinary_runtime": "disabled",
+    "ordinary_runtime": "offline test harness; production not observed",
     "private_worker": "openai-worker-context-v2 (explicit mode; fake process proof only)",
     "provider_fixture_model": "gpt-6.1-sol (fake only; no availability claim)",
     "recorded_behavior_model": "RecordedBehaviorModel; no real model",
     "research_transport": "FakeHostedSearchTransport; no credentials",
-    "private_research": "private-research-stage0-v1 (trusted bootstrap only; disabled by default)"
+    "private_research": "private-research-stage0-v1 (trusted bootstrap only; disabled by default)",
+    "evidence_scope": "offline_harness_only",
+    "intellectual_state": "agent-intellectual-state-v1",
+    "intellectual_prompt": "agent-intellectual-state-prompt-v5",
+    "conversation_transcript": "model-contract-conversation-transcript-v4"
   },
   "scenarios": [
     {
@@ -265,6 +269,44 @@
             "tests/test_int22_rehearsal.py::test_journey_validation_survives_optimized_python[transcript]",
             "tests/test_provider_proposal_drift.py::test_all_provider_purpose_schema_decoder_pairs_are_audited"
           ]
+        },
+        {
+          "layer": "E2E",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart"
+          ],
+          "scope": "New own root is discovered, a verified incoming challenge receives a chosen reply and source-bound own question; two private chats see the common experience after reconnect, and withdrawal suppresses inherited output. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_goal_completion_journeys.py::test_new_owned_discussion_reply_and_reason_reach_both_private_chats_after_restart"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "PrivateWebApplication authenticated messages/history and request-local timing decorators",
+          "components": [
+            "WorkerConversationRuntime",
+            "OpenAIWorkerClient",
+            "Server-Timing",
+            "ContextVar"
+          ],
+          "sink": "Authenticated HTTP duration headers; no stored traces or private payloads",
+          "risks": [
+            "concurrency"
+          ],
+          "scope": "Offline real local IPC and concurrent application requests with synthetic SDK; no production latency claim.",
+          "node_ids": [
+            "tests/test_private_request_timing.py::test_request_timings_separate_model_context_and_history_without_payload[False]",
+            "tests/test_private_request_timing.py::test_request_timings_separate_model_context_and_history_without_payload[True]",
+            "tests/test_private_request_timing.py::test_timing_contexts_are_isolated_across_concurrent_requests",
+            "tests/test_private_request_timing.py::test_timing_preserves_errors_and_does_not_record_outside_requests"
+          ]
         }
       ],
       "missing_connections": [],
@@ -354,6 +396,24 @@
             "tests/test_int19_worker_runtime.py::test_context_protocol_round_trip_has_no_protected_identifiers",
             "tests/test_int19_worker_runtime.py::test_deletion_before_reply_release_blocks_worker_draft",
             "tests/test_event_store_v8.py::test_v7_worker_outcome_migration_is_atomic"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "An incoming response inherits restricted own-parent ancestry through direct and external intermediate parents; an unauthorized participant cannot receive it, and parent withdrawal withdraws inherited output. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_public_dialogue_continuity.py::test_nested_response_inherits_own_parent_ancestry_and_withdrawal[False]",
+            "tests/test_public_dialogue_continuity.py::test_nested_response_inherits_own_parent_ancestry_and_withdrawal[True]"
           ]
         }
       ],
@@ -964,12 +1024,28 @@
           "node_ids": [
             "tests/test_int25_guarded_spawn.py::test_spawned_mapped_worker_has_offline_guards"
           ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [],
+          "scope": "Persistence and later projection of a chosen own question through a deliberate no-action turn; this case does not perform hosted research or establish the quality of a real question. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_intellectual_recorded_reasons.py::test_a_durable_own_question_can_survive_without_a_publication_or_forced_revision"
+          ]
         }
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "Stage 1 production issuer, credentialed adapter/provider schemas and bounded separately approved research smoke; semantic citation support and multilingual usefulness calibration.",
-        "Arbitrary privately motivated abstraction, recurring research/recovery resolver, production authority/bootstrap and real provider validation are unavailable. Fixed two-operation consumption is unchanged; structurally recorded citations do not establish factual or semantic truth."
+        "Validate the deployed issuer, credentialed provider adapters and strict schemas for the reviewed release; conduct separately authorized bounded research trials and calibrate semantic citation support and multilingual usefulness.",
+        "Bounded ordinary private-to-shared influence, model-proposed public questions, standing monthly research limits and recovery paths are implemented and exercised offline.",
+        "Demonstrate privately motivated research through the permitted abstraction paths with a real provider. Unrestricted phrasing remains subject to the existing exact-review/consent path; lexical generality and structurally recorded citations establish neither anonymity nor semantic truth. Legacy fixed two-operation fixtures remain limited evidence for their own path."
       ]
     },
     {
@@ -1127,6 +1203,24 @@
             "tests/test_int24_runtime.py::test_unknown_publication_pauses_account_and_reconcile_does_not_resend",
             "tests/test_int24_runtime_guards.py::test_interrupted_sending_is_recoverable_without_retransmission"
           ]
+        },
+        {
+          "layer": "E2E",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart"
+          ],
+          "scope": "Verified own-post discovery without a bootstrap root, bounded conversation polling, chosen public reply through finite authority, then private inspection of that reply. No publication minimum. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_goal_completion_journeys.py::test_new_owned_discussion_reply_and_reason_reach_both_private_chats_after_restart",
+            "tests/test_b11c_window.py::test_window_discovers_comments_on_a_later_confirmed_own_post"
+          ]
         }
       ],
       "missing_connections": [],
@@ -1198,11 +1292,29 @@
             "tests/test_threads_stage0_integration.py::test_verified_inbound_reply_has_its_own_durable_link[reply]",
             "tests/test_threads_stage0_integration.py::test_verified_inbound_reply_has_its_own_durable_link[mention]"
           ]
+        },
+        {
+          "layer": "E2E",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart"
+          ],
+          "scope": "A substantive public challenge reaches source-bound deliberation and remains visible beside public state and ordinary private history; semantic argument engagement and non-sycophancy are not scored by these fakes. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_goal_completion_journeys.py::test_new_owned_discussion_reply_and_reason_reach_both_private_chats_after_restart",
+            "tests/test_public_dialogue_continuity.py::test_ordinary_private_history_does_not_consume_the_public_comment_slot"
+          ]
         }
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "Calibrated real-model challenge engagement and paired owner/non-owner tests; general public belief/research bridge remains absent."
+        "Calibrated real-model challenge engagement and paired owner/non-owner tests using the implemented public/private intellectual and research-evidence bridges. Demonstrate counterevidence use, intellectual influence and epistemic independence after deployment; offline delivery does not establish real-model judgment quality."
       ]
     },
     {
@@ -1564,12 +1676,95 @@
             "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[foreign_link]",
             "tests/test_generic_memory.py::test_forged_reply_generic_graph_blocks_release[missing_source]"
           ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart",
+            "crash"
+          ],
+          "scope": "Reply delivery precedes optional maintenance; persisted memory reaches a later turn, and a received one-use receipt reconciles after interruption without another synthetic worker call. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_deferred_memory_maintenance.py::test_response_precedes_auxiliary_inference_and_next_turn_uses_persisted_memory",
+            "tests/test_deferred_memory_maintenance.py::test_received_auxiliary_receipt_reconciles_after_crash_without_a_second_call"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "IntellectualState.reserve at the remaining private request byte budget",
+          "components": [
+            "IntellectualState",
+            "PrivateIntellectualState",
+            "protected intellectual projection"
+          ],
+          "sink": "Whole retained state and unchanged source dependencies, with optional reason removed before state exclusion",
+          "risks": [],
+          "scope": "Synthetic stored state and exact byte boundaries; no real model memory or semantic acceptance claim.",
+          "node_ids": [
+            "tests/test_intellectual_recorded_reasons.py::test_optional_reason_yields_to_the_state_at_the_remaining_request_budget[exact_base]",
+            "tests/test_intellectual_recorded_reasons.py::test_optional_reason_yields_to_the_state_at_the_remaining_request_budget[fits_reason]",
+            "tests/test_intellectual_recorded_reasons.py::test_optional_reason_yields_to_the_state_at_the_remaining_request_budget[too_small]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Budget-aware genuine public source variants",
+          "components": [
+            "PublicIntellectualSource",
+            "PrivateIntellectualState.attach",
+            "IntellectualStateStore.reserve",
+            "Scoped SQLite receipts",
+            "Synthetic SDK"
+          ],
+          "sink": "SDK-bound public context and matching whole protected receipts within exact byte and visibility bounds",
+          "risks": [],
+          "scope": "Actual local IPC and protected synthetic stores for request-budget cases; generation and visibility checks use controlled fixtures. No live provider, real human participation, production latency or complete-MVP acceptance.",
+          "node_ids": [
+            "tests/test_intellectual_recorded_reasons.py::test_private_request_keeps_a_genuine_public_source_when_its_reason_cannot_fit[exact_legacy]",
+            "tests/test_intellectual_recorded_reasons.py::test_private_request_keeps_a_genuine_public_source_when_its_reason_cannot_fit[fits_reason]",
+            "tests/test_intellectual_recorded_reasons.py::test_private_request_keeps_a_genuine_public_source_when_its_reason_cannot_fit[too_small]",
+            "tests/test_intellectual_recorded_reasons.py::test_reasonless_public_variants_require_the_same_live_generation",
+            "tests/test_intellectual_recorded_reasons.py::test_a_public_source_fallback_cannot_expand_this_calls_visibility"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "Public epistemic revisions and exact historical private receipts",
+          "components": [
+            "PublicIntellectualSource",
+            "PublicIntellectualState",
+            "WorkerConversationRuntime",
+            "PrivateIntellectualState",
+            "PrivacyReadGate",
+            "AF_UNIX worker",
+            "Synthetic SDK"
+          ],
+          "sink": "Both private histories and live derived state survive public revisions; withdrawn roots and stale active inference remain unavailable",
+          "risks": [
+            "adversarial"
+          ],
+          "scope": "Actual SQLite, private HTTP and local IPC with synthetic model responses. Legacy compatibility and exact protected receipts are checked; no real-model or human acceptance is claimed.",
+          "node_ids": [
+            "tests/test_historical_public_context.py::test_public_revision_preserves_both_private_histories_until_source_withdrawal",
+            "tests/test_historical_public_context.py::test_three_public_revisions_keep_complete_distinct_private_context_receipts",
+            "tests/test_historical_public_context.py::test_historical_receipts_do_not_release_an_active_stale_public_snapshot",
+            "tests/test_historical_public_context.py::test_private_position_keeps_live_historical_public_evidence",
+            "tests/test_historical_public_context.py::test_legacy_revisions_remain_visible_without_combining_conflicting_receipts",
+            "tests/test_historical_public_context.py::test_historical_shared_revision_keeps_participant_permissions_and_withdrawal"
+          ]
         }
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "Arbitrary model-guided consolidation, a live extractor and independent semantic corroboration are not demonstrated; supported generic kinds and explicit private parent revisions are the synthetic scope.",
-        "Authenticated deletion UI, production retention and encrypted backup/restore activation fences; no forensic or external processor deletion claim."
+        "Validate real-model extraction and model-guided consolidation, long-history continuity and independent semantic corroboration for the reviewed deployment. Offline checks cover bounded generic/typed records, explicit private parent revisions and historical public receipts; they do not demonstrate arbitrary consolidation or semantic acceptance.",
+        "Validate the authenticated consent/deletion UI, production retention and encrypted backup/restore activation fences on the reviewed deployment. Local erasure provides no forensic or external-processor deletion claim."
       ]
     },
     {
@@ -1645,6 +1840,23 @@
           "scope": "Closed abstraction and mission vocabularies; directly constructed application approval is not authenticated UI evidence.",
           "node_ids": [
             "tests/test_shared_intelligence.py::test_counterevidence_classification_survives_further_revisions"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart"
+          ],
+          "scope": "A structured unchanged-fields retention preserves a new source-bound reason after database reopen; this is protocol continuity, not human-calibrated evidence evaluation. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_intellectual_recorded_reasons.py::test_retaining_fields_with_new_evidence_preserves_the_new_recorded_reason"
           ]
         }
       ],
@@ -1813,7 +2025,7 @@
       ],
       "missing_connections": [],
       "later_stage_requirements": [
-        "The configured offline application path is not a deployed daemon or live provider integration. Real-model judgment, general corroboration and reassessment policy, fluent-human calibration and operator review remain required."
+        "Offline evidence does not prove that the reviewed release is deployed or that its live provider path, operational denials and owner observations work. Real-model judgment, general corroboration and reassessment policy, fluent-human calibration and operator review remain required."
       ]
     },
     {
@@ -1894,6 +2106,22 @@
           "scope": "Single synthetic wakeup; no behavioral judgment.",
           "node_ids": [
             "tests/test_int24_runtime.py::test_public_no_action_and_default_disabled"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [],
+          "scope": "Observation distinguishes no-change, received/rejected/accepted lifecycle, allowance denials and unresolved research; historical counts are not health, billing or a personality score. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_owner_public_development.py::test_owner_distinguishes_null_proposals_from_rejected_and_recorded_changes",
+            "tests/test_owner_public_development.py::test_owner_separates_allowance_denial_from_failure_and_unresolved_work"
           ]
         }
       ],
@@ -2088,6 +2316,87 @@
           "node_ids": [
             "tests/test_int24_runtime_guards.py::test_revoked_source_and_existing_outbox_are_rechecked_at_handoff",
             "tests/test_int24_runtime.py::test_expired_approval_and_owner_stop_prevent_http"
+          ]
+        },
+        {
+          "layer": "E2E",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart"
+          ],
+          "scope": "The connected discussion withdraws source-dependent private output without deleting unrelated personal input. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_goal_completion_journeys.py::test_new_owned_discussion_reply_and_reason_reach_both_private_chats_after_restart"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "PrivateWebApplication and rendered private chat",
+          "components": [
+            "AuthStore",
+            "PrivateWebApplication",
+            "Chromium",
+            "Synthetic API routes"
+          ],
+          "sink": "Bound account rejection and discarded stale browser response",
+          "risks": [
+            "concurrency",
+            "adversarial"
+          ],
+          "scope": "A stale page cannot submit or retrieve under a changed authenticated account; a late old-account response is discarded. Browser responses are simulated; this is not real human participation or a production latency measurement.",
+          "node_ids": [
+            "tests/test_private_turn_delivery.py::test_a_page_bound_to_another_account_cannot_read_or_submit_in_the_new_session",
+            "tests/test_private_turn_browser.py::test_old_history_cannot_overwrite_a_later_completed_post[True]"
+          ]
+        },
+        {
+          "layer": "connected integration",
+          "entry_point": "PrivateWebApplication and queued worker-runtime turns",
+          "components": [
+            "WorkerConversationRuntime",
+            "OpenAIWorkerServer.serve",
+            "AuthStore",
+            "EventStore"
+          ],
+          "sink": "Scoped persisted HTTP replies, single-active SDK calls, queued Stop/revocation and duplicate handling",
+          "risks": [
+            "concurrency"
+          ],
+          "scope": "Actual local single-active Unix IPC server with synthetic participants and fake SDK. No live provider, deployment or human-participation evidence.",
+          "node_ids": [
+            "tests/test_private_worker_serialization.py::test_private_turns_share_one_worker_and_recheck_stop_after_wait[False-False]",
+            "tests/test_private_worker_serialization.py::test_private_turns_share_one_worker_and_recheck_stop_after_wait[False-True]",
+            "tests/test_private_worker_serialization.py::test_private_turns_share_one_worker_and_recheck_stop_after_wait[True-False]",
+            "tests/test_private_worker_serialization.py::test_private_turns_share_one_worker_and_recheck_stop_after_wait[True-True]",
+            "tests/test_private_worker_serialization.py::test_revoked_queued_request_is_rejected_before_input_persistence"
+          ]
+        },
+        {
+          "layer": "component",
+          "entry_point": "Private narrative replay and deferred maintenance admission",
+          "components": [
+            "WorkerConversationRuntime",
+            "NarrativeAuditStore",
+            "SQLite stores",
+            "Synthetic worker client"
+          ],
+          "sink": "Nonblocking active narrative retry and foreground priority after maintenance admission",
+          "risks": [
+            "concurrency"
+          ],
+          "scope": "Synthetic in-process worker responses with real scoped stores and controlled interleavings. No live provider, production latency or human-participation evidence.",
+          "node_ids": [
+            "tests/test_narrative.py::test_concurrent_duplicate_does_not_resolve_active_narrative_reply[after_reservation]",
+            "tests/test_narrative.py::test_concurrent_duplicate_does_not_resolve_active_narrative_reply[after_finish]",
+            "tests/test_narrative.py::test_concurrent_received_narrative_reconciliation_is_idempotent",
+            "tests/test_deferred_memory_maintenance.py::test_foreground_arriving_after_maintenance_admission_still_takes_priority",
+            "tests/test_private_worker_serialization.py::test_narrative_reconciliation_without_a_reply_cannot_bypass_busy_inference_lane"
           ]
         }
       ],
@@ -2306,6 +2615,24 @@
             "tests/test_int24_worker_boundaries.py::test_worker_restart_keeps_one_use_authority_consumed",
             "tests/test_int24_worker_boundaries.py::test_lost_limit_response_recovers_suspension_without_reinference",
             "tests/test_int24_runtime_guards.py::test_interrupted_reconciliation_claim_has_purpose_bound_operator_recovery"
+          ]
+        },
+        {
+          "layer": "E2E",
+          "entry_point": "Goal completion regression journeys",
+          "components": [
+            "Bound source adapters",
+            "SQLite stores",
+            "Fake provider fixtures"
+          ],
+          "sink": "Captured authorized context, delivery and source-bound lifecycle",
+          "risks": [
+            "restart",
+            "adversarial"
+          ],
+          "scope": "A connected bounded social/private path preserves default A/B isolation, one-use public reply, restart and source withdrawal. Existing adversarial corpus paths and all full normative requirements remain required. Synthetic fixtures only; no live provider, real human participation or production acceptance.",
+          "node_ids": [
+            "tests/test_goal_completion_journeys.py::test_new_owned_discussion_reply_and_reason_reach_both_private_chats_after_restart"
           ]
         }
       ],
