@@ -116,17 +116,6 @@ class PublicIntellectualSource:
         try:
             self._schema()
             generation = view.ledger.control_generation()
-            shared = view.shared_intellectual_source
-            shared_sources = None if shared is None else shared._sources_in(_private_db)
-            sources = view.intellectual.sources(_shared_sources=shared_sources)
-            allowed = (
-                None
-                if shared is None
-                else {
-                    row.operation_id
-                    for row in shared.shared.select(_private_db, principal)
-                }
-            )
             # Activity and legacy-current identities retain their existing reader.
             current = self.sources(
                 principal=principal,
@@ -134,6 +123,7 @@ class PublicIntellectualSource:
                 required_keys=frozenset(receipts),
             )
             result = {}
+            historical = None
             from app.integration.public_state_history import resolve
 
             with connect_read_only(view.journal.path) as db:
@@ -145,6 +135,31 @@ class PublicIntellectualSource:
                     if candidate is not None and candidate["receipt"] == receipt:
                         result[key] = candidate
                     elif key not in current_keys:
+                        # Most released activity still has its current receipt.
+                        # Rebuild ancestry for older revisions only when needed,
+                        # once per lookup, never across authorization boundaries.
+                        if historical is None:
+                            shared = view.shared_intellectual_source
+                            shared_sources = (
+                                None
+                                if shared is None
+                                else shared._sources_in(_private_db)
+                            )
+                            sources = view.intellectual.sources(
+                                _shared_sources=shared_sources
+                            )
+                            allowed = (
+                                None
+                                if shared is None
+                                else {
+                                    row.operation_id
+                                    for row in shared.shared.select(
+                                        _private_db, principal
+                                    )
+                                }
+                            )
+                            historical = sources, allowed
+                        sources, allowed = historical
                         candidate = resolve(
                             db, view.account, receipt, sources, generation, allowed
                         )
