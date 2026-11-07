@@ -44,6 +44,44 @@ def agent_ids(app, participant):
     }
 
 
+def test_current_receipts_do_not_rebuild_the_public_source_graph(
+    integrated, monkeypatch
+):
+    bridge, events = integrated[5], integrated[9]
+    current = bridge.sources()
+    assert current
+    receipts = {key: source["receipt"] for key, source in current.items()}
+    original = bridge.view.intellectual.sources
+    calls = []
+
+    def counted(**kwargs):
+        calls.append(True)
+        return original(**kwargs)
+
+    monkeypatch.setattr(bridge.view.intellectual, "sources", counted)
+    with events._open() as db:
+        assert (
+            bridge.historical_sources(
+                receipts, principal=principal("a"), _private_db=db
+            )
+            == current
+        )
+    assert len(calls) == 1
+    with integrated[0].service.store._open() as db:
+        db.execute(
+            "DELETE FROM threads_inbound_events WHERE account_ref=?",
+            (integrated[0].account,),
+        )
+    with events._open() as db:
+        assert (
+            bridge.historical_sources(
+                receipts, principal=principal("a"), _private_db=db
+            )
+            == {}
+        )
+    assert len(calls) > 1
+
+
 def test_public_revision_preserves_both_private_histories_until_source_withdrawal(
     integrated,
 ):
