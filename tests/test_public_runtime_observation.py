@@ -191,3 +191,69 @@ def test_dated_observation_survives_a_new_status_but_not_withdrawal(
     assert len(
         [x for x in app._conversations.history(principal("a")) if x.role == "agent"]
     ) == (0 if withdraw else 1)
+
+
+@pytest.mark.parametrize(
+    "code", ["project_spend_limit_exceeded", "organization_spend_limit_exceeded"]
+)
+def test_confirmed_spend_stop_records_its_attempt_without_further_public_work(
+    tmp_path, monkeypatch, code
+):
+    from app.integration.public_runtime_observation import current
+    from app.integration.public_window import PublicOperatingWindow
+    from test_b11c_window import setup, spec, serve, finish, NO_ACTION
+
+    public, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    contacts = []
+
+    class SpendLimit(Exception):
+        status_code = 429
+        body = {"error": {"code": code}}
+
+    def denied(**_kwargs):
+        contacts.append(True)
+        raise SpendLimit("synthetic confirmed spend limit")
+
+    monkeypatch.setattr(sdk, "create", denied)
+    thread = serve(worker, 1)
+    try:
+        result = PublicOperatingWindow(
+            public, spec(max_model_calls=3, max_poll_pages=0, max_inbound_events=0)
+        ).run(wait=lambda seconds: clock.advance(timedelta(seconds=seconds)))
+        finish(thread)
+        assert result["state"] == "controls_denied"
+        assert public.provider.is_spend_suspended()
+        assert len(contacts) == 1 and http.calls == []
+        with public.journal.transaction() as db:
+            sources = current(db, public.account, public.ledger.control_generation())
+        assert len(sources) == 1
+        value = json.loads(next(iter(sources.values()))["text"].split("\n", 1)[1])
+        assert value["last_model"]["outcome"] == "spend_limit_confirmed"
+        assert value["last_model"]["constraint"] == code
+        assert value["last_work"] == {"kind": "tick", "outcome": "failed"}
+    finally:
+        worker.close()
+
+
+def test_stop_before_work_does_not_invent_a_completed_attempt(tmp_path):
+    from app.integration.public_runtime_observation import TABLE
+    from app.integration.public_window import PublicOperatingWindow
+    from test_b11c_window import setup, spec, NO_ACTION
+
+    public, worker, sdk, http, _ = setup(tmp_path, NO_ACTION)
+    with public.owner._connection() as db:
+        db.execute("UPDATE owner_stop SET active=1")
+    try:
+        result = PublicOperatingWindow(public, spec()).run()
+        assert result["state"] == "controls_denied"
+        assert sdk.calls == [] and http.calls == []
+        with public.journal.transaction() as db:
+            assert (
+                db.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?",
+                    (TABLE,),
+                ).fetchone()
+                is None
+            )
+    finally:
+        worker.close()
