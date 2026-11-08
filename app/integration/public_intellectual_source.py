@@ -376,6 +376,21 @@ class PublicIntellectualSource:
                 if self.include_public_activity
                 else {}
             )
+            if self.include_public_activity:
+                from app.integration.public_runtime_observation import current
+
+                with connect_read_only(view.journal.path) as db:
+                    observation = current(
+                        db, view.account, generation, required_keys=required_keys
+                    )
+                result = {
+                    **{
+                        key: source
+                        for key, source in observation.items()
+                        if required_keys is None or key in required_keys
+                    },
+                    **result,
+                }
             for item, revision, payload, deps, _operation in sorted(
                 heads,
                 key=lambda row: (row[2]["metadata"]["decided_at"], row[0]),

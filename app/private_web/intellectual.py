@@ -306,7 +306,12 @@ class PrivateIntellectualState:
             key
             for key, source in public_selection.items()
             if source["kind"]
-            in {"confirmed_publication", "public_agent_state", "external_assertion"}
+            in {
+                "confirmed_publication",
+                "public_agent_state",
+                "external_assertion",
+                "capability_snapshot",
+            }
         )
         visible.update(priority)
         budget = (
