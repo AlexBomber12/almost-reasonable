@@ -705,7 +705,7 @@ class ThreadsRuntime(ThreadsStage0):
         if exhausted:
             return ()
         counts = self._research_counts_in(db, profile)
-        if sum(counts.values()) >= profile.aggregate_limit:
+        if profile.aggregate_exhausted(sum(counts.values())):
             return ()
         if profile.question_policy is not None:
             return (FREE_QUESTION_CHOICE[0],)
@@ -1462,7 +1462,7 @@ class ThreadsRuntime(ThreadsStage0):
             topic = profile.topic(payload["topic"])
             if (
                 topic is None
-                or sum(counts.values()) >= profile.aggregate_limit
+                or profile.aggregate_exhausted(sum(counts.values()))
                 or counts.get(
                     payload["topic"]
                     if profile.question_policy is not None

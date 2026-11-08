@@ -253,7 +253,11 @@ def _budget(value):
         )
         or type(value["admission_available"]) is not bool
         or (
-            value["search_limit"] != 100 or type(value["search_limit"]) is not int
+            not (
+                value["search_limit"] is None
+                and value["scope"] == "shared_conservative_project_wallet"
+            )
+            and (value["search_limit"] != 100 or type(value["search_limit"]) is not int)
             if value["lane"] == "research"
             else value["search_limit"] is not None
         )

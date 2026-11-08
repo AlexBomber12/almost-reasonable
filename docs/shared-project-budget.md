@@ -3,7 +3,9 @@
 Public Sol, private Sol, and Luna hosted search can share one billing project
 and one $40 local conservative wallet. There are no per-lane dollar allocations.
 Every SDK request must obtain an atomic reservation from the same local broker.
-The independent search count remains 100 attempts per UTC calendar month.
+Search attempts remain counted per UTC calendar month, without a separate count
+ceiling in this shared wallet. A reviewed public research v4 profile explicitly
+uses `aggregate_limit: null`; old finite profiles retain their count limits.
 
 The broker is credential-free, has no network, and owns only its ledger and Unix
 socket. Workers retain separate UIDs, provider credentials, grants, Stops, and
@@ -39,8 +41,8 @@ Pricing checked 2026-11-08:
 
 Local settled charges and unknown holds must be displayed separately from
 provider-billed usage. All lanes show the **same shared balance**; adding those
-observations together would triple-count it. Exhausted search admission does not
-exhaust dollars or block an otherwise authorized Sol call. Fresh months replenish
+observations together would triple-count it. New searches and either Sol lane
+compete for the same dollar balance. Fresh months replenish
 the monthly allowance, but never erase unknown holds or duplicate-operation fences.
 
 ## Reviewed cutover
@@ -87,7 +89,7 @@ the monthly allowance, but never erase unknown holds or duplicate-operation fenc
    outbox, research, or intellectual effects can get one fresh operation per new
    policy/month. Unknown provider outcomes are never automatically replayed.
 7. Verify actual image/source identity, all original history/account/grant rows,
-   imported financial rows, shared admission, 100-search count, owner diagnostics,
+   imported financial rows, shared admission, historical search counts, owner diagnostics,
    and original Stops before restoring authorized operation. Do not use paid
    inference or a public post as an installation health check.
 
@@ -98,3 +100,32 @@ exit. On restart, only an owned, unchanged socket with no listener can be
 reclaimed, under that lease; live or foreign paths fail closed. A rollback must keep the shared
 ledger and its new charges, or perform a reviewed reverse migration under Stops.
 Restoring a pre-cutover wallet after new spending would manufacture credit.
+
+## Removing the independent search count ceiling
+
+This changes admission, not monetary rates or the ledger schema. Reuse the
+existing shared SQLite file and all settled records, unknown holds, operation
+IDs and clock fences. Never initialize, empty or reprice it during this update.
+The $40 limit and one-attempt SDK boundary remain in force across all lanes.
+
+The public application and research worker require matching reviewed
+`public-research-profile-v4` documents with `aggregate_limit: null`, existing
+standing UTC renewal, and the existing per-question policy. The worker refuses
+this mode without a protected route to a responsive shared $40 broker. A
+legacy SQLite wallet, different project, unreachable broker or still-count-capped
+broker cannot enable it. Private and legacy finite profiles cannot acquire an
+uncapped aggregate through a null field.
+
+Deploy under the existing Stops after quiescence and fresh backups. Update the
+broker before starting a v4 worker. Replace the two profile projections together
+using a new reviewed profile ID and matching digest, then activate the replacement
+in the existing authority journal. Retain all authority reservations and monthly
+research history; old IDs remain revoked. Old profile versions continue to enforce
+their approved aggregate counts until explicitly replaced. Per-question, replay,
+privacy, Stop, output and daily operating-window controls retain their behavior.
+
+Verify both SDK workers and public application source identity, matching profiles,
+native budget observations with `search_limit: null`, the same global $40 balance,
+and preserved old records before restoring the original Stop states. Owner
+diagnostics continue to show monthly search attempts, without a `/100` ceiling.
+No paid probe or public test publication is needed for this cutover.

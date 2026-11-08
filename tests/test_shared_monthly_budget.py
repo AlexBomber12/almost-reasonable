@@ -109,7 +109,8 @@ def test_search_count_and_unknown_holds_survive_month_rollover(tmp_path):
     for i in range(100):
         assert budget.reserve("research", str(i))
         budget.settle("research", str(i), USAGE)
-    assert not budget.reserve("research", "101")
+    assert budget.reserve("research", "101")
+    budget.settle("research", "101", USAGE)
     assert budget.reserve("sol", "still-allowed")
     now[0] = DEC
     status = budget.snapshot("research")
