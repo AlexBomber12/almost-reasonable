@@ -93,6 +93,10 @@ def resolve(db, account, receipt, sources, generation, allowed):
     validate(receipt)
     if receipt["account"] != account or receipt["generation"] != generation:
         return None
+    from app.integration import public_runtime_observation
+
+    if receipt["item"].startswith(public_runtime_observation.PREFIX):
+        return public_runtime_observation.resolve(db, account, receipt, generation)
     if indexed(db):
         row = db.execute(
             f"SELECT item,reasoned FROM {TABLE} WHERE alias=? AND revision=?",

@@ -343,6 +343,7 @@ class PublicOperatingWindow:
             )
 
     def _cycle(self):
+        last_work = None
         offered = self._due("wake")
         if offered is not None:
             identity, now, _ = offered
@@ -350,6 +351,7 @@ class PublicOperatingWindow:
                 (WakeupEvent(identity, now, "bounded operating window"),)
             )
             self._outcome(identity, result.outcome.value)
+            last_work = ("tick", result.outcome.value)
             self.app.recover()
         offered = self._due("poll")
         if offered is not None:
@@ -380,6 +382,7 @@ class PublicOperatingWindow:
                 deadline_at=self.spec.expires_at,
             )
             self._outcome(identity, "completed")
+            last_work = ("poll", "completed")
         for stream in (InboundKind.REPLY, InboundKind.MENTION):
             self.app.guard()
             with self.app.journal.transaction() as db:
@@ -390,6 +393,7 @@ class PublicOperatingWindow:
             )
             if limit > 0:
                 self.app.process_inbound(stream, limit=limit)
+        return last_work
 
     def run(self, *, wait=time.sleep):
         self.app.operator.authenticate()
@@ -414,9 +418,15 @@ class PublicOperatingWindow:
                             ):
                                 state = "exhausted"
                                 break
-                        self._cycle()
+                        last_work = self._cycle()
                         if self.spec.publication_grant is not None:
                             self.app.public_grants.drain(self)
+                        if last_work is not None:
+                            from app.integration.public_runtime_observation import (
+                                capture,
+                            )
+
+                            capture(self.app, *last_work)
                         with self.app.journal.transaction() as db:
                             if (
                                 self._counts(db)["model_calls"]
