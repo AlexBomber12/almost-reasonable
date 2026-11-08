@@ -1,5 +1,9 @@
 # Standing private conversations with a monthly budget
 
+The single-project $40 policy replaces the separate private wallet only after
+[the reviewed shared budget cutover](shared-project-budget.md). Never sum the
+three shared balance observations or reset old financial state during migration.
+
 The operator may separately authorize `private-standing-grant-v1` for the private
 Sol worker. This is an explicit change of authority, never an automatic extension
 of an expired ordinary grant. It uses the same closed fields as the ordinary

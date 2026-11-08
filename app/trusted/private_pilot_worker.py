@@ -44,6 +44,7 @@ from app.trusted.private_pilot import (
 )
 from app.trusted.private_budget import PrivateBudgetedResponses, available
 from app.trusted.public_monthly_budget import MonthlyBudget
+from app.trusted.shared_budget_service import open_monthly_budget
 
 
 ACTIVATION_PATH = Path("/run/almost-reasonable-private-pilot/control/activation.json")
@@ -360,7 +361,7 @@ def build_worker(
     if activation.standing != (monthly_budget_path is not None):
         raise PilotAuthorityError("standing private grant requires its monthly budget")
     monthly_budget = (
-        MonthlyBudget(
+        open_monthly_budget(
             monthly_budget_path,
             lane="private_sol",
             project_id=activation.project_id,

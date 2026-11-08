@@ -690,7 +690,7 @@ class PublicWorkerServer:
             correlation_id=request.correlation_id,
             provider=PROVIDER_NAME,
             model_identifier=getattr(self.adapter, "model", "public-model-unknown"),
-            provider_config_version="threads-public-worker-v1",
+            provider_config_version="threads-public-worker-budget-v2",
             prompt_version=public_prompt_version(
                 request.mission_evolution, request.intellectual_state is not None
             ),

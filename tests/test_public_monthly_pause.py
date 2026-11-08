@@ -125,6 +125,66 @@ def denied_comment(tmp_path, monkeypatch):
         worker.close()
 
 
+def test_new_budget_policy_unpauses_only_attested_old_pre_sdk_denial(denied_comment):
+    from app.integration.public_budget_pause import paused, retryable, CONFIG
+
+    public, _, _, clock, operation, phase, origin = denied_comment
+    with public.provider._event_store._open() as db:
+        db.execute(
+            "UPDATE provider_usage_attempts SET provider_config_version=?,started_at=? WHERE attempt_id=?",
+            ("threads-public-worker-v1", clock.now().isoformat(), operation),
+        )
+    assert CONFIG != "threads-public-worker-v1"
+    assert not paused(public)
+    assert retryable(public, operation, phase, origin)
+    with public.provider._event_store._open() as db:
+        db.execute(
+            "UPDATE provider_usage_attempts SET provider_response_id='resp_synthetic' WHERE attempt_id=?",
+            (operation,),
+        )
+    assert not retryable(public, operation, phase, origin)
+
+
+def test_policy_upgrade_retry_passes_the_actual_credential_worker_attestor(
+    tmp_path, monkeypatch
+):
+    from app.ops.int24_public_worker import _attestor
+
+    public, worker, sdk, _, clock = setup(tmp_path, NO_ACTION)
+    public.poll(InboundKind.REPLY, correlation_id="policy-upgrade")
+    window = PublicOperatingWindow(public, spec(max_poll_pages=0))
+    window._initialize()
+    public.operating_window = window
+    worker.attest = _attestor(public.account)
+    original = sdk.create
+
+    def denied(**kwargs):
+        raise PublicOutputRejected(
+            "public_monthly_budget_exhausted", "synthetic pre-SDK denial"
+        )
+
+    monkeypatch.setattr(sdk, "create", denied)
+    try:
+        thread = serve(worker, 1)
+        assert public.process_inbound(InboundKind.REPLY) == ()
+        finish(thread)
+        with public.provider._event_store._open() as db:
+            db.execute(
+                "UPDATE provider_usage_attempts SET provider_config_version=? WHERE provider_error_code=?",
+                ("threads-public-worker-v1", "public_monthly_budget_exhausted"),
+            )
+        monkeypatch.setattr(sdk, "create", original)
+        thread = serve(worker, 1)
+        completed = public.process_inbound(InboundKind.REPLY)
+        finish(thread)
+        assert len(completed) == 1
+        assert public.journal.read(completed[0])["decision"] == "no_action"
+        assert len(sdk.calls) == 1
+        assert public.process_inbound(InboundKind.REPLY) == ()
+    finally:
+        worker.close()
+
+
 @pytest.mark.parametrize(
     "case",
     [

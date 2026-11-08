@@ -240,7 +240,8 @@ def _budget(value):
             "admission_available",
         }
         or value["available"] is not True
-        or value["scope"] != "conservative_monthly_wallet"
+        or value["scope"]
+        not in ("conservative_monthly_wallet", "shared_conservative_project_wallet")
         or value["billing_authority"] is not False
         or value["lane"] not in ("sol", "research", "private_sol")
         or type(value["month"]) is not str

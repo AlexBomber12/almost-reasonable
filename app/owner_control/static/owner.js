@@ -162,7 +162,8 @@ function recentList(id, source, label) {
 function showBudget(label, budget) {
   if (!budget || !budget.available) {show(`Месячный лимит: ${label}`, 'Нет наблюдения кошелька'); return;}
   const usd = amount => `$${(amount / 1000000).toFixed(2)}`;
-  show(`Месячный лимит: ${label}`, `${budget.month} UTC; лимит ${usd(budget.limit_microusd)}; учтено ${usd(budget.settled_microusd)}; удержано ${usd(budget.unresolved_microusd)} (${budget.unresolved_attempts} незавершённых попыток); свободно ${usd(budget.remaining_microusd)}. Это консервативный местный учёт, не счёт провайдера.`);
+  const scope = budget.scope === 'shared_conservative_project_wallet' ? 'Общий бюджет проекта; один баланс для всех контуров, суммы не складываются. ' : '';
+  show(`Месячный лимит: ${label}`, `${scope}${budget.month} UTC; лимит ${usd(budget.limit_microusd)}; учтено ${usd(budget.settled_microusd)}; удержано ${usd(budget.unresolved_microusd)} (${budget.unresolved_attempts} незавершённых попыток); свободно ${usd(budget.remaining_microusd)}. Это консервативный местный учёт, не счёт провайдера.`);
   show(`Допуск следующего вызова: ${label}`, `${budget.admission_available ? 'В рамках месячной квоты' : 'Месячная квота не допускает новый вызов'}; резерв ${usd(budget.next_reservation_microusd)}. Разрешения, Stop и состояние процесса проверяются отдельно.`);
   if (budget.search_limit !== null) show(`Поиски за месяц: ${label}`, `${budget.month_attempts}/${budget.search_limit} попыток. Неопределённые результаты сохраняют резерв и могут относиться к прошлому месяцу.`);
 }

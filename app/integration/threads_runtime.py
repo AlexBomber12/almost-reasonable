@@ -501,7 +501,12 @@ class ThreadsRuntime(ThreadsStage0):
         return not paused(self)
 
     def _inbound_operation(self, stream, event, resumed):
-        from app.integration.public_budget_pause import claims, retryable, _month
+        from app.integration.public_budget_pause import (
+            claims,
+            retryable,
+            _month,
+            CONFIG,
+        )
 
         original = super()._inbound_operation(stream, event, resumed)
         if any(
@@ -509,7 +514,9 @@ class ThreadsRuntime(ThreadsStage0):
             and retryable(self, operation, phase, origin)
             for operation, phase, origin in claims(self, stream.value, resumed)
         ):
-            return _identity(original, "monthly-budget-retry", _month(self.clock.now()))
+            return _identity(
+                original, "monthly-budget-retry", CONFIG, _month(self.clock.now())
+            )
         return original
 
     def guard(self):
