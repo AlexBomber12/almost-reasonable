@@ -432,3 +432,26 @@ def test_unrecallable_update_is_rolled_back_with_terminal_failure(lab, monkeypat
     assert lab.inspect("public")["memory"] == []
     with sqlite3.connect(lab.path) as db:
         assert db.execute("SELECT COUNT(*) FROM revisions").fetchone()[0] == 0
+
+
+def test_new_decision_is_included_in_next_context_before_commit(lab):
+    """P2: memory and decision together must fit; success cannot poison recall."""
+    lab.add("post", "public", "post", "п" * 750, source="operator:synthetic")
+
+    def large(offset):
+        return decision(
+            text="о" * 1024,
+            reason="п" * 400,
+            updates=[
+                update(key=f"state-{i}", text="т" * 400, reason="п" * 400)
+                for i in range(offset, offset + 4)
+            ],
+        )
+
+    assert lab.step("first", "post", Model(large(0)))["status"] == "decided"
+    result = lab.step("second", "post", Model(large(4)))
+    assert result["status"] == "failed"
+    assert result["error"] == "context_full"
+    frame = Lab(lab.root).context("post")
+    assert len(frame["memory"]) == 4
+    assert [d["operation"] for d in frame["decisions"]] == ["first"]

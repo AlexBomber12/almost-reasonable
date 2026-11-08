@@ -489,16 +489,17 @@ class Lab:
                                 operation,
                             ),
                         )
-                    # Test the next projection inside the same transaction. Roll
-                    # back every proposed revision if it could not be recalled.
-                    self._context(db, event)
-                    result.update(
+                    candidate = result | dict(
                         status="decided", decision=value, effect="shadow_only"
                     )
                     db.execute(
                         "UPDATE operations SET status='decided',result=? WHERE id=?",
-                        (_json(result), operation),
+                        (_json(candidate), operation),
                     )
+                    # Include both the proposed memory and this decision in the
+                    # next projection. A failure rolls back both atomically.
+                    self._context(db, event)
+                    result = candidate
             except Exception as error:
                 code = str(error) if isinstance(error, LabError) else "provider_error"
                 allowed = {
