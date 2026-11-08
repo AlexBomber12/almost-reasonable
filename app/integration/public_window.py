@@ -68,7 +68,8 @@ class WindowSpec:
             "fetched_events": self.max_poll_pages * self.page_size,
             "inbound_deliberations": min(self.max_inbound_events, self.max_model_calls),
             "research_operations_separate_authority": min(
-                self.max_model_calls, research_limit
+                self.max_model_calls,
+                self.max_model_calls if research_limit is None else research_limit,
             ),
             "publication_posts": self.max_model_calls
             if self.publication_grant is not None

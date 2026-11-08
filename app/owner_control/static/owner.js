@@ -166,6 +166,7 @@ function showBudget(label, budget) {
   show(`Месячный лимит: ${label}`, `${scope}${budget.month} UTC; лимит ${usd(budget.limit_microusd)}; учтено ${usd(budget.settled_microusd)}; удержано ${usd(budget.unresolved_microusd)} (${budget.unresolved_attempts} незавершённых попыток); свободно ${usd(budget.remaining_microusd)}. Это консервативный местный учёт, не счёт провайдера.`);
   show(`Допуск следующего вызова: ${label}`, `${budget.admission_available ? 'В рамках месячной квоты' : 'Месячная квота не допускает новый вызов'}; резерв ${usd(budget.next_reservation_microusd)}. Разрешения, Stop и состояние процесса проверяются отдельно.`);
   if (budget.search_limit !== null) show(`Поиски за месяц: ${label}`, `${budget.month_attempts}/${budget.search_limit} попыток. Неопределённые результаты сохраняют резерв и могут относиться к прошлому месяцу.`);
+  else if (budget.lane === 'research') show(`Поиски за месяц: ${label}`, `${budget.month_attempts} попыток; отдельного лимита количества нет, действует общий денежный бюджет. Неопределённые результаты сохраняют резерв.`);
 }
 async function refresh() {
   const data = await api('/status', 'POST');

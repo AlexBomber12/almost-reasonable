@@ -147,7 +147,7 @@ class AuthorityJournal:
                     return False
             if (
                 topic is None
-                or aggregate >= profile.aggregate_limit
+                or profile.aggregate_exhausted(aggregate)
                 or per_topic >= topic.limit
             ):
                 return False
@@ -215,7 +215,7 @@ class AuthorityJournal:
             )
             if profile.standing_monthly:
                 count = sum(self._period_counts(db, profile).values())
-            return count >= profile.aggregate_limit
+            return profile.aggregate_exhausted(count)
 
     def _period_counts(self, db, profile):
         legacy = dict(

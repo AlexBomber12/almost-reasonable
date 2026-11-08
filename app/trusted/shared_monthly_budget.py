@@ -147,11 +147,10 @@ class SharedWallet:
             unresolved_microusd=unresolved,
             unresolved_attempts=holds,
             month_attempts=attempts,
-            search_limit=100 if lane == "research" else None,
+            search_limit=None,
             next_reservation_microusd=policy[2],
             remaining_microusd=max(0, LIMIT - settled - unresolved),
-            admission_available=settled + unresolved + policy[2] <= LIMIT
-            and (lane != "research" or attempts < 100),
+            admission_available=settled + unresolved + policy[2] <= LIMIT,
         )
 
     def reserve(self, lane, operation):

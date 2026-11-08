@@ -20,6 +20,7 @@ from app.research.provider import default_hosted_search_config
 VERSION = "public-research-profile-v1"
 AUTONOMOUS_VERSION = "public-research-profile-v2"
 STANDING_VERSION = "public-research-profile-v3"
+MONEY_ONLY_VERSION = "public-research-profile-v4"
 PUBLIC_PURPOSE = "public-deliberation-catalog-research-v1"
 AUTONOMOUS_PUBLIC_PURPOSE = "public-deliberation-autonomous-research-v1"
 PUBLIC_PURPOSES = frozenset({PUBLIC_PURPOSE, AUTONOMOUS_PUBLIC_PURPOSE})
@@ -77,7 +78,7 @@ class ResearchProfile:
     expires_at: datetime
     reviewer: str
     reviewed_at: datetime
-    aggregate_limit: int
+    aggregate_limit: int | None
     topics: tuple[CatalogTopic, ...]
     digest: str
     principal_id: str | None = None
@@ -86,6 +87,9 @@ class ResearchProfile:
     account_ref: str | None = None
     question_policy: QuestionPolicy | None = None
     standing_monthly: bool = False
+
+    def aggregate_exhausted(self, count):
+        return self.aggregate_limit is not None and count >= self.aggregate_limit
 
     def topic(self, choice: str) -> CatalogTopic | None:
         if type(choice) is not str:
@@ -185,7 +189,8 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
     private = {"principal_id", "authenticated_source_ref"}
     if type(data) is not dict:
         raise ValueError("invalid profile fields")
-    standing = data.get("version") == STANDING_VERSION
+    money_only = data.get("version") == MONEY_ONLY_VERSION
+    standing = money_only or data.get("version") == STANDING_VERSION
     autonomous = standing or data.get("version") == AUTONOMOUS_VERSION
     if standing:
         common.add("renewal")
@@ -198,7 +203,8 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
     ) | ({"account_ref"} if purpose in PUBLIC_PURPOSES else set()):
         raise ValueError("invalid profile fields")
     if (
-        data["version"] not in {VERSION, AUTONOMOUS_VERSION, STANDING_VERSION}
+        data["version"]
+        not in {VERSION, AUTONOMOUS_VERSION, STANDING_VERSION, MONEY_ONLY_VERSION}
         or (
             standing
             and (
@@ -224,8 +230,12 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
         or not 0 <= data["peer_uid"] <= 2**32 - 2
         or type(data["reviewer"]) is not str
         or not data["reviewer"].strip()
-        or type(data["aggregate_limit"]) is not int
-        or not 1 <= data["aggregate_limit"] <= 100
+        or (
+            data["aggregate_limit"] is not None
+            if money_only
+            else type(data["aggregate_limit"]) is not int
+            or not 1 <= data["aggregate_limit"] <= 100
+        )
     ):
         raise ValueError("invalid profile authority")
     issued = datetime.fromisoformat(data["issued_at"])
@@ -253,7 +263,9 @@ def load_research_profile(path: str | Path, *, role: str) -> ResearchProfile:
             or type(raw_policy["max_question_bytes"]) is not int
             or raw_policy["max_question_bytes"] != 512
             or type(raw_policy["per_question_limit"]) is not int
-            or not 1 <= raw_policy["per_question_limit"] <= data["aggregate_limit"]
+            or not 1
+            <= raw_policy["per_question_limit"]
+            <= (100 if money_only else data["aggregate_limit"])
         ):
             raise ValueError("invalid finite question policy")
         policy = QuestionPolicy(

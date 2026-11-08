@@ -128,6 +128,16 @@ def build_worker(
     )
     if getattr(authority, "standing_monthly", False) and monthly_budget_path is None:
         raise ValueError("standing public research requires a monthly budget")
+    if getattr(authority, "aggregate_limit", 0) is None:
+        from app.trusted.shared_budget_service import RemoteBudget
+
+        if monthly_budget_path.suffix != ".json":
+            raise ValueError("money-only research requires the shared project budget")
+        observation = RemoteBudget(
+            monthly_budget_path, lane="research", project_id=project_id
+        ).snapshot()
+        if observation["search_limit"] is not None:
+            raise ValueError("shared project budget still has a search count limit")
     stop = (
         PilotStop(pilot_stop_path)
         if pilot_stop_path is not None
