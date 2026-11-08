@@ -76,6 +76,7 @@ class PublicExperienceHistory:
         """Authorize every source before relevance ranking, count or byte limits."""
         app = self.app
         candidates = {}
+        generation = app.ledger.control_generation()
         for event in app.service.store.public_experience_events(app.account):
             if self._event_allowed(event):
                 record = PublicExperienceRecord(
@@ -101,7 +102,7 @@ class PublicExperienceHistory:
             payload = json.loads(raw)
             if (
                 payload.get("runtime_version") != "threads-public-runtime-v1"
-                or payload.get("generation") != app.ledger.control_generation()
+                or payload.get("generation") != generation
                 or not ThreadsStage0.source_valid(app, payload)
             ):
                 continue
@@ -157,7 +158,7 @@ class PublicExperienceHistory:
                         record,
                         _digest([payload, item.revision, item.dispatch_evidence]),
                     )
-        return candidates
+        return candidates if generation == app.ledger.control_generation() else {}
 
     def select(self, origin, *, research_source=None):
         from app.core.intellectual_state import MAX_DEPENDENCIES

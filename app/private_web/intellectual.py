@@ -24,10 +24,29 @@ class PrivateIntellectualState:
         """Recheck report ancestry without binding unrelated inference pipelines."""
         state = self.state(principal)
         checked = {}
+        public_sources = None
 
-        def permitted(creator):
+        def permitted(creator, *, _reply=None):
+            nonlocal public_sources
             if creator not in checked:
-                reply = self.app._outputs._read(db, principal, creator)
+                if public_sources is None:
+                    operations = tuple(
+                        row[0]
+                        for row in db.execute(
+                            "SELECT operation_id FROM agent_reply_operations WHERE audience_principal_id=?",
+                            (principal.principal_id.value,),
+                        )
+                    )
+                    public_sources = (
+                        self.app._public_intellectual_operation_sources_many(
+                            db, principal, operations
+                        )
+                    )
+                reply = (
+                    self.app._outputs._read(db, principal, creator)
+                    if _reply is None
+                    else _reply
+                )
                 deps = state.dependencies(db, creator)
                 report_ancestry = any(
                     key.startswith("reply:")
@@ -48,8 +67,16 @@ class PrivateIntellectualState:
                     and (
                         not report_ancestry or state._valid_dependencies(deps, sources)
                     )
-                    and self.app._public_intellectual_dependencies_live(
-                        creator, principal
+                    and (
+                        self.app._public_intellectual_dependencies_live(
+                            creator, principal, _sources=public_sources.get(creator, {})
+                        )
+                        if reply is None
+                        else self.app._shared_consent_live(
+                            reply.operation,
+                            principal,
+                            _public_sources=public_sources.get(creator, {}),
+                        )
                     )
                 )
             return checked[creator]
@@ -83,8 +110,18 @@ class PrivateIntellectualState:
             if _public_selection is None
             else _public_selection
         )
+        operations = tuple(
+            row[0]
+            for row in db.execute(
+                "SELECT operation_id FROM agent_reply_operations WHERE audience_principal_id=? ORDER BY operation_id",
+                (principal.principal_id.value,),
+            )
+        )
+        public_sources = app._public_intellectual_operation_sources_many(
+            db, principal, tuple(sorted(set(operations) | set(_required_operations)))
+        )
         for operation in _required_operations:
-            exact = app._public_intellectual_operation_sources(db, principal, operation)
+            exact = public_sources[operation]
             if any(
                 key in result and result[key]["binding"] != value["binding"]
                 for key, value in exact.items()
@@ -98,14 +135,15 @@ class PrivateIntellectualState:
                 "binding": event.event_id,
                 "dependencies": {},
             }
-        for (operation,) in db.execute(
-            "SELECT operation_id FROM agent_reply_operations WHERE audience_principal_id=? ORDER BY operation_id",
-            (principal.principal_id.value,),
-        ):
+        for operation in operations:
             reply = app._outputs._read(db, principal, operation)
             if (
                 reply is not None
-                and app._shared_consent_live(reply.operation, principal)
+                and app._shared_consent_live(
+                    reply.operation,
+                    principal,
+                    _public_sources=public_sources[operation],
+                )
                 and app._narrative_reply_permitted(reply.operation)
             ):
                 required = frozenset(
@@ -114,9 +152,7 @@ class PrivateIntellectualState:
                     if key.startswith("public-state:")
                 )
                 if required:
-                    historical = app._public_intellectual_operation_sources(
-                        db, principal, operation
-                    )
+                    historical = public_sources[operation]
                     # Old unversioned identities can collide across revisions.
                     # Keep history readable, but never combine conflicting proof.
                     if any(
@@ -167,7 +203,11 @@ class PrivateIntellectualState:
             ).fetchone() != ("completed", "release:" + operation):
                 continue
             if (
-                not app._shared_consent_live(reply.operation, principal)
+                not app._shared_consent_live(
+                    reply.operation,
+                    principal,
+                    _public_sources=public_sources[operation],
+                )
                 or not app._narrative_reply_permitted(reply.operation)
                 or not app._historical_research_permitted(principal, reply)
             ):
@@ -345,10 +385,18 @@ class PrivateIntellectualState:
             private.narrative_operation_ids,
         )
         limits = (16, 16, 15 if reserve_narrative_slot else 16)
+        # Capacity trials share this one private transaction. Re-reading an
+        # identical retained reply for every proposed source adds no evidence.
+        context_replies = {}
 
         def dependencies_fit(dependencies):
             inherited = self.inherited_operations(
-                db, principal, operation, dependencies=dependencies, sources=sources
+                db,
+                principal,
+                operation,
+                dependencies=dependencies,
+                sources=sources,
+                _replies=context_replies,
             )
             from app.core.public_intellectual_receipt import (
                 collect,
@@ -419,8 +467,17 @@ class PrivateIntellectualState:
         return result, tuple(sorted(set(event_ids) | own_roots))
 
     def inherited_operations(
-        self, db, principal, operation, *, dependencies=None, sources=None
+        self,
+        db,
+        principal,
+        operation,
+        *,
+        dependencies=None,
+        sources=None,
+        _replies=None,
     ):
+        if _replies is None:
+            _replies = {}
         groups = [set(), set(), set()]
         if dependencies is None:
             dependencies = self.state(principal).dependencies(db, operation)
@@ -439,9 +496,10 @@ class PrivateIntellectualState:
             groups[0].update(receipt["shared"])
         for key in dependencies:
             if key.startswith("context:") and key != "context:" + operation:
-                reply = self.app._outputs._read(
-                    db, principal, key.removeprefix("context:")
-                )
+                creator = key.removeprefix("context:")
+                if creator not in _replies:
+                    _replies[creator] = self.app._outputs._read(db, principal, creator)
+                reply = _replies[creator]
                 if reply is None:
                     raise ValueError("intellectual context disappeared")
                 for target, values in zip(
