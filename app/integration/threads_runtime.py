@@ -477,6 +477,41 @@ class ThreadsRuntime(ThreadsStage0):
 
         return datetime.fromisoformat(value)
 
+    def process_inbound(self, stream, *, resume=False, limit=100):
+        from app.integration.public_budget_pause import paused
+
+        self.guard()
+        if paused(self):
+            return ()
+        return super().process_inbound(stream, resume=resume, limit=limit)
+
+    def _claimed_events(self, kind, resumed):
+        from app.integration.public_budget_pause import claims, retryable
+
+        return tuple(
+            origin["event"]
+            for operation, phase, origin in claims(self, kind, resumed)
+            if not retryable(self, operation, phase, origin)
+        )
+
+    def _inbound_permitted(self):
+        from app.integration.public_budget_pause import paused
+
+        self.guard()
+        return not paused(self)
+
+    def _inbound_operation(self, stream, event, resumed):
+        from app.integration.public_budget_pause import claims, retryable, _month
+
+        original = super()._inbound_operation(stream, event, resumed)
+        if any(
+            origin["event"] == event.event_id
+            and retryable(self, operation, phase, origin)
+            for operation, phase, origin in claims(self, stream.value, resumed)
+        ):
+            return _identity(original, "monthly-budget-retry", _month(self.clock.now()))
+        return original
+
     def guard(self):
         if (
             not self.enabled

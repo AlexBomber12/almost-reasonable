@@ -30,6 +30,7 @@ class SchedulerOutcome(StrEnum):
     RATE_LIMITED = "rate_limited"
     EXECUTION_LIMIT = "execution_limit"
     FAILED = "failed"
+    BUDGET_PAUSED = "budget_paused"
 
 
 @dataclass(frozen=True, slots=True)

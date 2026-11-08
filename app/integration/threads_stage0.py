@@ -882,9 +882,7 @@ class ThreadsStage0:
                     stream,
                     limit=limit,
                     now=self.clock.now(),
-                    excluded_event_ids=self.journal.claimed_events(
-                        stream.value, resume
-                    ),
+                    excluded_event_ids=self._claimed_events(stream.value, resume),
                 )
             )
             if resume
@@ -893,25 +891,25 @@ class ThreadsStage0:
                 stream,
                 limit=limit,
                 now=self.clock.now(),
-                excluded_event_ids=self.journal.claimed_events(stream.value, resume),
+                excluded_event_ids=self._claimed_events(stream.value, resume),
             )
         )
         operations = []
         for event in events:
+            if not self._inbound_permitted():
+                break
             control = self.service.store.conversation_control(
                 self.account, stream, event.conversation_id, now=self.clock.now()
             )
             if control is not None or event.source_ref != self.simulator.source_ref:
                 continue
-            operation = _identity(
-                self.account,
-                stream.value,
-                event.event_id,
-                "resume" if resume else "initial",
-            )
+            operation = self._inbound_operation(stream, event, resume)
             try:
                 self._decide(
-                    operation, self._origin(event, resumed=resume), (event.content,)
+                    operation,
+                    self._origin(event, resumed=resume),
+                    (event.content,),
+                    self.scheduler.policy.max_execution_seconds,
                 )
             except ValueError:
                 continue  # A stale claimed intent cannot starve another conversation.
@@ -923,6 +921,20 @@ class ThreadsStage0:
                     continue  # Hold this intent; independent conversation work remains eligible.
                 operations.append(operation)
         return tuple(operations)
+
+    def _inbound_permitted(self):
+        return True
+
+    def _claimed_events(self, kind, resumed):
+        return self.journal.claimed_events(kind, resumed)
+
+    def _inbound_operation(self, stream, event, resumed):
+        return _identity(
+            self.account,
+            stream.value,
+            event.event_id,
+            "resume" if resumed else "initial",
+        )
 
     def approve(
         self, operation, operator, *, expires_at, purpose=ApprovalPurpose.PUBLICATION
