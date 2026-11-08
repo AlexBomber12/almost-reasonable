@@ -159,7 +159,7 @@ def capture(app, kind, outcome):
     now = app.clock.now().astimezone(UTC).isoformat()
     with connect_read_only(app.provider._event_store.database_path) as db:
         latest = db.execute(
-            "SELECT started_at,model_identifier,outcome,provider_error_code FROM provider_usage_attempts WHERE provider_config_version='threads-public-worker-v1' ORDER BY rowid DESC LIMIT 1"
+            "SELECT started_at,model_identifier,outcome,provider_error_code FROM provider_usage_attempts WHERE provider_config_version IN ('threads-public-worker-v1','threads-public-worker-budget-v2') ORDER BY rowid DESC LIMIT 1"
         ).fetchone()
     model = None
     if latest is not None:

@@ -79,6 +79,47 @@ def test_worker_attestor_requires_exact_started_application_identity(tmp_path):
     )
 
 
+def test_native_attestor_recognizes_only_current_policy_bounded_month_retry_ids():
+    from datetime import UTC, datetime
+    from app.integration.public_budget_pause import CONFIG
+
+    original = _identity("account-1", "reply", "comment-1", "initial")
+    evidence = dict(
+        account="account-1",
+        kind="reply",
+        event="comment-1",
+        resumed=False,
+        runtime_version=PUBLIC_RUNTIME_VERSION,
+        phase="started",
+        context_digest=public_context_digest(()),
+        mission=(),
+        timeout=5,
+    )
+    deadline = datetime(2026, 11, 1, tzinfo=UTC)
+    request = PublicBehaviorRequest(
+        original,
+        original,
+        "public_message",
+        (),
+        (),
+        5,
+        reservation=evidence,
+        deadline_at=deadline,
+    )
+    attest = _attestor("account-1")
+    for month in ("2026-11", "2026-10"):
+        operation = _identity(original, "monthly-budget-retry", CONFIG, month)
+        candidate = replace(request, operation_id=operation, correlation_id=operation)
+        assert attest(candidate)
+        assert not attest(replace(candidate, deadline_at=None))
+        assert not attest(replace(candidate, reservation=evidence | dict(kind="wake")))
+    for epoch, month in (("foreign-config", "2026-11"), (CONFIG, "2026-09")):
+        operation = _identity(original, "monthly-budget-retry", epoch, month)
+        assert not attest(
+            replace(request, operation_id=operation, correlation_id=operation)
+        )
+
+
 def test_default_operator_entrypoint_remains_disabled(capsys):
     assert main(["readiness"]) == 0
     assert json.loads(capsys.readouterr().out)["ready"] is False

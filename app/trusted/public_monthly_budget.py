@@ -257,10 +257,23 @@ class BudgetedResponses:
             )
         raw = self.delegate.create(**kwargs)
         usage = raw.get("usage") if type(raw) is dict else getattr(raw, "usage", None)
-        if usage is not None and type(usage) is not dict:
+        if usage is not None:
+            original_usage = usage
+            read = (
+                original_usage.get
+                if type(original_usage) is dict
+                else lambda key: getattr(original_usage, key, None)
+            )
             usage = {
-                key: getattr(usage, key, None)
+                key: read(key)
                 for key in ("input_tokens", "output_tokens", "total_tokens")
             }
+            details = read("input_tokens_details")
+            if details is not None:
+                usage["cached_input_tokens"] = (
+                    details.get("cached_tokens")
+                    if type(details) is dict
+                    else getattr(details, "cached_tokens", None)
+                )
         self.budget.settle(operation, usage)
         return raw

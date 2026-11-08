@@ -7,11 +7,16 @@ import sqlite3
 from time import monotonic
 
 from app.trusted.private_pilot import protected_state_identity, PilotAuthorityError
+from app.trusted.openai_credential_files import TrustedTransportConfigurationError
 from app.trusted.public_monthly_budget import POLICIES, VERSION
 
 
 def observe_budget(path, *, clock=lambda: datetime.now(UTC)):
     try:
+        if path.suffix == ".json":
+            from app.trusted.shared_budget_service import observe_remote_budget
+
+            return observe_remote_budget(path)
         identity = protected_state_identity(path)
         observed = clock()
         if observed.tzinfo is None:
@@ -88,5 +93,7 @@ def observe_budget(path, *, clock=lambda: datetime.now(UTC)):
         sqlite3.Error,
         OverflowError,
         PilotAuthorityError,
+        TrustedTransportConfigurationError,
+        KeyError,
     ):
         return {"available": False}

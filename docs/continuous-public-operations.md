@@ -1,5 +1,9 @@
 # Standing public operation with a monthly budget
 
+For the reviewed single-project $40 policy covering private Sol, public Sol and
+Luna together, use [the shared budget cutover](shared-project-budget.md). The
+legacy lane-specific limits below apply only before that explicit migration.
+
 This mode requires explicit operator authorization. Existing finite windows and
 v1/v2 research profiles retain their original expiration and lifetime allowances.
 It does not activate itself from environment variables or model output.

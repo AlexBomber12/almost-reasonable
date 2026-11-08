@@ -1,6 +1,7 @@
 """Explicit public-only model worker; run under a separate restricted UID."""
 
 import argparse
+from datetime import UTC, timedelta
 import json
 import os
 from pathlib import Path
@@ -35,6 +36,30 @@ def _billing_scope(config):
     if not project.startswith("proj_") or not organization.startswith("org-"):
         raise ValueError("OpenAI billing scope is invalid")
     return project, organization
+
+
+def _operation_matches(request, expected, kind):
+    if request.operation_id == expected:
+        return request.correlation_id == expected
+    if kind == "wake" or request.deadline_at is None:
+        return False
+    from app.integration.public_budget_pause import CONFIG
+
+    deadline = request.deadline_at.astimezone(UTC)
+    months = (
+        deadline.strftime("%Y-%m"),
+        (deadline.replace(day=1) - timedelta(days=1)).strftime("%Y-%m"),
+    )
+    # The authenticated application attests a started, effect-free retry. Its
+    # stable ID is fenced by the worker's own attempt journal. The adjacent
+    # month handles a request prepared across the UTC month boundary.
+    retries = {
+        _identity(expected, "monthly-budget-retry", CONFIG, month) for month in months
+    }
+    return (
+        request.operation_id == request.correlation_id
+        and request.operation_id in retries
+    )
 
 
 def _attestor(account):
@@ -83,7 +108,7 @@ def _attestor(account):
                 request.intellectual_state is None
                 or value["intellectual_digest"] == digest(request.intellectual_state)
             )
-            and request.operation_id == expected == request.correlation_id
+            and _operation_matches(request, expected, value["kind"])
             and value.get("runtime_version") == PUBLIC_RUNTIME_VERSION
             and request.trigger
             == ("autonomous_wakeup" if value["kind"] == "wake" else "public_message")
@@ -127,12 +152,13 @@ def main(argv=None):
         project=project,
         organization=organization,
     )
-    from app.trusted.public_monthly_budget import BudgetedResponses, MonthlyBudget
+    from app.trusted.public_monthly_budget import BudgetedResponses
+    from app.trusted.shared_budget_service import open_monthly_budget
 
     sdk = SimpleNamespace(
         responses=BudgetedResponses(
             sdk.responses,
-            MonthlyBudget(
+            open_monthly_budget(
                 config["monthly_budget_path"], lane="sol", project_id=project
             ),
         )

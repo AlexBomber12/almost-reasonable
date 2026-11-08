@@ -6,7 +6,8 @@ import json
 from app.core.read_only_sqlite import connect_read_only
 
 CODE = "public_monthly_budget_exhausted"
-CONFIG = "threads-public-worker-v1"
+CONFIG = "threads-public-worker-budget-v2"
+LEGACY_CONFIG = "threads-public-worker-v1"
 
 
 def _month(value):
@@ -49,12 +50,15 @@ def retryable(app, operation, phase, origin):
         return False
     with connect_read_only(app.provider._event_store.database_path) as db:
         row = db.execute(
-            "SELECT started_at FROM provider_usage_attempts WHERE attempt_id=? "
-            "AND provider_config_version=? AND outcome='provider_error' AND provider_error_code=? "
+            "SELECT started_at,provider_config_version FROM provider_usage_attempts WHERE attempt_id=? "
+            "AND provider_config_version IN (?,?) AND outcome='provider_error' AND provider_error_code=? "
             "AND provider_response_id IS NULL AND input_tokens IS NULL AND output_tokens IS NULL AND total_tokens IS NULL",
-            (operation, CONFIG, CODE),
+            (operation, CONFIG, LEGACY_CONFIG, CODE),
         ).fetchone()
-    if row is None or _month(datetime.fromisoformat(row[0])) >= _month(app.clock.now()):
+    if row is None:
+        return False
+    observed, current = _month(datetime.fromisoformat(row[0])), _month(app.clock.now())
+    if observed > current or (observed == current and row[1] == CONFIG):
         return False
     with connect_read_only(app.service.store.database) as db:
         if db.execute(

@@ -189,7 +189,7 @@ def _peer_uid(connection):
     )[1]
 
 
-def _safe_socket_directory(path, group_gid):
+def _safe_socket_directory(path, group_gid, *, require_absent=True):
     if not path.is_absolute() or len(os.fsencode(path)) > 107:
         raise ValueError("invalid telemetry socket path")
     parent = path.parent
@@ -207,7 +207,7 @@ def _safe_socket_directory(path, group_gid):
         or (group_gid is not None and entry.st_gid != group_gid)
     ):
         raise ValueError("unsafe telemetry socket directory")
-    if path.exists() or path.is_symlink():
+    if require_absent and (path.exists() or path.is_symlink()):
         raise ValueError("telemetry socket already exists")
 
 

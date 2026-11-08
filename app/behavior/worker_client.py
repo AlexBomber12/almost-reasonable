@@ -152,7 +152,7 @@ class PublicBehaviorClient:
                 telemetry["correlation_id"],
                 PROVIDER_NAME,
                 telemetry["model_identifier"],
-                "threads-public-worker-v1",
+                "threads-public-worker-budget-v2",
                 public_prompt_version(
                     public.mission_evolution, public.intellectual_state is not None
                 ),

@@ -60,13 +60,13 @@ class PublicResearchTransport:
             from types import SimpleNamespace
             from app.trusted.public_monthly_budget import (
                 BudgetedResponses,
-                MonthlyBudget,
             )
+            from app.trusted.shared_budget_service import open_monthly_budget
 
             client = SimpleNamespace(
                 responses=BudgetedResponses(
                     client.responses,
-                    MonthlyBudget(
+                    open_monthly_budget(
                         monthly_budget_path, lane="research", project_id=project_id
                     ),
                 )

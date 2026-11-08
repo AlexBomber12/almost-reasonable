@@ -1,0 +1,43 @@
+name: almost-reasonable-budget
+
+services:
+  shared-budget:
+    image: ${SHARED_BUDGET_IMAGE:?set reviewed immutable application image digest}
+    user: "${SHARED_BUDGET_UID:?set dedicated ledger UID}:${SHARED_BUDGET_UID:?set dedicated ledger UID}"
+    group_add: ["${SHARED_BUDGET_IPC_GID:?set budget IPC GID}"]
+    command:
+      - python
+      - -B
+      - -m
+      - app.trusted.shared_budget_service
+      - --wallet
+      - /var/lib/project-budget/shared.sqlite
+      - --socket
+      - /run/project-budget/budget.sock
+      - --project-id
+      - ${SHARED_BUDGET_PROJECT_ID:?set the single billing project}
+      - --peer
+      - "${PILOT_WORKER_UID:?set private worker UID}:private_sol"
+      - --peer
+      - "${PUBLIC_WORKER_UID:?set public worker UID}:sol"
+      - --peer
+      - "${RESEARCH_WORKER_UID:?set research worker UID}:research"
+      - --socket-group-gid
+      - "${SHARED_BUDGET_IPC_GID:?set budget IPC GID}"
+    network_mode: none
+    read_only: true
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: ${SHARED_BUDGET_STATE_DIR:?set existing protected ledger directory}
+        target: /var/lib/project-budget
+        bind: {create_host_path: false}
+      - type: bind
+        source: ${SHARED_BUDGET_IPC_DIR:?set existing protected socket directory}
+        target: /run/project-budget
+        bind: {create_host_path: false}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    pids_limit: 32
+    mem_limit: 128m
+    stop_grace_period: 10s
