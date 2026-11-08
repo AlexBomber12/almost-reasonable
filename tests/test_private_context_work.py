@@ -48,19 +48,19 @@ def test_fresh_reply_has_bounded_public_graph_builds(
         if x.role == "agent"
     }
     reads = Counter()
-    read = app._conversations._outputs._read
+    read = app._conversations._outputs._read_record
 
-    def counted_read(db, participant, operation):
+    def counted_read(db, participant, operation, **kwargs):
         if operation in old_operations:
             reads[operation] += 1
-        return read(db, participant, operation)
+        return read(db, participant, operation, **kwargs)
 
     def counted(**kwargs):
         builds.append(True)
         return original(**kwargs)
 
     monkeypatch.setattr(bridge.view.intellectual, "sources", counted)
-    monkeypatch.setattr(app._conversations._outputs, "_read", counted_read)
+    monkeypatch.setattr(app._conversations._outputs, "_read_record", counted_read)
     assert (
         private_submit(server, a, "fresh", "Что изменилось в твоих интересах?")[
             "model_state"

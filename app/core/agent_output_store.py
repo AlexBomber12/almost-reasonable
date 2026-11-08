@@ -151,11 +151,20 @@ class AgentOutputStore:
 
     @staticmethod
     def _sources_valid(
-        db: sqlite3.Connection, principal: str, op: ReplyOperation
+        db: sqlite3.Connection,
+        principal: str,
+        op: ReplyOperation,
+        *,
+        _graph_snapshot=None,
     ) -> bool:
-        validate_shared_graph(db)
-        validate_generic_graph(db)
-        validate_narrative_graph(db)
+        if not (
+            db.in_transaction
+            and _graph_snapshot
+            == (db, db.total_changes, db.execute("PRAGMA data_version").fetchone()[0])
+        ):
+            validate_shared_graph(db)
+            validate_generic_graph(db)
+            validate_narrative_graph(db)
         all_sources = set(op.source_event_ids)
         from app.cognition.narrative_store import narrative_shared_operations
 
@@ -507,11 +516,40 @@ class AgentOutputStore:
         finally:
             db.close()
 
-    def _read(
+    def _read_many(self, db, context, operations):
+        """Share structural proof only within an unchanged SQLite snapshot."""
+        if not operations:
+            return {}
+        if not db.in_transaction:
+            with db:
+                db.execute("BEGIN")
+                return self._read_many(db, context, operations)
+        try:
+            validate_shared_graph(db)
+            validate_generic_graph(db)
+            validate_narrative_graph(db)
+        except ValueError:
+            return dict.fromkeys(operations)
+        snapshot = (
+            db,
+            db.total_changes,
+            db.execute("PRAGMA data_version").fetchone()[0],
+        )
+        return {
+            op: self._read_record(db, context, op, _graph_snapshot=snapshot)
+            for op in operations
+        }
+
+    def _read(self, db, context, operation_id):
+        return self._read_record(db, context, operation_id)
+
+    def _read_record(
         self,
         db: sqlite3.Connection,
         context: TrustedPrincipalContext,
         operation_id: str,
+        *,
+        _graph_snapshot=None,
     ) -> PrivateReply | None:
         row = db.execute(
             """
@@ -575,7 +613,9 @@ class AgentOutputStore:
         )
         self._validate(context, op)
         try:
-            if not self._sources_valid(db, context.principal_id.value, op):
+            if not self._sources_valid(
+                db, context.principal_id.value, op, _graph_snapshot=_graph_snapshot
+            ):
                 return None
         except ValueError:
             return None

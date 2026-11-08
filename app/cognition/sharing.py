@@ -3,6 +3,7 @@
 from collections.abc import Callable
 from datetime import datetime
 import re
+import sys
 import unicodedata
 
 from app.core.events import (
@@ -71,25 +72,31 @@ _DEFAULT_IGNORABLE_CODEPOINTS = frozenset(
 )
 
 
+def _translation_tables():
+    privacy, marks = {}, {}
+    for codepoint in range(sys.maxunicode + 1):
+        character = chr(codepoint)
+        category = unicodedata.category(character)
+        if character.isspace():
+            privacy[codepoint] = " "
+        elif category in {"Cc", "Cf"} or codepoint in _DEFAULT_IGNORABLE_CODEPOINTS:
+            privacy[codepoint] = None
+        if category in {"Mn", "Mc", "Me"}:
+            marks[codepoint] = None
+    privacy.update(_IDNA_DOT_TRANSLATION)
+    return privacy, marks
+
+
+_PRIVACY_TRANSLATION, _MARK_TRANSLATION = _translation_tables()
+
+
 def _normalize_privacy_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFKC", value).translate(_IDNA_DOT_TRANSLATION)
-    return "".join(
-        " " if character.isspace() else character
-        for character in normalized
-        if character.isspace()
-        or (
-            unicodedata.category(character) not in {"Cc", "Cf"}
-            and ord(character) not in _DEFAULT_IGNORABLE_CODEPOINTS
-        )
-    )
+    return unicodedata.normalize("NFKC", value).translate(_PRIVACY_TRANSLATION)
 
 
 def _canonical_identifier_text(value: str) -> str:
-    decomposed = unicodedata.normalize("NFKD", _normalize_privacy_text(value))
-    return "".join(
-        character
-        for character in decomposed
-        if unicodedata.category(character) not in {"Mn", "Mc", "Me"}
+    return unicodedata.normalize("NFKD", _normalize_privacy_text(value)).translate(
+        _MARK_TRANSLATION
     )
 
 

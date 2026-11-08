@@ -128,6 +128,7 @@ class PrivateIntellectualState:
             ):
                 raise ValueError("conflicting public context receipts")
             result.update(exact)
+        replies = app._outputs._read_many(db, principal, operations)
         for event in app._event_store.retrieve_private_events(principal):
             result["event:" + event.event_id] = {
                 "kind": "participant_assertion",
@@ -136,7 +137,7 @@ class PrivateIntellectualState:
                 "dependencies": {},
             }
         for operation in operations:
-            reply = app._outputs._read(db, principal, operation)
+            reply = replies[operation]
             if (
                 reply is not None
                 and app._shared_consent_live(
