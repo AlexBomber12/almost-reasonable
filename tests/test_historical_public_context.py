@@ -267,7 +267,7 @@ def test_old_public_receipt_is_readable_before_and_after_writer_backfill(
             receipts, principal=principal("a"), _private_db=private_db
         ) == {key: legacy}
         with monkeypatch.context() as isolated:
-            isolated.setattr(bridge, "sources", lambda **kwargs: {})
+            isolated.setattr(bridge, "_sources", lambda **kwargs: {})
             assert bridge.historical_sources(
                 receipts, principal=principal("a"), _private_db=private_db
             ) == {key: legacy}
@@ -620,7 +620,7 @@ def test_historical_shared_revision_keeps_participant_permissions_and_withdrawal
                 )
                 is None
             )
-        monkeypatch.setattr(bridge, "sources", lambda **kwargs: {})
+        monkeypatch.setattr(bridge, "_sources", lambda **kwargs: {})
         assert (
             bridge.historical_sources(
                 receipts, principal=principal("b"), _private_db=db

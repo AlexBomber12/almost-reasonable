@@ -760,7 +760,7 @@ class _DurableConversationRuntime(ConversationService):
                 source_permitted = (
                     self._intellectual.source_validator(db, principal)
                     if self._intellectual is not None
-                    else lambda _operation: True
+                    else lambda _operation, **_kwargs: True
                 )
                 from .context_budget import context_fits
 
@@ -789,13 +789,16 @@ class _DurableConversationRuntime(ConversationService):
                         "reply:" + episode.operation_id.removeprefix("narrative:")
                     ),
                     reply_permitted=lambda reply: self._current_request.get()()
-                    and self._shared_consent_live(reply.operation, principal)
+                    and (
+                        self._intellectual is not None
+                        or self._shared_consent_live(reply.operation, principal)
+                    )
                     and self._narrative_reply_permitted(reply.operation)
                     and (
                         self._intellectual is not None
                         or self._research_evidence(reply.operation.operation_id) is None
                     )
-                    and source_permitted(reply.operation.operation_id)
+                    and source_permitted(reply.operation.operation_id, _reply=reply)
                     and self._historical_research_permitted(principal, reply),
                     include_memories=True,
                     include_narrative=getattr(self, "_narrative_audit", None)
@@ -2674,9 +2677,9 @@ class _DurableConversationRuntime(ConversationService):
 
         return self._gate.authorized(read)
 
-    def _shared_consent_live(self, operation, principal):
+    def _shared_consent_live(self, operation, principal, *, _public_sources=None):
         return self._public_intellectual_dependencies_live(
-            operation.operation_id, principal
+            operation.operation_id, principal, _sources=_public_sources
         ) and (
             not operation.shared_operation_ids
             or self._shared_guard.operations_consent_live(
@@ -2684,7 +2687,9 @@ class _DurableConversationRuntime(ConversationService):
             )
         )
 
-    def _public_intellectual_dependencies_live(self, operation, principal):
+    def _public_intellectual_dependencies_live(
+        self, operation, principal, *, _sources=None
+    ):
         from app.core.intellectual_state import IntellectualStateStore
 
         with closing(self._event_store._open()) as db:
@@ -2698,41 +2703,54 @@ class _DurableConversationRuntime(ConversationService):
         }
         if not required:
             return True
-        with closing(self._event_store._open()) as db:
-            current = self._public_intellectual_operation_sources(
-                db, principal, operation
-            )
+        if _sources is None:
+            with closing(self._event_store._open()) as db:
+                current = self._public_intellectual_operation_sources(
+                    db, principal, operation
+                )
+        else:
+            current = _sources
         return all(
             key in current and current[key]["binding"] == value
             for key, value in required.items()
         )
 
     def _public_intellectual_operation_sources(self, db, principal, operation):
+        return self._public_intellectual_operation_sources_many(
+            db, principal, (operation,)
+        )[operation]
+
+    def _public_intellectual_operation_sources_many(self, db, principal, operations):
+        """Batch only within one caller's privacy-fenced read; never retain it."""
         from app.core.intellectual_state import IntellectualStateStore
 
         source = getattr(self, "_public_intellectual_source", None)
         if source is None:
-            return {}
-        row = IntellectualStateStore(
-            "private", principal.principal_id.value
-        )._operation(db, operation)
-        if row is None or row[2] is None:
-            return {}
-        snapshot = json.loads(row[2])
-        receipts = snapshot.get("external_receipts", {})
-        if not receipts:
-            return {}
-        released = db.execute(
-            "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
-            (operation,),
-        ).fetchone() == ("completed", "release:" + operation)
-        current_keys = (
-            frozenset()
-            if released
-            else frozenset(set(snapshot["source_keys"]) & receipts.keys())
-        )
-        return source.historical_sources(
-            receipts, principal=principal, _private_db=db, current_keys=current_keys
+            return dict.fromkeys(operations, {})
+        requests = []
+        state = IntellectualStateStore("private", principal.principal_id.value)
+        for operation in operations:
+            row = state._operation(db, operation)
+            snapshot = {} if row is None or row[2] is None else json.loads(row[2])
+            receipts = snapshot.get("external_receipts", {})
+            released = db.execute(
+                "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                (operation,),
+            ).fetchone() == ("completed", "release:" + operation)
+            current_keys = (
+                frozenset()
+                if released
+                else frozenset(set(snapshot.get("source_keys", ())) & receipts.keys())
+            )
+            requests.append((receipts, current_keys))
+        return dict(
+            zip(
+                operations,
+                source.historical_sources_batch(
+                    requests, principal=principal, _private_db=db
+                ),
+                strict=True,
+            )
         )
 
     def _narrative_reply_permitted(self, operation):

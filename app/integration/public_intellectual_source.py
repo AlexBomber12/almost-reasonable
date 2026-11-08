@@ -105,69 +105,94 @@ class PublicIntellectualSource:
         self, receipts, *, principal, _private_db, current_keys=frozenset()
     ):
         """Resolve protected receipts; fresh direct inputs must still be current."""
-        if (
-            type(receipts) is not dict
-            or not 0 < len(receipts) <= MAX_DEPENDENCIES
-            or type(current_keys) is not frozenset
-            or not current_keys <= receipts.keys()
-        ):
-            return {}
+        return self.historical_sources_batch(
+            ((receipts, current_keys),), principal=principal, _private_db=_private_db
+        )[0]
+
+    def historical_sources_batch(self, requests, *, principal, _private_db):
+        """One fresh catalog for a caller's batch, never cached across gates."""
+        result = [{} for _ in requests]
+        valid = [
+            (index, receipts, current_keys)
+            for index, (receipts, current_keys) in enumerate(requests)
+            if type(receipts) is dict
+            and 0 < len(receipts) <= MAX_DEPENDENCIES
+            and type(current_keys) is frozenset
+            and current_keys <= receipts.keys()
+        ]
+        if not valid:
+            return result
         view = self.view
         try:
             self._schema()
             generation = view.ledger.control_generation()
-            # Activity and legacy-current identities retain their existing reader.
-            current = self.sources(
+            # Each stored receipt set retains its bound. The catalog union is
+            # internal lookup work, not an enlarged per-operation projection.
+            current = self._sources(
                 principal=principal,
                 _private_db=_private_db,
-                required_keys=frozenset(receipts),
+                required_keys=frozenset(
+                    key for _, receipts, _ in valid for key in receipts
+                ),
             )
-            result = {}
             historical = None
             from app.integration.public_state_history import resolve
 
             with connect_read_only(view.journal.path) as db:
-                for key, receipt in receipts.items():
-                    validate(receipt)
-                    if key != source_key(receipt["account"], receipt["item"]):
-                        continue
-                    candidate = current.get(key)
-                    if candidate is not None and candidate["receipt"] == receipt:
-                        result[key] = candidate
-                    elif key not in current_keys:
-                        # Most released activity still has its current receipt.
-                        # Rebuild ancestry for older revisions only when needed,
-                        # once per lookup, never across authorization boundaries.
-                        if historical is None:
-                            shared = view.shared_intellectual_source
-                            shared_sources = (
-                                None
-                                if shared is None
-                                else shared._sources_in(_private_db)
-                            )
-                            sources = view.intellectual.sources(
-                                _shared_sources=shared_sources
-                            )
-                            allowed = (
-                                None
-                                if shared is None
-                                else {
-                                    row.operation_id
-                                    for row in shared.shared.select(
-                                        _private_db, principal
+                for index, receipts, current_keys in valid:
+                    try:
+                        for key, receipt in receipts.items():
+                            validate(receipt)
+                            if key != source_key(receipt["account"], receipt["item"]):
+                                continue
+                            candidate = current.get(key)
+                            if (
+                                candidate is not None
+                                and candidate["receipt"] == receipt
+                            ):
+                                result[index][key] = candidate
+                            elif key not in current_keys:
+                                if historical is None:
+                                    shared = view.shared_intellectual_source
+                                    shared_sources = (
+                                        None
+                                        if shared is None
+                                        else shared._sources_in(_private_db)
                                     )
-                                }
-                            )
-                            historical = sources, allowed
-                        sources, allowed = historical
-                        candidate = resolve(
-                            db, view.account, receipt, sources, generation, allowed
-                        )
-                        if candidate is not None:
-                            result[key] = candidate
-            return result if generation == view.ledger.control_generation() else {}
+                                    sources = view.intellectual.sources(
+                                        _shared_sources=shared_sources
+                                    )
+                                    allowed = (
+                                        None
+                                        if shared is None
+                                        else {
+                                            row.operation_id
+                                            for row in shared.shared.select(
+                                                _private_db, principal
+                                            )
+                                        }
+                                    )
+                                    historical = sources, allowed
+                                sources, allowed = historical
+                                candidate = resolve(
+                                    db,
+                                    view.account,
+                                    receipt,
+                                    sources,
+                                    generation,
+                                    allowed,
+                                )
+                                if candidate is not None:
+                                    result[index][key] = candidate
+                    except (ValueError, KeyError, TypeError):
+                        result[index] = {}
+            return (
+                result
+                if generation == view.ledger.control_generation()
+                else [{} for _ in requests]
+            )
         except (OSError, ValueError, sqlite3.Error, KeyError, TypeError):
-            return {}
+            return [{} for _ in requests]
 
     @classmethod
     def from_config(
@@ -299,6 +324,16 @@ class PublicIntellectualSource:
             or not 0 < len(required_keys) <= MAX_DEPENDENCIES
         ):
             return {}
+        return self._sources(
+            principal=principal,
+            _private_db=_private_db,
+            required_keys=required_keys,
+            query=query,
+        )
+
+    def _sources(
+        self, *, principal=None, _private_db=None, required_keys=None, query=None
+    ):
         view = self.view
         try:
             if query is not None and (

@@ -26,9 +26,8 @@ class PublicIntellectualState:
     def sources(self, *, _candidates=None, _shared_sources=None):
         from app.integration.agent_cadence import cadence_sources
 
-        result = cadence_sources(
-            self.app.journal.path, self.app.ledger.control_generation()
-        )
+        generation = self.app.ledger.control_generation()
+        result = cadence_sources(self.app.journal.path, generation)
         candidates = (
             self.app.experience_history._candidates()
             if _candidates is None
@@ -54,7 +53,7 @@ class PublicIntellectualState:
             ).fetchall()
         for operation, phase, raw in rows:
             payload = json.loads(raw)
-            if not self._origin_allowed(payload):
+            if not self._origin_allowed(payload, generation):
                 continue
             if phase == "rejected":
                 kind, text, binding = (
@@ -97,7 +96,7 @@ class PublicIntellectualState:
             ).fetchall()
             for operation, evidence, raw in research:
                 payload = json.loads(raw)
-                if evidence is not None and self._origin_allowed(payload):
+                if evidence is not None and self._origin_allowed(payload, generation):
                     result["research:" + operation] = {
                         "kind": "hosted_research_model_report",
                         "text": "The full report in prior_untrusted_public_evidence is unverified model assessment, including its uncertainty and counterevidence; URLs are not factual approval.",
@@ -122,14 +121,12 @@ class PublicIntellectualState:
                 break
             for key in invalid:
                 del result[key]
-        return result
+        return result if generation == self.app.ledger.control_generation() else {}
 
-    def _origin_allowed(self, payload):
+    def _origin_allowed(self, payload, generation):
         from app.integration.threads_stage0 import ThreadsStage0
 
-        if payload.get(
-            "generation"
-        ) != self.app.ledger.control_generation() or not ThreadsStage0.source_valid(
+        if payload.get("generation") != generation or not ThreadsStage0.source_valid(
             self.app, payload
         ):
             return False
