@@ -8,7 +8,6 @@ import json
 import sqlite3
 import time
 
-from app.behavior.scheduler import WakeupEvent
 from app.integration.threads_stage0 import MAX_INTENTS, _identity
 from app.threads.domain import InboundKind, OutboxState, require_reference
 from app.threads.service import PolicyDeniedError, PollingError, PublicationPausedError
@@ -346,9 +345,9 @@ class PublicOperatingWindow:
         offered = self._due("wake")
         if offered is not None:
             identity, now, _ = offered
-            result = self.app.scheduler.run(
-                (WakeupEvent(identity, now, "bounded operating window"),)
-            )
+            from app.integration.public_budget_pause import wakeup
+
+            result = wakeup(self.app, identity, now)
             self._outcome(identity, result.outcome.value)
             self.app.recover()
         offered = self._due("poll")
