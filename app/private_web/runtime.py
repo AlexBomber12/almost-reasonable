@@ -2635,44 +2635,70 @@ class _DurableConversationRuntime(ConversationService):
 
     def history(self, principal) -> tuple[HistoryItem, ...]:
         def read():
-            items = []
-            for event in self._event_store.retrieve_private_events_in_commit_order(
+            events = self._event_store.retrieve_private_events_in_commit_order(
                 principal
-            ):
-                items.append(
-                    HistoryItem(event.event_id, event.occurred_at, event.content)
+            )
+            operations = tuple(self._operation_id(event.event_id) for event in events)
+            items = []
+            with closing(self._event_store._open()) as db, db:
+                db.execute("BEGIN")
+                self._event_store._verify_current_schema(db)
+                replies = self._outputs._read_many(db, principal, operations)
+                public_sources = self._public_intellectual_operation_sources_many(
+                    db, principal, operations
                 )
-                operation_id = self._operation_id(event.event_id)
-                reply, resolution = self._outputs.read_reply_and_resolution(
-                    principal, operation_id
-                )
-                # A held payload is never evidence of release. The scoped storage
-                # read also validates every live private/shared/generic dependency.
-                if (
-                    reply is not None
-                    and reply.result_state is ResultState.PERSISTED
-                    and resolution == ("completed", f"release:{operation_id}")
-                    and self._current_request.get()()
-                    and (
-                        getattr(self, "_narrative_audit", None) is None
-                        or self._narrative_permission()
+                permitted = (
+                    self._intellectual.source_validator(
+                        db, principal, _public_sources=public_sources
                     )
-                    and self._shared_consent_live(reply.operation, principal)
-                    and self._narrative_reply_permitted(reply.operation)
-                    and self._historical_research_permitted(principal, reply)
-                ):
+                    if self._intellectual is not None
+                    else None
+                )
+                for event, operation_id in zip(events, operations, strict=True):
+                    items.append(
+                        HistoryItem(event.event_id, event.occurred_at, event.content)
+                    )
+                    reply = replies[operation_id]
+                    resolution = db.execute(
+                        "SELECT outcome,release_id FROM agent_reply_resolutions WHERE operation_id=?",
+                        (operation_id,),
+                    ).fetchone()
+                    # Structural proof is scoped to this read snapshot. Every reply
+                    # still needs its own live scope, ancestry and release record.
                     if (
-                        self._intellectual is not None
-                        and not self._intellectual.research_valid(
-                            principal, operation_id
+                        reply is not None
+                        and reply.result_state is ResultState.PERSISTED
+                        and resolution == ("completed", f"release:{operation_id}")
+                        and self._current_request.get()()
+                        and (
+                            getattr(self, "_narrative_audit", None) is None
+                            or self._narrative_permission()
+                        )
+                        and self._narrative_reply_permitted(reply.operation)
+                        and (
+                            permitted(operation_id, _reply=reply)
+                            if permitted is not None
+                            else self._shared_consent_live(reply.operation, principal)
+                            and self._historical_research_permitted(principal, reply)
                         )
                     ):
-                        continue
-                    items.append(
-                        HistoryItem(
-                            operation_id, event.occurred_at, reply.content, "agent"
+                        items.append(
+                            HistoryItem(
+                                operation_id, event.occurred_at, reply.content, "agent"
+                            )
                         )
-                    )
+                # Public storage has its own control boundary. Re-read complete
+                # operation bindings before returning this batch: withdrawal during
+                # construction must also hide a dependent early history row.
+                current_sources = self._public_intellectual_operation_sources_many(
+                    db, principal, operations
+                )
+                items = [
+                    item
+                    for item in items
+                    if item.role != "agent"
+                    or public_sources[item.event_id] == current_sources[item.event_id]
+                ]
             return tuple(items)
 
         return self._gate.authorized(read)
