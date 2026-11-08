@@ -20,11 +20,11 @@ class PrivateIntellectualState:
     def controls(self):
         return str(self.app._gate._ledger.control_generation())
 
-    def source_validator(self, db, principal):
+    def source_validator(self, db, principal, *, _public_sources=None):
         """Recheck report ancestry without binding unrelated inference pipelines."""
         state = self.state(principal)
         checked = {}
-        public_sources = None
+        public_sources = _public_sources
 
         def permitted(creator, *, _reply=None):
             nonlocal public_sources

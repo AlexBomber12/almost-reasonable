@@ -1453,16 +1453,14 @@ def test_current_session_revalidated_before_history_and_html_research_release(
 
         monkeypatch.setattr(Stage0ConversationRuntime, "history", forbidden)
     elif point == "during_read":
-        original = AgentOutputStore.read_reply_and_resolution
+        original = AgentOutputStore._read_many
 
         def revoke_inside(self, *args):
             result = original(self, *args)
             invalidate()
             return result
 
-        monkeypatch.setattr(
-            AgentOutputStore, "read_reply_and_resolution", revoke_inside
-        )
+        monkeypatch.setattr(AgentOutputStore, "_read_many", revoke_inside)
     else:
         original = Stage0ConversationRuntime.history
 
