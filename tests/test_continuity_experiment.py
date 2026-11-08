@@ -455,3 +455,90 @@ def test_new_decision_is_included_in_next_context_before_commit(lab):
     frame = Lab(lab.root).context("post")
     assert len(frame["memory"]) == 4
     assert [d["operation"] for d in frame["decisions"]] == ["first"]
+
+
+@pytest.mark.parametrize("participant", ["a", "b"])
+def test_public_memory_cannot_poison_a_full_private_projection(lab, participant):
+    post(lab)
+    lab.add("private", participant, "message", "synthetic-private-canary")
+    for offset in range(0, 24, 4):
+        value = decision(
+            based_on=["private"],
+            updates=[
+                update(
+                    key=f"private-{i}",
+                    text="Позиция",
+                    reason="Основание",
+                    sources=["private"],
+                )
+                for i in range(offset, offset + 4)
+            ],
+        )
+        assert (
+            lab.step(f"remember-{offset}", "private", Model(value))["status"]
+            == "decided"
+        )
+    public = Model(decision(updates=[update()]))
+    result = lab.step("public-growth", "post", public)
+    assert result["status"] == "failed"
+    assert result["error"] == "memory_full"
+    assert lab.inspect("public")["memory"] == []
+    assert len(Lab(lab.root).context("private")["memory"]) == 24
+    assert "synthetic-private-canary" not in json.dumps(public.frames)
+    assert (
+        lab.step("still-works", "private", Model(decision(based_on=["private"])))[
+            "status"
+        ]
+        == "decided"
+    )
+
+
+def test_public_reply_size_cannot_poison_private_context_without_any_update(
+    lab, monkeypatch
+):
+    import app.continuity_experiment as module
+
+    post(lab)
+    lab.add("private", "a", "message", "private-canary-" + "a" * 900)
+    assert (
+        lab.step(
+            "remember",
+            "private",
+            Model(
+                decision(
+                    based_on=["private"],
+                    updates=[
+                        update(text="т" * 400, reason="п" * 400, sources=["private"])
+                    ],
+                )
+            ),
+        )["status"]
+        == "decided"
+    )
+    before = len(module._json(lab.context("private")).encode())
+    monkeypatch.setattr(module, "MAX_FRAME_BYTES", before + 500)
+    result = lab.step("large-public-reply", "post", Model(decision(text="р" * 1600)))
+    assert result["status"] == "failed"
+    assert result["error"] == "context_full"
+    assert len(module._json(lab.context("private")).encode()) <= before + 500
+    assert (
+        lab.step("still-works", "private", Model(decision(based_on=["private"])))[
+            "status"
+        ]
+        == "decided"
+    )
+
+
+def test_shared_commit_checks_actual_private_trigger_not_a_smaller_public_one(
+    lab, monkeypatch
+):
+    import app.continuity_experiment as module
+
+    post(lab)
+    lab.add("private", "a", "message", "a" * 2000)
+    before = len(module._json(lab.context("private")).encode())
+    monkeypatch.setattr(module, "MAX_FRAME_BYTES", before + 400)
+    result = lab.step("public-reply", "post", Model(decision(text="x" * 1500)))
+    assert result["status"] == "failed"
+    assert result["error"] == "context_full"
+    assert len(module._json(lab.context("private")).encode()) == before

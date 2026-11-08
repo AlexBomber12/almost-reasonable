@@ -506,6 +506,14 @@ class Lab:
                     # Include both the proposed memory and this decision in the
                     # next projection. A failure rolls back both atomically.
                     self._context(db, event)
+                    if scope == "public":
+                        for participant in self.participants:
+                            private = db.execute(
+                                "SELECT id FROM events WHERE scope=? ORDER BY rowid DESC LIMIT 1",
+                                (participant,),
+                            ).fetchone()
+                            if private is not None:
+                                self._context(db, private[0])
                     result = candidate
             except Exception as error:
                 code = str(error) if isinstance(error, LabError) else "provider_error"
