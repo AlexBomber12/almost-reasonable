@@ -896,6 +896,8 @@ class ThreadsStage0:
         )
         operations = []
         for event in events:
+            if not self._inbound_permitted():
+                break
             control = self.service.store.conversation_control(
                 self.account, stream, event.conversation_id, now=self.clock.now()
             )
@@ -919,6 +921,9 @@ class ThreadsStage0:
                     continue  # Hold this intent; independent conversation work remains eligible.
                 operations.append(operation)
         return tuple(operations)
+
+    def _inbound_permitted(self):
+        return True
 
     def _claimed_events(self, kind, resumed):
         return self.journal.claimed_events(kind, resumed)

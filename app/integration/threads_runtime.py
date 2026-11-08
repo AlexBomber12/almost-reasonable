@@ -494,6 +494,12 @@ class ThreadsRuntime(ThreadsStage0):
             if not retryable(self, operation, phase, origin)
         )
 
+    def _inbound_permitted(self):
+        from app.integration.public_budget_pause import paused
+
+        self.guard()
+        return not paused(self)
+
     def _inbound_operation(self, stream, event, resumed):
         from app.integration.public_budget_pause import claims, retryable, _month
 

@@ -321,3 +321,50 @@ def test_inbound_uses_the_configured_execution_allowance_for_context_and_model(
     finally:
         public.operating_window = None
         worker.close()
+
+
+def test_first_budget_denial_stops_the_remaining_inbound_batch(tmp_path, monkeypatch):
+    public, worker, sdk, http, clock = setup(tmp_path, NO_ACTION)
+    http.reply_rows = [
+        {
+            "id": f"reply-{index}",
+            "text": f"Synthetic independent comment {index}",
+            "timestamp": clock.now().isoformat(),
+            "root_post": {"id": "root-1"},
+            "replied_to": {"id": "root-1"},
+            "is_reply_owned_by_me": False,
+        }
+        for index in (1, 2)
+    ]
+    public.poll(InboundKind.REPLY, correlation_id="two-pending-comments")
+    contacts = []
+    original = public.model.complete
+
+    def counted(*args):
+        contacts.append(True)
+        if len(contacts) > 1:
+            raise ValueError("unexpected repeated worker contact")
+        return original(*args)
+
+    def denied(**_kwargs):
+        raise PublicOutputRejected("public_monthly_budget_exhausted", "local denial")
+
+    monkeypatch.setattr(public.model, "complete", counted)
+    monkeypatch.setattr(sdk, "create", denied)
+    thread = serve(worker, 1)
+    try:
+        assert public.process_inbound(InboundKind.REPLY) == ()
+        finish(thread)
+        assert len(contacts) == 1
+        assert (
+            len(
+                public.service.store.pending_inbound_events(
+                    public.account, InboundKind.REPLY, now=clock.now()
+                )
+            )
+            == 2
+        )
+        with public.journal.transaction() as db:
+            assert db.execute("SELECT COUNT(*) FROM intents").fetchone()[0] == 1
+    finally:
+        worker.close()
