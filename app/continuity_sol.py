@@ -5,7 +5,12 @@ from pathlib import Path
 
 from jsonschema import validate, ValidationError
 
-from app.continuity_experiment import ModelFailure, VERSION
+from app.continuity_experiment import (
+    ModelFailure,
+    VERSION,
+    MAX_FRAME_BYTES,
+    MAX_REPLY_CHARACTERS,
+)
 
 
 def _object(properties):
@@ -17,25 +22,40 @@ def _object(properties):
     )
 
 
+def _bounded_text(maximum, minimum=1):
+    # As in the existing public adapter, character bounds reserve four UTF-8
+    # bytes per scalar. The consumer retains its independent byte validation.
+    return dict(type="string", minLength=minimum, maxLength=maximum)
+
+
+_REFERENCES = dict(
+    type="array",
+    items=dict(type="string", pattern=r"^[A-Za-z0-9_-]{1,64}$"),
+    minItems=1,
+    maxItems=8,
+)
+
+
 SCHEMA = _object(
     dict(
         action=dict(type="string", enum=["reply", "draft", "research", "no_action"]),
-        text=dict(type="string"),
-        reason=dict(type="string"),
-        based_on=dict(type="array", items=dict(type="string")),
+        text=_bounded_text(MAX_REPLY_CHARACTERS, 0),
+        reason=_bounded_text(200),
+        based_on=_REFERENCES,
         question_key=dict(type=["string", "null"]),
         updates=dict(
             type="array",
+            maxItems=4,
             items=_object(
                 dict(
-                    key=dict(type="string"),
+                    key=dict(type="string", pattern=r"^[A-Za-z0-9_-]{1,64}$"),
                     kind=dict(
                         type="string", enum=["position", "question", "interest", "goal"]
                     ),
-                    text=dict(type="string"),
-                    reason=dict(type="string"),
-                    sources=dict(type="array", items=dict(type="string")),
-                    base_revision=dict(type="integer"),
+                    text=_bounded_text(200),
+                    reason=_bounded_text(200),
+                    sources=_REFERENCES,
+                    base_revision=dict(type="integer", minimum=0),
                 )
             ),
         ),
@@ -64,6 +84,8 @@ based_on — 1–8 ID видимых событий, которые действ
 Частные updates остаются у текущего участника. Частный шаг не даёт публичных прав.
 Возвращай только JSON по схеме. reason — краткое основание выбора, не скрытые
 внутренние рассуждения. Ни количество публикаций, ни согласие с владельцем не цель.
+Сам ответ — до 1800 символов, reason и каждая запись памяти — до 180 символов.
+Это пределы формата, а не требование заполнять их целиком. Сохраняй естественный язык.
 """
 
 
@@ -77,7 +99,7 @@ def decode(raw):
         return result
 
     try:
-        if type(raw) is not str or len(raw.encode()) > 16384:
+        if type(raw) is not str or len(raw.encode()) > MAX_FRAME_BYTES:
             raise ValueError("invalid size")
         value = json.loads(raw, object_pairs_hook=unique)
         validate(value, SCHEMA)

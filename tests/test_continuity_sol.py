@@ -60,6 +60,7 @@ def test_sol_has_no_tools_one_call_and_explicit_output_contract(tmp_path):
         ),
         ({"output_text": "not-json"}, "invalid_output"),
         ({"output_text": "x" * 17000}, "invalid_output"),
+        ({"output_text": "x" * 32769}, "invalid_output"),
         ({"output_text": None}, "invalid_output"),
     ],
 )
@@ -127,3 +128,54 @@ def test_normal_output_items_and_duplicate_or_wrong_schema_json():
     for text in ['{"action":"reply","action":"no_action"}', "{}", "[]"]:
         with pytest.raises(ModelFailure, match="invalid_output"):
             decode(text)
+
+
+def test_natural_cyrillic_reply_is_not_rejected_as_an_oversized_byte_string(tmp_path):
+    lab = Lab.create(tmp_path / "lab")
+    post(lab)
+    value = decision(text="Содержательный ответ. " * 70)
+    assert len(value["text"]) <= 2048 < len(value["text"].encode())
+    responses = Responses(output_text=json.dumps(value))
+    result = lab.step(
+        "cyrillic", "post", Sol(responses, stopped=lambda: False, max_calls=1)
+    )
+    assert result["status"] == "decided"
+    assert result["decision"]["text"] == value["text"]
+    assert len(responses.requests) == 1
+
+
+def test_maximum_utf8_reply_fits_even_when_json_uses_surrogate_escapes(tmp_path):
+    lab = Lab.create(tmp_path / "lab")
+    post(lab)
+    value = decision(text="🙂" * 2048)
+    raw = json.dumps(value)
+    assert len(raw.encode()) > 16384
+    model = Sol(Responses(output_text=raw), stopped=lambda: False, max_calls=1)
+    assert lab.step("unicode-boundary", "post", model)["status"] == "decided"
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"text": "x" * 2049},
+        {"reason": "🙂" * 201},
+        {
+            "updates": [
+                dict(
+                    key="q",
+                    kind="question",
+                    text="🙂" * 201,
+                    reason="Причина",
+                    sources=["post"],
+                    base_revision=0,
+                )
+            ]
+        },
+        {"based_on": ["post"] * 9},
+    ],
+)
+def test_wire_schema_bounds_match_consumer_before_memory_application(change):
+    from app.continuity_sol import decode
+
+    with pytest.raises(ModelFailure, match="invalid_output"):
+        decode(json.dumps(decision(**change)))

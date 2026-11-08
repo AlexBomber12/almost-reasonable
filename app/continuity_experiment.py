@@ -14,6 +14,7 @@ from time import monotonic
 VERSION = "ar-continuity-lab-v1"
 APPLICATION_ID = 0x41524C31
 MAX_FRAME_BYTES = 32768
+MAX_REPLY_CHARACTERS = 2048
 MAX_STATES = 24
 KINDS = {"message", "post", "comment", "research", "wake"}
 ACTIONS = {"reply", "draft", "research", "no_action"}
@@ -348,7 +349,13 @@ class Lab:
             raise LabError("invalid_decision")
         if value["action"] not in ACTIONS:
             raise LabError("invalid_action")
-        _text(value["text"], empty=value["action"] == "no_action")
+        _text(
+            value["text"],
+            MAX_REPLY_CHARACTERS * 4,
+            empty=value["action"] == "no_action",
+        )
+        if len(value["text"]) > MAX_REPLY_CHARACTERS:
+            raise LabError("invalid_text")
         _text(value["reason"], 800)
         sources = {e["id"] for e in frame["sources"]}
 
